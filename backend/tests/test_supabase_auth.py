@@ -14,6 +14,7 @@ from app.core.supabase_auth import (  # noqa: E402
     parse_supabase_claims,
     supabase_issuer_from_url,
 )
+from app.schemas.user import UserRead  # noqa: E402
 
 
 class SupabaseAuthTest(unittest.TestCase):
@@ -53,6 +54,22 @@ class SupabaseAuthTest(unittest.TestCase):
 
         self.assertTrue(openid.startswith("supabase:"))
         self.assertLessEqual(len(openid), 64)
+
+    def test_user_read_exposes_account_center_fields(self) -> None:
+        fields = set(UserRead.model_fields)
+
+        self.assertTrue(
+            {
+                "id",
+                "openid",
+                "auth_provider",
+                "auth_subject",
+                "email",
+                "role",
+                "status",
+                "last_login_at",
+            }.issubset(fields)
+        )
 
 
 if __name__ == "__main__":

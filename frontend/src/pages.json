@@ -50,6 +50,13 @@
             }
         },
         {
+            "path": "pages/account/index",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
             "path": "pages/join/landing",
             "style": {
                 "navigationStyle": "custom",

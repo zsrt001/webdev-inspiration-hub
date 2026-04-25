@@ -281,7 +281,7 @@ Expected: frontend build succeeds and backend imports.
 - Modify: `frontend/src/pages.json`
 - Test: `backend/tests/test_supabase_auth.py`
 
-- [ ] **Step 1: Backend exposes stable `/users/me`**
+- [x] **Step 1: Backend exposes stable `/users/me`**
 
 Ensure response includes:
 
@@ -298,7 +298,7 @@ Ensure response includes:
 }
 ```
 
-- [ ] **Step 2: Add account page**
+- [x] **Step 2: Add account page**
 
 Account page should show:
 
@@ -311,7 +311,7 @@ Account page should show:
 退出登录
 ```
 
-- [ ] **Step 3: Add navigation entry**
+- [x] **Step 3: Add navigation entry**
 
 Add `/pages/account/index` to `frontend/src/pages.json` and nav menu.
 
@@ -324,6 +324,8 @@ Home -> 登录 -> Google OAuth -> return -> Account -> Balance visible
 ```
 
 Manual Google credential entry is user-owned; agent only verifies post-login state.
+
+Status note: Account page, guest account state, credit balance, and recent ledger rendering were verified locally. Google OAuth post-login verification remains user-owned because credential entry and consent screens must be completed by the user.
 
 ---
 

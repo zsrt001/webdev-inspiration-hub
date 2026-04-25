@@ -15,6 +15,9 @@
         <view class="nav-link" :class="{ active: currentPath === '/pages/orders/orders' }" @tap="navigate('/pages/orders/orders')">
           {{ t('nav.orders') }}
         </view>
+        <view class="nav-link" :class="{ active: currentPath === '/pages/account/index' }" @tap="navigate('/pages/account/index')">
+          {{ accountLabel }}
+        </view>
       </view>
 
       <view class="nav-actions">
@@ -42,6 +45,7 @@
         <view class="menu-item" @tap="navigate('/pages/index/index')">{{ t('nav.home') }}</view>
         <view class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
         <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
+        <view class="menu-item" @tap="navigate('/pages/account/index')">{{ accountLabel }}</view>
       </view>
     </view>
   </view>
@@ -51,7 +55,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useI18nStore } from '../stores/i18n';
 import { get } from '../utils/api';
-import { isSupabaseLoggedIn, logout, signInWithGoogle } from '../utils/auth';
+import { isSupabaseLoggedIn, signInWithGoogle } from '../utils/auth';
 import { isSupabaseConfigured } from '../utils/supabase';
 
 const creditBalance = ref(0);
@@ -61,9 +65,10 @@ const supabaseEnabled = isSupabaseConfigured();
 const i18nStore = useI18nStore();
 const t = i18nStore.t;
 const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
+const accountLabel = computed(() => (i18nStore.locale === 'zh' ? '账户' : 'Account'));
 
 const authLabel = computed(() => {
-  if (googleAuthed.value) return i18nStore.locale === 'zh' ? '退出' : 'Logout';
+  if (googleAuthed.value) return accountLabel.value;
   return i18nStore.locale === 'zh' ? '登录' : 'Sign in';
 });
 
@@ -84,6 +89,7 @@ const pushPages = new Set([
   '/pages/legal/terms',
   '/pages/join/landing',
   '/pages/admin/index',
+  '/pages/account/index',
 ]);
 
 const goHome = () => {
@@ -122,9 +128,7 @@ const refreshAuthState = () => {
 
 const handleAuthTap = async () => {
   if (googleAuthed.value) {
-    logout();
-    refreshAuthState();
-    await fetchBalance();
+    navigate('/pages/account/index');
     return;
   }
 
