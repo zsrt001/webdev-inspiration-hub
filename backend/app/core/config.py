@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "AI Wedding Photo API"
     debug: bool = False
+    auto_create_tables: bool | None = None
     cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     # Database (Supabase/Neon compatible)
@@ -142,6 +143,13 @@ class Settings(BaseSettings):
             if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
                 return False
         return value
+
+    @property
+    def should_auto_create_tables(self) -> bool:
+        """Whether startup may mutate database schema for local/dev convenience."""
+        if self.auto_create_tables is not None:
+            return bool(self.auto_create_tables)
+        return bool(self.debug)
 
     @property
     def s3_public_url_base(self) -> str:

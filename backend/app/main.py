@@ -32,15 +32,19 @@ async def lifespan(app: FastAPI):
     try:
         from app.core.database import engine, Base
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(text("ALTER TABLE IF EXISTS leads ALTER COLUMN phone TYPE TEXT"))
-            await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(32)"))
-            await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_subject VARCHAR(128)"))
-            await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
-            await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS role VARCHAR(32) DEFAULT 'user'"))
-            await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'active'"))
-            await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE"))
-        logger.info("Database connected and tables created")
+            if settings.should_auto_create_tables:
+                await conn.run_sync(Base.metadata.create_all)
+                await conn.execute(text("ALTER TABLE IF EXISTS leads ALTER COLUMN phone TYPE TEXT"))
+                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(32)"))
+                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_subject VARCHAR(128)"))
+                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS role VARCHAR(32) DEFAULT 'user'"))
+                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'active'"))
+                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE"))
+        if settings.should_auto_create_tables:
+            logger.info("Database connected and schema auto-create completed")
+        else:
+            logger.info("Database connected; schema auto-create disabled")
     except Exception as e:
         if strict_mode:
             raise RuntimeError(f"database_startup_failed: {e}") from e

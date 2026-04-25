@@ -5,6 +5,8 @@
     "scripts": {
         "dev:mp-weixin": "uni -p mp-weixin",
         "build:mp-weixin": "uni build -p mp-weixin",
+        "dev:web": "uni -p h5",
+        "build:web": "uni build -p h5",
         "dev:h5": "uni -p h5",
         "build:h5": "uni build -p h5"
     },
