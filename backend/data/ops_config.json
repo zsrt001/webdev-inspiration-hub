@@ -1,0 +1,36 @@
+{
+  "template_overrides": {},
+  "pricing": {
+    "credit_packages": [
+      {
+        "id": "pack_50",
+        "credits": 50,
+        "price": 12.9,
+        "label": "AI Wedding Starter",
+        "popular": false
+      },
+      {
+        "id": "pack_120",
+        "credits": 120,
+        "price": 24.9,
+        "label": "AI Wedding Popular",
+        "popular": true
+      },
+      {
+        "id": "pack_300",
+        "credits": 300,
+        "price": 49.9,
+        "label": "AI Wedding Premium",
+        "popular": false
+      }
+    ]
+  },
+  "placements": {
+    "home_banner": {
+      "enabled": true,
+      "title": "AI Wedding Studio",
+      "subtitle": "Premium wedding portraits in minutes",
+      "cta_label": "Start Now"
+    }
+  }
+}

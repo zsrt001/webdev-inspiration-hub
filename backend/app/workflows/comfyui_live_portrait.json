@@ -1,0 +1,33 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "live_portrait_input.jpg"
+    }
+  },
+  "2": {
+    "class_type": "LivePortrait",
+    "inputs": {
+      "image": [
+        "1",
+        0
+      ],
+      "seconds": 5,
+      "motion_preset": "blink_smile",
+      "fps": 12
+    }
+  },
+  "3": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": [
+        "2",
+        0
+      ],
+      "fps": 12,
+      "format": "mp4",
+      "filename_prefix": "live_portrait"
+    }
+  }
+}
+

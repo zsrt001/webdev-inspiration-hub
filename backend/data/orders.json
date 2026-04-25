@@ -1,0 +1,13 @@
+[
+  {
+    "id": "1ec93483-8283-403a-97ff-c02585ae3c6d",
+    "user_id": "demo_user",
+    "image_url": "http://localhost:8000/static/styles/chn_xiuhe.jpg",
+    "template_id": "chn_xiuhe",
+    "template_title": "Chinese Xiuhe",
+    "clothing_prompt": null,
+    "custom_scene": null,
+    "created_at": "2026-02-07T22:00:44.981091",
+    "status": "completed"
+  }
+]

@@ -1,0 +1,70 @@
+/**
+ * AI Wedding Studio Design System - UI/UX Pro Max Refactor
+ * Theme: Liquid Glass / Romantic Luxury
+ */
+
+// ========================================
+// Colors - Liquid Glass Palette
+// ========================================
+$uni-color-primary: #DB2777; // Warm pink
+$uni-color-secondary: #F472B6; // Light pink
+$uni-color-accent: #CA8A04; // Elegant gold
+$uni-color-white: #ffffff;
+$uni-color-background: #FDF2F8; // Very soft pink
+$uni-color-border: #FCE7F3;
+
+// Text Colors
+$uni-text-color: #831843; // Deep wine
+$uni-text-color-secondary: #9D174D;
+$uni-text-color-muted: #BE185D;
+
+// ========================================
+// Typography - Bodoni Moda + Jost
+// ========================================
+$uni-font-family: 'Bodoni Moda', 'Playfair Display', serif;
+$uni-font-family-sans: 'Jost', 'Inter', sans-serif;
+
+$uni-font-size-xs: 12px;
+$uni-font-size-sm: 14px;
+$uni-font-size-base: 16px;
+$uni-font-size-lg: 18px;
+$uni-font-size-xl: 24px;
+$uni-font-size-2xl: 32px;
+$uni-font-size-3xl: 48px;
+$uni-font-size-hero: 64px;
+
+// ========================================
+// Spacing & Layout
+// ========================================
+$uni-container-width: 1400px; // Responsive max-width
+$uni-container-padding: 32px;
+
+$uni-border-radius-sm: 8px;
+$uni-border-radius-base: 16px;
+$uni-border-radius-lg: 24px;
+
+// ========================================
+// Spacing - Studio Rhythm
+// ========================================
+$uni-space-xs: 4px;
+$uni-space-sm: 8px;
+$uni-space-md: 16px;
+$uni-space-lg: 24px;
+$uni-space-xl: 32px;
+$uni-space-2xl: 48px;
+$uni-space-3xl: 64px;
+
+// ========================================
+// Shadows - Liquid Glass Depth
+// ========================================
+$uni-shadow-sm: 0 1px 2px rgba(131, 24, 67, 0.05);
+$uni-shadow-base: 0 4px 12px rgba(131, 24, 67, 0.08);
+$uni-shadow-lg: 0 10px 15px rgba(131, 24, 67, 0.1);
+$uni-shadow-xl: 0 20px 25px rgba(131, 24, 67, 0.15);
+
+// ========================================
+// Transitions
+// ========================================
+$uni-transition-fast: 0.15s ease;
+$uni-transition-base: 0.2s ease;
+$uni-transition-slow: 0.4s cubic-bezier(0.4, 0, 0.2, 1);

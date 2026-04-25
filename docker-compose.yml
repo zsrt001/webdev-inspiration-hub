@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai_wedding_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_wedding
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache & Task Queue
+  redis:
+    image: redis:7-alpine
+    container_name: ai_wedding_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO S3-Compatible Storage (Optional - for local development)
+  minio:
+    image: minio/minio:latest
+    container_name: ai_wedding_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ai_wedding_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/ai_wedding
+      REDIS_URL: redis://redis:6379/0
+      AWS_S3_ENDPOINT: http://minio:9000
+      HOST: 0.0.0.0
+      PORT: 8001
+      RELOAD: "0"
+    ports:
+      - "8001:8001"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+
+  worker:
+    build:
+      context: ./backend
+    container_name: ai_wedding_worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/ai_wedding
+      REDIS_URL: redis://redis:6379/0
+      AWS_S3_ENDPOINT: http://minio:9000
+    command: ["arq", "app.worker.WorkerSettings"]
+
+  frontend:
+    image: nginx:1.27-alpine
+    container_name: ai_wedding_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    volumes:
+      - ./frontend/dist/build/h5:/usr/share/nginx/html:ro
+      - ./frontend/nginx.h5.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "3000:80"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

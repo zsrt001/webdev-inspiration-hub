@@ -1,0 +1,313 @@
+<template>
+  <view class="navbar shadow-sm">
+    <view class="navbar-inner">
+      <view class="logo-area" @tap="goHome">
+        <text class="logo-main heading-serif">{{ t('nav.brand') }}</text>
+      </view>
+
+      <view class="nav-links-permanent">
+        <view class="nav-link" :class="{ active: currentPath === '/pages/index/index' }" @tap="navigate('/pages/index/index')">
+          {{ t('nav.home') }}
+        </view>
+        <view class="nav-link" :class="{ active: currentPath === '/pages/create/index' || currentPath === '/pages/detail/detail' }" @tap="navigate('/pages/create/index')">
+          {{ t('nav.studio') }}
+        </view>
+        <view class="nav-link" :class="{ active: currentPath === '/pages/orders/orders' }" @tap="navigate('/pages/orders/orders')">
+          {{ t('nav.orders') }}
+        </view>
+      </view>
+
+      <view class="nav-actions">
+        <view class="lang-toggle" @tap.stop="toggleLocale">
+          <text class="lang-text">{{ localeButtonText }}</text>
+        </view>
+
+        <view v-if="supabaseEnabled" class="auth-chip" @tap.stop="handleAuthTap">
+          <text class="auth-text">{{ authLabel }}</text>
+        </view>
+
+        <view class="balance-chip" @tap="showTopUp">
+          <text class="chip-icon">✦</text>
+          <text class="chip-val">{{ creditBalance }}</text>
+        </view>
+
+        <view class="menu-dots-mobile" @tap="toggleMenu">
+          <view class="dot"></view>
+          <view class="dot"></view>
+          <view class="dot"></view>
+        </view>
+      </view>
+
+      <view v-if="showMenu" class="dropdown-menu-mobile" @tap="showMenu = false">
+        <view class="menu-item" @tap="navigate('/pages/index/index')">{{ t('nav.home') }}</view>
+        <view class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
+        <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
+      </view>
+    </view>
+  </view>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue';
+import { useI18nStore } from '../stores/i18n';
+import { get } from '../utils/api';
+import { isSupabaseLoggedIn, logout, signInWithGoogle } from '../utils/auth';
+import { isSupabaseConfigured } from '../utils/supabase';
+
+const creditBalance = ref(0);
+const showMenu = ref(false);
+const googleAuthed = ref(false);
+const supabaseEnabled = isSupabaseConfigured();
+const i18nStore = useI18nStore();
+const t = i18nStore.t;
+const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
+
+const authLabel = computed(() => {
+  if (googleAuthed.value) return i18nStore.locale === 'zh' ? '退出' : 'Logout';
+  return i18nStore.locale === 'zh' ? '登录' : 'Sign in';
+});
+
+const currentPath = computed(() => {
+  const pages = getCurrentPages();
+  if (pages.length === 0) return '';
+  return `/${pages[pages.length - 1].route}`;
+});
+
+const emit = defineEmits<{
+  (e: 'show-payment'): void;
+}>();
+
+const pushPages = new Set([
+  '/pages/create/index',
+  '/pages/detail/detail',
+  '/pages/legal/privacy',
+  '/pages/legal/terms',
+  '/pages/join/landing',
+  '/pages/admin/index',
+]);
+
+const goHome = () => {
+  uni.reLaunch({ url: '/pages/index/index' });
+};
+
+const toggleLocale = () => {
+  i18nStore.toggleLocale();
+};
+
+const toggleMenu = () => {
+  showMenu.value = !showMenu.value;
+};
+
+const navigate = (path: string) => {
+  if (currentPath.value === path) return;
+  if (pushPages.has(path)) {
+    uni.navigateTo({ url: path });
+    return;
+  }
+  uni.reLaunch({ url: path });
+};
+
+const fetchBalance = async () => {
+  try {
+    const res = await get<{ balance: number }>('/credits/balance', { showLoading: false, showError: false });
+    creditBalance.value = res.balance;
+  } catch {
+    creditBalance.value = 0;
+  }
+};
+
+const refreshAuthState = () => {
+  googleAuthed.value = isSupabaseLoggedIn();
+};
+
+const handleAuthTap = async () => {
+  if (googleAuthed.value) {
+    logout();
+    refreshAuthState();
+    await fetchBalance();
+    return;
+  }
+
+  try {
+    await signInWithGoogle();
+  } catch (error: any) {
+    uni.showToast({
+      title: error?.message || 'Sign in failed',
+      icon: 'none',
+    });
+  }
+};
+
+const showTopUp = () => {
+  emit('show-payment');
+};
+
+const refreshBalance = () => fetchBalance();
+
+onMounted(async () => {
+  await fetchBalance();
+  refreshAuthState();
+});
+
+defineExpose({ refreshBalance });
+</script>
+
+<style lang="scss" scoped>
+.navbar {
+  width: 100%;
+  height: 64px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(15px);
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  border-bottom: 1px solid rgba(131, 24, 67, 0.06);
+}
+
+.navbar-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 40px;
+
+  @media (max-width: 768px) {
+    padding: 0 20px;
+  }
+}
+
+.logo-main {
+  font-size: 22px;
+  color: #1a1a1a;
+  font-weight: 700;
+}
+
+.nav-links-permanent {
+  display: flex;
+  gap: 28px;
+
+  @media (max-width: 960px) {
+    display: none;
+  }
+}
+
+.nav-link {
+  font-size: 14px;
+  font-weight: 600;
+  color: $uni-text-color;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 8px 0;
+  position: relative;
+  opacity: 0.72;
+  transition: all 0.25s;
+  cursor: pointer;
+
+  &:hover,
+  &.active {
+    opacity: 1;
+
+    &::after {
+      width: 100%;
+    }
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 0;
+    height: 2px;
+    background: $uni-color-primary;
+    transition: width 0.25s ease;
+  }
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lang-toggle,
+.auth-chip,
+.balance-chip {
+  min-width: 44px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(131, 24, 67, 0.16);
+  background: rgba(255, 255, 255, 0.96);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.balance-chip {
+  gap: 6px;
+}
+
+.lang-text,
+.auth-text,
+.chip-icon,
+.chip-val {
+  font-size: 12px;
+  font-weight: 800;
+  color: $uni-color-primary;
+}
+
+.menu-dots-mobile {
+  display: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(131, 24, 67, 0.16);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 3px;
+
+  @media (max-width: 960px) {
+    display: flex;
+  }
+}
+
+.dot {
+  width: 4px;
+  height: 4px;
+  background: $uni-color-primary;
+  border-radius: 999px;
+}
+
+.dropdown-menu-mobile {
+  position: absolute;
+  top: 60px;
+  right: 20px;
+  min-width: 140px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(131, 24, 67, 0.12);
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(18, 18, 18, 0.12);
+
+  @media (min-width: 961px) {
+    display: none;
+  }
+}
+
+.menu-item {
+  padding: 14px 16px;
+  font-size: 14px;
+  color: $uni-text-color;
+  border-bottom: 1px solid rgba(131, 24, 67, 0.06);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+</style>

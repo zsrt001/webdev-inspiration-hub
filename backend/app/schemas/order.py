@@ -1,0 +1,209 @@
+"""Order Pydantic schemas."""
+
+from datetime import datetime
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from app.models.order import OrderStatus
+
+
+class OrderBase(BaseModel):
+    """Base order schema."""
+
+    style_template: str | None = None
+    generation_params: dict | None = None
+
+
+class OrderCreate(BaseModel):
+    """Schema for creating an order."""
+
+    template_id: str
+    user_images: list[str]
+    legal_accepted: bool = False
+    director_mode: bool | None = None
+    remote_join: bool | None = None
+    global_style_text: str | None = None
+    scene_text: str | None = None
+    outfit_text: str | None = None
+    scene_preset_id: str | None = None
+    clothing_preset_id: str | None = None
+    prompt_override: str | None = None
+    scene_image_url: str | None = None
+    clothing_image_url: str | None = None
+    pose_image_url: str | None = None
+    depth_image_url: str | None = None
+    normal_image_url: str | None = None
+    scene_ip_weight: float | None = None
+    clothing_ip_weight: float | None = None
+    face_ip_weight: float | None = None
+    pose_cn_weight: float | None = None
+    depth_cn_weight: float | None = None
+    normal_cn_weight: float | None = None
+    pose_cn_start: float | None = None
+    pose_cn_end: float | None = None
+    depth_cn_start: float | None = None
+    depth_cn_end: float | None = None
+    normal_cn_start: float | None = None
+    normal_cn_end: float | None = None
+
+    @model_validator(mode="after")
+    def _normalize_director_inputs(self):
+        def _clean_text(value: str | None) -> str | None:
+            if value is None:
+                return None
+            cleaned = str(value).strip()
+            return cleaned or None
+
+        def _clean_scalar(value: str | None) -> str | None:
+            if value is None:
+                return None
+            cleaned = str(value).strip()
+            return cleaned or None
+
+        def _clamp_unit(value: float | None) -> float | None:
+            if value is None:
+                return None
+            try:
+                numeric = float(value)
+            except Exception:
+                return None
+            return max(0.0, min(1.0, numeric))
+
+        def _normalize_range(start: float | None, end: float | None) -> tuple[float | None, float | None]:
+            start_value = _clamp_unit(start)
+            end_value = _clamp_unit(end)
+            if start_value is not None and end_value is not None and start_value > end_value:
+                start_value, end_value = end_value, start_value
+            return start_value, end_value
+
+        self.template_id = str(self.template_id).strip()
+        self.user_images = [str(item).strip() for item in (self.user_images or []) if str(item).strip()]
+
+        self.global_style_text = _clean_text(self.global_style_text)
+        self.scene_text = _clean_text(self.scene_text)
+        self.outfit_text = _clean_text(self.outfit_text)
+        self.prompt_override = _clean_text(self.prompt_override)
+        self.scene_preset_id = _clean_scalar(self.scene_preset_id)
+        self.clothing_preset_id = _clean_scalar(self.clothing_preset_id)
+        self.scene_image_url = _clean_scalar(self.scene_image_url)
+        self.clothing_image_url = _clean_scalar(self.clothing_image_url)
+        self.pose_image_url = _clean_scalar(self.pose_image_url)
+        self.depth_image_url = _clean_scalar(self.depth_image_url)
+        self.normal_image_url = _clean_scalar(self.normal_image_url)
+
+        self.scene_ip_weight = _clamp_unit(self.scene_ip_weight)
+        self.clothing_ip_weight = _clamp_unit(self.clothing_ip_weight)
+        self.face_ip_weight = _clamp_unit(self.face_ip_weight)
+        self.pose_cn_weight = _clamp_unit(self.pose_cn_weight)
+        self.depth_cn_weight = _clamp_unit(self.depth_cn_weight)
+        self.normal_cn_weight = _clamp_unit(self.normal_cn_weight)
+
+        self.pose_cn_start, self.pose_cn_end = _normalize_range(self.pose_cn_start, self.pose_cn_end)
+        self.depth_cn_start, self.depth_cn_end = _normalize_range(self.depth_cn_start, self.depth_cn_end)
+        self.normal_cn_start, self.normal_cn_end = _normalize_range(self.normal_cn_start, self.normal_cn_end)
+        return self
+
+
+class OrderUpdate(BaseModel):
+    """Schema for updating an order."""
+
+    status: OrderStatus | None = None
+    style_template: str | None = None
+    generation_params: dict | None = None
+    preview_image_urls: dict | None = None
+    final_image_urls: dict | None = None
+    error_message: str | None = None
+
+
+class OrderRead(OrderBase):
+    """Schema for reading order data."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    user_id: UUID
+    status: OrderStatus
+    template_id: str | None = None
+    source_image_urls: dict | None = None
+    preview_image_urls: dict | None = None
+    final_image_urls: dict | None = None
+    price_cents: int
+    paid_at: datetime | None = None
+    error_message: str | None = None
+    director_mode: bool | None = None
+    remote_join: bool | None = None
+    subject_count: int | None = None
+    couple_flow: str | None = None
+    effective_scene_source: str | None = None
+    effective_outfit_source: str | None = None
+    effective_scene_preset_id: str | None = None
+    effective_outfit_preset_id: str | None = None
+    effective_scene_preset_title: str | None = None
+    effective_outfit_preset_title: str | None = None
+    effective_scene_ip_weight: float | None = None
+    effective_outfit_ip_weight: float | None = None
+    ignored_inputs: list[str] | None = None
+    director_summary: dict | None = None
+    director_decision_hints: list[str] | None = None
+    couple_guardrails: dict | None = None
+    qa_last_reasons: list[str] | None = None
+    qa_attempt_count: int | None = None
+    failure_code: str | None = None
+    failure_provider: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def _hydrate_effective_sources(self):
+        params = self.generation_params or {}
+        if isinstance(params, dict):
+            self.director_mode = bool(params.get("director_mode"))
+            self.remote_join = bool(params.get("remote_join"))
+            subject_count = params.get("subject_count")
+            if subject_count is not None:
+                try:
+                    self.subject_count = int(subject_count)
+                except Exception:
+                    self.subject_count = None
+            couple_flow = params.get("couple_flow")
+            self.couple_flow = str(couple_flow) if couple_flow else None
+            self.effective_scene_source = params.get("effective_scene_source")
+            self.effective_outfit_source = params.get("effective_outfit_source")
+            self.effective_scene_preset_id = params.get("effective_scene_preset_id")
+            self.effective_outfit_preset_id = params.get("effective_outfit_preset_id")
+            self.effective_scene_preset_title = params.get("effective_scene_preset_title")
+            self.effective_outfit_preset_title = params.get("effective_outfit_preset_title")
+            try:
+                self.effective_scene_ip_weight = float(params.get("effective_scene_ip_weight")) if params.get("effective_scene_ip_weight") is not None else None
+            except Exception:
+                self.effective_scene_ip_weight = None
+            try:
+                self.effective_outfit_ip_weight = float(params.get("effective_outfit_ip_weight")) if params.get("effective_outfit_ip_weight") is not None else None
+            except Exception:
+                self.effective_outfit_ip_weight = None
+            ignored_inputs = params.get("ignored_inputs")
+            if isinstance(ignored_inputs, list):
+                self.ignored_inputs = [str(item) for item in ignored_inputs if str(item).strip()]
+            director_summary = params.get("director_summary")
+            if isinstance(director_summary, dict):
+                self.director_summary = director_summary
+            director_decision_hints = params.get("director_decision_hints")
+            if isinstance(director_decision_hints, list):
+                self.director_decision_hints = [str(item) for item in director_decision_hints if str(item).strip()]
+            couple_guardrails = params.get("couple_guardrails")
+            if isinstance(couple_guardrails, dict):
+                self.couple_guardrails = couple_guardrails
+            qa_last_reasons = params.get("qa_last_reasons")
+            if isinstance(qa_last_reasons, list):
+                self.qa_last_reasons = [str(item) for item in qa_last_reasons if str(item).strip()]
+            qa_attempt_count = params.get("qa_attempt_count")
+            if qa_attempt_count is not None:
+                try:
+                    self.qa_attempt_count = int(qa_attempt_count)
+                except Exception:
+                    self.qa_attempt_count = None
+            failure_code = params.get("failure_code")
+            self.failure_code = str(failure_code) if failure_code else None
+            failure_provider = params.get("failure_provider")
+            self.failure_provider = str(failure_provider) if failure_provider else None
+        return self
