@@ -63,12 +63,14 @@ def _append_query(url: str, **params: str) -> str:
 
 
 def _payment_message(provider: str, status_value: str, *, submitted: bool = False) -> str:
-    if status_value == "COMPLETED":
+    if status_value == "paid":
         return "Payment completed."
-    if status_value == "FAILED":
+    if status_value == "failed":
         return "Payment failed."
-    if status_value == "CANCELED":
-        return "Payment canceled."
+    if status_value == "expired":
+        return "Payment expired."
+    if status_value == "refunded":
+        return "Payment refunded."
     if provider == "manual_review":
         if submitted:
             return "Payment submitted and is pending manual confirmation."
@@ -88,12 +90,12 @@ def _render_manual_checkout_html(context: dict) -> str:
     instructions = escape(str(context.get("instructions") or ""))
     contact = escape(str(context.get("contact") or ""))
     submitted_at = str(context.get("submitted_at") or "").strip()
-    status_value = str(purchase.status.value if hasattr(purchase.status, "value") else purchase.status)
+    status_value = payment_service._status_value(purchase.status)
 
-    if status_value == "COMPLETED":
+    if status_value == "paid":
         return_href = _append_query(return_url, payment="success", purchase_id=purchase_id)
         action_block = f'<a class="primary" href="{escape(return_href)}">Return to site</a>'
-    elif status_value in {"FAILED", "CANCELED"}:
+    elif status_value in {"failed", "expired", "refunded"}:
         return_href = _append_query(return_url, payment="failed", purchase_id=purchase_id)
         action_block = f'<a class="primary" href="{escape(return_href)}">Return to site</a>'
     else:
@@ -245,7 +247,7 @@ async def create_checkout(
     return CheckoutResponse(
         purchase_id=str(purchase.id),
         provider=purchase.provider,
-        status=purchase.status.value,
+        status=payment_service._status_value(purchase.status),
         checkout_url=purchase.checkout_url or "",
     )
 
@@ -267,8 +269,8 @@ async def get_payment_status(
     except PaymentError as exc:
         _raise_payment_error(exc)
 
-    status_value = purchase.status.value
-    completed = status_value == "COMPLETED"
+    status_value = payment_service._status_value(purchase.status)
+    completed = status_value == "paid"
     metadata = purchase.metadata_json if isinstance(purchase.metadata_json, dict) else {}
     message = _payment_message(
         purchase.provider,
@@ -343,7 +345,7 @@ async def complete_manual_checkout(
     return {
         "success": True,
         "purchase_id": str(purchase.id),
-        "status": purchase.status.value,
+        "status": payment_service._status_value(purchase.status),
         "provider": purchase.provider,
     }
 
@@ -365,7 +367,7 @@ async def fail_manual_checkout(
     return {
         "success": True,
         "purchase_id": str(purchase.id),
-        "status": purchase.status.value,
+        "status": payment_service._status_value(purchase.status),
         "provider": purchase.provider,
     }
 

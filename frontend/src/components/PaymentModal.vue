@@ -228,7 +228,7 @@ async function reconcilePendingPurchase() {
         showLoading: false,
         showError: false,
       });
-      if (status.completed || status.status === 'FAILED' || status.status === 'CANCELED') {
+      if (status.completed || ['failed', 'expired', 'refunded', 'FAILED', 'CANCELED'].includes(status.status)) {
         break;
       }
       await sleep(1500);
@@ -248,16 +248,16 @@ async function reconcilePendingPurchase() {
       return;
     }
 
-    if (status.status === 'FAILED' || status.status === 'CANCELED') {
+    if (['failed', 'expired', 'refunded', 'FAILED', 'CANCELED'].includes(status.status)) {
       clearPendingPurchase();
       clearRouteParams();
       uni.showToast({
-        title: status.status === 'FAILED' ? tr('支付失败', 'Payment failed') : tr('支付已取消', 'Payment canceled'),
+        title: tr('支付未完成', 'Payment was not completed'),
         icon: 'none',
       });
     }
 
-    if (status.status === 'PENDING') {
+    if (status.status === 'pending' || status.status === 'PENDING') {
       clearRouteParams();
       uni.showToast({
         title: status.message || tr('支付已提交，等待人工确认', 'Payment submitted and pending review'),

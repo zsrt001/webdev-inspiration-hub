@@ -34,8 +34,30 @@ class PaymentError(Exception):
 
 class PaymentService:
     _COMPLETED_STATES = {"completed", "paid", "succeeded", "success"}
-    _FAILED_STATES = {"failed", "expired"}
+    _FAILED_STATES = {"failed"}
+    _EXPIRED_STATES = {"expired"}
     _CANCELED_STATES = {"cancelled", "canceled"}
+
+    def _status_value(self, status: CreditPurchaseStatus | str | None) -> str:
+        value = status.value if hasattr(status, "value") else status
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "created": CreditPurchaseStatus.PENDING.value,
+            "pending": CreditPurchaseStatus.PENDING.value,
+            "completed": CreditPurchaseStatus.PAID.value,
+            "paid": CreditPurchaseStatus.PAID.value,
+            "succeeded": CreditPurchaseStatus.PAID.value,
+            "success": CreditPurchaseStatus.PAID.value,
+            "failed": CreditPurchaseStatus.FAILED.value,
+            "canceled": CreditPurchaseStatus.FAILED.value,
+            "cancelled": CreditPurchaseStatus.FAILED.value,
+            "expired": CreditPurchaseStatus.EXPIRED.value,
+            "refunded": CreditPurchaseStatus.REFUNDED.value,
+        }
+        return aliases.get(normalized, normalized)
+
+    def _is_paid(self, purchase: CreditPurchase) -> bool:
+        return self._status_value(purchase.status) == CreditPurchaseStatus.PAID.value
 
     def _provider(self) -> str:
         return settings.payment_mode
@@ -225,7 +247,7 @@ class PaymentService:
             credits=int(package["credits"]),
             price_cents=int(round(float(package["price"]) * 100)),
             currency="USD",
-            status=CreditPurchaseStatus.CREATED,
+            status=CreditPurchaseStatus.PENDING,
             provider_request_id=str(uuid.uuid4()),
             metadata_json={
                 "package_label": package["label"],
@@ -309,30 +331,12 @@ class PaymentService:
 
         return purchase
 
-    async def finalize_purchase(
+    async def _add_purchase_credits(
         self,
         db: AsyncSession,
         purchase: CreditPurchase,
-        *,
-        checkout_payload: dict[str, Any] | None = None,
-        webhook_event_id: str | None = None,
-    ) -> CreditPurchase:
-        if purchase.status == CreditPurchaseStatus.COMPLETED:
-            return purchase
-
-        purchase.provider_checkout_id = (
-            purchase.provider_checkout_id
-            or self._extract_checkout_id(checkout_payload or {})
-        )
-        purchase.provider_payment_id = self._extract_payment_id(checkout_payload or {}) or purchase.provider_payment_id
-        purchase.webhook_event_id = webhook_event_id or purchase.webhook_event_id
-        purchase.status = CreditPurchaseStatus.COMPLETED
-        purchase.completed_at = datetime.now(timezone.utc)
-        purchase.last_error = None
-        purchase.metadata_json = {
-            **(purchase.metadata_json or {}),
-            "last_checkout_payload": checkout_payload or {},
-        }
+        checkout_payload: dict[str, Any] | None,
+    ) -> int:
         await add_credits_async(
             db,
             purchase.user_id,
@@ -345,8 +349,36 @@ class PaymentService:
                 "provider": purchase.provider,
                 "provider_checkout_id": purchase.provider_checkout_id,
                 "provider_payment_id": purchase.provider_payment_id,
+                "checkout_payload": checkout_payload or {},
             },
         )
+        return await get_balance_async(db, purchase.user_id)
+
+    async def finalize_purchase(
+        self,
+        db: AsyncSession,
+        purchase: CreditPurchase,
+        *,
+        checkout_payload: dict[str, Any] | None = None,
+        webhook_event_id: str | None = None,
+    ) -> CreditPurchase:
+        if self._is_paid(purchase):
+            return purchase
+
+        purchase.provider_checkout_id = (
+            purchase.provider_checkout_id
+            or self._extract_checkout_id(checkout_payload or {})
+        )
+        purchase.provider_payment_id = self._extract_payment_id(checkout_payload or {}) or purchase.provider_payment_id
+        purchase.webhook_event_id = webhook_event_id or purchase.webhook_event_id
+        purchase.status = CreditPurchaseStatus.PAID
+        purchase.completed_at = datetime.now(timezone.utc)
+        purchase.last_error = None
+        purchase.metadata_json = {
+            **(purchase.metadata_json or {}),
+            "last_checkout_payload": checkout_payload or {},
+        }
+        await self._add_purchase_credits(db, purchase, checkout_payload)
         await db.flush()
         return purchase
 
@@ -359,7 +391,7 @@ class PaymentService:
         checkout_payload: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> CreditPurchase:
-        if purchase.status == CreditPurchaseStatus.COMPLETED:
+        if self._is_paid(purchase):
             return purchase
         purchase.status = status
         purchase.last_error = error or purchase.last_error
@@ -477,11 +509,19 @@ class PaymentService:
                 checkout_payload=checkout_payload,
                 error=f"provider_status:{normalized_status}",
             )
+        if normalized_status in self._EXPIRED_STATES:
+            return await self.mark_purchase_terminal(
+                db,
+                purchase,
+                status=CreditPurchaseStatus.EXPIRED,
+                checkout_payload=checkout_payload,
+                error=f"provider_status:{normalized_status}",
+            )
         if normalized_status in self._CANCELED_STATES:
             return await self.mark_purchase_terminal(
                 db,
                 purchase,
-                status=CreditPurchaseStatus.CANCELED,
+                status=CreditPurchaseStatus.FAILED,
                 checkout_payload=checkout_payload,
                 error=f"provider_status:{normalized_status}",
             )
@@ -521,7 +561,7 @@ class PaymentService:
         checkout_id: str | None = None,
     ) -> tuple[CreditPurchase, int]:
         purchase = await self._get_purchase_for_user(db, purchase_id, user_id)
-        if purchase.status == CreditPurchaseStatus.PENDING and (checkout_id or purchase.provider_checkout_id):
+        if self._status_value(purchase.status) == CreditPurchaseStatus.PENDING.value and (checkout_id or purchase.provider_checkout_id):
             purchase = await self.sync_checkout_status(db, purchase=purchase, checkout_id=checkout_id)
         balance = await get_balance_async(db, purchase.user_id)
         return purchase, balance

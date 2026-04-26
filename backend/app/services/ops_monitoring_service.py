@@ -104,7 +104,7 @@ async def get_ops_monitoring_summary(db: AsyncSession, *, days: int = 7, failure
             select(func.date(CreditPurchase.completed_at), func.coalesce(func.sum(CreditPurchase.price_cents), 0))
             .where(
                 CreditPurchase.completed_at >= start_dt,
-                CreditPurchase.status == CreditPurchaseStatus.COMPLETED,
+                CreditPurchase.status == CreditPurchaseStatus.PAID.value,
             )
             .group_by(func.date(CreditPurchase.completed_at))
         )

@@ -130,7 +130,7 @@ class Settings(BaseSettings):
 
     # Live Portrait / Remote Join
     live_portrait_enabled: bool = False
-    remote_join_enabled: bool = False
+    remote_join_enabled: bool = True
     allow_memory_fallback: bool = False
 
     @field_validator("debug", mode="before")

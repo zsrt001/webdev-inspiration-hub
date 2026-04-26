@@ -188,6 +188,42 @@ Expected: exits 0 and leaves schema at `head`.
 
 ---
 
+### Task 2.5: Supabase RLS Data Boundary
+
+**Files:**
+- Create: `backend/alembic/versions/20260426_0003_supabase_rls_policies.py`
+- Create: `backend/tests/test_supabase_rls_migration.py`
+
+- [x] **Step 1: Enable RLS for sensitive tables**
+
+Protect `users`, `user_credits`, `credit_transactions`, `credit_purchases`, `orders`, `live_portrait_jobs`, `leads`, and `click_stats`.
+
+- [x] **Step 2: Restrict authenticated reads to own rows**
+
+Use Supabase `auth.uid()` mapped through `users.auth_subject` via `public.app_current_user_id()`.
+
+- [x] **Step 3: Deny direct client access to service-only tables**
+
+`leads` and `click_stats` have RLS enabled with no authenticated direct-read policy. Backend/service role remains the authority.
+
+- [x] **Step 4: Pre-wire future commercial tables**
+
+If subscription, Creem customer, referral, or invite tables already exist in an environment, the migration applies own-row select policies when expected user ownership columns are present.
+
+- [x] **Step 5: Verify**
+
+Run:
+
+```powershell
+python -m unittest backend.tests.test_supabase_rls_migration -v
+cd backend
+python scripts/migrate_db.py
+```
+
+Expected: test passes and Supabase upgrades to `head`.
+
+---
+
 ### Task 3: Web/Vercel Build Hardening
 
 **Files:**
@@ -337,8 +373,9 @@ Status note: Account page, guest account state, credit balance, and recent ledge
 - Modify: `backend/app/routers/payments.py`
 - Modify: `frontend/src/components/PaymentModal.vue`
 - Create: `backend/tests/test_payment_webhook.py`
+- Create: `backend/alembic/versions/20260426_0002_payment_status_webhook_idempotency.py`
 
-- [ ] **Step 1: Payment states**
+- [x] **Step 1: Payment states**
 
 Support:
 
@@ -350,15 +387,15 @@ expired
 refunded
 ```
 
-- [ ] **Step 2: Webhook idempotency**
+- [x] **Step 2: Webhook idempotency**
 
 Webhook completion must be idempotent by provider event id or provider order id. Repeated webhook calls must not add credits twice.
 
-- [ ] **Step 3: Signature validation**
+- [x] **Step 3: Signature validation**
 
 `CREEM_WEBHOOK_SECRET` must be required when `PAYMENT_PROVIDER=creem` and `DEBUG=false`.
 
-- [ ] **Step 4: Frontend package checkout**
+- [x] **Step 4: Frontend package checkout**
 
 Payment modal should:
 
@@ -366,7 +403,7 @@ Payment modal should:
 list packages -> create checkout -> redirect hosted checkout -> poll status after return
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -375,6 +412,10 @@ python -m unittest backend/tests/test_payment_webhook.py -v
 ```
 
 Expected: idempotent webhook and failed signature tests pass.
+
+- [x] **Step 6: Apply migration**
+
+Normalize persisted statuses to `pending/paid/failed/expired/refunded`, add unique `webhook_event_id`, and switch revenue analytics to `paid`.
 
 ---
 

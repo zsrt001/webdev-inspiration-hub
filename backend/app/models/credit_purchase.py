@@ -14,11 +14,15 @@ from app.core.database import Base
 
 
 class CreditPurchaseStatus(str, Enum):
-    CREATED = "CREATED"
-    PENDING = "PENDING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    CANCELED = "CANCELED"
+    PENDING = "pending"
+    PAID = "paid"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    REFUNDED = "refunded"
+    # Backward-compatible aliases for older code paths.
+    CREATED = "pending"
+    COMPLETED = "paid"
+    CANCELED = "failed"
 
 
 class CreditPurchase(Base):
@@ -27,6 +31,7 @@ class CreditPurchase(Base):
     __tablename__ = "credit_purchases"
     __table_args__ = (
         UniqueConstraint("provider_request_id", name="uq_credit_purchase_request_id"),
+        UniqueConstraint("webhook_event_id", name="uq_credit_purchase_webhook_event_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -40,13 +45,13 @@ class CreditPurchase(Base):
     credits: Mapped[int] = mapped_column(Integer, default=0)
     price_cents: Mapped[int] = mapped_column(Integer, default=0)
     currency: Mapped[str] = mapped_column(String(8), default="USD")
-    status: Mapped[CreditPurchaseStatus] = mapped_column(String(32), default=CreditPurchaseStatus.CREATED, index=True)
+    status: Mapped[CreditPurchaseStatus] = mapped_column(String(32), default=CreditPurchaseStatus.PENDING, index=True)
     provider_request_id: Mapped[str] = mapped_column(String(128), index=True)
     provider_checkout_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     provider_payment_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    webhook_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    webhook_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

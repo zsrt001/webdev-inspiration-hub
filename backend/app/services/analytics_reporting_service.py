@@ -102,7 +102,7 @@ async def get_funnel_report(db: AsyncSession, *, days: int = 7) -> dict[str, Any
                 func.coalesce(func.sum(CreditPurchase.price_cents), 0),
             )
             .where(
-                CreditPurchase.status == CreditPurchaseStatus.COMPLETED,
+                CreditPurchase.status == CreditPurchaseStatus.PAID.value,
                 CreditPurchase.completed_at.is_not(None),
                 CreditPurchase.completed_at >= start_dt,
             )

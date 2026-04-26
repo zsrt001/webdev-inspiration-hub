@@ -45,7 +45,7 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
   },
   feature_flags: {
     live_portrait: false,
-    remote_join: false,
+    remote_join: true,
     local_recommendations: true,
     director_mode: true,
   },

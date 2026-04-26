@@ -219,13 +219,20 @@ def _ensure_credit_purchases(existing_tables: set[str]) -> None:
             sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
             sa.UniqueConstraint("provider_request_id", name="uq_credit_purchase_request_id"),
+            sa.UniqueConstraint("webhook_event_id", name="uq_credit_purchase_webhook_event_id"),
         )
+    _add_unique_constraint_if_missing(
+        "credit_purchases",
+        "uq_credit_purchase_webhook_event_id",
+        "webhook_event_id",
+    )
     _create_index("ix_credit_purchases_user_id", "credit_purchases", "user_id")
     _create_index("ix_credit_purchases_provider", "credit_purchases", "provider")
     _create_index("ix_credit_purchases_package_id", "credit_purchases", "package_id")
     _create_index("ix_credit_purchases_status", "credit_purchases", "status")
     _create_index("ix_credit_purchases_provider_request_id", "credit_purchases", "provider_request_id")
     _create_index("ix_credit_purchases_provider_checkout_id", "credit_purchases", "provider_checkout_id")
+    _create_index("ix_credit_purchases_webhook_event_id", "credit_purchases", "webhook_event_id")
 
 
 def _ensure_leads(existing_tables: set[str]) -> None:
