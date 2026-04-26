@@ -17,8 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus
 from app.models.credit_transaction import CreditTransactionType
+from app.models.payment_event import PaymentEvent
 from app.models.user import User
 from app.services.credit_service import add_credits_async, get_balance_async, get_package_by_id
+from app.services.subscription_service import subscription_service
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -33,6 +35,17 @@ class PaymentError(Exception):
 
 
 class PaymentService:
+    _ONE_TIME_WEBHOOK_EVENTS = {"checkout.completed", "checkout.succeeded", "checkout.paid", "payment.completed"}
+    _SUBSCRIPTION_WEBHOOK_EVENTS = {
+        "invoice.paid",
+        "subscription.created",
+        "subscription.updated",
+        "subscription.paid",
+        "subscription.payment_succeeded",
+        "subscription.canceled",
+        "subscription.cancelled",
+        "subscription.past_due",
+    }
     _COMPLETED_STATES = {"completed", "paid", "succeeded", "success"}
     _FAILED_STATES = {"failed"}
     _EXPIRED_STATES = {"expired"}
@@ -148,6 +161,72 @@ class PaymentService:
             if result:
                 return result
         return payload
+
+    def _extract_event_id(self, payload: dict[str, Any], body: bytes) -> str:
+        value = payload.get("id") or payload.get("event_id")
+        if value is not None:
+            text = str(value).strip()
+            if text:
+                return text
+        digest = hashlib.sha256(body or repr(payload).encode("utf-8")).hexdigest()
+        return f"generated:{digest}"
+
+    def _extract_event_type(self, payload: dict[str, Any]) -> str:
+        return str(payload.get("type") or payload.get("event") or "").strip().lower()
+
+    def _extract_event_object(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data = payload.get("data")
+        if isinstance(data, dict):
+            for key in ("object", "subscription", "checkout", "payment"):
+                child = data.get(key)
+                if isinstance(child, dict):
+                    return child
+            return data
+        for key in ("object", "subscription", "checkout", "payment"):
+            child = payload.get(key)
+            if isinstance(child, dict):
+                return child
+        return payload
+
+    def _extract_object_id(self, payload: dict[str, Any]) -> str | None:
+        event_object = self._extract_event_object(payload)
+        for key in ("subscription_id", "provider_subscription_id", "checkout_id", "payment_id", "id"):
+            value = event_object.get(key)
+            if value is not None:
+                text = str(value).strip()
+                if text:
+                    return text
+        return None
+
+    async def _get_or_create_payment_event(
+        self,
+        db: AsyncSession,
+        *,
+        provider: str,
+        event_id: str,
+        event_type: str,
+        object_id: str | None,
+        payload: dict[str, Any],
+    ) -> tuple[PaymentEvent, bool]:
+        result = await db.execute(
+            select(PaymentEvent)
+            .where(PaymentEvent.provider == provider, PaymentEvent.event_id == event_id)
+            .with_for_update()
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return existing, False
+
+        event = PaymentEvent(
+            provider=provider,
+            event_id=event_id,
+            event_type=event_type or "unknown",
+            object_id=object_id,
+            payload_json=payload,
+        )
+        db.add(event)
+        await db.flush()
+        return event, True
 
     def _extract_checkout_url(self, payload: dict[str, Any]) -> str | None:
         for key in ("checkout_url", "url", "hosted_checkout_url"):
@@ -570,30 +649,61 @@ class PaymentService:
         if not self.verify_webhook_signature(body, signature_header):
             raise PaymentError(code="invalid_webhook_signature", message="Invalid webhook signature.", status_code=401)
 
-        event_type = str(payload.get("type") or payload.get("event") or "").strip().lower()
-        if event_type not in {"checkout.completed", "checkout.succeeded", "payment.completed"}:
+        provider = self._provider()
+        event_type = self._extract_event_type(payload)
+        event_id = self._extract_event_id(payload, body)
+        payment_event, _created = await self._get_or_create_payment_event(
+            db,
+            provider=provider,
+            event_id=event_id,
+            event_type=event_type,
+            object_id=self._extract_object_id(payload),
+            payload=payload,
+        )
+        if payment_event.processed_at is not None:
             return None
 
-        checkout_payload = self._extract_checkout_dict(payload.get("data") or payload)
-        request_id = str(checkout_payload.get("request_id") or "").strip()
-        checkout_id = self._extract_checkout_id(checkout_payload)
-        event_id = str(payload.get("id") or "").strip() or None
+        try:
+            purchase: CreditPurchase | None = None
+            if event_type in self._ONE_TIME_WEBHOOK_EVENTS:
+                checkout_payload = self._extract_checkout_dict(payload.get("data") or payload)
+                request_id = str(checkout_payload.get("request_id") or "").strip()
+                checkout_id = self._extract_checkout_id(checkout_payload)
 
-        purchase: CreditPurchase | None = None
-        if request_id:
-            result = await db.execute(
-                select(CreditPurchase).where(CreditPurchase.provider_request_id == request_id).with_for_update()
-            )
-            purchase = result.scalar_one_or_none()
-        if purchase is None and checkout_id:
-            result = await db.execute(
-                select(CreditPurchase).where(CreditPurchase.provider_checkout_id == checkout_id).with_for_update()
-            )
-            purchase = result.scalar_one_or_none()
-        if purchase is None:
-            raise PaymentError(code="purchase_not_found", message="Purchase not found for webhook.", status_code=404)
+                if request_id:
+                    result = await db.execute(
+                        select(CreditPurchase).where(CreditPurchase.provider_request_id == request_id).with_for_update()
+                    )
+                    purchase = result.scalar_one_or_none()
+                if purchase is None and checkout_id:
+                    result = await db.execute(
+                        select(CreditPurchase).where(CreditPurchase.provider_checkout_id == checkout_id).with_for_update()
+                    )
+                    purchase = result.scalar_one_or_none()
+                if purchase is None:
+                    raise PaymentError(code="purchase_not_found", message="Purchase not found for webhook.", status_code=404)
+                purchase = await self.finalize_purchase(
+                    db,
+                    purchase,
+                    checkout_payload=checkout_payload,
+                    webhook_event_id=event_id,
+                )
+            elif event_type in self._SUBSCRIPTION_WEBHOOK_EVENTS:
+                await subscription_service.process_provider_event(
+                    db,
+                    provider=provider,
+                    event_type=event_type,
+                    payload=self._extract_event_object(payload),
+                )
 
-        return await self.finalize_purchase(db, purchase, checkout_payload=checkout_payload, webhook_event_id=event_id)
+            payment_event.processed_at = datetime.now(timezone.utc)
+            payment_event.error = None
+            await db.flush()
+            return purchase
+        except Exception as exc:
+            payment_event.error = f"{type(exc).__name__}:{exc}"
+            await db.flush()
+            raise
 
 
 payment_service = PaymentService()

@@ -22,6 +22,7 @@ from app.services.lead_crm_service import build_crm_payload, list_crm_push_histo
 from app.services.ops_alert_service import get_ops_alerts
 from app.services.ops_config_service import get_ops_config, save_ops_config
 from app.services.ops_monitoring_service import get_ops_monitoring_summary
+from app.services.retention_service import cleanup_expired_orders, cleanup_expired_source_images
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -36,6 +37,12 @@ class DashboardStats(BaseModel):
     total_credits_in_circulation: int
     template_breakdown: dict
     recent_activity: list
+    active_subscriptions: int = 0
+    past_due_subscriptions: int = 0
+    canceled_this_month: int = 0
+    subscription_mrr_cents: int = 0
+    credits_granted_this_month: int = 0
+    recent_failed_payment_events: list[dict[str, Any]] = []
 
 
 class GrantCreditsRequest(BaseModel):
@@ -113,6 +120,11 @@ class CrmPushHistoryItem(BaseModel):
     filters: dict[str, Any] = {}
 
 
+class CleanupAssetsResponse(BaseModel):
+    source_images: dict[str, int]
+    generated_assets: dict[str, int]
+
+
 @router.get("/dashboard", response_model=DashboardStats)
 async def get_dashboard(db: AsyncSession = Depends(get_db)):
     """
@@ -151,6 +163,14 @@ async def list_users(db: AsyncSession = Depends(get_db)):
         users=[UserInfo(**u) for u in users],
         total=len(users)
     )
+
+
+@router.post("/cleanup_expired_assets", response_model=CleanupAssetsResponse)
+async def cleanup_admin_expired_assets(limit: int = 100, db: AsyncSession = Depends(get_db)):
+    """Delete expired source images and generated assets according to retention policy."""
+    source_images = await cleanup_expired_source_images(db, limit=limit)
+    generated_assets = await cleanup_expired_orders(db, limit=limit)
+    return CleanupAssetsResponse(source_images=source_images, generated_assets=generated_assets)
 
 
 @router.get("/ops_config", response_model=OpsConfigResponse)

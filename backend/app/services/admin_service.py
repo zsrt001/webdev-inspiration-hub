@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.live_portrait_job import LivePortraitJob, LivePortraitStatus
 from app.models.order import Order, OrderStatus
+from app.models.payment_event import PaymentEvent
+from app.models.subscription_credit_grant import SubscriptionCreditGrant
+from app.models.subscription_plan import SubscriptionPlan
+from app.models.user_subscription import SubscriptionStatus, UserSubscription
 from app.models.user import User
 from app.models.user_credit import UserCredit
 from app.services.credit_service import add_credits_async
@@ -63,6 +67,7 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=24)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     active_order_users = (
         await db.execute(select(Order.user_id).where(Order.created_at >= cutoff).distinct())
@@ -126,6 +131,68 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
             }
         )
 
+    active_subscriptions = int(
+        await db.scalar(
+            select(func.count(UserSubscription.id)).where(
+                UserSubscription.status.in_([SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIALING.value])
+            )
+        )
+        or 0
+    )
+    past_due_subscriptions = int(
+        await db.scalar(
+            select(func.count(UserSubscription.id)).where(UserSubscription.status == SubscriptionStatus.PAST_DUE.value)
+        )
+        or 0
+    )
+    canceled_this_month = int(
+        await db.scalar(
+            select(func.count(UserSubscription.id)).where(
+                UserSubscription.status == SubscriptionStatus.CANCELED.value,
+                UserSubscription.updated_at >= month_start,
+            )
+        )
+        or 0
+    )
+    subscription_mrr_cents = int(
+        await db.scalar(
+            select(func.coalesce(func.sum(SubscriptionPlan.price_cents), 0))
+            .select_from(UserSubscription)
+            .join(SubscriptionPlan, SubscriptionPlan.id == UserSubscription.plan_id)
+            .where(UserSubscription.status.in_([SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIALING.value]))
+        )
+        or 0
+    )
+    credits_granted_this_month = int(
+        await db.scalar(
+            select(func.coalesce(func.sum(SubscriptionCreditGrant.credits), 0)).where(
+                SubscriptionCreditGrant.created_at >= month_start
+            )
+        )
+        or 0
+    )
+    failed_events = (
+        await db.execute(
+            select(PaymentEvent)
+            .where(PaymentEvent.error.is_not(None))
+            .order_by(PaymentEvent.updated_at.desc())
+            .limit(20)
+        )
+    ).scalars().all()
+    recent_failed_payment_events = [
+        {
+            "id": str(event.id),
+            "provider": event.provider,
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "object_id": event.object_id,
+            "error": event.error,
+            "created_at": event.created_at.isoformat() if event.created_at else "",
+            "updated_at": event.updated_at.isoformat() if event.updated_at else "",
+        }
+        for event in failed_events
+    ]
+
     return {
         "total_orders": total_orders,
         "total_revenue_credits": total_revenue_credits,
@@ -135,6 +202,12 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
         "total_credits_in_circulation": total_credits_in_circulation,
         "template_breakdown": template_breakdown,
         "recent_activity": recent_activity,
+        "active_subscriptions": active_subscriptions,
+        "past_due_subscriptions": past_due_subscriptions,
+        "canceled_this_month": canceled_this_month,
+        "subscription_mrr_cents": subscription_mrr_cents,
+        "credits_granted_this_month": credits_granted_this_month,
+        "recent_failed_payment_events": recent_failed_payment_events,
     }
 
 

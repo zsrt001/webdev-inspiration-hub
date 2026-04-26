@@ -107,6 +107,8 @@ def validate_commercial_config_values() -> list[str]:
         errors.append("LLM_PROVIDER must be jiekou or wenwen in commercial mode")
     if not settings.phone_crypto_key:
         errors.append("PHONE_CRYPTO_KEY is required for leads encryption")
+    if not settings.effective_cleanup_cron_token:
+        errors.append("CLEANUP_CRON_TOKEN or CRON_SECRET is required for automatic image deletion")
     if not settings.cors_origins and not settings.is_vercel_runtime:
         errors.append("CORS_ALLOW_ORIGINS must not be empty")
     if raw_payment_provider not in {"creem", "manual", "manual_review", "manual-review", "offline"}:
@@ -151,6 +153,13 @@ def validate_commercial_config_values() -> list[str]:
             errors.append("CREEM_PRODUCT_PACK_120 is required when PAYMENT_PROVIDER=creem")
         if not settings.creem_product_pack_300:
             errors.append("CREEM_PRODUCT_PACK_300 is required when PAYMENT_PROVIDER=creem")
+        if settings.subscription_billing_enabled:
+            if not settings.creem_subscription_starter_product_id:
+                errors.append("CREEM_SUBSCRIPTION_STARTER_PRODUCT_ID is required when SUBSCRIPTION_BILLING_ENABLED=true")
+            if not settings.creem_subscription_creator_product_id:
+                errors.append("CREEM_SUBSCRIPTION_CREATOR_PRODUCT_ID is required when SUBSCRIPTION_BILLING_ENABLED=true")
+            if not settings.creem_subscription_studio_product_id:
+                errors.append("CREEM_SUBSCRIPTION_STUDIO_PRODUCT_ID is required when SUBSCRIPTION_BILLING_ENABLED=true")
 
     return errors
 
@@ -228,6 +237,13 @@ def _check_payments_config() -> tuple[bool, str]:
         missing.append("CREEM_PRODUCT_PACK_120")
     if not settings.creem_product_pack_300:
         missing.append("CREEM_PRODUCT_PACK_300")
+    if settings.subscription_billing_enabled:
+        if not settings.creem_subscription_starter_product_id:
+            missing.append("CREEM_SUBSCRIPTION_STARTER_PRODUCT_ID")
+        if not settings.creem_subscription_creator_product_id:
+            missing.append("CREEM_SUBSCRIPTION_CREATOR_PRODUCT_ID")
+        if not settings.creem_subscription_studio_product_id:
+            missing.append("CREEM_SUBSCRIPTION_STUDIO_PRODUCT_ID")
 
     if missing:
         raise RuntimeError(f"missing payment config: {', '.join(missing)}")

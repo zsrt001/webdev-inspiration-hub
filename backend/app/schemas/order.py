@@ -127,6 +127,10 @@ class OrderRead(OrderBase):
     source_image_urls: dict | None = None
     preview_image_urls: dict | None = None
     final_image_urls: dict | None = None
+    source_images_expires_at: datetime | None = None
+    expires_at: datetime | None = None
+    deleted_at: datetime | None = None
+    storage_cleanup_status: str | None = None
     price_cents: int
     paid_at: datetime | None = None
     error_message: str | None = None

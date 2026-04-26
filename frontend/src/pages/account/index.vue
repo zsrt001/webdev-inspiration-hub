@@ -8,7 +8,7 @@
           <text class="account-kicker">{{ tr('账户中心', 'Account Center') }}</text>
           <text class="account-title heading-serif">{{ tr('我的 AI 婚纱工作台', 'My AI Wedding Workspace') }}</text>
           <text class="account-subtitle">
-            {{ tr('查看登录状态、积分余额、最近流水和生成记录。', 'Review sign-in status, credits, recent ledger entries, and generation history.') }}
+            {{ tr('查看登录状态、积分余额、订阅、积分流水和生成历史。', 'Review sign-in status, credits, subscription, ledger entries, and generation history.') }}
           </text>
         </view>
 
@@ -16,9 +16,7 @@
           <button v-if="!supabaseAuthed && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
-          <button class="btn btn-outline hero-btn" @tap="refresh">
-            {{ tr('刷新', 'Refresh') }}
-          </button>
+          <button class="btn btn-outline hero-btn" @tap="refresh">{{ tr('刷新', 'Refresh') }}</button>
         </view>
       </view>
 
@@ -74,17 +72,43 @@
             <text class="card-eyebrow">{{ tr('当前积分', 'Current Credits') }}</text>
             <text class="credit-value heading-serif">{{ balance?.balance ?? 0 }}</text>
             <view class="credit-status" :class="{ blocked: !balance?.can_generate }">
-              <text>
-                {{ balance?.can_generate ? tr('可立即生成', 'Ready to generate') : tr('积分不足', 'Insufficient credits') }}
-              </text>
+              <text>{{ balance?.can_generate ? tr('可立即生成', 'Ready to generate') : tr('积分不足', 'Insufficient credits') }}</text>
             </view>
-            <text class="credit-copy">
-              {{ tr('每次生成消耗', 'Cost per generation') }} {{ balance?.cost_per_generation ?? 0 }} {{ tr('积分', 'credits') }}
-            </text>
+            <text class="credit-copy">{{ tr('基础单人生成', 'Base single generation') }} 2 {{ tr('积分起', 'credits and up') }}</text>
             <view class="credit-actions">
               <button class="btn btn-primary compact-btn" @tap="goCreate">{{ tr('开始创作', 'Create') }}</button>
               <button class="btn btn-outline compact-btn" @tap="goOrders">{{ tr('查看订单', 'Orders') }}</button>
             </view>
+          </view>
+
+          <view class="subscription-card glass-card">
+            <text class="card-eyebrow">{{ tr('订阅状态', 'Subscription') }}</text>
+            <text class="subscription-name heading-serif">{{ activePlanName }}</text>
+            <view class="profile-meta subscription-meta">
+              <view class="meta-row">
+                <text>{{ tr('状态', 'Status') }}</text>
+                <text>{{ subscriptionStore.current?.status || 'none' }}</text>
+              </view>
+              <view class="meta-row">
+                <text>{{ tr('每月积分', 'Monthly credits') }}</text>
+                <text>{{ subscriptionStore.current?.monthly_credits || 0 }}</text>
+              </view>
+              <view class="meta-row">
+                <text>{{ tr('到期时间', 'Period end') }}</text>
+                <text>{{ formatDate(subscriptionStore.current?.current_period_end) }}</text>
+              </view>
+              <view class="meta-row">
+                <text>{{ tr('自动续订', 'Renewal') }}</text>
+                <text>{{ subscriptionStore.current?.cancel_at_period_end ? tr('已取消续订', 'Cancel scheduled') : tr('开启', 'Active') }}</text>
+              </view>
+            </view>
+            <button
+              v-if="subscriptionStore.current?.plan_code && !subscriptionStore.current?.cancel_at_period_end"
+              class="btn btn-outline logout-btn"
+              @tap="cancelSubscription"
+            >
+              {{ tr('到期取消续订', 'Cancel at period end') }}
+            </button>
           </view>
         </view>
 
@@ -107,9 +131,7 @@
                   <text class="row-subtitle">{{ item.description || item.source || tr('系统记录', 'System record') }}</text>
                 </view>
                 <view class="row-side">
-                  <text class="amount" :class="{ positive: item.amount > 0, negative: item.amount < 0 }">
-                    {{ formatAmount(item.amount) }}
-                  </text>
+                  <text class="amount" :class="{ positive: item.amount > 0, negative: item.amount < 0 }">{{ formatAmount(item.amount) }}</text>
                   <text class="row-date">{{ formatDate(item.created_at) }}</text>
                 </view>
               </view>
@@ -120,7 +142,8 @@
             <view class="section-head">
               <view>
                 <text class="section-kicker">{{ tr('生成记录', 'Generation Records') }}</text>
-                <text class="section-title">{{ tr('最近订单', 'Recent Orders') }}</text>
+                <text class="section-title">{{ tr('最近作品', 'Recent Images') }}</text>
+                <text class="retention-note">{{ retentionNotice }}</text>
               </view>
               <button class="mini-link" @tap="goOrders">{{ tr('全部', 'All') }}</button>
             </view>
@@ -135,10 +158,10 @@
                 <view class="order-main">
                   <text class="row-title">#{{ shortId(order.id) }}</text>
                   <text class="row-subtitle">{{ formatDate(order.created_at) }}</text>
+                  <text class="row-subtitle">{{ tr('图片保留至', 'Images kept until') }} {{ formatDate(order.expires_at) }}</text>
                 </view>
-                <view class="order-status" :class="statusClass(order.status)">
-                  {{ statusText(order.status) }}
-                </view>
+                <view class="order-status" :class="statusClass(order.status)">{{ statusText(order.status) }}</view>
+                <button class="mini-link danger-link" @tap.stop="deleteOrder(order.id)">{{ tr('删除', 'Delete') }}</button>
               </view>
             </view>
           </view>
@@ -152,7 +175,8 @@
 import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import { useI18nStore } from '../../stores/i18n';
-import { get, resolvePublicUrl } from '../../utils/api';
+import { useSubscriptionStore } from '../../stores/subscription';
+import { del, get, resolvePublicUrl } from '../../utils/api';
 import { getAuthProvider, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
 import { isSupabaseConfigured } from '../../utils/supabase';
 
@@ -198,10 +222,23 @@ interface Order {
   preview_image_urls: Record<string, string> | null;
   final_image_urls: Record<string, string> | null;
   created_at: string;
+  expires_at?: string | null;
+  storage_cleanup_status?: string | null;
   status: string;
 }
 
+interface LegalPolicies {
+  retention?: {
+    source_images_days?: number;
+    free_generated_days?: number;
+    paid_generated_days?: number;
+    subscription_generated_days?: number;
+    studio_generated_days?: number;
+  };
+}
+
 const i18nStore = useI18nStore();
+const subscriptionStore = useSubscriptionStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const loading = ref(true);
@@ -210,16 +247,19 @@ const profile = ref<UserProfile | null>(null);
 const balance = ref<BalanceResponse | null>(null);
 const transactions = ref<CreditTransaction[]>([]);
 const orders = ref<Order[]>([]);
+const legalPolicies = ref<LegalPolicies | null>(null);
 const supabaseAuthed = ref(false);
 const supabaseEnabled = isSupabaseConfigured();
 
-const displayName = computed(() => {
-  return profile.value?.nickname || profile.value?.email || tr('访客用户', 'Guest user');
-});
-
-const profileInitial = computed(() => {
-  const source = displayName.value || 'A';
-  return source.slice(0, 1).toUpperCase();
+const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('访客用户', 'Guest user'));
+const profileInitial = computed(() => (displayName.value || 'A').slice(0, 1).toUpperCase());
+const activePlanName = computed(() => subscriptionStore.activePlan?.name || tr('未订阅', 'No subscription'));
+const retentionNotice = computed(() => {
+  const retention = legalPolicies.value?.retention || {};
+  return tr(
+    `原图 ${retention.source_images_days || 7} 天后删除；免费作品 ${retention.free_generated_days || 30} 天，付费积分包 ${retention.paid_generated_days || 90} 天，订阅用户 ${retention.subscription_generated_days || 180} 天，Studio ${retention.studio_generated_days || 365} 天。`,
+    `Source images are deleted after ${retention.source_images_days || 7} days. Generated images: free ${retention.free_generated_days || 30} days, paid packs ${retention.paid_generated_days || 90} days, subscriptions ${retention.subscription_generated_days || 180} days, Studio ${retention.studio_generated_days || 365} days.`,
+  );
 });
 
 const providerLabel = computed(() => {
@@ -231,8 +271,7 @@ const providerLabel = computed(() => {
 function shortId(value?: string | null): string {
   const raw = String(value || '').trim();
   if (!raw) return '--';
-  if (raw.length <= 12) return raw;
-  return `${raw.slice(0, 8)}...${raw.slice(-4)}`;
+  return raw.length <= 12 ? raw : `${raw.slice(0, 8)}...${raw.slice(-4)}`;
 }
 
 function formatDate(value?: string | null): string {
@@ -257,6 +296,7 @@ function transactionTitle(item: CreditTransaction): string {
   const map: Record<string, string> = {
     WELCOME_BONUS: tr('新用户赠送', 'Welcome bonus'),
     PURCHASE: tr('购买积分', 'Credit purchase'),
+    SUBSCRIPTION_GRANT: tr('订阅积分发放', 'Subscription grant'),
     GENERATION_DEBIT: tr('生成扣费', 'Generation debit'),
     GENERATION_REFUND: tr('生成退款', 'Generation refund'),
     ADMIN_GRANT: tr('人工加积分', 'Admin grant'),
@@ -268,10 +308,8 @@ function transactionTitle(item: CreditTransaction): string {
 function orderPreview(order: Order): string {
   const final = order.final_image_urls ? Object.values(order.final_image_urls) : [];
   if (final.length && final[0]) return resolvePublicUrl(final[0]);
-
   const preview = order.preview_image_urls ? Object.values(order.preview_image_urls) : [];
   if (preview.length && preview[0]) return resolvePublicUrl(preview[0]);
-
   return resolvePublicUrl('/style-previews/couple_royal_castle.jpg');
 }
 
@@ -301,25 +339,30 @@ async function loadAccount(): Promise<void> {
   supabaseAuthed.value = isSupabaseLoggedIn();
 
   try {
-    const [profileResult, balanceResult, transactionsResult, ordersResult] = await Promise.allSettled([
+    const [
+      profileResult,
+      balanceResult,
+      transactionsResult,
+      ordersResult,
+      legalResult,
+    ] = await Promise.allSettled([
       get<UserProfile>('/users/me', { showLoading: false, showError: false }),
       get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false }),
       get<TransactionsResponse>('/credits/transactions?limit=8', { showLoading: false, showError: false }),
       get<Order[]>('/orders/', { showLoading: false, showError: false }),
+      get<LegalPolicies>('/legal/policies', { showLoading: false, showError: false }),
+      subscriptionStore.fetchPlans(true),
+      subscriptionStore.fetchCurrentSubscription(true),
     ]);
 
-    if (profileResult.status === 'rejected') {
-      throw profileResult.reason;
-    }
-
+    if (profileResult.status === 'rejected') throw profileResult.reason;
     profile.value = profileResult.value;
     balance.value = balanceResult.status === 'fulfilled' ? balanceResult.value : null;
-    transactions.value = transactionsResult.status === 'fulfilled'
-      ? (transactionsResult.value.transactions || [])
+    transactions.value = transactionsResult.status === 'fulfilled' ? (transactionsResult.value.transactions || []) : [];
+    orders.value = ordersResult.status === 'fulfilled' && Array.isArray(ordersResult.value)
+      ? ordersResult.value.slice(0, 6)
       : [];
-    orders.value = ordersResult.status === 'fulfilled'
-      ? (Array.isArray(ordersResult.value) ? ordersResult.value.slice(0, 4) : [])
-      : [];
+    legalPolicies.value = legalResult.status === 'fulfilled' ? legalResult.value : null;
     supabaseAuthed.value = isSupabaseLoggedIn();
   } catch (err: any) {
     error.value = err?.message || tr('账户数据加载失败', 'Failed to load account data');
@@ -336,10 +379,7 @@ async function signIn(): Promise<void> {
   try {
     await signInWithGoogle();
   } catch (err: any) {
-    uni.showToast({
-      title: err?.message || tr('登录失败', 'Sign-in failed'),
-      icon: 'none',
-    });
+    uni.showToast({ title: err?.message || tr('登录失败', 'Sign-in failed'), icon: 'none' });
   }
 }
 
@@ -347,6 +387,32 @@ async function signOut(): Promise<void> {
   logout();
   uni.showToast({ title: tr('已退出登录', 'Signed out'), icon: 'none' });
   await loadAccount();
+}
+
+async function cancelSubscription(): Promise<void> {
+  try {
+    await subscriptionStore.cancelSubscription();
+    uni.showToast({ title: tr('已设置到期取消续订', 'Cancellation scheduled'), icon: 'none' });
+  } catch (err: any) {
+    uni.showToast({ title: err?.message || tr('取消失败', 'Cancel failed'), icon: 'none' });
+  }
+}
+
+async function deleteOrder(orderId: string): Promise<void> {
+  uni.showModal({
+    title: tr('删除作品', 'Delete image'),
+    content: tr('删除后图片文件会被移除，订单记录不会再展示。', 'Image files will be removed and this order will no longer be shown.'),
+    success: async (res) => {
+      if (!res.confirm) return;
+      try {
+        await del(`/orders/${orderId}`, { showLoading: true, showError: false });
+        orders.value = orders.value.filter((order) => order.id !== orderId);
+        uni.showToast({ title: tr('已删除', 'Deleted'), icon: 'success' });
+      } catch (err: any) {
+        uni.showToast({ title: err?.message || tr('删除失败', 'Delete failed'), icon: 'none' });
+      }
+    },
+  });
 }
 
 function goCreate(): void {
@@ -406,11 +472,12 @@ onMounted(loadAccount);
   color: #831843;
 }
 
-.account-subtitle {
+.account-subtitle,
+.retention-note {
   display: block;
-  max-width: 720px;
+  max-width: 760px;
   margin-top: 12px;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1.8;
   color: rgba(131, 24, 67, 0.68);
 }
@@ -438,7 +505,7 @@ onMounted(loadAccount);
 }
 
 .overview-grid {
-  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.6fr) minmax(300px, 0.75fr);
   margin-bottom: 20px;
 }
 
@@ -456,6 +523,7 @@ onMounted(loadAccount);
 
 .profile-card,
 .credits-card,
+.subscription-card,
 .ledger-card,
 .orders-card {
   padding: 24px;
@@ -485,12 +553,17 @@ onMounted(loadAccount);
   font-weight: 800;
 }
 
-.profile-name {
+.profile-name,
+.subscription-name {
   display: block;
   margin-top: 5px;
   font-size: 24px;
   font-weight: 800;
   color: #831843;
+}
+
+.subscription-name {
+  margin: 14px 0 10px;
 }
 
 .profile-email,
@@ -558,7 +631,7 @@ onMounted(loadAccount);
 
 .section-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
@@ -582,6 +655,11 @@ onMounted(loadAccount);
   color: #831843;
   font-size: 12px;
   font-weight: 800;
+}
+
+.danger-link {
+  color: #be123c;
+  border-color: rgba(190, 18, 60, 0.2);
 }
 
 .ledger-list,
@@ -690,15 +768,15 @@ onMounted(loadAccount);
   border-color: rgba(220, 38, 38, 0.18);
 }
 
-@media (max-width: 980px) {
-  .account-hero {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
+@media (max-width: 1100px) {
   .overview-grid,
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .account-hero {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .account-title {

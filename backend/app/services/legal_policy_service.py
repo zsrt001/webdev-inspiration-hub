@@ -1,0 +1,53 @@
+"""Public legal and commercial policy copy."""
+
+from __future__ import annotations
+
+from datetime import date
+
+from app.services.retention_service import (
+    FREE_ORDER_RETENTION_DAYS,
+    PAID_ORDER_RETENTION_DAYS,
+    SOURCE_IMAGE_RETENTION_DAYS,
+    STUDIO_ORDER_RETENTION_DAYS,
+    SUBSCRIPTION_ORDER_RETENTION_DAYS,
+)
+
+
+def get_legal_policies() -> dict:
+    return {
+        "last_updated": date(2026, 4, 26).isoformat(),
+        "retention": {
+            "source_images_days": SOURCE_IMAGE_RETENTION_DAYS,
+            "free_generated_days": FREE_ORDER_RETENTION_DAYS,
+            "paid_generated_days": PAID_ORDER_RETENTION_DAYS,
+            "subscription_generated_days": SUBSCRIPTION_ORDER_RETENTION_DAYS,
+            "studio_generated_days": STUDIO_ORDER_RETENTION_DAYS,
+            "summary": (
+                "Uploaded source photos are temporary processing inputs. Generated assets are retained by account tier "
+                "and removed automatically after expiry unless the user deletes them earlier."
+            ),
+        },
+        "pricing": {
+            "single": 2,
+            "director": 3,
+            "couple_local": 3,
+            "couple_remote": 4,
+            "premium_scene": 5,
+            "live_portrait_5s": 6,
+            "live_portrait_extra_5s": 4,
+            "summary": "Credits are deducted only after a generation job is accepted into the queue and are refunded if queueing fails.",
+        },
+        "disclaimers": [
+            "Generated AI images may not be perfectly accurate and should be reviewed before commercial use.",
+            "Users must only upload portraits and materials they own or are authorized to use.",
+            "The service does not store card numbers, CVV, bank data, or other raw payment credentials.",
+            "Refunds and failure compensation are recorded as ledger adjustments rather than rewriting historical transactions.",
+        ],
+        "embed_points": [
+            "Google sign-in and account creation",
+            "Image upload and generation consent",
+            "Payment and subscription checkout consent",
+            "Account image history and retention notice",
+            "Footer Privacy Policy and Terms of Service links",
+        ],
+    }

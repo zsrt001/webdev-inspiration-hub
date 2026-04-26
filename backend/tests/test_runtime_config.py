@@ -33,6 +33,11 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertEqual(settings.generation_execution_mode, "inline")
 
+    def test_cleanup_cron_token_accepts_vercel_cron_secret_alias(self) -> None:
+        settings = Settings(cleanup_cron_token="", cron_secret="vercel-cron-secret")
+
+        self.assertEqual(settings.effective_cleanup_cron_token, "vercel-cron-secret")
+
 
 if __name__ == "__main__":
     unittest.main()

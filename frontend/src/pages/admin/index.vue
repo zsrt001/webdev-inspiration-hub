@@ -53,6 +53,46 @@
         </view>
       </view>
 
+      <view class="kpi-row commercial-row">
+        <view class="kpi-card gold">
+          <view class="kpi-icon">S</view>
+          <text class="kpi-label">{{ tr('活跃订阅', 'Active Subs') }}</text>
+          <text class="kpi-value">{{ stats.active_subscriptions || 0 }}</text>
+        </view>
+
+        <view class="kpi-card orange">
+          <view class="kpi-icon">M</view>
+          <text class="kpi-label">{{ tr('订阅 MRR', 'Subscription MRR') }}</text>
+          <text class="kpi-value">${{ ((stats.subscription_mrr_cents || 0) / 100).toFixed(2) }}</text>
+        </view>
+
+        <view class="kpi-card blue">
+          <view class="kpi-icon">G</view>
+          <text class="kpi-label">{{ tr('本月订阅积分', 'Monthly Grants') }}</text>
+          <text class="kpi-value">{{ stats.credits_granted_this_month || 0 }}</text>
+        </view>
+
+        <view class="kpi-card purple">
+          <view class="kpi-icon">!</view>
+          <text class="kpi-label">{{ tr('失败支付事件', 'Failed Events') }}</text>
+          <text class="kpi-value">{{ stats.recent_failed_payment_events?.length || 0 }}</text>
+          <text class="kpi-sub">{{ tr('逾期订阅', 'Past due') }} {{ stats.past_due_subscriptions || 0 }}</text>
+        </view>
+      </view>
+
+      <view v-if="stats.recent_failed_payment_events?.length" class="section">
+        <view class="section-header">
+          <text class="section-title">{{ tr('失败支付 / 订阅事件', 'Failed Payment / Subscription Events') }}</text>
+          <text class="section-count">{{ stats.recent_failed_payment_events.length }} {{ tx('items') }}</text>
+        </view>
+        <textarea
+          :value="JSON.stringify(stats.recent_failed_payment_events, null, 2)"
+          class="ops-textarea readonly-textarea"
+          auto-height
+          disabled
+        />
+      </view>
+
       <view class="section god-mode">
         <view class="section-header">
           <text class="section-title">{{ tx('godModeTitle') }}</text>
@@ -319,6 +359,12 @@ interface DashboardStats {
   total_users: number;
   active_users_24h: number;
   total_credits_in_circulation: number;
+  active_subscriptions?: number;
+  past_due_subscriptions?: number;
+  canceled_this_month?: number;
+  subscription_mrr_cents?: number;
+  credits_granted_this_month?: number;
+  recent_failed_payment_events?: Array<Record<string, any>>;
   template_breakdown: Record<string, number>;
   recent_activity: Array<{
     id: string;
@@ -551,6 +597,7 @@ const textMap: Record<TextKey, { zh: string; en: string }> = {
 };
 
 const tx = (key: TextKey): string => (i18nStore.locale === 'zh' ? textMap[key].zh : textMap[key].en);
+const tr = (zh: string, en: string): string => (i18nStore.locale === 'zh' ? zh : en);
 
 const loading = ref(true);
 const stats = ref<DashboardStats>({
@@ -560,6 +607,12 @@ const stats = ref<DashboardStats>({
   total_users: 0,
   active_users_24h: 0,
   total_credits_in_circulation: 0,
+  active_subscriptions: 0,
+  past_due_subscriptions: 0,
+  canceled_this_month: 0,
+  subscription_mrr_cents: 0,
+  credits_granted_this_month: 0,
+  recent_failed_payment_events: [],
   template_breakdown: {},
   recent_activity: [],
 });

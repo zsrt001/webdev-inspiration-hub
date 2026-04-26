@@ -82,6 +82,31 @@ class Order(Base):
         nullable=True,
         comment="Final high-resolution image URLs",
     )
+    source_images_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment="When uploaded source images should be removed from storage",
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment="When generated assets should be removed from storage",
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment="When order assets were removed or user requested deletion",
+    )
+    storage_cleanup_status: Mapped[str] = mapped_column(
+        String(32),
+        default="active",
+        server_default="active",
+        index=True,
+        comment="active | source_deleted | deleted | cleanup_failed",
+    )
 
     # Payment
     price_cents: Mapped[int] = mapped_column(

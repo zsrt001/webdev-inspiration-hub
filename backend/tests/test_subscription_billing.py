@@ -1,6 +1,7 @@
 """Subscription billing model and migration contract tests."""
 
 from pathlib import Path
+import importlib
 import sys
 import unittest
 import uuid
@@ -18,6 +19,7 @@ from app.models.subscription_plan import SubscriptionPlan  # noqa: E402
 from app.models.user_subscription import SubscriptionStatus, UserSubscription  # noqa: E402
 from app.models.user_credit import UserCredit  # noqa: E402
 from app.services.credit_service import DEFAULT_CREDITS  # noqa: E402
+from app.services.payment_service import PaymentService  # noqa: E402
 from app.services.subscription_service import SubscriptionService  # noqa: E402
 
 
@@ -67,6 +69,64 @@ class _FakeSubscriptionDb:
         return None
 
 
+class _FakeWebhookDb:
+    def __init__(self):
+        self.events = {}
+        self.credit_row = None
+        self.transactions = []
+        self.grants = {}
+        self.plan = SubscriptionPlan(
+            id=uuid.uuid4(),
+            code="starter_monthly",
+            name="Starter",
+            billing_interval="month",
+            price_cents=1900,
+            currency="USD",
+            monthly_credits=80,
+            is_active=True,
+        )
+        self.subscription = UserSubscription(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            plan_id=self.plan.id,
+            provider="creem",
+            provider_subscription_id="sub_1",
+            status=SubscriptionStatus.ACTIVE,
+        )
+        self.subscription.plan = self.plan
+
+    async def execute(self, statement):
+        text = str(statement)
+        if "payment_events" in text:
+            return _ScalarResult(self.events.get(("creem", "evt_sub_1")))
+        if "user_subscriptions" in text:
+            return _ScalarResult(self.subscription)
+        if "subscription_credit_grants" in text:
+            return _ScalarResult(self.grants.get((str(self.subscription.id), "2026-04")))
+        return _ScalarResult(self.credit_row)
+
+    def add(self, value):
+        if isinstance(value, PaymentEvent):
+            self.events[(value.provider, value.event_id)] = value
+        elif isinstance(value, UserCredit):
+            self.credit_row = value
+        elif isinstance(value, SubscriptionCreditGrant):
+            self.grants[(str(value.subscription_id), value.period_key)] = value
+        else:
+            self.transactions.append(value)
+
+    async def flush(self):
+        for item in [*self.events.values(), *self.transactions, *self.grants.values()]:
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
+        return None
+
+
+class _SignedWebhookPaymentService(PaymentService):
+    def verify_webhook_signature(self, body, signature_header):
+        return True
+
+
 class SubscriptionBillingModelTest(unittest.TestCase):
     def test_subscription_status_contract_uses_lowercase_provider_safe_values(self) -> None:
         self.assertEqual(SubscriptionStatus.TRIALING.value, "trialing")
@@ -113,6 +173,40 @@ class SubscriptionBillingModelTest(unittest.TestCase):
         self.assertNotIn("credit_card", sql)
         self.assertNotIn("cvv", sql)
 
+    def test_subscription_api_schema_contract(self) -> None:
+        schema_module = importlib.import_module("app.schemas.subscription")
+
+        plan = schema_module.SubscriptionPlanRead(
+            code="starter_monthly",
+            name="Starter",
+            billing_interval="month",
+            price_cents=1900,
+            currency="USD",
+            monthly_credits=80,
+            feature_flags={"remote_join": True},
+        )
+        current = schema_module.CurrentSubscriptionRead(
+            status="active",
+            plan_code="starter_monthly",
+            current_period_end=None,
+            cancel_at_period_end=False,
+        )
+
+        self.assertEqual(plan.code, "starter_monthly")
+        self.assertEqual(plan.monthly_credits, 80)
+        self.assertEqual(current.status, "active")
+        self.assertEqual(current.plan_code, "starter_monthly")
+
+    def test_subscription_router_is_registered(self) -> None:
+        routers_module = importlib.import_module("app.routers")
+
+        routes = {route.path for route in routers_module.api_router.routes}
+
+        self.assertIn("/subscriptions/plans", routes)
+        self.assertIn("/subscriptions/me", routes)
+        self.assertIn("/subscriptions/checkout", routes)
+        self.assertIn("/subscriptions/cancel", routes)
+
 
 class SubscriptionBillingServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_subscription_period_grant_is_idempotent(self) -> None:
@@ -150,6 +244,35 @@ class SubscriptionBillingServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(subscription_grants), 1)
         self.assertEqual(subscription_grants[0].amount, 80)
         self.assertEqual(subscription_grants[0].balance_after, DEFAULT_CREDITS + 80)
+
+    async def test_repeated_subscription_webhook_is_recorded_and_processed_once(self) -> None:
+        db = _FakeWebhookDb()
+        service = _SignedWebhookPaymentService()
+        event = {
+            "id": "evt_sub_1",
+            "type": "subscription.paid",
+            "data": {
+                "subscription_id": "sub_1",
+                "current_period_start": "2026-04-01T00:00:00Z",
+                "current_period_end": "2026-05-01T00:00:00Z",
+            },
+        }
+
+        await service.process_webhook_event(db, payload=event, body=b"{}", signature_header="ok")
+        await service.process_webhook_event(db, payload=event, body=b"{}", signature_header="ok")
+
+        self.assertEqual(len(db.events), 1)
+        stored_event = db.events[("creem", "evt_sub_1")]
+        self.assertIsNotNone(stored_event.processed_at)
+        self.assertIsNone(stored_event.error)
+        self.assertEqual(stored_event.event_type, "subscription.paid")
+        self.assertEqual(stored_event.object_id, "sub_1")
+        self.assertEqual(len(db.grants), 1)
+        subscription_grants = [
+            tx for tx in db.transactions if tx.transaction_type == CreditTransactionType.SUBSCRIPTION_GRANT
+        ]
+        self.assertEqual(len(subscription_grants), 1)
+        self.assertEqual(subscription_grants[0].amount, 80)
 
 
 if __name__ == "__main__":

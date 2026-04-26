@@ -3,7 +3,7 @@
     <view class="modal-content" @tap.stop>
       <view class="modal-header">
         <text class="modal-title heading-serif">{{ tr('购买积分', 'Top Up Credits') }}</text>
-        <view class="close-btn" @tap="handleClose">×</view>
+        <view class="close-btn" @tap="handleClose">x</view>
       </view>
 
       <view class="balance-display">
@@ -15,7 +15,7 @@
       </view>
 
       <view v-if="processing" class="processing-state">
-        <text class="processing-icon">···</text>
+        <text class="processing-icon">...</text>
         <text class="processing-text">{{ processingText }}</text>
       </view>
 
@@ -30,29 +30,70 @@
       </view>
 
       <view v-else class="packages">
-        <text class="packages-title">{{ tr('选择积分包', 'Select a package') }}</text>
-
-        <view
-          v-for="pkg in packages"
-          :key="pkg.id"
-          class="package-card"
-          :class="{ popular: pkg.popular, selected: selectedPackage?.id === pkg.id }"
-          @tap="selectPackage(pkg)"
-        >
-          <view v-if="pkg.popular" class="popular-badge">{{ tr('推荐', 'Popular') }}</view>
-          <view class="package-copy">
-            <text class="package-credits">{{ pkg.credits }} {{ tr('积分', 'credits') }}</text>
-            <text class="package-rate">{{ packageRateLabel(pkg) }}</text>
+        <view class="billing-tabs">
+          <view
+            class="billing-tab"
+            :class="{ active: activeBillingMode === 'credits' }"
+            @tap="activeBillingMode = 'credits'"
+          >
+            {{ tr('积分包', 'Credit packs') }}
           </view>
-          <text class="package-price">${{ pkg.price.toFixed(2) }}</text>
+          <view
+            class="billing-tab"
+            :class="{ active: activeBillingMode === 'subscription' }"
+            @tap="activeBillingMode = 'subscription'"
+          >
+            {{ tr('订阅套餐', 'Subscriptions') }}
+          </view>
         </view>
 
-        <button class="btn btn-primary buy-btn" :disabled="!selectedPackage || !paymentConsentAccepted" @tap="handlePurchase">
-          {{ selectedPackage ? tr('前往支付', 'Proceed to checkout') : tr('请选择积分包', 'Select a package') }}
-        </button>
+        <template v-if="activeBillingMode === 'credits'">
+          <text class="packages-title">{{ tr('选择积分包', 'Select a package') }}</text>
+
+          <view
+            v-for="pkg in packages"
+            :key="pkg.id"
+            class="package-card"
+            :class="{ popular: pkg.popular, selected: selectedPackage?.id === pkg.id }"
+            @tap="selectPackage(pkg)"
+          >
+            <view v-if="pkg.popular" class="popular-badge">{{ tr('推荐', 'Popular') }}</view>
+            <view class="package-copy">
+              <text class="package-credits">{{ pkg.credits }} {{ tr('积分', 'credits') }}</text>
+              <text class="package-rate">{{ packageRateLabel(pkg) }}</text>
+            </view>
+            <text class="package-price">${{ pkg.price.toFixed(2) }}</text>
+          </view>
+
+          <button class="btn btn-primary buy-btn" :disabled="!selectedPackage || !paymentConsentAccepted" @tap="handlePurchase">
+            {{ selectedPackage ? tr('前往支付', 'Proceed to checkout') : tr('请选择积分包', 'Select a package') }}
+          </button>
+        </template>
+
+        <template v-else>
+          <text class="packages-title">{{ tr('选择订阅套餐', 'Select a subscription') }}</text>
+
+          <view
+            v-for="plan in subscriptionStore.plans"
+            :key="plan.code"
+            class="package-card subscription-plan-card"
+            :class="{ selected: selectedPlanCode === plan.code }"
+            @tap="selectedPlanCode = plan.code"
+          >
+            <view class="package-copy">
+              <text class="package-credits">{{ plan.name }}</text>
+              <text class="package-rate">{{ plan.monthly_credits }} {{ tr('积分 / 月', 'credits / month') }}</text>
+            </view>
+            <text class="package-price">{{ formatPlanPrice(plan) }}</text>
+          </view>
+
+          <button class="btn btn-primary buy-btn" :disabled="!selectedPlanCode || !paymentConsentAccepted" @tap="handleSubscriptionPurchase">
+            {{ selectedPlanCode ? tr('开始订阅', 'Start subscription') : tr('请选择套餐', 'Select a plan') }}
+          </button>
+        </template>
 
         <view class="provider-note">
-          <text>{{ tr('支付将跳转到托管结算页。', 'You will be redirected to the hosted checkout flow.') }}</text>
+          <text>{{ tr('支付将跳转到托管结算页面。支付成功后，后端 webhook 会发放积分。', 'You will be redirected to hosted checkout. Credits are issued after webhook confirmation.') }}</text>
         </view>
 
         <LegalConsentInline v-model="paymentConsentAccepted" mode="payment" compact />
@@ -63,8 +104,9 @@
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
-import { useI18nStore } from '../stores/i18n';
 import LegalConsentInline from './LegalConsentInline.vue';
+import { useI18nStore } from '../stores/i18n';
+import { useSubscriptionStore, type SubscriptionPlan } from '../stores/subscription';
 import { get, post } from '../utils/api';
 
 interface CreditPackage {
@@ -101,9 +143,7 @@ interface PendingPurchase {
 
 const PENDING_PURCHASE_KEY = 'aws_pending_credit_purchase';
 
-const props = defineProps<{
-  visible: boolean;
-}>();
+const props = defineProps<{ visible: boolean }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -111,11 +151,14 @@ const emit = defineEmits<{
 }>();
 
 const i18nStore = useI18nStore();
+const subscriptionStore = useSubscriptionStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const currentBalance = ref(0);
 const packages = ref<CreditPackage[]>([]);
 const selectedPackage = ref<CreditPackage | null>(null);
+const selectedPlanCode = ref('');
+const activeBillingMode = ref<'credits' | 'subscription'>('credits');
 const processing = ref(false);
 const processingText = ref('');
 const purchaseSuccess = ref(false);
@@ -132,23 +175,25 @@ function packageRateLabel(pkg: CreditPackage): string {
   return tr(`每 10 积分 $${pricePerTen.toFixed(2)}`, `$${pricePerTen.toFixed(2)} / 10 credits`);
 }
 
-function currentReturnUrl(): string | undefined {
-  if (isH5()) {
-    return window.location.href;
-  }
-  return undefined;
+function formatPlanPrice(plan: SubscriptionPlan): string {
+  const price = (Number(plan.price_cents || 0) / 100).toFixed(2);
+  const currency = plan.currency || 'USD';
+  return `${currency} ${price}`;
 }
 
-function readRouteParams(): { purchaseId: string; checkoutId: string } {
-  const result = { purchaseId: '', checkoutId: '' };
+function currentReturnUrl(): string | undefined {
+  return isH5() ? window.location.href : undefined;
+}
+
+function readRouteParams(): { purchaseId: string; checkoutId: string; subscriptionStatus: string } {
+  const result = { purchaseId: '', checkoutId: '', subscriptionStatus: '' };
 
   if (isH5()) {
     const url = new URL(window.location.href);
     result.purchaseId = url.searchParams.get('purchase_id') || '';
     result.checkoutId = url.searchParams.get('checkout_id') || '';
-    if (result.purchaseId || result.checkoutId) {
-      return result;
-    }
+    result.subscriptionStatus = url.searchParams.get('subscription') || '';
+    if (result.purchaseId || result.checkoutId || result.subscriptionStatus) return result;
   }
 
   const pages = getCurrentPages();
@@ -156,15 +201,16 @@ function readRouteParams(): { purchaseId: string; checkoutId: string } {
   const options = current?.options || {};
   result.purchaseId = options.purchase_id || '';
   result.checkoutId = options.checkout_id || '';
+  result.subscriptionStatus = options.subscription || '';
   return result;
 }
 
 function clearRouteParams() {
   if (!isH5()) return;
   const url = new URL(window.location.href);
-  url.searchParams.delete('payment');
-  url.searchParams.delete('purchase_id');
-  url.searchParams.delete('checkout_id');
+  ['payment', 'purchase_id', 'checkout_id', 'subscription', 'plan_code'].forEach((key) => {
+    url.searchParams.delete(key);
+  });
   window.history.replaceState({}, '', url.toString());
 }
 
@@ -176,10 +222,7 @@ function readPendingPurchase(): PendingPurchase | null {
   try {
     const raw = uni.getStorageSync(PENDING_PURCHASE_KEY);
     if (!raw) return null;
-    if (typeof raw === 'string') {
-      return JSON.parse(raw) as PendingPurchase;
-    }
-    return raw as PendingPurchase;
+    return typeof raw === 'string' ? JSON.parse(raw) as PendingPurchase : raw as PendingPurchase;
   } catch {
     return null;
   }
@@ -198,10 +241,12 @@ async function fetchData() {
     const [balanceRes, packagesRes] = await Promise.all([
       get<{ balance: number }>('/credits/balance', { showLoading: false, showError: false }),
       get<{ packages: CreditPackage[] }>('/credits/packages', { showLoading: false, showError: false }),
+      subscriptionStore.fetchPlans(true),
     ]);
     currentBalance.value = balanceRes.balance;
     packages.value = packagesRes.packages;
     selectedPackage.value = packagesRes.packages.find((pkg) => pkg.popular) || packagesRes.packages[0] || null;
+    selectedPlanCode.value = subscriptionStore.plans[1]?.code || subscriptionStore.plans[0]?.code || '';
   } catch {
     currentBalance.value = 0;
     packages.value = [];
@@ -211,14 +256,19 @@ async function fetchData() {
 
 async function reconcilePendingPurchase() {
   const routeParams = readRouteParams();
+  if (routeParams.subscriptionStatus === 'success') {
+    clearRouteParams();
+    await subscriptionStore.fetchCurrentSubscription(true);
+    uni.showToast({ title: tr('订阅处理中，积分到账以后会自动显示', 'Subscription is processing'), icon: 'none' });
+  }
+
   const pending = readPendingPurchase();
   const purchaseId = routeParams.purchaseId || pending?.purchaseId || '';
   const checkoutId = routeParams.checkoutId || pending?.checkoutId || '';
-
   if (!purchaseId) return;
 
   processing.value = true;
-  processingText.value = tr('正在确认支付状态…', 'Verifying payment status…');
+  processingText.value = tr('正在确认支付状态...', 'Verifying payment status...');
 
   try {
     let status: PaymentStatusResponse | null = null;
@@ -228,14 +278,11 @@ async function reconcilePendingPurchase() {
         showLoading: false,
         showError: false,
       });
-      if (status.completed || ['failed', 'expired', 'refunded', 'FAILED', 'CANCELED'].includes(status.status)) {
-        break;
-      }
+      if (status.completed || ['failed', 'expired', 'refunded', 'FAILED', 'CANCELED'].includes(status.status)) break;
       await sleep(1500);
     }
 
     if (!status) return;
-
     currentBalance.value = status.balance;
     if (status.completed) {
       purchaseSuccess.value = true;
@@ -247,27 +294,13 @@ async function reconcilePendingPurchase() {
       uni.showToast({ title: tr('支付成功，积分已到账', 'Payment succeeded'), icon: 'success' });
       return;
     }
-
     if (['failed', 'expired', 'refunded', 'FAILED', 'CANCELED'].includes(status.status)) {
       clearPendingPurchase();
       clearRouteParams();
-      uni.showToast({
-        title: tr('支付未完成', 'Payment was not completed'),
-        icon: 'none',
-      });
-    }
-
-    if (status.status === 'pending' || status.status === 'PENDING') {
-      clearRouteParams();
-      uni.showToast({
-        title: status.message || tr('支付已提交，等待人工确认', 'Payment submitted and pending review'),
-        icon: 'none',
-      });
+      uni.showToast({ title: tr('支付未完成', 'Payment was not completed'), icon: 'none' });
     }
   } catch (error: any) {
-    if (props.visible) {
-      uni.showToast({ title: error?.message || tr('支付状态确认失败', 'Payment verification failed'), icon: 'none' });
-    }
+    uni.showToast({ title: error?.message || tr('支付状态确认失败', 'Payment verification failed'), icon: 'none' });
   } finally {
     processing.value = false;
   }
@@ -285,50 +318,51 @@ async function handlePurchase() {
   }
 
   processing.value = true;
-  processingText.value = tr('正在创建支付订单…', 'Creating checkout…');
-
+  processingText.value = tr('正在创建支付订单...', 'Creating checkout...');
   try {
     const response = await post<CheckoutResponse>(
       '/payments/checkout',
-      {
-        package_id: selectedPackage.value.id,
-        return_url: currentReturnUrl(),
-      },
+      { package_id: selectedPackage.value.id, return_url: currentReturnUrl() },
       { showLoading: false, showError: false },
     );
-
     savePendingPurchase({ purchaseId: response.purchase_id });
-
     if (isH5()) {
-      processingText.value = tr('即将跳转到结算页…', 'Redirecting to checkout…');
       window.location.href = response.checkout_url;
       return;
     }
-
     processing.value = false;
-    uni.setClipboardData({
-      data: response.checkout_url,
-      success: () => {
-        uni.showModal({
-          title: tr('请在浏览器完成支付', 'Complete payment in browser'),
-          content: tr(
-            '已复制支付链接。当前小程序端暂使用浏览器完成托管支付，完成后返回页面即可同步积分状态。',
-            'The checkout link has been copied. Complete Creem payment in a browser, then return and the balance will sync automatically.',
-          ),
-          showCancel: false,
-        });
-      },
-    });
+    uni.setClipboardData({ data: response.checkout_url });
   } catch (error: any) {
     processing.value = false;
     uni.showToast({ title: error?.message || tr('支付创建失败', 'Unable to start payment'), icon: 'none' });
   }
 }
 
-function handleClose() {
-  if (!processing.value) {
-    emit('close');
+async function handleSubscriptionPurchase() {
+  if (!selectedPlanCode.value) return;
+  if (!paymentConsentAccepted.value) {
+    uni.showToast({ title: tr('请先同意隐私政策与服务条款', 'Accept the legal terms first'), icon: 'none' });
+    return;
   }
+
+  processing.value = true;
+  processingText.value = tr('正在创建订阅订单...', 'Creating subscription checkout...');
+  try {
+    const response = await subscriptionStore.startSubscriptionCheckout(selectedPlanCode.value, currentReturnUrl());
+    if (isH5()) {
+      window.location.href = response.checkout_url;
+      return;
+    }
+    processing.value = false;
+    uni.setClipboardData({ data: response.checkout_url });
+  } catch (error: any) {
+    processing.value = false;
+    uni.showToast({ title: error?.message || tr('订阅创建失败', 'Unable to start subscription'), icon: 'none' });
+  }
+}
+
+function handleClose() {
+  if (!processing.value) emit('close');
 }
 
 function handleContinue() {
@@ -338,8 +372,8 @@ function handleContinue() {
 
 watch(
   () => props.visible,
-  async (visible) => {
-    if (!visible) return;
+  async (value) => {
+    if (!value) return;
     purchaseSuccess.value = false;
     creditsAdded.value = 0;
     newBalance.value = 0;
@@ -371,8 +405,9 @@ onMounted(async () => {
   background: $uni-color-white;
   border-radius: 20px;
   width: 100%;
-  max-width: 420px;
-  overflow: hidden;
+  max-width: 460px;
+  max-height: 92vh;
+  overflow-y: auto;
   animation: slideUp 0.25s ease-out;
 }
 
@@ -419,7 +454,6 @@ onMounted(async () => {
 .balance-label,
 .packages-title,
 .provider-note,
-.legal-note,
 .processing-text,
 .success-balance,
 .package-rate {
@@ -478,13 +512,41 @@ onMounted(async () => {
   margin-bottom: 8px;
 }
 
-.continue-btn {
+.continue-btn,
+.buy-btn {
   width: 100%;
-  margin-top: 24px;
+  margin-top: 18px;
 }
 
 .packages {
   padding: 24px;
+}
+
+.billing-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #f8f1f5;
+}
+
+.billing-tab {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: $uni-text-color-muted;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.billing-tab.active {
+  background: $uni-color-white;
+  color: $uni-color-primary;
+  box-shadow: 0 8px 18px rgba(131, 24, 67, 0.1);
 }
 
 .package-card {
@@ -498,15 +560,15 @@ onMounted(async () => {
   border-radius: 14px;
   margin-bottom: 12px;
   transition: all 0.2s ease;
+}
 
-  &.selected,
-  &.popular {
-    border-color: $uni-color-accent;
-  }
+.package-card.selected,
+.package-card.popular {
+  border-color: $uni-color-accent;
+}
 
-  &.selected {
-    background: rgba(201, 169, 110, 0.08);
-  }
+.package-card.selected {
+  background: rgba(201, 169, 110, 0.08);
 }
 
 .package-copy {
@@ -534,22 +596,16 @@ onMounted(async () => {
 }
 
 .package-price {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   color: $uni-color-accent;
-}
-
-.buy-btn {
-  width: 100%;
-  margin-top: 18px;
 }
 
 .buy-btn[disabled] {
   opacity: 0.5;
 }
 
-.provider-note,
-.legal-note {
+.provider-note {
   display: block;
   margin-top: 14px;
   font-size: 12px;
@@ -557,24 +613,14 @@ onMounted(async () => {
   text-align: center;
 }
 
-.legal-link {
-  color: $uni-color-primary;
-  margin: 0 4px;
-}
-
 @media (max-width: 480px) {
-  .modal-content {
-    max-height: 92vh;
-    overflow-y: auto;
-  }
-
   .package-card {
     align-items: flex-start;
     flex-direction: column;
   }
 
   .package-price {
-    font-size: 22px;
+    font-size: 20px;
   }
 }
 </style>

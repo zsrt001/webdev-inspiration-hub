@@ -1,6 +1,7 @@
 """Orders API routes using database-backed state machine."""
 
 import uuid
+from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import select
@@ -21,6 +22,8 @@ from app.services.credit_service import (
     get_generation_cost,
 )
 from app.models.credit_transaction import CreditTransactionType
+from app.services.retention_service import apply_order_retention, delete_storage_urls, order_asset_urls, user_has_paid_credit_history
+from app.services.subscription_service import subscription_service
 from app.services import gatekeeper_service
 from app.services.content_policy_service import evaluate_prompt_text, build_rejection_message
 from app.core.task_queue import enqueue_generate_order
@@ -93,7 +96,9 @@ async def list_orders(
 ):
     """Get all orders for current user (newest first)."""
     result = await db.execute(
-        select(Order).where(Order.user_id == current_user.id).order_by(Order.created_at.desc())
+        select(Order)
+        .where(Order.user_id == current_user.id, Order.deleted_at.is_(None))
+        .order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
     return [OrderRead.model_validate(o) for o in orders]
@@ -112,7 +117,7 @@ async def get_order(
         raise HTTPException(status_code=400, detail="Invalid order ID")
     result = await db.execute(select(Order).where(Order.id == order_uuid))
     order = result.scalar_one_or_none()
-    if not order:
+    if not order or order.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -222,7 +227,11 @@ async def create_order(
         template.category if template else None,
         is_remote_join=bool(request.remote_join),
         image_count=len(request.user_images or []),
+        director_mode=bool(request.director_mode),
     )
+    retention_subscription = await subscription_service.get_current_subscription(db, current_user.id)
+    retention_plan_code = getattr(getattr(retention_subscription, "plan", None), "code", None)
+    has_paid_credits = bool(retention_plan_code) or await user_has_paid_credit_history(db, current_user.id)
 
     if not await deduct_credits_async(
         db,
@@ -231,7 +240,12 @@ async def create_order(
         transaction_type=CreditTransactionType.GENERATION_DEBIT,
         source="order",
         description=f"Generation debit for template {request.template_id}",
-        metadata={"template_id": request.template_id, "remote_join": bool(request.remote_join)},
+        metadata={
+            "template_id": request.template_id,
+            "remote_join": bool(request.remote_join),
+            "director_mode": bool(request.director_mode),
+            "credits_cost": credits_cost,
+        },
     ):
         balance = await get_balance_async(db, current_user.id)
         raise HTTPException(
@@ -426,6 +440,22 @@ async def create_order(
             },
             price_cents=0,
         )
+        apply_order_retention(
+            order,
+            plan_code=retention_plan_code,
+            has_paid_credits=has_paid_credits,
+        )
+        order.generation_params = {
+            **(order.generation_params or {}),
+            "retention": {
+                "plan_code": retention_plan_code,
+                "has_paid_credits": has_paid_credits,
+                "source_images_expires_at": order.source_images_expires_at.isoformat()
+                if order.source_images_expires_at
+                else None,
+                "expires_at": order.expires_at.isoformat() if order.expires_at else None,
+            },
+        }
         db.add(order)
         await db.flush()
 
@@ -481,3 +511,29 @@ async def create_order(
         raise
 
     return OrderRead.model_validate(order)
+
+
+@router.delete("/{order_id}")
+async def delete_my_order(
+    order_id: str,
+    current_user: User = Depends(get_request_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-delete an order and remove associated stored image assets."""
+    try:
+        order_uuid = uuid.UUID(order_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid order ID")
+    result = await db.execute(select(Order).where(Order.id == order_uuid))
+    order = result.scalar_one_or_none()
+    if not order or order.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.deleted_at is None:
+        summary = delete_storage_urls(order_asset_urls(order))
+        order.source_image_urls = None
+        order.preview_image_urls = None
+        order.final_image_urls = None
+        order.deleted_at = datetime.now(timezone.utc)
+        order.storage_cleanup_status = "deleted" if summary["failed"] == 0 else "cleanup_failed"
+        await db.flush()
+    return {"success": True, "order_id": str(order.id), "storage_cleanup_status": order.storage_cleanup_status}

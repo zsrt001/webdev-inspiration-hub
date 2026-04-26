@@ -8,7 +8,7 @@
       <text class="consent-link" @tap.stop="openLegal('/pages/legal/privacy')">{{ tr('《隐私政策》', 'Privacy Policy') }}</text>
       <text class="consent-text">{{ betweenText }}</text>
       <text class="consent-link" @tap.stop="openLegal('/pages/legal/terms')">{{ tr('《服务条款》', 'Terms of Service') }}</text>
-      <text v-if="afterText" class="consent-text">{{ afterText }}</text>
+      <text class="consent-text">{{ afterText }}</text>
     </view>
   </view>
 </template>
@@ -28,7 +28,7 @@ const props = withDefaults(
   {
     mode: 'generate',
     compact: false,
-  }
+  },
 );
 
 const emit = defineEmits<{
@@ -39,25 +39,29 @@ const i18nStore = useI18nStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const beforeText = computed(() => {
-  if (props.mode === 'lead') {
-    return tr('我同意平台依据 ', 'I agree that the platform may process my details under the ');
-  }
-  return tr('我已阅读并同意 ', 'I have read and agree to the ');
+  if (props.mode === 'lead') return tr('我同意平台依据', 'I agree that the platform may process my details under the ');
+  return tr('我已阅读并同意', 'I have read and agree to the ');
 });
 
 const betweenText = computed(() => tr(' 与 ', ' and the '));
 
 const afterText = computed(() => {
   if (props.mode === 'generate') {
-    return tr('，并确认上传内容合法、真实，且为本人或已获授权使用。', ', and confirm the uploaded content is lawful, authentic, and authorized for use.');
+    return tr(
+      '，确认上传内容合法、真实、已获授权；理解原图会定期删除，AI 结果可能不完全准确。',
+      ', confirm uploaded content is lawful, authentic, and authorized; source images are periodically deleted and AI results may be inaccurate.',
+    );
   }
   if (props.mode === 'lead') {
-    return tr('，用于婚摄咨询、服务联系与预约跟进。', ', for consultation, follow-up, and booking communication.');
+    return tr(
+      '，用于婚摄咨询、服务联系与预约跟进。',
+      ', for consultation, follow-up, and booking communication.',
+    );
   }
-  if (props.mode === 'payment') {
-    return tr('，并理解积分在任务成功入队后扣除，失败将自动退回。', ', and understand credits are deducted on successful queueing and refunded on failure.');
-  }
-  return '';
+  return tr(
+    '，理解积分非现金，支付和订阅由托管支付方处理，平台不存储银行卡号、CVV 或银行信息。',
+    ', and understand credits are not cash, payments are handled by the hosted provider, and the platform does not store card numbers, CVV, or bank data.',
+  );
 });
 
 function toggle() {

@@ -21,10 +21,12 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 DEFAULT_CREDITS = 10
 COST_SINGLE_GENERATION = 2
-COST_COUPLE_LOCAL_GENERATION = 2
+COST_DIRECTOR_GENERATION = 3
+COST_COUPLE_LOCAL_GENERATION = 3
 COST_COUPLE_REMOTE_GENERATION = 4
-COST_VINTAGE_GENERATION = 4
-COST_LIVE_PORTRAIT = 1
+COST_VINTAGE_GENERATION = 5
+COST_LIVE_PORTRAIT = 6
+COST_LIVE_PORTRAIT_EXTRA_BLOCK = 4
 COST_PER_GENERATION = COST_SINGLE_GENERATION
 
 
@@ -39,6 +41,7 @@ def get_generation_cost(
     *,
     is_remote_join: bool = False,
     image_count: int = 1,
+    director_mode: bool = False,
 ) -> int:
     if template_category == "vintage":
         return COST_VINTAGE_GENERATION
@@ -47,12 +50,17 @@ def get_generation_cost(
         return COST_COUPLE_REMOTE_GENERATION
     if is_couple:
         return COST_COUPLE_LOCAL_GENERATION
+    if director_mode:
+        return COST_DIRECTOR_GENERATION
     return COST_SINGLE_GENERATION
 
 
 def get_live_portrait_cost(*, seconds: int = 5) -> int:
-    _ = seconds
-    return COST_LIVE_PORTRAIT
+    normalized_seconds = max(1, int(seconds or 5))
+    if normalized_seconds <= 5:
+        return COST_LIVE_PORTRAIT
+    extra_blocks = (normalized_seconds - 1) // 5
+    return COST_LIVE_PORTRAIT + (extra_blocks * COST_LIVE_PORTRAIT_EXTRA_BLOCK)
 
 
 async def _get_or_create_credit_row(db: AsyncSession, user_id: uuid.UUID | str) -> UserCredit:

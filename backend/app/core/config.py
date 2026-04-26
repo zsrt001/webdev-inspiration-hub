@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     creem_product_pack_50: str = ""
     creem_product_pack_120: str = ""
     creem_product_pack_300: str = ""
+    subscription_billing_enabled: bool = False
+    creem_subscription_starter_product_id: str = ""
+    creem_subscription_creator_product_id: str = ""
+    creem_subscription_studio_product_id: str = ""
 
     # Generation engine
     generation_engine: str = "wenwen"  # comfyui | wenwen
@@ -127,6 +131,8 @@ class Settings(BaseSettings):
     comfyui_max_retries: int = 1
     comfyui_require_storage_delivery: bool = True
     cleanup_source_images_on_complete: bool = False
+    cleanup_cron_token: str = ""
+    cron_secret: str = ""
 
     # Live Portrait / Remote Join
     live_portrait_enabled: bool = False
@@ -150,6 +156,16 @@ class Settings(BaseSettings):
         if self.auto_create_tables is not None:
             return bool(self.auto_create_tables)
         return bool(self.debug)
+
+    @property
+    def effective_cleanup_cron_token(self) -> str:
+        """Token accepted by the cleanup endpoint.
+
+        Vercel Cron sends `Authorization: Bearer $CRON_SECRET` when `CRON_SECRET`
+        is configured. `CLEANUP_CRON_TOKEN` is kept as an app-specific alias so
+        local/manual cron jobs do not need to depend on Vercel naming.
+        """
+        return (self.cleanup_cron_token or self.cron_secret or "").strip()
 
     @property
     def s3_public_url_base(self) -> str:

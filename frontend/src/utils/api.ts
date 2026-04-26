@@ -175,7 +175,7 @@ function createApiError(statusCode: number, payload: any): ApiError {
 }
 
 async function requestJson<T>(
-    method: 'GET' | 'POST' | 'PUT',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     data: any,
     options: RequestOptions,
@@ -249,6 +249,14 @@ export async function put<T>(
     return requestJson<T>('PUT', path, data, merged, localeText('处理中...', 'Processing...'));
 }
 
+export async function del<T>(
+    path: string,
+    options: RequestOptions = {}
+): Promise<T> {
+    const merged = { showLoading: true, showError: true, ...options };
+    return requestJson<T>('DELETE', path, undefined, merged, localeText('处理中...', 'Processing...'));
+}
+
 export async function uploadFile(
     path: string,
     filePath: string,
@@ -298,5 +306,6 @@ export default {
     get,
     post,
     put,
+    del,
     uploadFile,
 };
