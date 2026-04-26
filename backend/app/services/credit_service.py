@@ -148,9 +148,33 @@ async def add_credits_async(
     description: str | None = None,
     metadata: dict | None = None,
 ) -> int:
+    balance, _transaction = await add_credits_with_transaction_async(
+        db,
+        user_id,
+        amount,
+        transaction_type=transaction_type,
+        source=source,
+        source_id=source_id,
+        description=description,
+        metadata=metadata,
+    )
+    return balance
+
+
+async def add_credits_with_transaction_async(
+    db: AsyncSession,
+    user_id: uuid.UUID | str,
+    amount: int,
+    *,
+    transaction_type: CreditTransactionType = CreditTransactionType.ADMIN_GRANT,
+    source: str | None = None,
+    source_id: str | None = None,
+    description: str | None = None,
+    metadata: dict | None = None,
+) -> tuple[int, CreditTransaction]:
     row = await _get_or_create_credit_row(db, user_id)
     row.balance = int(row.balance or 0) + int(amount)
-    await _record_credit_transaction(
+    transaction = await _record_credit_transaction(
         db,
         user_id,
         transaction_type=transaction_type,
@@ -162,7 +186,7 @@ async def add_credits_async(
         metadata=metadata,
     )
     await db.flush()
-    return int(row.balance or 0)
+    return int(row.balance or 0), transaction
 
 
 async def reset_balance_async(db: AsyncSession, user_id: uuid.UUID | str, amount: int = DEFAULT_CREDITS) -> int:

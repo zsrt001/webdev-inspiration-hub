@@ -3,6 +3,7 @@
 from pathlib import Path
 import sys
 import unittest
+import uuid
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -11,12 +12,59 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.models.payment_event import PaymentEvent  # noqa: E402
+from app.models.credit_transaction import CreditTransactionType  # noqa: E402
 from app.models.subscription_credit_grant import SubscriptionCreditGrant  # noqa: E402
 from app.models.subscription_plan import SubscriptionPlan  # noqa: E402
 from app.models.user_subscription import SubscriptionStatus, UserSubscription  # noqa: E402
+from app.models.user_credit import UserCredit  # noqa: E402
+from app.services.credit_service import DEFAULT_CREDITS  # noqa: E402
+from app.services.subscription_service import SubscriptionService  # noqa: E402
 
 
 MIGRATION_PATH = BACKEND_DIR / "alembic" / "versions" / "20260426_0004_subscription_billing.py"
+
+
+class _ScalarResult:
+    def __init__(self, row):
+        self._row = row
+
+    def scalar_one_or_none(self):
+        return self._row
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return [] if self._row is None else [self._row]
+
+
+class _FakeSubscriptionDb:
+    def __init__(self):
+        self.credit_row = None
+        self.transactions = []
+        self.grants = {}
+
+    async def execute(self, statement):
+        text = str(statement)
+        if "subscription_credit_grants" in text:
+            params = getattr(statement, "compile", lambda **_: None)
+            _ = params
+            return _ScalarResult(next(iter(self.grants.values()), None))
+        return _ScalarResult(self.credit_row)
+
+    def add(self, value):
+        if isinstance(value, UserCredit):
+            self.credit_row = value
+        elif isinstance(value, SubscriptionCreditGrant):
+            self.grants[(str(value.subscription_id), value.period_key)] = value
+        else:
+            self.transactions.append(value)
+
+    async def flush(self):
+        for item in [*self.transactions, *self.grants.values()]:
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
+        return None
 
 
 class SubscriptionBillingModelTest(unittest.TestCase):
@@ -64,6 +112,44 @@ class SubscriptionBillingModelTest(unittest.TestCase):
         self.assertIn("app_current_user_id", sql)
         self.assertNotIn("credit_card", sql)
         self.assertNotIn("cvv", sql)
+
+
+class SubscriptionBillingServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_subscription_period_grant_is_idempotent(self) -> None:
+        db = _FakeSubscriptionDb()
+        user_id = uuid.uuid4()
+        subscription = UserSubscription(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            plan_id=uuid.uuid4(),
+            provider="creem",
+            provider_subscription_id="sub_1",
+            status=SubscriptionStatus.ACTIVE,
+        )
+        service = SubscriptionService()
+
+        first = await service.grant_period_credits(
+            db,
+            subscription,
+            period_key="2026-04",
+            credits=80,
+        )
+        second = await service.grant_period_credits(
+            db,
+            subscription,
+            period_key="2026-04",
+            credits=80,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.credit_transaction_id, second.credit_transaction_id)
+        self.assertEqual(len(db.grants), 1)
+        subscription_grants = [
+            tx for tx in db.transactions if tx.transaction_type == CreditTransactionType.SUBSCRIPTION_GRANT
+        ]
+        self.assertEqual(len(subscription_grants), 1)
+        self.assertEqual(subscription_grants[0].amount, 80)
+        self.assertEqual(subscription_grants[0].balance_after, DEFAULT_CREDITS + 80)
 
 
 if __name__ == "__main__":

@@ -186,7 +186,7 @@ Expected: tests pass and Supabase upgrades to head.
 - Modify: `backend/app/services/credit_service.py` if a helper is needed for source metadata.
 - Test: `backend/tests/test_subscription_billing.py`
 
-- [ ] **Step 1: Write failing grant idempotency test**
+- [x] **Step 1: Write failing grant idempotency test**
 
 ```python
 async def test_subscription_period_grant_is_idempotent():
@@ -197,7 +197,7 @@ async def test_subscription_period_grant_is_idempotent():
     assert ledger_purchase_count(db, subscription.user_id, "subscription_grant") == 1
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 python -m unittest backend.tests.test_subscription_billing -v
@@ -205,7 +205,7 @@ python -m unittest backend.tests.test_subscription_billing -v
 
 Expected: fails because `SubscriptionService` does not exist.
 
-- [ ] **Step 3: Implement `grant_period_credits`**
+- [x] **Step 3: Implement `grant_period_credits`**
 
 Behavior:
 
@@ -218,7 +218,7 @@ else:
   flush and return
 ```
 
-- [ ] **Step 4: Add `SUBSCRIPTION_GRANT` transaction type**
+- [x] **Step 4: Add `SUBSCRIPTION_GRANT` transaction type**
 
 Extend `CreditTransactionType` with:
 
@@ -226,7 +226,7 @@ Extend `CreditTransactionType` with:
 SUBSCRIPTION_GRANT = "SUBSCRIPTION_GRANT"
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 ```powershell
 python -m unittest backend.tests.test_subscription_billing backend.tests.test_credit_ledger -v
