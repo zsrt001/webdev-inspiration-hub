@@ -165,6 +165,7 @@
       </view>
     </view>
 
+    <LegalFooter />
     <PaymentModal :visible="showPaymentModal" @close="showPaymentModal = false" @purchase-complete="onPurchaseComplete" />
   </view>
 </template>
@@ -173,6 +174,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import PaymentModal from '../../components/PaymentModal.vue';
 import LegalConsentInline from '../../components/LegalConsentInline.vue';
+import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { useOpsStore } from '../../stores/ops';
 import { useOrderStore } from '../../stores/order';

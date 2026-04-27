@@ -168,12 +168,14 @@
         </view>
       </template>
     </view>
+    <LegalFooter />
   </view>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
+import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { useSubscriptionStore } from '../../stores/subscription';
 import { del, get, resolvePublicUrl } from '../../utils/api';

@@ -2,7 +2,8 @@
 
 from typing import Any, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from app.services.admin_service import (
     grant_credits_to_user,
     get_all_users,
 )
+from app.services.admin_audit_service import list_admin_audit_logs, log_admin_action
 from app.services.analytics_reporting_service import (
     get_city_ranking,
     get_funnel_report,
@@ -125,6 +127,18 @@ class CleanupAssetsResponse(BaseModel):
     generated_assets: dict[str, int]
 
 
+class AdminAuditLogItem(BaseModel):
+    id: str
+    actor: str
+    action: str
+    request_method: str | None = None
+    request_path: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    details: dict[str, Any] | None = None
+    created_at: datetime
+
+
 @router.get("/dashboard", response_model=DashboardStats)
 async def get_dashboard(db: AsyncSession = Depends(get_db)):
     """
@@ -136,20 +150,30 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/grant_credits", response_model=GrantCreditsResponse)
-async def grant_credits(request: GrantCreditsRequest, db: AsyncSession = Depends(get_db)):
+async def grant_credits(
+    request: Request,
+    payload: GrantCreditsRequest,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Grant credits to a user (admin operation).
     """
-    if not request.user_id.strip():
+    if not payload.user_id.strip():
         raise HTTPException(status_code=400, detail="User ID is required")
 
-    if request.amount <= 0:
+    if payload.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
     
-    if request.amount > 10000:
+    if payload.amount > 10000:
         raise HTTPException(status_code=400, detail="Amount too large (max 10000)")
     
-    result = await grant_credits_to_user(db, request.user_id, request.amount)
+    result = await grant_credits_to_user(db, payload.user_id, payload.amount)
+    await log_admin_action(
+        db,
+        action="grant_credits",
+        request=request,
+        details={"target_user_id": payload.user_id, "amount": payload.amount},
+    )
     return GrantCreditsResponse(**result)
 
 
@@ -166,10 +190,20 @@ async def list_users(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/cleanup_expired_assets", response_model=CleanupAssetsResponse)
-async def cleanup_admin_expired_assets(limit: int = 100, db: AsyncSession = Depends(get_db)):
+async def cleanup_admin_expired_assets(
+    request: Request,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
     """Delete expired source images and generated assets according to retention policy."""
     source_images = await cleanup_expired_source_images(db, limit=limit)
     generated_assets = await cleanup_expired_orders(db, limit=limit)
+    await log_admin_action(
+        db,
+        action="cleanup_expired_assets",
+        request=request,
+        details={"limit": limit, "source_images": source_images, "generated_assets": generated_assets},
+    )
     return CleanupAssetsResponse(source_images=source_images, generated_assets=generated_assets)
 
 
@@ -180,9 +214,14 @@ async def get_admin_ops_config():
 
 
 @router.put("/ops_config", response_model=OpsConfigResponse)
-async def update_admin_ops_config(payload: OpsConfigResponse):
+async def update_admin_ops_config(
+    payload: OpsConfigResponse,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Update operator-managed config without code deploy."""
     saved = save_ops_config(payload.model_dump())
+    await log_admin_action(db, action="update_ops_config", request=request, details={"sections": list(saved.keys())})
     return OpsConfigResponse(**saved)
 
 
@@ -247,6 +286,7 @@ async def get_admin_crm_preview(
 
 @router.post("/crm_push", response_model=CrmPushResponse)
 async def post_admin_crm_push(
+    request: Request,
     limit: int = 100,
     city: str | None = None,
     source_page: str | None = None,
@@ -263,6 +303,12 @@ async def post_admin_crm_push(
         source_slot=source_slot,
         template_id=template_id,
     )
+    await log_admin_action(
+        db,
+        action="crm_push",
+        request=request,
+        details={"limit": limit, "city": city, "source_page": source_page, "source_slot": source_slot, "template_id": template_id, "pushed": result.get("pushed")},
+    )
     return CrmPushResponse(**result)
 
 
@@ -270,3 +316,23 @@ async def post_admin_crm_push(
 async def get_admin_crm_push_history(limit: int = 20):
     """Return recent CRM push audit records."""
     return [CrmPushHistoryItem(**item) for item in list_crm_push_history(limit=limit)]
+
+
+@router.get("/audit_logs", response_model=list[AdminAuditLogItem])
+async def get_admin_audit_logs(limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """Return recent privileged admin operations."""
+    logs = await list_admin_audit_logs(db, limit=limit)
+    return [
+        AdminAuditLogItem(
+            id=str(item.id),
+            actor=item.actor,
+            action=item.action,
+            request_method=item.request_method,
+            request_path=item.request_path,
+            ip_address=item.ip_address,
+            user_agent=item.user_agent,
+            details=item.details,
+            created_at=item.created_at,
+        )
+        for item in logs
+    ]

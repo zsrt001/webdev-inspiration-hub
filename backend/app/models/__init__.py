@@ -10,6 +10,7 @@ from app.models.subscription_plan import SubscriptionPlan
 from app.models.user_subscription import UserSubscription, SubscriptionStatus
 from app.models.subscription_credit_grant import SubscriptionCreditGrant
 from app.models.payment_event import PaymentEvent
+from app.models.admin_audit_log import AdminAuditLog
 from app.models.lead import Lead
 from app.models.click_stat import ClickStat
 
@@ -29,6 +30,7 @@ __all__ = [
     "SubscriptionStatus",
     "SubscriptionCreditGrant",
     "PaymentEvent",
+    "AdminAuditLog",
     "Lead",
     "ClickStat",
 ]

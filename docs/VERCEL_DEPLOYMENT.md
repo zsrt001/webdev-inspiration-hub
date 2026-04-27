@@ -55,6 +55,9 @@ WENWEN_CHAT_API_KEY=
 WENWEN_VISION_API_KEY=
 
 PAYMENT_PROVIDER=creem
+SUPPORT_CONTACT_EMAIL=
+SUPPORT_CONTACT_URL=
+REFUND_POLICY_URL=/pages/legal/refund
 CREEM_API_KEY=
 CREEM_WEBHOOK_SECRET=
 CREEM_PRODUCT_PACK_50=
@@ -68,6 +71,12 @@ CREEM_SUBSCRIPTION_STUDIO_PRODUCT_ID=
 
 CLEANUP_CRON_TOKEN=
 CRON_SECRET=
+
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_DEFAULT_REQUESTS=240
+RATE_LIMIT_DEFAULT_WINDOW_SECONDS=60
+RATE_LIMIT_SENSITIVE_REQUESTS=40
+RATE_LIMIT_SENSITIVE_WINDOW_SECONDS=60
 ```
 
 Leave `VITE_API_BASE_URL` empty on Vercel. The frontend will use same-origin `/api/v1`.
@@ -87,6 +96,28 @@ Live Portrait extra 5s block: +4 credits
 ```
 
 Subscriptions are not unlimited usage. Each billing period grants the plan's fixed credit amount through provider webhook reconciliation.
+
+## Refunds, Support, And Legal Entry Points
+
+Production deployments must expose a support contact before real-money checkout is enabled. Configure `SUPPORT_CONTACT_EMAIL` or `SUPPORT_CONTACT_URL` and keep the footer links visible on the homepage, creation flow, account center, order archive, and legal pages.
+
+Refund handling is review-based:
+
+```text
+Eligible for review: duplicate charges, paid credits not delivered, webhook failures, platform-side queue failures, confirmed storage/generation delivery failures.
+Usually not refundable after successful delivery: subjective style preference, user prompt choices, poor upload quality, or third-party payment delay.
+Never request or store: card numbers, CVV, bank credentials, payment passwords, or full ID documents.
+```
+
+The public refund/support page is `/pages/legal/refund`; the backend also exposes the current legal policy summary at `/api/v1/legal/policies`.
+
+## Rate Limiting And Admin Audit
+
+`RATE_LIMIT_ENABLED=true` is required for commercial readiness. The built-in limiter is per-instance and should be paired with Vercel Firewall/WAF for stronger production protection.
+
+Sensitive API prefixes use the stricter limit: auth, orders, payments, subscriptions, session, upload, and live portrait.
+
+Admin write operations are recorded in `admin_audit_logs` and can be reviewed from `/api/v1/admin/audit_logs` or the Admin page. The audit log stores a hash of the admin token, action, path, IP, user agent, and safe operation details; it does not store raw admin tokens.
 
 ## Image Retention And Cleanup
 

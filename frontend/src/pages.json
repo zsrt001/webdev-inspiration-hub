@@ -83,6 +83,13 @@
                 "navigationStyle": "custom",
                 "navigationBarTitleText": ""
             }
+        },
+        {
+            "path": "pages/legal/refund",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
         }
     ],
     "globalStyle": {

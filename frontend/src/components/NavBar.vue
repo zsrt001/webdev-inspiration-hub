@@ -46,6 +46,7 @@
         <view class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
         <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
         <view class="menu-item" @tap="navigate('/pages/account/index')">{{ accountLabel }}</view>
+        <view class="menu-item" @tap="navigate('/pages/legal/refund')">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</view>
       </view>
     </view>
   </view>
@@ -87,6 +88,7 @@ const pushPages = new Set([
   '/pages/detail/detail',
   '/pages/legal/privacy',
   '/pages/legal/terms',
+  '/pages/legal/refund',
   '/pages/join/landing',
   '/pages/admin/index',
   '/pages/account/index',

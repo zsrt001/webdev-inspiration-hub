@@ -88,6 +88,9 @@ class Settings(BaseSettings):
         "Submit the order reference to customer support after payment. Credits are issued after review."
     )
     manual_payment_contact: str = ""
+    support_contact_email: str = ""
+    support_contact_url: str = ""
+    refund_policy_url: str = ""
     creem_api_key: str = ""
     creem_webhook_secret: str = ""
     creem_api_base_url: str = "https://api.creem.io"
@@ -112,6 +115,12 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str = ""
     supabase_jwt_audience: str = "authenticated"
     supabase_auth_timeout: float = 5.0
+    rate_limit_enabled: bool = False
+    rate_limit_default_requests: int = 240
+    rate_limit_default_window_seconds: int = 60
+    rate_limit_sensitive_requests: int = 40
+    rate_limit_sensitive_window_seconds: int = 60
+    rate_limit_exempt_paths: str = "/health,/health/ready,/api/v1/ops/readiness,/api/v1/ops/public_config"
 
     # ComfyUI
     comfy_provider: str = "local"  # local | cloud
@@ -166,6 +175,10 @@ class Settings(BaseSettings):
         local/manual cron jobs do not need to depend on Vercel naming.
         """
         return (self.cleanup_cron_token or self.cron_secret or "").strip()
+
+    @property
+    def rate_limit_exempt_path_list(self) -> list[str]:
+        return [item.strip() for item in (self.rate_limit_exempt_paths or "").split(",") if item.strip()]
 
     @property
     def s3_public_url_base(self) -> str:

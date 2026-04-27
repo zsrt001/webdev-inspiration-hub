@@ -145,6 +145,8 @@
               <text class="footer-legal-link" @tap="goToPrivacy">{{ t('nav.privacy_policy') }}</text>
               <text class="footer-legal-divider">·</text>
               <text class="footer-legal-link" @tap="goToTerms">{{ t('nav.terms_service') }}</text>
+              <text class="footer-legal-divider">·</text>
+              <text class="footer-legal-link" @tap="goToRefund">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</text>
             </view>
           </view>
           <view class="f-dots">
@@ -283,6 +285,10 @@ const goToPrivacy = () => {
 
 const goToTerms = () => {
   uni.navigateTo({ url: '/pages/legal/terms' });
+};
+
+const goToRefund = () => {
+  uni.navigateTo({ url: '/pages/legal/refund' });
 };
 
 const goToCustom = () => {

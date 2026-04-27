@@ -215,6 +215,25 @@
       <view class="section">
         <view class="section-header">
           <view>
+            <text class="section-title">{{ tr('🔐 管理审计', '🔐 Admin Audit') }}</text>
+            <text class="section-desc">{{ tr('最近后台写操作、来源 IP 与动作详情', 'Recent privileged operations, source IPs, and action details.') }}</text>
+          </view>
+          <button class="token-save" @tap="fetchAuditLogs">
+            {{ auditLogsLoading ? tx('loadingReport') : tr('刷新审计', 'Reload Audit') }}
+          </button>
+        </view>
+        <textarea
+          :value="auditLogsText"
+          class="ops-textarea readonly-textarea"
+          :placeholder="tr('暂无审计记录', 'No audit logs yet')"
+          auto-height
+          disabled
+        />
+      </view>
+
+      <view class="section">
+        <view class="section-header">
+          <view>
             <text class="section-title">{{ tx('crmTitle') }}</text>
             <text class="section-desc">{{ tx('crmDesc') }}</text>
           </view>
@@ -431,6 +450,18 @@ interface OpsAlertItem {
   metric: Record<string, any>;
 }
 
+interface AdminAuditLogItem {
+  id: string;
+  actor: string;
+  action: string;
+  request_method?: string | null;
+  request_path?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  details?: Record<string, any> | null;
+  created_at: string;
+}
+
 interface CrmPushResponse {
   pushed: boolean;
   reason: string;
@@ -637,6 +668,8 @@ const opsOverviewText = ref('');
 const opsOverviewLoading = ref(false);
 const opsAlertsText = ref('');
 const opsAlertsLoading = ref(false);
+const auditLogsText = ref('');
+const auditLogsLoading = ref(false);
 const crmPreviewText = ref('');
 const crmHistoryText = ref('');
 const crmLoading = ref(false);
@@ -670,6 +703,7 @@ const saveAdminToken = () => {
   fetchAnalyticsOverview();
   fetchOpsOverview();
   fetchOpsAlerts();
+  fetchAuditLogs();
   fetchCrmPreview();
 };
 
@@ -730,6 +764,7 @@ const saveOpsConfig = async () => {
   try {
     const res = await put<OpsConfigResponse>('/admin/ops_config', payload as any);
     opsConfigText.value = JSON.stringify(res, null, 2);
+    await fetchAuditLogs();
     uni.showToast({ title: tx('configSaved'), icon: 'success' });
   } catch (e) {
     uni.showToast({ title: tx('configSaveFailed'), icon: 'none' });
@@ -784,6 +819,21 @@ const fetchOpsAlerts = async () => {
   }
 };
 
+const fetchAuditLogs = async () => {
+  auditLogsLoading.value = true;
+  try {
+    const res = await get<AdminAuditLogItem[]>('/admin/audit_logs?limit=30', {
+      showLoading: false,
+      showError: false,
+    } as any);
+    auditLogsText.value = JSON.stringify(res, null, 2);
+  } catch (e) {
+    auditLogsText.value = '';
+  } finally {
+    auditLogsLoading.value = false;
+  }
+};
+
 const buildLeadFilterQuery = (): string => {
   const query = new URLSearchParams();
   if (leadFilters.value.city.trim()) query.set('city', leadFilters.value.city.trim());
@@ -826,6 +876,7 @@ const pushCrmBatch = async () => {
     } as any);
     crmPreviewText.value = JSON.stringify(res.payload || {}, null, 2);
     await fetchCrmPreview();
+    await fetchAuditLogs();
     uni.showToast({
       title: res.pushed ? tx('crmPushSuccess') : tx('crmPushFailed'),
       icon: res.pushed ? 'success' : 'none',
@@ -891,6 +942,7 @@ const grantCredits = async () => {
 
     const usersRes = await get<{ users: User[] }>('/admin/users');
     users.value = usersRes.users;
+    await fetchAuditLogs();
   } catch (error: any) {
     uni.showToast({
       title: error.message || tx('grantFailed'),
@@ -932,6 +984,7 @@ onMounted(() => {
   fetchAnalyticsOverview();
   fetchOpsOverview();
   fetchOpsAlerts();
+  fetchAuditLogs();
   fetchCrmPreview();
 });
 </script>

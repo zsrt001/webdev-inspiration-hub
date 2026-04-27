@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.core.rate_limit import RateLimitMiddleware
 from app.core.runtime_checks import (
     run_core_readiness_checks,
     run_readiness_checks,
@@ -100,6 +101,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
 
 # Mount static files directory for backend-owned assets
 import os

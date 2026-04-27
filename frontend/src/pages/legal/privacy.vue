@@ -15,6 +15,7 @@
           <text v-for="line in activeLines(section)" :key="line" class="section-line">{{ line }}</text>
         </view>
       </view>
+      <LegalFooter />
     </view>
   </view>
 </template>
@@ -22,6 +23,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import NavBar from '../../components/NavBar.vue';
+import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 
 const i18nStore = useI18nStore();

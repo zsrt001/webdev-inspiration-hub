@@ -107,6 +107,10 @@ def validate_commercial_config_values() -> list[str]:
         errors.append("LLM_PROVIDER must be jiekou or wenwen in commercial mode")
     if not settings.phone_crypto_key:
         errors.append("PHONE_CRYPTO_KEY is required for leads encryption")
+    if not settings.rate_limit_enabled:
+        errors.append("RATE_LIMIT_ENABLED must be true")
+    if not (settings.support_contact_email or settings.support_contact_url or settings.manual_payment_contact):
+        errors.append("SUPPORT_CONTACT_EMAIL or SUPPORT_CONTACT_URL is required")
     if not settings.effective_cleanup_cron_token:
         errors.append("CLEANUP_CRON_TOKEN or CRON_SECRET is required for automatic image deletion")
     if not settings.cors_origins and not settings.is_vercel_runtime:

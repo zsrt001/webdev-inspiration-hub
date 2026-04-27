@@ -54,12 +54,14 @@
         <button class="btn btn-outline retry-btn" @tap="refresh">{{ t('orders.retry') }}</button>
       </view>
     </view>
+    <LegalFooter />
   </view>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
+import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { getLocalizedTemplateTitle, useTemplateStore } from '../../stores/template';
 import { get, resolvePublicUrl } from '../../utils/api';
