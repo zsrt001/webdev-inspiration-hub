@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -20,6 +21,42 @@ from app.models.user_subscription import UserSubscription
 from app.services.credit_service import add_credits_with_transaction_async
 
 settings = get_settings()
+
+DEFAULT_PLAN_SEEDS = (
+    {
+        "id": uuid.UUID("30aa1d5f-bbbd-4b1d-9f5b-2608ad6f0001"),
+        "code": "starter_monthly",
+        "name": "Starter Monthly",
+        "billing_interval": "month",
+        "price_cents": 1900,
+        "currency": "USD",
+        "monthly_credits": 80,
+        "feature_flags": {"tier": "starter"},
+        "is_active": True,
+    },
+    {
+        "id": uuid.UUID("30aa1d5f-bbbd-4b1d-9f5b-2608ad6f0002"),
+        "code": "creator_monthly",
+        "name": "Creator Monthly",
+        "billing_interval": "month",
+        "price_cents": 4900,
+        "currency": "USD",
+        "monthly_credits": 260,
+        "feature_flags": {"tier": "creator"},
+        "is_active": True,
+    },
+    {
+        "id": uuid.UUID("30aa1d5f-bbbd-4b1d-9f5b-2608ad6f0003"),
+        "code": "studio_monthly",
+        "name": "Studio Monthly",
+        "billing_interval": "month",
+        "price_cents": 12900,
+        "currency": "USD",
+        "monthly_credits": 900,
+        "feature_flags": {"tier": "studio"},
+        "is_active": True,
+    },
+)
 
 
 class SubscriptionError(Exception):
@@ -283,12 +320,23 @@ class SubscriptionService:
         return ""
 
     async def list_active_plans(self, db: AsyncSession) -> list[SubscriptionPlan]:
+        await self.ensure_default_plans(db)
         result = await db.execute(
             select(SubscriptionPlan)
             .where(SubscriptionPlan.is_active.is_(True))
             .order_by(SubscriptionPlan.price_cents.asc(), SubscriptionPlan.code.asc())
         )
         return list(result.scalars().all())
+
+    async def ensure_default_plans(self, db: AsyncSession) -> None:
+        for plan in DEFAULT_PLAN_SEEDS:
+            statement = (
+                pg_insert(SubscriptionPlan)
+                .values(**plan)
+                .on_conflict_do_nothing(index_elements=["code"])
+            )
+            await db.execute(statement)
+        await db.flush()
 
     async def get_current_subscription(self, db: AsyncSession, user_id: uuid.UUID) -> UserSubscription | None:
         result = await db.execute(
@@ -316,6 +364,7 @@ class SubscriptionService:
         return_url: str | None,
     ) -> dict[str, str]:
         normalized_plan_code = str(plan_code or "").strip()
+        await self.ensure_default_plans(db)
         result = await db.execute(
             select(SubscriptionPlan).where(
                 SubscriptionPlan.code == normalized_plan_code,
