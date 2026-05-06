@@ -33,7 +33,15 @@ class SubscriptionError(Exception):
 class SubscriptionService:
     """Coordinates subscription period credit grants against the credit ledger."""
 
-    _ACTIVE_EVENTS = {"subscription.created", "subscription.updated", "subscription.paid", "invoice.paid", "subscription.payment_succeeded"}
+    _ACTIVE_EVENTS = {
+        "subscription.active",
+        "subscription.created",
+        "subscription.update",
+        "subscription.updated",
+        "subscription.paid",
+        "invoice.paid",
+        "subscription.payment_succeeded",
+    }
 
     def _status_value(self, status: SubscriptionStatus | str | None) -> str:
         value = status.value if hasattr(status, "value") else status
@@ -70,7 +78,11 @@ class SubscriptionService:
         explicit = str(payload.get("period_key") or "").strip()
         if explicit:
             return explicit
-        start = self._parse_datetime(payload.get("current_period_start") or payload.get("period_start"))
+        start = self._parse_datetime(
+            payload.get("current_period_start")
+            or payload.get("current_period_start_date")
+            or payload.get("period_start")
+        )
         if start is None:
             start = datetime.now(timezone.utc)
         return start.strftime("%Y-%m")
@@ -100,18 +112,42 @@ class SubscriptionService:
         for key in ("customer_id", "provider_customer_id", "customer"):
             value = payload.get(key)
             if value is not None:
+                if isinstance(value, dict):
+                    value = value.get("id") or value.get("customer_id")
                 text = str(value).strip()
                 if text:
                     return text
         return None
+
+    def _product_id(self, payload: dict[str, Any]) -> str:
+        for key in ("product_id", "product"):
+            value = payload.get(key)
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                value = value.get("id") or value.get("product_id")
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _plan_code_for_product_id(self, product_id: str) -> str:
+        normalized = str(product_id or "").strip()
+        if not normalized:
+            return ""
+        mapping = {
+            str(settings.creem_subscription_starter_product_id or "").strip(): "starter_monthly",
+            str(settings.creem_subscription_creator_product_id or "").strip(): "creator_monthly",
+            str(settings.creem_subscription_studio_product_id or "").strip(): "studio_monthly",
+        }
+        return mapping.get(normalized, "")
 
     async def _find_plan(self, db: AsyncSession, payload: dict[str, Any]) -> SubscriptionPlan | None:
         metadata = self._metadata(payload)
         plan_code = str(
             metadata.get("plan_code")
             or payload.get("plan_code")
-            or payload.get("product_id")
-            or payload.get("product")
+            or self._plan_code_for_product_id(self._product_id(payload))
             or ""
         ).strip()
         if not plan_code:
@@ -208,6 +244,17 @@ class SubscriptionService:
         parsed = urlparse(candidate)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return settings.effective_frontend_base_url.rstrip("/")
+        if parsed.scheme != "https" and not settings.using_manual_review_payments:
+            default = settings.effective_frontend_base_url.rstrip("/")
+            default_parsed = urlparse(default)
+            if default_parsed.scheme == "https" and default_parsed.hostname:
+                return urlunparse(
+                    default_parsed._replace(
+                        path=parsed.path or default_parsed.path,
+                        query=parsed.query,
+                        fragment=parsed.fragment,
+                    )
+                )
         return candidate
 
     async def _request(self, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -354,8 +401,16 @@ class SubscriptionService:
 
         if normalized_event_type in {"subscription.canceled", "subscription.cancelled"}:
             status = SubscriptionStatus.CANCELED.value
+        elif normalized_event_type == "subscription.scheduled_cancel":
+            status = SubscriptionStatus.ACTIVE.value
         elif normalized_event_type == "subscription.past_due":
             status = SubscriptionStatus.PAST_DUE.value
+        elif normalized_event_type in {"subscription.unpaid", "subscription.paused"}:
+            status = SubscriptionStatus.PAST_DUE.value
+        elif normalized_event_type == "subscription.expired":
+            status = SubscriptionStatus.EXPIRED.value
+        elif normalized_event_type == "subscription.trialing":
+            status = SubscriptionStatus.TRIALING.value
         elif not status and normalized_event_type in self._ACTIVE_EVENTS:
             status = SubscriptionStatus.ACTIVE.value
 
@@ -365,12 +420,18 @@ class SubscriptionService:
         if customer_id:
             subscription.provider_customer_id = customer_id
         subscription.current_period_start = self._parse_datetime(
-            payload.get("current_period_start") or payload.get("period_start")
+            payload.get("current_period_start")
+            or payload.get("current_period_start_date")
+            or payload.get("period_start")
         ) or subscription.current_period_start
         subscription.current_period_end = self._parse_datetime(
-            payload.get("current_period_end") or payload.get("period_end")
+            payload.get("current_period_end")
+            or payload.get("current_period_end_date")
+            or payload.get("period_end")
         ) or subscription.current_period_end
-        if "cancel_at_period_end" in payload:
+        if normalized_event_type == "subscription.scheduled_cancel":
+            subscription.cancel_at_period_end = True
+        elif "cancel_at_period_end" in payload:
             subscription.cancel_at_period_end = bool(payload.get("cancel_at_period_end"))
         subscription.metadata_json = {
             **(subscription.metadata_json or {}),

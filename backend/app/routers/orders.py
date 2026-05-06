@@ -1,10 +1,10 @@
 """Orders API routes using database-backed state machine."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
 from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -24,6 +24,11 @@ from app.services.credit_service import (
 from app.models.credit_transaction import CreditTransactionType
 from app.services.retention_service import apply_order_retention, delete_storage_urls, order_asset_urls, user_has_paid_credit_history
 from app.services.subscription_service import subscription_service
+from app.services.trial_access_service import (
+    _trial_daily_generation_limit,
+    access_tier_for_order,
+    can_download_order,
+)
 from app.services import gatekeeper_service
 from app.services.content_policy_service import evaluate_prompt_text, build_rejection_message
 from app.core.task_queue import enqueue_generate_order
@@ -39,6 +44,40 @@ from app.services.preset_service import (
 settings = get_settings()
 
 router = APIRouter()
+
+
+async def _serialize_order_for_user(db: AsyncSession, order: Order, user_id: uuid.UUID) -> OrderRead:
+    has_paid_credits = await user_has_paid_credit_history(db, user_id)
+    can_download = can_download_order(order.generation_params, has_paid_credits=has_paid_credits)
+    payload = OrderRead.model_validate(order)
+    payload.can_download = can_download
+    payload.download_locked = not can_download
+    if not can_download:
+        payload.final_image_urls = None
+    return payload
+
+
+async def _enforce_trial_generation_limit(db: AsyncSession, user_id: uuid.UUID) -> None:
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    count = int(
+        await db.scalar(
+            select(func.count(Order.id)).where(
+                Order.user_id == user_id,
+                Order.created_at >= since,
+                Order.generation_params["access_tier"].astext == "trial_preview",
+            )
+        )
+        or 0
+    )
+    if count >= _trial_daily_generation_limit():
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "trial_daily_limit_reached",
+                "message": "Free preview quota reached today. Please top up to continue.",
+                "limit": _trial_daily_generation_limit(),
+            },
+        )
 
 
 def _normalize_identity_image_url(image_url: str) -> str:
@@ -101,7 +140,7 @@ async def list_orders(
         .order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
-    return [OrderRead.model_validate(o) for o in orders]
+    return [await _serialize_order_for_user(db, o, current_user.id) for o in orders]
 
 
 @router.get("/{order_id}", response_model=OrderRead)
@@ -121,7 +160,7 @@ async def get_order(
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Order not found")
-    return OrderRead.model_validate(order)
+    return await _serialize_order_for_user(db, order, current_user.id)
 
 
 @router.post("/create", response_model=OrderRead)
@@ -232,6 +271,9 @@ async def create_order(
     retention_subscription = await subscription_service.get_current_subscription(db, current_user.id)
     retention_plan_code = getattr(getattr(retention_subscription, "plan", None), "code", None)
     has_paid_credits = bool(retention_plan_code) or await user_has_paid_credit_history(db, current_user.id)
+    access_tier = access_tier_for_order(has_paid_credits=has_paid_credits)
+    if not has_paid_credits:
+        await _enforce_trial_generation_limit(db, current_user.id)
 
     if not await deduct_credits_async(
         db,
@@ -245,6 +287,7 @@ async def create_order(
             "remote_join": bool(request.remote_join),
             "director_mode": bool(request.director_mode),
             "credits_cost": credits_cost,
+            "access_tier": access_tier,
         },
     ):
         balance = await get_balance_async(db, current_user.id)
@@ -363,6 +406,8 @@ async def create_order(
             source_image_urls={"images": request.user_images},
             generation_params={
                 "credits_cost": credits_cost,
+                "access_tier": access_tier,
+                "download_locked": not has_paid_credits,
                 "gatekeeper": {"passed": True, "images": gatekeeper_results},
                 "remote_join": bool(request.remote_join),
                 "couple_flow": couple_flow,
@@ -455,6 +500,11 @@ async def create_order(
                 else None,
                 "expires_at": order.expires_at.isoformat() if order.expires_at else None,
             },
+            "entitlement": {
+                "access_tier": access_tier,
+                "download_locked": not has_paid_credits,
+                "trial_daily_limit": _trial_daily_generation_limit() if not has_paid_credits else None,
+            },
         }
         db.add(order)
         await db.flush()
@@ -508,9 +558,10 @@ async def create_order(
                 source_id=str(order.id) if "order" in locals() else None,
                 description="Generation failed before queue start; credits refunded",
             )
+            await db.commit()
         raise
 
-    return OrderRead.model_validate(order)
+    return await _serialize_order_for_user(db, order, current_user.id)
 
 
 @router.delete("/{order_id}")

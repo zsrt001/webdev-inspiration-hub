@@ -119,7 +119,7 @@ async def verify_supabase_token(token: str) -> SupabaseUserClaims:
             "Authorization": f"Bearer {access_token}",
         }
         try:
-            async with httpx.AsyncClient(timeout=settings.supabase_auth_timeout) as client:
+            async with httpx.AsyncClient(timeout=settings.supabase_auth_timeout, trust_env=False) as client:
                 response = await client.get(user_url, headers=headers)
         except httpx.HTTPError as exc:
             raise SupabaseAuthError("supabase_userinfo_unreachable") from exc

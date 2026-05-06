@@ -29,7 +29,9 @@ TASK_EXECUTION_MODE=inline
 
 DATABASE_URL=
 SECRET_KEY=
-ADMIN_TOKEN=
+ADMIN_USER_IDS=
+ADMIN_OPENIDS=
+ADMIN_EMAILS=
 PHONE_CRYPTO_KEY=
 
 SUPABASE_URL=
@@ -37,8 +39,6 @@ SUPABASE_ANON_KEY=
 SUPABASE_JWT_SECRET=
 SUPABASE_JWT_AUDIENCE=authenticated
 
-VITE_SUPABASE_URL=
-VITE_SUPABASE_ANON_KEY=
 VITE_API_BASE_URL=
 
 FRONTEND_BASE_URL=https://your-domain.com
@@ -77,6 +77,20 @@ RATE_LIMIT_DEFAULT_REQUESTS=240
 RATE_LIMIT_DEFAULT_WINDOW_SECONDS=60
 RATE_LIMIT_SENSITIVE_REQUESTS=40
 RATE_LIMIT_SENSITIVE_WINDOW_SECONDS=60
+NEW_ACCOUNT_IP_LIMIT_PER_HOUR=8
+NEW_ACCOUNT_DEVICE_LIMIT_PER_HOUR=3
+
+TRIAL_WELCOME_CREDITS=6
+TRIAL_DAILY_GENERATION_LIMIT=3
+TRIAL_PREVIEW_MAX_WIDTH=900
+TRIAL_PREVIEW_MAX_HEIGHT=1125
+TRIAL_WATERMARK_TEXT=AI WEDDING STUDIO PREVIEW
+
+POSTPROCESS_ENABLED=true
+POSTPROCESS_UPSCALE_FACTOR=2
+POSTPROCESS_MAX_LONG_EDGE=2400
+POSTPROCESS_JPEG_QUALITY=92
+POSTPROCESS_VARIANTS=2x3,3x4,9x16
 ```
 
 Leave `VITE_API_BASE_URL` empty on Vercel. The frontend will use same-origin `/api/v1`.
@@ -94,6 +108,8 @@ Premium/vintage scene generation: 5 credits
 Live Portrait 5s: 6 credits
 Live Portrait extra 5s block: +4 credits
 ```
+
+New users receive trial credits for preview generation. Trial orders can view watermarked previews; HD downloads and poster export are unlocked only after paid credit history or an active subscription.
 
 Subscriptions are not unlimited usage. Each billing period grants the plan's fixed credit amount through provider webhook reconciliation.
 
@@ -117,7 +133,7 @@ The public refund/support page is `/pages/legal/refund`; the backend also expose
 
 Sensitive API prefixes use the stricter limit: auth, orders, payments, subscriptions, session, upload, and live portrait.
 
-Admin write operations are recorded in `admin_audit_logs` and can be reviewed from `/api/v1/admin/audit_logs` or the Admin page. The audit log stores a hash of the admin token, action, path, IP, user agent, and safe operation details; it does not store raw admin tokens.
+Admin write operations are recorded in `admin_audit_logs` and can be reviewed from `/api/v1/admin/audit_logs` or the Admin page. Prefer `ADMIN_USER_IDS`, `ADMIN_OPENIDS`, or `ADMIN_EMAILS` so the frontend only sends the normal signed-in user JWT. `ADMIN_TOKEN` is a backend-only fallback for scripts/internal calls and must not be stored in browser localStorage or exposed through `VITE_*` variables.
 
 ## Image Retention And Cleanup
 
@@ -151,6 +167,8 @@ AUTO_CREATE_TABLES=false
 ```
 
 ## Supabase OAuth URLs
+
+The current frontend build does not embed Supabase anon keys. If Google OAuth is reintroduced later, keep the browser flow behind backend-owned endpoints instead of adding `VITE_SUPABASE_ANON_KEY`.
 
 In Supabase Authentication settings:
 

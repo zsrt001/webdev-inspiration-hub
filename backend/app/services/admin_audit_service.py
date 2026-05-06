@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 from fastapi import Request
+from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,10 +16,24 @@ from app.models.admin_audit_log import AdminAuditLog
 def _actor_from_request(request: Request | None) -> str:
     if request is None:
         return "system"
-    token = request.headers.get("x-admin-token") or request.query_params.get("admin_token") or ""
+    state_actor = getattr(request.state, "admin_actor", "")
+    if state_actor:
+        return str(state_actor)[:128]
+    token = request.headers.get("x-admin-token") or ""
     if token:
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
         return f"admin:{digest}"
+    authorization = request.headers.get("authorization") or ""
+    scheme, _, bearer = authorization.partition(" ")
+    if scheme.lower() == "bearer" and bearer.strip():
+        try:
+            claims = jwt.get_unverified_claims(bearer.strip())
+            subject = str(claims.get("sub") or "").strip()
+            if subject:
+                digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:12]
+                return f"admin-user:{digest}"
+        except JWTError:
+            pass
     return "debug-admin"
 
 

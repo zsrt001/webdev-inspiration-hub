@@ -127,6 +127,9 @@ class OrderRead(OrderBase):
     source_image_urls: dict | None = None
     preview_image_urls: dict | None = None
     final_image_urls: dict | None = None
+    can_download: bool = False
+    access_tier: str | None = None
+    download_locked: bool = True
     source_images_expires_at: datetime | None = None
     expires_at: datetime | None = None
     deleted_at: datetime | None = None
@@ -210,4 +213,6 @@ class OrderRead(OrderBase):
             self.failure_code = str(failure_code) if failure_code else None
             failure_provider = params.get("failure_provider")
             self.failure_provider = str(failure_provider) if failure_provider else None
+            access_tier = params.get("access_tier")
+            self.access_tier = str(access_tier) if access_tier else None
         return self

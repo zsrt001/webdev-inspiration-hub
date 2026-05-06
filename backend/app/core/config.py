@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     wenwen_image_size_couple: str = "3:2"
     wenwen_poll_interval: float = 3.0
     wenwen_poll_timeout: int = 240
-    wenwen_max_retries: int = 0
+    wenwen_max_retries: int = 2
     gatekeeper_allow_without_pillow: bool = False
     qa_allow_without_pillow: bool = False
     qa_require_vision: bool = False
@@ -108,7 +108,10 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
-    admin_token: str = ""  # If set, protects admin-only endpoints via X-Admin-Token header.
+    admin_token: str = ""  # Backend-only fallback for scripts/internal admin calls. Do not expose in frontend.
+    admin_user_ids: str = ""  # Comma-separated local user UUIDs allowed to use admin APIs.
+    admin_openids: str = ""  # Comma-separated local openids allowed to use admin APIs.
+    admin_emails: str = ""  # Comma-separated emails allowed to use admin APIs.
     phone_crypto_key: str = ""  # Optional dedicated key for lead phone encryption.
     supabase_url: str = ""
     supabase_anon_key: str = ""
@@ -121,6 +124,18 @@ class Settings(BaseSettings):
     rate_limit_sensitive_requests: int = 40
     rate_limit_sensitive_window_seconds: int = 60
     rate_limit_exempt_paths: str = "/health,/health/ready,/api/v1/ops/readiness,/api/v1/ops/public_config"
+    new_account_ip_limit_per_hour: int = 8
+    new_account_device_limit_per_hour: int = 3
+    trial_welcome_credits: int = 6
+    trial_daily_generation_limit: int = 3
+    trial_preview_max_width: int = 900
+    trial_preview_max_height: int = 1125
+    trial_watermark_text: str = "AI WEDDING STUDIO PREVIEW"
+    postprocess_enabled: bool = True
+    postprocess_upscale_factor: int = 2
+    postprocess_max_long_edge: int = 2400
+    postprocess_jpeg_quality: int = 92
+    postprocess_variants: str = "2x3,3x4,9x16"
 
     # ComfyUI
     comfy_provider: str = "local"  # local | cloud
@@ -142,6 +157,17 @@ class Settings(BaseSettings):
     cleanup_source_images_on_complete: bool = False
     cleanup_cron_token: str = ""
     cron_secret: str = ""
+
+    # Observability
+    sentry_dsn: str = ""
+
+    # Alert push (Slack / Feishu / DingTalk incoming webhook URL)
+    ops_alert_webhook_url: str = ""
+
+    # Email notifications (Resend)
+    resend_api_key: str = ""
+    email_from_address: str = "noreply@example.com"
+    email_from_name: str = "AI Wedding Studio"
 
     # Live Portrait / Remote Join
     live_portrait_enabled: bool = False
@@ -179,6 +205,22 @@ class Settings(BaseSettings):
     @property
     def rate_limit_exempt_path_list(self) -> list[str]:
         return [item.strip() for item in (self.rate_limit_exempt_paths or "").split(",") if item.strip()]
+
+    @property
+    def admin_user_id_list(self) -> set[str]:
+        return {item.strip().lower() for item in (self.admin_user_ids or "").split(",") if item.strip()}
+
+    @property
+    def admin_openid_list(self) -> set[str]:
+        return {item.strip() for item in (self.admin_openids or "").split(",") if item.strip()}
+
+    @property
+    def admin_email_list(self) -> set[str]:
+        return {item.strip().lower() for item in (self.admin_emails or "").split(",") if item.strip()}
+
+    @property
+    def admin_identity_configured(self) -> bool:
+        return bool(self.admin_user_id_list or self.admin_openid_list or self.admin_email_list)
 
     @property
     def s3_public_url_base(self) -> str:

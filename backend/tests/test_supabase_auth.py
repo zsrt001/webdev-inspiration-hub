@@ -71,6 +71,14 @@ class SupabaseAuthTest(unittest.TestCase):
             }.issubset(fields)
         )
 
+    def test_supabase_oauth_routes_are_registered(self) -> None:
+        from app.routers import api_router
+
+        routes = {route.path for route in api_router.routes}
+
+        self.assertIn("/auth/supabase/google/start", routes)
+        self.assertIn("/auth/supabase/session", routes)
+
 
 if __name__ == "__main__":
     unittest.main()

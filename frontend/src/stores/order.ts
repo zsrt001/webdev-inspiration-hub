@@ -20,6 +20,9 @@ export interface Order {
     source_image_urls: { images: string[] } | null;
     preview_image_urls: Record<string, string> | null;
     final_image_urls: Record<string, string> | null;
+    can_download?: boolean;
+    access_tier?: string | null;
+    download_locked?: boolean;
     price_cents: number;
     error_message: string | null;
     director_mode?: boolean | null;
