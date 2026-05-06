@@ -51,6 +51,9 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
     query_pairs = parse_qsl(parts.query, keep_blank_values=True)
     connect_args: dict = {}
     kept_pairs: list[tuple[str, str]] = []
+    host = (parts.hostname or "").lower()
+    is_supabase_host = host.endswith(".supabase.co") or "pooler.supabase." in host
+    is_pooler_host = "pooler.supabase." in host
 
     for key, value in query_pairs:
         lowered = key.lower()
@@ -65,6 +68,15 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
                 connect_args["ssl"] = ssl.create_default_context()
             continue
         kept_pairs.append((key, value))
+
+    if is_supabase_host and "ssl" not in connect_args:
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        connect_args["ssl"] = ssl_context
+
+    if is_pooler_host:
+        connect_args.setdefault("statement_cache_size", 0)
 
     normalized = urlunsplit(
         (parts.scheme, parts.netloc, parts.path, urlencode(kept_pairs), parts.fragment)
