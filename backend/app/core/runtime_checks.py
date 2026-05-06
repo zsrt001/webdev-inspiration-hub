@@ -79,8 +79,8 @@ def validate_commercial_config_values() -> list[str]:
             errors.append("COMFYUI_BASE_URL is required when COMFY_PROVIDER=local")
     else:
         errors.append("GENERATION_ENGINE must be comfyui or wenwen")
-    if not settings.admin_token:
-        errors.append("ADMIN_TOKEN is required")
+    if not settings.admin_token and not settings.admin_identity_configured:
+        errors.append("ADMIN_USER_IDS, ADMIN_EMAILS, or backend-only ADMIN_TOKEN is required")
     if provider in {"", "local"}:
         errors.append("STORAGE_PROVIDER must be s3 or vercel (local is not commercial-safe)")
     if settings.allow_memory_fallback:

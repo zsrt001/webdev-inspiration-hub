@@ -1,39 +1,18 @@
 <template>
-  <view v-if="visible" class="modal-overlay" @tap="handleClose">
-    <view class="modal-content" @tap.stop>
-      <view class="modal-header">
-        <text class="modal-title heading-serif">{{ tr('购买积分', 'Top Up Credits') }}</text>
-        <view class="close-btn" @tap="handleClose">x</view>
-      </view>
+  <view v-if="visible" class="pricing-overlay" @tap="handleClose">
+    <view class="pricing-dialog" @tap.stop>
+      <button class="close-button" aria-label="Close" @tap="handleClose">x</button>
 
-      <view class="balance-display">
-        <text class="balance-label">{{ tr('当前余额', 'Current balance') }}</text>
-        <text class="balance-value">{{ currentBalance }} {{ tr('积分', 'credits') }}</text>
-        <text v-if="currentBalance < 2" class="balance-warning">
-          {{ tr('当前余额不足以发起一次生成', 'Balance is below one generation cost') }}
-        </text>
-      </view>
+      <view class="pricing-header">
+        <text class="pricing-title heading-serif">{{ tr('升级套餐', 'Upgrade Plan') }}</text>
+        <text class="pricing-subtitle">{{ modeSummary }}</text>
 
-      <view v-if="processing" class="processing-state">
-        <text class="processing-icon">...</text>
-        <text class="processing-text">{{ processingText }}</text>
-      </view>
-
-      <view v-else-if="purchaseSuccess" class="success-state">
-        <text class="success-icon">✓</text>
-        <text class="success-title">{{ tr('支付完成', 'Payment completed') }}</text>
-        <text class="success-credits">+{{ creditsAdded }} {{ tr('积分已到账', 'credits added') }}</text>
-        <text class="success-balance">{{ tr('最新余额', 'Updated balance') }}: {{ newBalance }}</text>
-        <button class="btn btn-primary continue-btn" @tap="handleContinue">
-          {{ tr('继续创作', 'Continue') }}
-        </button>
-      </view>
-
-      <view v-else class="packages">
-        <view class="billing-tabs">
+        <view class="billing-tabs" role="tablist">
           <view
             class="billing-tab"
             :class="{ active: activeBillingMode === 'credits' }"
+            role="tab"
+            :aria-selected="activeBillingMode === 'credits'"
             @tap="activeBillingMode = 'credits'"
           >
             {{ tr('积分包', 'Credit packs') }}
@@ -41,69 +20,156 @@
           <view
             class="billing-tab"
             :class="{ active: activeBillingMode === 'subscription' }"
+            role="tab"
+            :aria-selected="activeBillingMode === 'subscription'"
             @tap="activeBillingMode = 'subscription'"
           >
             {{ tr('订阅套餐', 'Subscriptions') }}
           </view>
         </view>
+      </view>
 
-        <template v-if="activeBillingMode === 'credits'">
-          <text class="packages-title">{{ tr('选择积分包', 'Select a package') }}</text>
+      <view class="balance-strip">
+        <view>
+          <text class="balance-label">{{ tr('当前积分', 'Current credits') }}</text>
+          <text class="balance-value">{{ currentBalance }}</text>
+        </view>
+        <view class="balance-meta">
+          <text>{{ tr('基础生成', 'Base generation') }} {{ costPerGeneration }} {{ tr('积分起', 'credits and up') }}</text>
+          <text v-if="activePlanName">{{ tr('当前订阅', 'Current subscription') }}: {{ activePlanName }}</text>
+        </view>
+      </view>
 
+      <view v-if="processing" class="state-panel">
+        <view class="loading-ring"></view>
+        <text class="state-title">{{ processingText }}</text>
+      </view>
+
+      <view v-else-if="purchaseSuccess" class="state-panel success-panel">
+        <view class="success-mark">✓</view>
+        <text class="state-title">{{ tr('支付完成', 'Payment completed') }}</text>
+        <text class="state-copy">+{{ creditsAdded }} {{ tr('积分已到账', 'credits added') }}</text>
+        <text class="state-copy">{{ tr('最新余额', 'Updated balance') }}: {{ newBalance }}</text>
+        <button class="primary-action state-action" @tap="handleContinue">
+          {{ tr('继续创作', 'Continue') }}
+        </button>
+      </view>
+
+      <template v-else>
+        <view v-if="activeBillingMode === 'credits'" class="pricing-grid">
           <view
             v-for="pkg in packages"
             :key="pkg.id"
-            class="package-card"
-            :class="{ popular: pkg.popular, selected: selectedPackage?.id === pkg.id }"
+            class="pricing-card"
+            :class="{ highlighted: pkg.popular, selected: selectedPackage?.id === pkg.id }"
             @tap="selectPackage(pkg)"
           >
-            <view v-if="pkg.popular" class="popular-badge">{{ tr('推荐', 'Popular') }}</view>
-            <view class="package-copy">
-              <text class="package-credits">{{ pkg.credits }} {{ tr('积分', 'credits') }}</text>
-              <text class="package-rate">{{ packageRateLabel(pkg) }}</text>
+            <view class="card-top">
+              <view>
+                <text class="plan-name">{{ packageTitle(pkg) }}</text>
+                <text class="plan-caption">{{ tr('一次性购买', 'One-time purchase') }}</text>
+              </view>
+              <view v-if="pkg.popular" class="plan-badge">{{ tr('推荐', 'Popular') }}</view>
             </view>
-            <text class="package-price">${{ pkg.price.toFixed(2) }}</text>
+
+            <view class="price-line">
+              <text class="currency">$</text>
+              <text class="price-value">{{ pkg.price.toFixed(2) }}</text>
+              <text class="price-unit">USD</text>
+            </view>
+
+            <text class="plan-description">
+              {{ pkg.credits }} {{ tr('积分到账，可用于当前所有生成类型', 'credits for the current generation pricing') }}
+            </text>
+
+            <button
+              class="plan-button"
+              :class="{ primary: pkg.popular }"
+              :disabled="!paymentConsentAccepted"
+              @tap.stop="handlePurchase(pkg)"
+            >
+              {{ tr('购买', 'Buy') }} {{ packageShortName(pkg) }}
+            </button>
+
+            <view class="feature-list">
+              <view v-for="line in packageFeatureLines(pkg)" :key="line" class="feature-row">
+                <view class="feature-mark"></view>
+                <text>{{ line }}</text>
+              </view>
+            </view>
           </view>
 
-          <button class="btn btn-primary buy-btn" :disabled="!selectedPackage || !paymentConsentAccepted" @tap="handlePurchase">
-            {{ selectedPackage ? tr('前往支付', 'Proceed to checkout') : tr('请选择积分包', 'Select a package') }}
-          </button>
-        </template>
-
-        <template v-else>
-          <text class="packages-title">{{ tr('选择订阅套餐', 'Select a subscription') }}</text>
-
-          <view
-            v-for="plan in subscriptionStore.plans"
-            :key="plan.code"
-            class="package-card subscription-plan-card"
-            :class="{ selected: selectedPlanCode === plan.code }"
-            @tap="selectedPlanCode = plan.code"
-          >
-            <view class="package-copy">
-              <text class="package-credits">{{ plan.name }}</text>
-              <text class="package-rate">{{ plan.monthly_credits }} {{ tr('积分 / 月', 'credits / month') }}</text>
-            </view>
-            <text class="package-price">{{ formatPlanPrice(plan) }}</text>
+          <view v-if="packages.length === 0" class="empty-pricing">
+            <text>{{ tr('暂未配置积分包', 'No credit packs configured yet') }}</text>
           </view>
-
-          <button class="btn btn-primary buy-btn" :disabled="!selectedPlanCode || !paymentConsentAccepted" @tap="handleSubscriptionPurchase">
-            {{ selectedPlanCode ? tr('开始订阅', 'Start subscription') : tr('请选择套餐', 'Select a plan') }}
-          </button>
-        </template>
-
-        <view class="provider-note">
-          <text>{{ tr('支付将跳转到托管结算页面。支付成功后，后端 webhook 会发放积分。', 'You will be redirected to hosted checkout. Credits are issued after webhook confirmation.') }}</text>
         </view>
 
-        <LegalConsentInline v-model="paymentConsentAccepted" mode="payment" compact />
-      </view>
+        <view v-else class="pricing-grid">
+          <view
+            v-for="(plan, index) in subscriptionStore.plans"
+            :key="plan.code"
+            class="pricing-card"
+            :class="{
+              highlighted: isPlanHighlighted(plan, index),
+              selected: selectedPlanCode === plan.code,
+              current: isCurrentPlan(plan),
+            }"
+            @tap="selectedPlanCode = plan.code"
+          >
+            <view class="card-top">
+              <view>
+                <text class="plan-name">{{ planDisplayName(plan) }}</text>
+                <text class="plan-caption">{{ billingIntervalLabel(plan) }}</text>
+              </view>
+              <view v-if="isCurrentPlan(plan)" class="plan-badge muted">{{ tr('当前', 'Current') }}</view>
+              <view v-else-if="isPlanHighlighted(plan, index)" class="plan-badge">{{ tr('推荐', 'Popular') }}</view>
+            </view>
+
+            <view class="price-line">
+              <text class="currency">{{ currencySymbol(plan.currency) }}</text>
+              <text class="price-value">{{ priceFromCents(plan.price_cents) }}</text>
+              <text class="price-unit">{{ plan.currency }} / {{ tr('月', 'mo') }}</text>
+            </view>
+
+            <text class="plan-description">
+              {{ plan.monthly_credits }} {{ tr('积分 / 月，进入同一个积分余额', 'credits / month added to the same balance') }}
+            </text>
+
+            <button
+              class="plan-button"
+              :class="{ primary: isPlanHighlighted(plan, index) }"
+              :disabled="!paymentConsentAccepted || isCurrentPlan(plan)"
+              @tap.stop="handleSubscriptionPurchase(plan.code)"
+            >
+              {{ isCurrentPlan(plan) ? tr('你当前的套餐', 'Current plan') : tr('开通', 'Subscribe') + ' ' + planShortName(plan) }}
+            </button>
+
+            <view class="feature-list">
+              <view v-for="line in planFeatureLines(plan)" :key="line" class="feature-row">
+                <view class="feature-mark"></view>
+                <text>{{ line }}</text>
+              </view>
+            </view>
+          </view>
+
+          <view v-if="subscriptionStore.plans.length === 0" class="empty-pricing">
+            <text>{{ tr('暂未配置订阅套餐', 'No subscription plans configured yet') }}</text>
+          </view>
+        </view>
+
+        <view class="pricing-footer">
+          <LegalConsentInline v-model="paymentConsentAccepted" mode="payment" compact />
+          <text class="provider-note">
+            {{ tr('支付成功后，积分以服务端确认结果为准。', 'Credits are issued after server-side payment confirmation.') }}
+          </text>
+        </view>
+      </template>
     </view>
   </view>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import LegalConsentInline from './LegalConsentInline.vue';
 import { useI18nStore } from '../stores/i18n';
 import { useSubscriptionStore, type SubscriptionPlan } from '../stores/subscription';
@@ -115,6 +181,15 @@ interface CreditPackage {
   price: number;
   label: string;
   popular: boolean;
+}
+
+interface BalanceResponse {
+  balance: number;
+  cost_per_generation: number;
+}
+
+interface PackagesResponse {
+  packages: CreditPackage[];
 }
 
 interface CheckoutResponse {
@@ -141,6 +216,8 @@ interface PendingPurchase {
   checkoutId?: string;
 }
 
+type BillingMode = 'credits' | 'subscription';
+
 const PENDING_PURCHASE_KEY = 'aws_pending_credit_purchase';
 
 const props = defineProps<{ visible: boolean }>();
@@ -155,10 +232,11 @@ const subscriptionStore = useSubscriptionStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const currentBalance = ref(0);
+const costPerGeneration = ref(2);
 const packages = ref<CreditPackage[]>([]);
 const selectedPackage = ref<CreditPackage | null>(null);
 const selectedPlanCode = ref('');
-const activeBillingMode = ref<'credits' | 'subscription'>('credits');
+const activeBillingMode = ref<BillingMode>('credits');
 const processing = ref(false);
 const processingText = ref('');
 const purchaseSuccess = ref(false);
@@ -166,19 +244,20 @@ const creditsAdded = ref(0);
 const newBalance = ref(0);
 const paymentConsentAccepted = ref(false);
 
+const activePlanName = computed(() => {
+  const plan = subscriptionStore.activePlan;
+  return plan ? planDisplayName(plan) : '';
+});
+
+const modeSummary = computed(() => {
+  if (activeBillingMode.value === 'credits') {
+    return tr('按现有积分包定价购买，适合临时加量。', 'Buy from the current credit-pack catalog for one-time top-ups.');
+  }
+  return tr('订阅每月发放固定积分，不是无限使用。', 'Subscriptions grant fixed monthly credits, not unlimited usage.');
+});
+
 function isH5(): boolean {
   return typeof window !== 'undefined' && typeof document !== 'undefined';
-}
-
-function packageRateLabel(pkg: CreditPackage): string {
-  const pricePerTen = (pkg.price / Math.max(pkg.credits, 1)) * 10;
-  return tr(`每 10 积分 $${pricePerTen.toFixed(2)}`, `$${pricePerTen.toFixed(2)} / 10 credits`);
-}
-
-function formatPlanPrice(plan: SubscriptionPlan): string {
-  const price = (Number(plan.price_cents || 0) / 100).toFixed(2);
-  const currency = plan.currency || 'USD';
-  return `${currency} ${price}`;
 }
 
 function currentReturnUrl(): string | undefined {
@@ -236,22 +315,143 @@ async function sleep(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchData() {
-  try {
-    const [balanceRes, packagesRes] = await Promise.all([
-      get<{ balance: number }>('/credits/balance', { showLoading: false, showError: false }),
-      get<{ packages: CreditPackage[] }>('/credits/packages', { showLoading: false, showError: false }),
-      subscriptionStore.fetchPlans(true),
-    ]);
-    currentBalance.value = balanceRes.balance;
-    packages.value = packagesRes.packages;
-    selectedPackage.value = packagesRes.packages.find((pkg) => pkg.popular) || packagesRes.packages[0] || null;
-    selectedPlanCode.value = subscriptionStore.plans[1]?.code || subscriptionStore.plans[0]?.code || '';
-  } catch {
-    currentBalance.value = 0;
-    packages.value = [];
-    selectedPackage.value = null;
+function currencySymbol(currency: string): string {
+  return String(currency || 'USD').toUpperCase() === 'USD' ? '$' : '';
+}
+
+function priceFromCents(cents: number): string {
+  return (Number(cents || 0) / 100).toFixed(2);
+}
+
+function generationEstimate(credits: number): string {
+  const estimate = Math.max(1, Math.floor(Number(credits || 0) / Math.max(costPerGeneration.value, 1)));
+  return tr(`约 ${estimate} 次基础生成`, `About ${estimate} base generations`);
+}
+
+function unitPriceLabel(amount: number, credits: number, currency = 'USD'): string {
+  const perTenCredits = (Number(amount || 0) / Math.max(Number(credits || 0), 1)) * 10;
+  const prefix = currencySymbol(currency);
+  const suffix = String(currency || 'USD').toUpperCase() === 'USD' ? '' : ` ${currency}`;
+  return `${prefix}${perTenCredits.toFixed(2)}${suffix} / ${tr('10 积分', '10 credits')}`;
+}
+
+function packageTitle(pkg: CreditPackage): string {
+  const label = String(pkg.label || pkg.id).replace(/^AI Wedding\s*/i, '').trim();
+  if (i18nStore.locale !== 'zh') return label || pkg.id;
+  const zhNames: Record<string, string> = {
+    pack_50: 'Starter 积分包',
+    pack_120: 'Popular 积分包',
+    pack_300: 'Premium 积分包',
+  };
+  return zhNames[pkg.id] || label || pkg.id;
+}
+
+function packageShortName(pkg: CreditPackage): string {
+  return packageTitle(pkg).replace(/\s*积分包$/, '');
+}
+
+function packageFeatureLines(pkg: CreditPackage): string[] {
+  return [
+    `${pkg.credits} ${tr('积分一次性到账', 'one-time credits')}`,
+    unitPriceLabel(pkg.price, pkg.credits, 'USD'),
+    generationEstimate(pkg.credits),
+    tr('可用于高清下载和继续生成', 'Usable for downloads and new generations'),
+    tr('支付确认后自动入账', 'Issued after payment confirmation'),
+  ];
+}
+
+function planDisplayName(plan: SubscriptionPlan): string {
+  const name = String(plan.name || plan.code).replace(/\s*Monthly$/i, '').trim();
+  if (i18nStore.locale !== 'zh') return name || plan.code;
+  const zhNames: Record<string, string> = {
+    starter_monthly: 'Starter 月度',
+    creator_monthly: 'Creator 月度',
+    studio_monthly: 'Studio 月度',
+  };
+  return zhNames[plan.code] || name || plan.code;
+}
+
+function planShortName(plan: SubscriptionPlan): string {
+  return planDisplayName(plan).replace(/\s*月度$/, '');
+}
+
+function billingIntervalLabel(plan: SubscriptionPlan): string {
+  return plan.billing_interval === 'year'
+    ? tr('年付订阅', 'Yearly subscription')
+    : tr('月付订阅', 'Monthly subscription');
+}
+
+function isCurrentPlan(plan: SubscriptionPlan): boolean {
+  return subscriptionStore.current?.plan_code === plan.code
+    && ['active', 'trialing', 'past_due'].includes(subscriptionStore.current?.status || '');
+}
+
+function isPlanHighlighted(plan: SubscriptionPlan, index: number): boolean {
+  if (isCurrentPlan(plan)) return true;
+  if (plan.code.includes('creator')) return true;
+  if (!subscriptionStore.plans.some((item) => item.code.includes('creator'))) return index === 1;
+  return false;
+}
+
+function planFeatureLines(plan: SubscriptionPlan): string[] {
+  const flags = plan.feature_flags || {};
+  const lines = [
+    `${plan.monthly_credits} ${tr('积分 / 月', 'credits / month')}`,
+    unitPriceLabel(Number(plan.price_cents || 0) / 100, plan.monthly_credits, plan.currency),
+    generationEstimate(plan.monthly_credits),
+  ];
+  if (flags.remote_join) lines.push(tr('支持远程合照流程', 'Remote couple join enabled'));
+  if (flags.live_portrait) lines.push(tr('支持动态人像额度消耗', 'Live portrait usage enabled'));
+  if (flags.priority_generation) lines.push(tr('优先生成权益', 'Priority generation entitlement'));
+  lines.push(tr('订阅积分进入同一余额', 'Subscription credits share the same balance'));
+  return lines;
+}
+
+function selectPackage(pkg: CreditPackage) {
+  selectedPackage.value = pkg;
+}
+
+function normalizeSelections() {
+  if (packages.value.length > 0) {
+    const existing = selectedPackage.value
+      ? packages.value.find((pkg) => pkg.id === selectedPackage.value?.id)
+      : null;
+    selectedPackage.value = existing || packages.value.find((pkg) => pkg.popular) || packages.value[0] || null;
   }
+
+  if (subscriptionStore.plans.length > 0) {
+    const existingPlan = subscriptionStore.plans.find((plan) => plan.code === selectedPlanCode.value);
+    selectedPlanCode.value = existingPlan?.code
+      || subscriptionStore.current?.plan_code
+      || subscriptionStore.plans.find((plan) => plan.code.includes('creator'))?.code
+      || subscriptionStore.plans[0]?.code
+      || '';
+  }
+}
+
+async function fetchData() {
+  const balanceTask = get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false })
+    .then((res) => {
+      currentBalance.value = res.balance;
+      costPerGeneration.value = Number(res.cost_per_generation || 2);
+    })
+    .catch(() => undefined);
+
+  const currentSubscriptionTask = subscriptionStore.fetchCurrentSubscription(true)
+    .then(() => normalizeSelections())
+    .catch(() => undefined);
+
+  const [packagesResult] = await Promise.allSettled([
+    get<PackagesResponse>('/credits/packages', { showLoading: false, showError: false }),
+    subscriptionStore.fetchPlans(true),
+  ]);
+
+  if (packagesResult.status === 'fulfilled') {
+    packages.value = Array.isArray(packagesResult.value.packages) ? packagesResult.value.packages : [];
+  }
+  normalizeSelections();
+
+  void Promise.allSettled([balanceTask, currentSubscriptionTask]);
 }
 
 async function reconcilePendingPurchase() {
@@ -259,7 +459,7 @@ async function reconcilePendingPurchase() {
   if (routeParams.subscriptionStatus === 'success') {
     clearRouteParams();
     await subscriptionStore.fetchCurrentSubscription(true);
-    uni.showToast({ title: tr('订阅处理中，积分到账以后会自动显示', 'Subscription is processing'), icon: 'none' });
+    uni.showToast({ title: tr('订阅处理中，积分到账后会自动显示', 'Subscription is processing'), icon: 'none' });
   }
 
   const pending = readPendingPurchase();
@@ -306,12 +506,10 @@ async function reconcilePendingPurchase() {
   }
 }
 
-function selectPackage(pkg: CreditPackage) {
-  selectedPackage.value = pkg;
-}
-
-async function handlePurchase() {
-  if (!selectedPackage.value) return;
+async function handlePurchase(pkg?: CreditPackage) {
+  const targetPackage = pkg || selectedPackage.value;
+  if (!targetPackage) return;
+  selectedPackage.value = targetPackage;
   if (!paymentConsentAccepted.value) {
     uni.showToast({ title: tr('请先同意隐私政策与服务条款', 'Accept the legal terms first'), icon: 'none' });
     return;
@@ -322,7 +520,7 @@ async function handlePurchase() {
   try {
     const response = await post<CheckoutResponse>(
       '/payments/checkout',
-      { package_id: selectedPackage.value.id, return_url: currentReturnUrl() },
+      { package_id: targetPackage.id, return_url: currentReturnUrl() },
       { showLoading: false, showError: false },
     );
     savePendingPurchase({ purchaseId: response.purchase_id });
@@ -338,8 +536,12 @@ async function handlePurchase() {
   }
 }
 
-async function handleSubscriptionPurchase() {
-  if (!selectedPlanCode.value) return;
+async function handleSubscriptionPurchase(planCode?: string) {
+  const targetPlanCode = planCode || selectedPlanCode.value;
+  if (!targetPlanCode) return;
+  selectedPlanCode.value = targetPlanCode;
+  const targetPlan = subscriptionStore.plans.find((plan) => plan.code === targetPlanCode);
+  if (targetPlan && isCurrentPlan(targetPlan)) return;
   if (!paymentConsentAccepted.value) {
     uni.showToast({ title: tr('请先同意隐私政策与服务条款', 'Accept the legal terms first'), icon: 'none' });
     return;
@@ -348,7 +550,7 @@ async function handleSubscriptionPurchase() {
   processing.value = true;
   processingText.value = tr('正在创建订阅订单...', 'Creating subscription checkout...');
   try {
-    const response = await subscriptionStore.startSubscriptionCheckout(selectedPlanCode.value, currentReturnUrl());
+    const response = await subscriptionStore.startSubscriptionCheckout(targetPlanCode, currentReturnUrl());
     if (isH5()) {
       window.location.href = response.checkout_url;
       return;
@@ -390,146 +592,95 @@ onMounted(async () => {
 </script>
 
 <style lang="scss" scoped>
-.modal-overlay {
+.pricing-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.68);
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
-  padding: 20px;
+  padding: 28px;
+  background: rgba(250, 247, 249, 0.94);
+  backdrop-filter: blur(10px);
 }
 
-.modal-content {
-  background: $uni-color-white;
-  border-radius: 20px;
-  width: 100%;
-  max-width: 460px;
+.pricing-dialog {
+  position: relative;
+  width: min(1180px, 100%);
   max-height: 92vh;
   overflow-y: auto;
-  animation: slideUp 0.25s ease-out;
+  border: 1px solid rgba(131, 24, 67, 0.1);
+  border-radius: 20px;
+  background: #fbfaf9;
+  box-shadow: 0 24px 60px rgba(35, 31, 32, 0.14);
+  padding: 42px 36px 30px;
+  animation: modalEnter 0.22s ease-out;
 }
 
-@keyframes slideUp {
+@keyframes modalEnter {
   from {
     opacity: 0;
-    transform: translateY(18px);
+    transform: translateY(14px) scale(0.99);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24px;
-  border-bottom: 1px solid $uni-color-border;
-}
-
-.modal-title {
-  font-size: 22px;
-  color: $uni-color-primary;
-}
-
-.close-btn {
-  width: 32px;
-  height: 32px;
+.close-button {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
-  color: $uni-text-color-muted;
-}
-
-.balance-display {
-  padding: 20px 24px;
-  background: linear-gradient(135deg, #fcf7fb 0%, #fffaf6 100%);
-  text-align: center;
-}
-
-.balance-label,
-.packages-title,
-.provider-note,
-.processing-text,
-.success-balance,
-.package-rate {
-  color: $uni-text-color-muted;
-}
-
-.balance-label,
-.packages-title {
-  display: block;
-  font-size: 12px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  margin-bottom: 8px;
-}
-
-.balance-value {
-  display: block;
-  font-size: 28px;
-  font-weight: 700;
-  color: $uni-color-primary;
-}
-
-.balance-warning {
-  display: block;
-  margin-top: 8px;
-  color: #d64545;
-  font-size: 12px;
-}
-
-.processing-state,
-.success-state {
-  padding: 44px 24px;
-  text-align: center;
-}
-
-.processing-icon,
-.success-icon {
-  display: block;
-  font-size: 42px;
-  margin-bottom: 14px;
-}
-
-.success-title {
-  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #8a8588;
   font-size: 24px;
+  line-height: 1;
+}
+
+.close-button::after,
+.plan-button::after,
+.primary-action::after {
+  border: 0;
+}
+
+.pricing-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.pricing-title {
+  color: #161315;
+  font-size: 30px;
   font-weight: 700;
-  color: $uni-color-primary;
-  margin-bottom: 12px;
 }
 
-.success-credits {
-  display: block;
-  color: #2b8a57;
-  font-size: 18px;
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-
-.continue-btn,
-.buy-btn {
-  width: 100%;
-  margin-top: 18px;
-}
-
-.packages {
-  padding: 24px;
+.pricing-subtitle {
+  max-width: 620px;
+  color: #6f6870;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .billing-tabs {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-  margin-bottom: 18px;
+  min-width: 220px;
   padding: 4px;
   border-radius: 999px;
-  background: #f8f1f5;
+  background: #ece9e8;
 }
 
 .billing-tab {
@@ -538,89 +689,341 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  color: $uni-text-color-muted;
+  color: #8a8588;
+  font-size: 14px;
+  font-weight: 700;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.billing-tab.active {
+  background: #fff;
+  color: #241f22;
+  box-shadow: 0 4px 14px rgba(35, 31, 32, 0.12);
+}
+
+.balance-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 22px;
+  padding: 16px 18px;
+  border: 1px solid rgba(202, 138, 4, 0.18);
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.balance-label,
+.plan-caption,
+.price-unit,
+.provider-note {
+  color: #7d747a;
+}
+
+.balance-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.balance-value {
+  display: block;
+  margin-top: 2px;
+  color: #161315;
+  font-size: 30px;
+  font-weight: 800;
+}
+
+.balance-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #5f575d;
+  font-size: 13px;
+  text-align: right;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.pricing-card {
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  border: 1px solid #e7e2e4;
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+
+.pricing-card.selected,
+.pricing-card:hover {
+  border-color: rgba(219, 39, 119, 0.36);
+  box-shadow: 0 14px 34px rgba(35, 31, 32, 0.1);
+  transform: translateY(-2px);
+}
+
+.pricing-card.highlighted {
+  border-color: rgba(129, 121, 233, 0.34);
+  background: #f7f6ff;
+}
+
+.pricing-card.current {
+  border-color: rgba(202, 138, 4, 0.38);
+}
+
+.card-top {
+  min-height: 58px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.plan-name {
+  display: block;
+  color: #161315;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.plan-caption {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.plan-badge {
+  flex: 0 0 auto;
+  min-width: 54px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #241f22;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.plan-badge.muted {
+  background: #e9e3d6;
+  color: #6e561d;
+}
+
+.price-line {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  margin-top: 24px;
+  color: #101014;
+}
+
+.currency {
+  padding-bottom: 9px;
+  color: #8a8588;
+  font-size: 20px;
+}
+
+.price-value {
+  font-size: 52px;
+  font-weight: 500;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+}
+
+.price-unit {
+  padding-bottom: 9px;
   font-size: 13px;
   font-weight: 700;
 }
 
-.billing-tab.active {
-  background: $uni-color-white;
-  color: $uni-color-primary;
-  box-shadow: 0 8px 18px rgba(131, 24, 67, 0.1);
+.plan-description {
+  display: block;
+  min-height: 48px;
+  margin-top: 18px;
+  color: #2a2529;
+  font-size: 15px;
+  line-height: 1.55;
 }
 
-.package-card {
-  position: relative;
+.plan-button,
+.primary-action {
+  width: 100%;
+  min-height: 48px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 18px 20px;
-  border: 2px solid $uni-color-border;
-  border-radius: 14px;
-  margin-bottom: 12px;
-  transition: all 0.2s ease;
+  justify-content: center;
+  margin: 28px 0 22px;
+  border: 1px solid #ded9dc;
+  border-radius: 999px;
+  background: #fff;
+  color: #3b343a;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
-.package-card.selected,
-.package-card.popular {
-  border-color: $uni-color-accent;
+.plan-button.primary,
+.primary-action {
+  border-color: transparent;
+  background: #9d98f2;
+  color: #fff;
 }
 
-.package-card.selected {
-  background: rgba(201, 169, 110, 0.08);
+.plan-button[disabled] {
+  opacity: 0.48;
 }
 
-.package-copy {
+.feature-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 16px;
+  margin-top: auto;
 }
 
-.popular-badge {
-  position: absolute;
-  top: -10px;
-  right: 16px;
-  background: $uni-color-accent;
-  color: $uni-color-white;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 4px 8px;
+.feature-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: #282329;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.feature-mark {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  margin-top: 6px;
   border-radius: 999px;
+  background: #db2777;
+  box-shadow: 0 0 0 4px rgba(219, 39, 119, 0.11);
 }
 
-.package-credits {
-  font-size: 18px;
-  font-weight: 700;
-  color: $uni-color-primary;
-}
-
-.package-price {
-  font-size: 22px;
-  font-weight: 700;
-  color: $uni-color-accent;
-}
-
-.buy-btn[disabled] {
-  opacity: 0.5;
-}
-
-.provider-note {
-  display: block;
-  margin-top: 14px;
-  font-size: 12px;
-  line-height: 1.6;
+.pricing-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 22px;
+  align-items: center;
   text-align: center;
 }
 
-@media (max-width: 480px) {
-  .package-card {
+.provider-note {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.state-panel,
+.empty-pricing {
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.loading-ring {
+  width: 44px;
+  height: 44px;
+  border: 4px solid rgba(219, 39, 119, 0.16);
+  border-top-color: #db2777;
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.success-mark {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #1f8f58;
+  color: #fff;
+  font-size: 30px;
+  font-weight: 800;
+}
+
+.state-title {
+  display: block;
+  margin-top: 18px;
+  color: #161315;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.state-copy {
+  display: block;
+  margin-top: 8px;
+  color: #5f575d;
+  font-size: 15px;
+}
+
+.state-action {
+  max-width: 260px;
+}
+
+@media (max-width: 980px) {
+  .pricing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pricing-card {
+    min-height: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .pricing-overlay {
+    align-items: flex-start;
+    padding: 12px;
+  }
+
+  .pricing-dialog {
+    max-height: calc(100vh - 24px);
+    padding: 58px 16px 22px;
+    border-radius: 16px;
+  }
+
+  .pricing-title {
+    font-size: 26px;
+  }
+
+  .balance-strip {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .package-price {
-    font-size: 20px;
+  .balance-meta {
+    text-align: left;
+  }
+
+  .pricing-card {
+    padding: 20px;
+  }
+
+  .plan-name {
+    font-size: 24px;
+  }
+
+  .price-value {
+    font-size: 44px;
   }
 }
 </style>

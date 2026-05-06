@@ -58,10 +58,19 @@ _QA_REASON_MAP: dict[str, str] = {
     "identity_swapped": "identity_swap",
     "swapped_identity": "identity_swap",
     "identity_swap": "identity_swap",
+    "identity_mismatch": "identity_mismatch",
+    "face_not_like_source": "identity_mismatch",
+    "face_mismatch": "identity_mismatch",
+    "identity_not_preserved": "identity_mismatch",
     "extra_limbs": "extra_limbs",
     "extra_arms": "extra_limbs",
     "bad_hands": "bad_hands",
     "hands_distorted": "bad_hands",
+    "extra_fingers": "bad_hands",
+    "bad_fingers": "bad_hands",
+    "dress_exposure_error": "dress_exposure_error",
+    "wedding_dress_exposure": "dress_exposure_error",
+    "wardrobe_malfunction": "dress_exposure_error",
     "black_or_blank": "black_or_blank",
     "blank": "black_or_blank",
     "black_image": "black_or_blank",
@@ -81,8 +90,10 @@ _ALLOWED_QA_REASONS = {
     "body_fusion",
     "subject_missing",
     "identity_swap",
+    "identity_mismatch",
     "extra_limbs",
     "bad_hands",
+    "dress_exposure_error",
     "black_or_blank",
     "watermark_or_text",
     "nsfw",
@@ -235,7 +246,7 @@ async def _coerce_remote_image_input(image_url: str) -> str:
     if not _is_localish_url(raw):
         return raw
 
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, trust_env=False) as client:
         response = await client.get(raw)
         response.raise_for_status()
         content_type = response.headers.get("content-type") or "image/jpeg"
@@ -264,7 +275,7 @@ async def _llm_chat(payload: dict[str, Any], *, title: str, timeout: float) -> d
         "X-Title": title,
     }
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
@@ -291,7 +302,7 @@ async def _text_chat(payload: dict[str, Any], *, title: str, timeout: float) -> 
         "X-Title": title,
     }
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
@@ -337,7 +348,12 @@ async def optimize_generation_prompt(prompt: str, *, is_couple: bool = False) ->
         return raw_prompt
 
 
-async def verify_generated_image_quality(image_url: str, *, is_couple: bool = False) -> dict[str, Any]:
+async def verify_generated_image_quality(
+    image_url: str,
+    *,
+    is_couple: bool = False,
+    source_image_urls: list[str] | None = None,
+) -> dict[str, Any]:
     """
     Strict QA check for generated images.
 
@@ -349,6 +365,7 @@ async def verify_generated_image_quality(image_url: str, *, is_couple: bool = Fa
     if not is_vision_provider_configured():
         return {"passed": True, "reasons": [], "notes": "llm_not_configured"}
 
+    source_images = [str(url).strip() for url in (source_image_urls or []) if str(url).strip()]
     couple_rules = (
         "\nCouple-specific rules:\n"
         "- The image must clearly contain two primary wedding subjects.\n"
@@ -356,10 +373,17 @@ async def verify_generated_image_quality(image_url: str, *, is_couple: bool = Fa
         "- If bodies, torsos, shoulders, or limbs are fused/overlapping unnaturally, passed=false with reason body_fusion.\n"
         "- If identities are swapped or subject roles are clearly confused, passed=false with reason identity_swap.\n"
     ) if is_couple else ""
+    identity_rules = (
+        "\nIdentity rules:\n"
+        "- Compare the generated face(s) against the provided source portrait(s).\n"
+        "- If the generated face clearly does not resemble the source identity, passed=false with reason identity_mismatch.\n"
+        "- Do not fail for normal beautification, makeup, lighting, hairstyle, or bridal styling changes.\n"
+    ) if source_images else ""
 
     prompt = (
         "You are a strict QA inspector for AI-generated wedding photos.\n"
         "Check for critical errors that make the result NOT acceptable for a paid product.\n"
+        "Focus especially on: distorted faces, too many fingers, broken hands, abnormal limbs, identity mismatch, unsafe or wrong wedding dress exposure, missing subjects, and severe artifacts.\n"
         "Return strictly valid JSON only with this schema:\n"
         "{\n"
         '  "passed": boolean,\n'
@@ -368,20 +392,27 @@ async def verify_generated_image_quality(image_url: str, *, is_couple: bool = Fa
         "}\n"
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","extra_limbs","bad_hands","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        "- Use bad_hands for malformed hands, too many fingers, missing fingers, or impossible finger geometry.\n"
+        "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
         f"{couple_rules}"
+        f"{identity_rules}"
         "- notes: brief (<= 200 chars)."
     )
+
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for idx, src in enumerate(source_images[:2]):
+        content.append({"type": "text", "text": f"Source portrait {idx + 1}:"})
+        content.append({"type": "image_url", "image_url": {"url": await _coerce_remote_image_input(src)}})
+    content.append({"type": "text", "text": "Generated candidate:"})
+    content.append({"type": "image_url", "image_url": {"url": await _coerce_remote_image_input(image_url)}})
 
     payload = {
         "model": _active_vision_model(),
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ],
+                "content": content,
             }
         ],
         "response_format": {"type": "json_object"},

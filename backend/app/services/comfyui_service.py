@@ -17,6 +17,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.database import async_session_maker
 from app.models.order import Order, OrderStatus
+from app.services.trial_access_service import prepare_delivered_image_urls, is_trial_order
 from app.models.live_portrait_job import LivePortraitJob, LivePortraitStatus
 from app.services.template_service import get_template_by_id
 from app.services.credit_service import add_credits_async, COST_PER_GENERATION, COST_LIVE_PORTRAIT
@@ -1121,8 +1122,10 @@ class ComfyUIService:
                 "body_fusion",
                 "subject_missing",
                 "identity_swap",
+                "identity_mismatch",
                 "extra_limbs",
                 "bad_hands",
+                "dress_exposure_error",
                 "face_distortion",
                 "cropped_face",
                 "headless",
@@ -1283,7 +1286,11 @@ class ComfyUIService:
                 if not output_urls or not primary_image_url:
                     continue
 
-                qa_ok, qa_reasons = await output_passes(primary_image_url, is_couple=is_couple)
+                qa_ok, qa_reasons = await output_passes(
+                    primary_image_url,
+                    is_couple=is_couple,
+                    source_image_urls=[str(url) for url in user_images if url],
+                )
                 if not qa_ok:
                     async with async_session_maker() as db:
                         result = await db.execute(select(Order).where(Order.id == order_uuid))
@@ -1351,7 +1358,11 @@ class ComfyUIService:
                                     order.generation_params = base_params
                                     await db.commit()
 
-                            inpaint_ok, inpaint_reasons = await output_passes(inpaint_urls[0], is_couple=True)
+                            inpaint_ok, inpaint_reasons = await output_passes(
+                                inpaint_urls[0],
+                                is_couple=True,
+                                source_image_urls=[str(url) for url in user_images if url],
+                            )
                             if inpaint_ok:
                                 output_urls = inpaint_urls
                                 output_assets = [{"media_type": "images", "url": u, "filename": ""} for u in inpaint_urls]
@@ -1384,14 +1395,20 @@ class ComfyUIService:
                     order = result.scalar_one_or_none()
                     if order:
                         order.status = OrderStatus.COMPLETED
-                        urls_dict = {f"image_{i+1}": url for i, url in enumerate(delivered_urls)}
-                        # For "enqueue-and-charge" commercial flow, generation output is final deliverable.
-                        order.preview_image_urls = urls_dict
-                        order.final_image_urls = urls_dict
                         base_params = order.generation_params if isinstance(order.generation_params, dict) else {}
+                        preview_urls, final_urls, preview_meta = await prepare_delivered_image_urls(
+                            delivered_urls,
+                            trial_preview=is_trial_order(base_params),
+                        )
+                        order.preview_image_urls = preview_urls
+                        order.final_image_urls = final_urls
                         debug = base_params.get("debug") if isinstance(base_params.get("debug"), dict) else {}
                         debug.update({"comfyui_view_urls": output_urls, "delivery_source": delivered_source})
                         base_params["debug"] = debug
+                        base_params["delivery"] = {
+                            **(base_params.get("delivery") if isinstance(base_params.get("delivery"), dict) else {}),
+                            **preview_meta,
+                        }
                         base_params["qa_last_reasons"] = []
                         base_params["qa_attempt_count"] = attempt + 1
                         base_params["couple_guardrails"] = {

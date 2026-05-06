@@ -81,6 +81,26 @@ class PaymentWebhookTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(service.verify_webhook_signature(b'{"id":"evt_1"}', "bad-signature"))
 
+    def test_creem_event_type_object_payload_is_supported(self) -> None:
+        service = PaymentService()
+        payload = {
+            "id": "evt_1",
+            "eventType": "checkout.completed",
+            "object": {
+                "id": "checkout_1",
+                "request_id": "request-1",
+                "order": {"id": "order_1", "status": "paid"},
+            },
+        }
+
+        checkout = service._extract_checkout_dict(payload)
+
+        self.assertEqual(service._extract_event_type(payload), "checkout.completed")
+        self.assertEqual(service._extract_checkout_id(checkout), "checkout_1")
+        self.assertEqual(checkout["request_id"], "request-1")
+        self.assertEqual(service._extract_payment_id(checkout), "order_1")
+        self.assertEqual(service._normalize_status(checkout), "paid")
+
 
 if __name__ == "__main__":
     unittest.main()

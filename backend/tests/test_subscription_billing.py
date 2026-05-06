@@ -19,8 +19,8 @@ from app.models.subscription_plan import SubscriptionPlan  # noqa: E402
 from app.models.user_subscription import SubscriptionStatus, UserSubscription  # noqa: E402
 from app.models.user_credit import UserCredit  # noqa: E402
 from app.services.credit_service import DEFAULT_CREDITS  # noqa: E402
-from app.services.payment_service import PaymentService  # noqa: E402
-from app.services.subscription_service import SubscriptionService  # noqa: E402
+from app.services.payment_service import PaymentService, settings as payment_settings  # noqa: E402
+from app.services.subscription_service import SubscriptionService, settings as subscription_settings  # noqa: E402
 
 
 MIGRATION_PATH = BACKEND_DIR / "alembic" / "versions" / "20260426_0004_subscription_billing.py"
@@ -196,6 +196,37 @@ class SubscriptionBillingModelTest(unittest.TestCase):
         self.assertEqual(plan.monthly_credits, 80)
         self.assertEqual(current.status, "active")
         self.assertEqual(current.plan_code, "starter_monthly")
+
+    def test_creem_subscription_product_ids_map_to_plan_codes(self) -> None:
+        service = SubscriptionService()
+        old_creator = subscription_settings.creem_subscription_creator_product_id
+        subscription_settings.creem_subscription_creator_product_id = "prod_creator"
+        try:
+            self.assertEqual(service._plan_code_for_product_id("prod_creator"), "creator_monthly")
+            self.assertEqual(service._product_id({"product": {"id": "prod_creator"}}), "prod_creator")
+            self.assertEqual(service._provider_customer_id({"customer": {"id": "cust_1"}}), "cust_1")
+        finally:
+            subscription_settings.creem_subscription_creator_product_id = old_creator
+
+    def test_creem_return_urls_upgrade_local_http_to_https_frontend(self) -> None:
+        old_frontend = payment_settings.frontend_base_url
+        old_provider = payment_settings.payment_provider
+        payment_settings.frontend_base_url = "https://frontend.example.test"
+        payment_settings.payment_provider = "creem"
+        try:
+            local_return_url = "http://127.0.0.1:3000/pages/create/index?from=test"
+
+            self.assertEqual(
+                PaymentService()._safe_return_url(local_return_url),
+                "https://frontend.example.test/pages/create/index?from=test",
+            )
+            self.assertEqual(
+                SubscriptionService()._safe_return_url(local_return_url),
+                "https://frontend.example.test/pages/create/index?from=test",
+            )
+        finally:
+            payment_settings.frontend_base_url = old_frontend
+            payment_settings.payment_provider = old_provider
 
     def test_subscription_router_is_registered(self) -> None:
         routers_module = importlib.import_module("app.routers")

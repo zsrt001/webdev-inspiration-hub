@@ -12,6 +12,10 @@
         {
             "path": "/api/v1/ops/cleanup_expired_assets",
             "schedule": "0 19 * * *"
+        },
+        {
+            "path": "/api/v1/ops/check_alerts",
+            "schedule": "0 * * * *"
         }
     ],
     "rewrites": [
@@ -46,7 +50,7 @@
                 },
                 {
                     "key": "Access-Control-Allow-Headers",
-                    "value": "Content-Type, Authorization"
+        "value": "Content-Type, Authorization, X-Device-Id, X-Visitor-Id, X-Client-Fingerprint"
                 }
             ]
         }

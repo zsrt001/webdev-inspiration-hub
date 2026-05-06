@@ -38,13 +38,22 @@ class PaymentService:
     _ONE_TIME_WEBHOOK_EVENTS = {"checkout.completed", "checkout.succeeded", "checkout.paid", "payment.completed"}
     _SUBSCRIPTION_WEBHOOK_EVENTS = {
         "invoice.paid",
+        "subscription.active",
         "subscription.created",
+        "subscription.update",
         "subscription.updated",
         "subscription.paid",
         "subscription.payment_succeeded",
         "subscription.canceled",
         "subscription.cancelled",
+        "subscription.scheduled_cancel",
         "subscription.past_due",
+        "subscription.expired",
+        "subscription.paused",
+        "subscription.trialing",
+        "subscription.unpaid",
+        "refund.created",
+        "dispute.created",
     }
     _COMPLETED_STATES = {"completed", "paid", "succeeded", "success"}
     _FAILED_STATES = {"failed"}
@@ -131,6 +140,17 @@ class PaymentService:
             return self._default_return_url()
         if parsed.hostname.lower() not in self._allowed_return_hosts():
             return self._default_return_url()
+        if parsed.scheme != "https" and not settings.using_manual_review_payments:
+            default = self._default_return_url()
+            default_parsed = urlparse(default)
+            if default_parsed.scheme == "https" and default_parsed.hostname:
+                return urlunparse(
+                    default_parsed._replace(
+                        path=parsed.path or default_parsed.path,
+                        query=parsed.query,
+                        fragment=parsed.fragment,
+                    )
+                )
         return candidate
 
     def _append_query(self, url: str, **params: str) -> str:
@@ -151,7 +171,7 @@ class PaymentService:
             return {}
         if not isinstance(payload, dict):
             return {}
-        for key in ("checkout", "item", "result"):
+        for key in ("object", "checkout", "item", "result"):
             child = payload.get(key)
             if isinstance(child, dict):
                 return child
@@ -172,7 +192,13 @@ class PaymentService:
         return f"generated:{digest}"
 
     def _extract_event_type(self, payload: dict[str, Any]) -> str:
-        return str(payload.get("type") or payload.get("event") or "").strip().lower()
+        return str(
+            payload.get("eventType")
+            or payload.get("event_type")
+            or payload.get("type")
+            or payload.get("event")
+            or ""
+        ).strip().lower()
 
     def _extract_event_object(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = payload.get("data")
@@ -251,11 +277,24 @@ class PaymentService:
                 text = str(value).strip()
                 if text:
                     return text
+        order = payload.get("order")
+        if isinstance(order, dict):
+            for key in ("transaction", "id", "payment_id", "charge_id"):
+                value = order.get(key)
+                if value is not None:
+                    text = str(value).strip()
+                    if text:
+                        return text
         return None
 
     def _normalize_status(self, payload: dict[str, Any]) -> str:
         for key in ("payment_status", "status"):
             value = payload.get(key)
+            if value is not None:
+                return str(value).strip().lower()
+        order = payload.get("order")
+        if isinstance(order, dict):
+            value = order.get("status")
             if value is not None:
                 return str(value).strip().lower()
         return ""
@@ -459,6 +498,22 @@ class PaymentService:
         }
         await self._add_purchase_credits(db, purchase, checkout_payload)
         await db.flush()
+
+        try:
+            from app.services.email_service import send_payment_confirmation
+            import asyncio
+            user = await db.get(User, purchase.user_id)
+            if user and user.email:
+                pkg = get_package_by_id(purchase.package_id)
+                asyncio.create_task(send_payment_confirmation(
+                    to=user.email,
+                    credits=purchase.credits,
+                    package_name=pkg.get("name", purchase.package_id) if pkg else purchase.package_id,
+                    amount_display=f"${purchase.price_cents / 100:.2f}" if purchase.price_cents else "N/A",
+                ))
+        except Exception as exc:
+            logger.warning("Payment confirmation email failed: %s", exc)
+
         return purchase
 
     async def mark_purchase_terminal(
@@ -703,6 +758,11 @@ class PaymentService:
         except Exception as exc:
             payment_event.error = f"{type(exc).__name__}:{exc}"
             await db.flush()
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(exc)
+            except ImportError:
+                pass
             raise
 
 

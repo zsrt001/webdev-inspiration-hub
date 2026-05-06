@@ -77,6 +77,16 @@ export function getGuestUserId(): string {
     return guestUserId;
 }
 
+export function getClientFingerprint(): string {
+    const guestId = getGuestUserId();
+    let fingerprint = String(uni.getStorageSync('ai_wedding_client_fingerprint') || '').trim();
+    if (!fingerprint) {
+        fingerprint = `${guestId}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+        uni.setStorageSync('ai_wedding_client_fingerprint', fingerprint);
+    }
+    return fingerprint.slice(0, 128);
+}
+
 export async function login(apiBaseUrl?: string): Promise<{ userId: string; token: string }> {
     const loginUrl = resolveLoginUrl(apiBaseUrl);
 
@@ -89,6 +99,10 @@ export async function login(apiBaseUrl?: string): Promise<{ userId: string; toke
         url: loginUrl,
         method: 'POST',
         data: { code: `web_${guestId}` },
+        header: {
+            'X-Visitor-Id': guestId.slice(0, 64),
+            'X-Device-Id': getClientFingerprint(),
+        },
     });
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -110,6 +124,10 @@ export async function login(apiBaseUrl?: string): Promise<{ userId: string; toke
                         url: loginUrl,
                         method: 'POST',
                         data: { code: (loginRes.code || '').trim() || `mp_${fallbackGuestId}` },
+                        header: {
+                            'X-Visitor-Id': fallbackGuestId.slice(0, 64),
+                            'X-Device-Id': getClientFingerprint(),
+                        },
                     });
 
                     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -191,6 +209,7 @@ export default {
     getToken,
     getUserId,
     getAuthProvider,
+    getClientFingerprint,
     isLoggedIn,
     isSupabaseLoggedIn,
     isJwtToken,

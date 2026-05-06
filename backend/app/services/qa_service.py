@@ -35,12 +35,21 @@ async def basic_image_check(image_url: str) -> tuple[bool, list[str], dict[str, 
     return len(reasons) == 0, reasons, metrics
 
 
-async def verify_with_vision(image_url: str, *, is_couple: bool = False) -> tuple[bool, list[str]]:
+async def verify_with_vision(
+    image_url: str,
+    *,
+    is_couple: bool = False,
+    source_image_urls: list[str] | None = None,
+) -> tuple[bool, list[str]]:
     if not llm_service.is_vision_provider_configured():
         if settings.qa_require_vision:
             return False, ["vision_not_configured"]
         return True, []
-    verdict = await llm_service.verify_generated_image_quality(image_url, is_couple=is_couple)
+    verdict = await llm_service.verify_generated_image_quality(
+        image_url,
+        is_couple=is_couple,
+        source_image_urls=source_image_urls,
+    )
     if verdict.get("passed") is True:
         return True, []
     reasons = verdict.get("reasons") or ["vision_fail"]
@@ -56,11 +65,20 @@ async def verify_with_vision(image_url: str, *, is_couple: bool = False) -> tupl
     return False, normalized or ["other"]
 
 
-async def output_passes(image_url: str, *, is_couple: bool = False) -> tuple[bool, list[str]]:
+async def output_passes(
+    image_url: str,
+    *,
+    is_couple: bool = False,
+    source_image_urls: list[str] | None = None,
+) -> tuple[bool, list[str]]:
     passed, reasons, _metrics = await basic_image_check(image_url)
     if not passed:
         return False, reasons
-    vision_ok, vision_reasons = await verify_with_vision(image_url, is_couple=is_couple)
+    vision_ok, vision_reasons = await verify_with_vision(
+        image_url,
+        is_couple=is_couple,
+        source_image_urls=source_image_urls,
+    )
     if not vision_ok:
         combined: list[str] = []
         seen: set[str] = set()

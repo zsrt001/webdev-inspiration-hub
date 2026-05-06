@@ -1,70 +1,143 @@
-import { createClient, type SupabaseClient, type Session } from '@supabase/supabase-js';
+import { API_BASE_URL, isH5Runtime, resolveBackendOrigin } from './apiConfig';
 
-const SUPABASE_URL = String((import.meta as any)?.env?.VITE_SUPABASE_URL || '').trim();
-const SUPABASE_ANON_KEY = String((import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY || '').trim();
+type Session = {
+    access_token: string;
+    user: {
+        id: string;
+        email?: string | null;
+    };
+};
 
-let client: SupabaseClient | null = null;
+type OAuthParams = {
+    accessToken: string;
+    error: string;
+};
+
+function getOAuthParams(): OAuthParams {
+    if (!isH5Runtime()) return { accessToken: '', error: '' };
+
+    const hash = window.location.hash.startsWith('#')
+        ? window.location.hash.slice(1)
+        : window.location.hash;
+    const hashParams = new URLSearchParams(hash);
+    const queryParams = new URLSearchParams(window.location.search);
+
+    return {
+        accessToken: String(hashParams.get('access_token') || queryParams.get('access_token') || '').trim(),
+        error: String(
+            hashParams.get('error_description') ||
+            hashParams.get('error') ||
+            queryParams.get('error_description') ||
+            queryParams.get('error') ||
+            '',
+        ).trim(),
+    };
+}
+
+function clearOAuthParams(): void {
+    if (!isH5Runtime()) return;
+    if (!window.location.hash && !/[?&](access_token|error|error_description)=/.test(window.location.search)) return;
+
+    window.history.replaceState(
+        null,
+        document.title,
+        `${window.location.pathname}${stripOAuthQuery(window.location.search)}`,
+    );
+}
+
+function stripOAuthQuery(search: string): string {
+    if (!search) return '';
+    const params = new URLSearchParams(search);
+    ['access_token', 'expires_at', 'expires_in', 'provider_token', 'refresh_token', 'token_type', 'type', 'error', 'error_description'].forEach((key) => {
+        params.delete(key);
+    });
+    const next = params.toString();
+    return next ? `?${next}` : '';
+}
+
+function decodeJwtPayload(token: string): Record<string, any> {
+    const part = token.split('.')[1] || '';
+    if (!part) return {};
+    const padded = part.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(part.length / 4) * 4, '=');
+    try {
+        return JSON.parse(window.atob(padded));
+    } catch {
+        return {};
+    }
+}
+
+async function exchangeSupabaseAccessToken(accessToken: string): Promise<Session | null> {
+    const response = await uni.request({
+        url: `${API_BASE_URL}/auth/supabase/session`,
+        method: 'POST',
+        data: { access_token: accessToken },
+        header: {
+            'Content-Type': 'application/json',
+        },
+    });
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+        return null;
+    }
+
+    const payload: any = response.data || {};
+    const access_token = String(payload.access_token || payload.token || '').trim();
+    const userId = String(payload.user_id || payload.userId || '').trim();
+    if (!access_token || !userId || access_token.split('.').length !== 3) {
+        return null;
+    }
+
+    const claims = decodeJwtPayload(accessToken);
+    return {
+        access_token,
+        user: {
+            id: userId,
+            email: typeof claims.email === 'string' ? claims.email : null,
+        },
+    };
+}
 
 export function isSupabaseConfigured(): boolean {
-    return !!SUPABASE_URL && !!SUPABASE_ANON_KEY;
+    return isH5Runtime();
 }
 
-export function getSupabaseClient(): SupabaseClient | null {
-    if (!isSupabaseConfigured()) return null;
-    if (!client) {
-        client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-            auth: {
-                persistSession: true,
-                autoRefreshToken: true,
-                detectSessionInUrl: true,
-                flowType: 'pkce',
-            },
-        });
-    }
-    return client;
-}
-
-export async function getCurrentSupabaseSession(): Promise<Session | null> {
-    const supabase = getSupabaseClient();
-    if (!supabase) return null;
-
-    const { data, error } = await supabase.auth.getSession();
-    if (error) return null;
-    if (data.session) return data.session;
-
-    if (typeof window !== 'undefined') {
-        const code = new URLSearchParams(window.location.search).get('code');
-        if (code) {
-            const exchanged = await supabase.auth.exchangeCodeForSession(code);
-            return exchanged.data.session || null;
-        }
-    }
-
+export function getSupabaseClient(): null {
     return null;
 }
 
+export async function getCurrentSupabaseSession(): Promise<Session | null> {
+    const params = getOAuthParams();
+    if (params.error) {
+        clearOAuthParams();
+        return null;
+    }
+
+    if (!params.accessToken) {
+        return null;
+    }
+
+    try {
+        return await exchangeSupabaseAccessToken(params.accessToken);
+    } finally {
+        clearOAuthParams();
+    }
+}
+
 export function getSupabaseRedirectUrl(): string {
-    if (typeof window === 'undefined') return 'http://localhost:3000/';
-    return `${window.location.origin}/`;
+    if (!isH5Runtime()) return 'http://localhost:3000/pages/account/index';
+    return `${window.location.origin}/pages/account/index`;
 }
 
 export async function signInWithGoogle(): Promise<void> {
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-        throw new Error('Supabase is not configured');
+    if (!isH5Runtime()) {
+        throw new Error('Google sign-in is only available in the web app');
     }
-    const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-            redirectTo: getSupabaseRedirectUrl(),
-            scopes: 'email profile',
-        },
-    });
-    if (error) throw error;
+
+    const backendOrigin = resolveBackendOrigin();
+    const startUrl = `${backendOrigin || ''}/api/v1/auth/supabase/google/start?next=${encodeURIComponent('/pages/account/index')}`;
+    window.location.assign(startUrl);
 }
 
 export async function signOutFromSupabase(): Promise<void> {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-    await supabase.auth.signOut();
+    return;
 }

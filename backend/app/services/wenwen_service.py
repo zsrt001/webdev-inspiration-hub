@@ -18,6 +18,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.database import async_session_maker
 from app.models.order import Order, OrderStatus
+from app.services.trial_access_service import prepare_delivered_image_urls, is_trial_order
 from app.models.credit_transaction import CreditTransactionType
 from app.services import llm_service
 from app.services.credit_service import COST_PER_GENERATION, add_credits_async
@@ -33,8 +34,13 @@ settings = get_settings()
 class WenwenService:
     """Best-effort provider for Wenwen's hosted Gemini image models."""
 
+    CIRCUIT_FAILURE_THRESHOLD = 5
+    CIRCUIT_COOLDOWN_SECONDS = 60
+
     def __init__(self) -> None:
         self._runtime_validation_ok = False
+        self._consecutive_failures = 0
+        self._circuit_open_until: float = 0
 
     @staticmethod
     def _base_url() -> str:
@@ -102,12 +108,15 @@ class WenwenService:
 
     async def ping_runtime(self) -> tuple[bool, str]:
         self.validate_runtime_requirements(force=True)
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
             response = await client.get(self._models_url(), headers=self._headers())
         if response.status_code in {200, 404, 405}:
             return True, f"http_{response.status_code}"
         if response.status_code in {401, 403}:
-            raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
+            raise RuntimeError(
+                f"wenwen_auth_failed:{response.status_code} "
+                f"(base_url={self._base_url()}, model={settings.wenwen_image_model})"
+            )
         response.raise_for_status()
         return True, "ok"
 
@@ -131,7 +140,7 @@ class WenwenService:
             return raw
         if not raw.startswith(("http://", "https://")):
             return raw
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, trust_env=False) as client:
             response = await client.get(raw)
             response.raise_for_status()
             content_type = response.headers.get("content-type") or "image/jpeg"
@@ -349,7 +358,7 @@ class WenwenService:
 
     async def _persist_outputs_to_storage(self, output_urls: list[str], order_uuid: uuid.UUID) -> list[str]:
         public_urls: list[str] = []
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, trust_env=False) as client:
             for index, url in enumerate(output_urls):
                 response = await client.get(url)
                 response.raise_for_status()
@@ -441,13 +450,20 @@ class WenwenService:
             if not order:
                 return
             order.status = OrderStatus.COMPLETED
-            urls_dict = {f"image_{index + 1}": url for index, url in enumerate(delivered_urls)}
-            order.preview_image_urls = urls_dict
-            order.final_image_urls = urls_dict
             params = order.generation_params if isinstance(order.generation_params, dict) else {}
+            preview_urls, final_urls, preview_meta = await prepare_delivered_image_urls(
+                delivered_urls,
+                trial_preview=is_trial_order(params),
+            )
+            order.preview_image_urls = preview_urls
+            order.final_image_urls = final_urls
             debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
             debug["wenwen_output_urls"] = provider_urls
             params["debug"] = debug
+            params["delivery"] = {
+                **(params.get("delivery") if isinstance(params.get("delivery"), dict) else {}),
+                **preview_meta,
+            }
             params["qa_last_reasons"] = []
             params["qa_attempt_count"] = qa_attempt_count
             params["couple_guardrails"] = {
@@ -507,6 +523,37 @@ class WenwenService:
                 order.generation_params = params
                 await db.commit()
 
+    async def _record_qa_failure(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        attempt: int,
+        reasons: list[str],
+        candidate_url: str,
+    ) -> None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return
+            params = order.generation_params if isinstance(order.generation_params, dict) else {}
+            debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
+            qa_history = debug.get("qa_history") if isinstance(debug.get("qa_history"), list) else []
+            qa_history.append(
+                {
+                    "attempt": int(attempt),
+                    "reasons": list(reasons),
+                    "candidate_url": candidate_url,
+                    "engine": "wenwen",
+                }
+            )
+            debug["qa_history"] = qa_history[-8:]
+            params["debug"] = debug
+            params["qa_last_reasons"] = list(reasons)
+            params["qa_attempt_count"] = int(attempt)
+            order.generation_params = params
+            await db.commit()
+
     async def generate_photo(
         self,
         order_id: str,
@@ -524,6 +571,10 @@ class WenwenService:
     ) -> None:
         order_uuid = uuid.UUID(str(order_id))
         try:
+            if time.monotonic() < self._circuit_open_until:
+                raise RuntimeError(
+                    f"wenwen_circuit_open: provider unavailable, retry after {int(self._circuit_open_until - time.monotonic())}s"
+                )
             self.validate_runtime_requirements()
             template = get_template_by_id(template_id)
             if not template:
@@ -542,54 +593,117 @@ class WenwenService:
                 couple_flow=couple_flow,
             )
 
-            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-                response = await client.post(self._native_generation_url(), json=native_payload, headers=self._headers())
-                if response.status_code in {401, 403}:
-                    raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
-                if response.status_code in {402, 429}:
-                    raise RuntimeError(f"wenwen_quota_rejected:{response.status_code}:{response.text[:200]}")
-                if response.status_code in {400, 422, 500, 503}:
-                    lowered = response.text.lower()
-                    if "model_not_found" in lowered or "no available channel" in lowered or "not supported model for image generation" in lowered:
-                        raise RuntimeError(
-                            f"wenwen_model_unavailable:{settings.wenwen_image_model}:{response.status_code}:{response.text[:240]}"
+            max_retries = max(0, settings.wenwen_max_retries)
+            is_couple = bool(subject_count and int(subject_count) >= 2)
+            delivered_urls: list[str] = []
+            for attempt in range(1 + max_retries):
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
+                        follow_redirects=True,
+                        trust_env=False,
+                    ) as client:
+                        response = await client.post(
+                            self._native_generation_url(), json=native_payload, headers=self._headers(),
                         )
-                response.raise_for_status()
-                submission = response.json()
-                task_id = self._extract_task_id(submission) or f"inline-{order_id}"
+                    if response.status_code in {401, 403}:
+                        raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
+                    if response.status_code in {402, 429}:
+                        raise RuntimeError(f"wenwen_quota_rejected:{response.status_code}:{response.text[:200]}")
+                    if response.status_code in {400, 422, 500, 503}:
+                        lowered = response.text.lower()
+                        if "model_not_found" in lowered or "no available channel" in lowered or "not supported model for image generation" in lowered:
+                            raise RuntimeError(
+                                f"wenwen_model_unavailable:{settings.wenwen_image_model}:{response.status_code}:{response.text[:240]}"
+                            )
+                        if response.status_code >= 500 and attempt < max_retries:
+                            logger.warning("Wenwen 5xx (attempt %d/%d): %s", attempt + 1, 1 + max_retries, response.status_code)
+                            await asyncio.sleep(min(2 ** attempt, 8))
+                            continue
+                    response.raise_for_status()
 
-                await self._update_order_generating(
-                    order_uuid,
-                    task_id=task_id,
-                    payload=native_payload,
-                    prompt_text=prompt_text,
-                    negative_prompt=negative_prompt,
-                )
+                    submission = response.json()
+                    task_id = self._extract_task_id(submission) or f"inline-{order_id}-{attempt + 1}"
 
-                content = ((submission.get("candidates") or [{}])[0] or {}).get("content") or {}
-                parts = content.get("parts") or []
-                delivered_urls = await self._persist_inline_outputs_to_storage(parts, order_uuid)
-                if not delivered_urls:
-                    raise RuntimeError("wenwen_outputs_missing")
+                    await self._update_order_generating(
+                        order_uuid,
+                        task_id=task_id,
+                        payload=native_payload,
+                        prompt_text=prompt_text,
+                        negative_prompt=negative_prompt,
+                    )
 
-                primary_image_url = delivered_urls[0]
-                qa_ok, qa_reasons = await output_passes(
-                    primary_image_url,
-                    is_couple=bool(subject_count and int(subject_count) >= 2),
-                )
-                if not qa_ok:
-                    raise ValueError(f"QA failed: {','.join(qa_reasons)}")
-                await self._complete_order(
-                    order_uuid,
-                    delivered_urls=delivered_urls,
-                    provider_urls=[],
-                    qa_attempt_count=1,
-                    is_couple=bool(subject_count and int(subject_count) >= 2),
-                    subject_count=subject_count,
-                    couple_flow=couple_flow,
-                )
+                    content = ((submission.get("candidates") or [{}])[0] or {}).get("content") or {}
+                    parts = content.get("parts") or []
+                    delivered_urls = await self._persist_inline_outputs_to_storage(parts, order_uuid)
+                    if not delivered_urls:
+                        raise RuntimeError("wenwen_outputs_missing")
+
+                    primary_image_url = delivered_urls[0]
+                    qa_ok, qa_reasons = await output_passes(
+                        primary_image_url,
+                        is_couple=is_couple,
+                        source_image_urls=[str(url) for url in user_images if url],
+                    )
+                    if not qa_ok:
+                        await self._record_qa_failure(
+                            order_uuid,
+                            attempt=attempt + 1,
+                            reasons=qa_reasons,
+                            candidate_url=primary_image_url,
+                        )
+                        if attempt < max_retries:
+                            logger.warning("Wenwen QA failed; regenerating (attempt %d/%d): %s", attempt + 1, 1 + max_retries, qa_reasons)
+                            continue
+                        raise ValueError(f"QA failed: {','.join(qa_reasons)}")
+
+                    await self._complete_order(
+                        order_uuid,
+                        delivered_urls=delivered_urls,
+                        provider_urls=[],
+                        qa_attempt_count=attempt + 1,
+                        is_couple=is_couple,
+                        subject_count=subject_count,
+                        couple_flow=couple_flow,
+                    )
+                    break
+                except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                    if attempt < max_retries:
+                        logger.warning("Wenwen transient error (attempt %d/%d): %s", attempt + 1, 1 + max_retries, exc)
+                        await asyncio.sleep(min(2 ** attempt, 8))
+                        continue
+                    raise
+            else:
+                raise RuntimeError("wenwen_generation_exhausted")
+
+            try:
+                from app.services.email_service import send_order_completed
+                async with async_session_maker() as db:
+                    order = (await db.execute(select(Order).where(Order.id == order_uuid))).scalar_one_or_none()
+                    if order and order.user_id:
+                        from app.models.user import User
+                        user = await db.get(User, order.user_id)
+                        if user and user.email:
+                            preview = (order.preview_image_urls or {}).get("image_1")
+                            asyncio.create_task(send_order_completed(
+                                to=user.email, order_id=str(order.id), preview_url=preview,
+                            ))
+            except Exception as mail_exc:
+                logger.debug("Order completion email skipped: %s", mail_exc)
+
+            self._consecutive_failures = 0
+            self._circuit_open_until = 0
         except Exception as exc:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.CIRCUIT_FAILURE_THRESHOLD:
+                self._circuit_open_until = time.monotonic() + self.CIRCUIT_COOLDOWN_SECONDS
+                logger.error("Wenwen circuit breaker OPEN after %d consecutive failures", self._consecutive_failures)
             logger.error("Wenwen generation failed: %s", exc)
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(exc)
+            except ImportError:
+                pass
             await self._fail_order(order_uuid, str(exc), self._classify_error(exc))
 
     async def generate_live_portrait(self, *args: Any, **kwargs: Any) -> None:

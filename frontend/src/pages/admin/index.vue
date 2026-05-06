@@ -10,16 +10,6 @@
       </view>
     </view>
 
-    <view class="admin-token-bar">
-      <input
-        v-model="adminTokenInput"
-        class="token-input"
-        :placeholder="tx('tokenPlaceholder')"
-        :password="true"
-      />
-      <button class="token-save" @tap="saveAdminToken">{{ tx('apply') }}</button>
-    </view>
-
     <view v-if="loading" class="loading-state">
       <text class="loading-icon">...</text>
       <text class="loading-text">{{ tx('loading') }}</text>
@@ -368,7 +358,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { get, post, put, resolveApiUrl } from '../../utils/api';
+import { get, post, put } from '../../utils/api';
 import { useI18nStore } from '../../stores/i18n';
 
 interface DashboardStats {
@@ -474,8 +464,6 @@ type TextKey =
   | 'headerTitle'
   | 'headerSubtitle'
   | 'adminMode'
-  | 'tokenPlaceholder'
-  | 'apply'
   | 'loading'
   | 'totalOrders'
   | 'revenueCredits'
@@ -537,9 +525,6 @@ type TextKey =
   | 'configSaveFailed'
   | 'configJsonInvalid'
   | 'footer'
-  | 'tokenApplied'
-  | 'tokenCleared'
-  | 'tokenSaveFailed'
   | 'dashboardLoadFailed'
   | 'exportFailed'
   | 'enterUserId'
@@ -553,8 +538,6 @@ const textMap: Record<TextKey, { zh: string; en: string }> = {
   headerTitle: { zh: '\u8fd0\u8425\u770b\u677f', en: 'Boss Dashboard' },
   headerSubtitle: { zh: '\u7ba1\u7406\u63a7\u5236\u4e2d\u5fc3', en: 'Admin Command Center' },
   adminMode: { zh: '\u7ba1\u7406\u6a21\u5f0f', en: 'ADMIN MODE' },
-  tokenPlaceholder: { zh: '\u7ba1\u7406\u5458\u4ee4\u724c\uff08\u53ef\u9009\uff09', en: 'Admin token (optional)' },
-  apply: { zh: '\u5e94\u7528', en: 'Apply' },
   loading: { zh: '\u52a0\u8f7d\u770b\u677f\u4e2d...', en: 'Loading dashboard...' },
   totalOrders: { zh: '\u8ba2\u5355\u603b\u6570', en: 'Total Orders' },
   revenueCredits: { zh: '\u8425\u6536\uff08\u79ef\u5206\uff09', en: 'Revenue (Credits)' },
@@ -616,9 +599,6 @@ const textMap: Record<TextKey, { zh: string; en: string }> = {
   configSaveFailed: { zh: '\u4fdd\u5b58\u914d\u7f6e\u5931\u8d25', en: 'Failed to save config' },
   configJsonInvalid: { zh: 'JSON \u683c\u5f0f\u65e0\u6548', en: 'Invalid JSON payload' },
   footer: { zh: 'AI \u5a5a\u7eb1\u5de5\u4f5c\u5ba4\u7ba1\u7406\u7aef \u2022 v1.0.0', en: 'AI Wedding Studio Admin \u2022 v1.0.0' },
-  tokenApplied: { zh: '\u4ee4\u724c\u5df2\u5e94\u7528', en: 'Token applied' },
-  tokenCleared: { zh: '\u4ee4\u724c\u5df2\u6e05\u9664', en: 'Token cleared' },
-  tokenSaveFailed: { zh: '\u4fdd\u5b58\u4ee4\u724c\u5931\u8d25', en: 'Failed to save token' },
   dashboardLoadFailed: { zh: '\u52a0\u8f7d\u770b\u677f\u5931\u8d25', en: 'Failed to load dashboard' },
   exportFailed: { zh: '\u5bfc\u51fa\u5931\u8d25', en: 'Export failed' },
   enterUserId: { zh: '\u8bf7\u8f93\u5165\u7528\u6237 ID', en: 'Enter user id' },
@@ -655,7 +635,6 @@ const leadFilters = ref({
   templateId: '',
 });
 
-const adminTokenInput = ref('');
 const targetUserId = ref('');
 const creditAmount = ref(100);
 const granting = ref(false);
@@ -674,38 +653,6 @@ const crmPreviewText = ref('');
 const crmHistoryText = ref('');
 const crmLoading = ref(false);
 const crmPushing = ref(false);
-
-const loadAdminToken = () => {
-  try {
-    const raw = uni.getStorageSync('ADMIN_TOKEN');
-    adminTokenInput.value = typeof raw === 'string' ? raw : String(raw || '');
-  } catch (e) {
-    adminTokenInput.value = '';
-  }
-};
-
-const saveAdminToken = () => {
-  const value = (adminTokenInput.value || '').trim();
-  try {
-    if (value) {
-      uni.setStorageSync('ADMIN_TOKEN', value);
-      uni.showToast({ title: tx('tokenApplied'), icon: 'success' });
-    } else {
-      uni.removeStorageSync('ADMIN_TOKEN');
-      uni.showToast({ title: tx('tokenCleared'), icon: 'none' });
-    }
-  } catch (e) {
-    uni.showToast({ title: tx('tokenSaveFailed'), icon: 'none' });
-  }
-  fetchDashboard();
-  fetchLeads();
-  fetchOpsConfig();
-  fetchAnalyticsOverview();
-  fetchOpsOverview();
-  fetchOpsAlerts();
-  fetchAuditLogs();
-  fetchCrmPreview();
-};
 
 const fetchDashboard = async () => {
   loading.value = true;
@@ -890,28 +837,24 @@ const pushCrmBatch = async () => {
 
 const exportLeads = async () => {
   const suffix = buildLeadFilterQuery();
-  const baseUrl = resolveApiUrl(`/leads/export.csv${suffix}`);
-  const token = (() => {
-    try {
-      const raw = uni.getStorageSync('ADMIN_TOKEN');
-      return typeof raw === 'string' ? raw.trim() : '';
-    } catch (e) {
-      return '';
-    }
-  })();
-  const url = token
-    ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}admin_token=${encodeURIComponent(token)}`
-    : baseUrl;
-  // #ifdef H5
   try {
-    window.open(url, '_blank');
+    const csv = await get<string>(`/leads/export.csv${suffix}`, {
+      showLoading: false,
+      showError: false,
+    } as any);
+    // #ifdef H5
+    const blob = new Blob([csv || ''], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'leads.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
     return;
-  } catch (e) {
-    // fallthrough
-  }
-  // #endif
-  try {
-    uni.downloadFile({ url });
+    // #endif
+    uni.showToast({ title: tx('exportFailed'), icon: 'none' });
   } catch (e) {
     uni.showToast({ title: tx('exportFailed'), icon: 'none' });
   }
@@ -977,7 +920,6 @@ const maskPhone = (phone: string): string => {
 };
 
 onMounted(() => {
-  loadAdminToken();
   fetchDashboard();
   fetchLeads();
   fetchOpsConfig();
@@ -1003,24 +945,6 @@ onMounted(() => {
   align-items: center;
   padding: 40px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.admin-token-bar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  padding: 18px 40px 0;
-}
-
-.token-input {
-  flex: 1;
-  height: 40px;
-  padding: 0 14px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #fff;
-  font-size: 12px;
 }
 
 .token-save {

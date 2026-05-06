@@ -76,8 +76,7 @@ https://*.vercel.app/**
 前端 `frontend/.env.local`：
 
 ```env
-VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-VITE_SUPABASE_ANON_KEY=your-supabase-anon-public-key
+Frontend Supabase VITE variables are intentionally not used. Keep API keys on the backend.
 ```
 
 后端 `backend/.env`：

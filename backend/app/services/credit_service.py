@@ -13,13 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
 from app.models.user_credit import UserCredit
 from app.services.ops_config_service import get_credit_package_overrides
+from app.services.trial_access_service import _trial_welcome_credits
 
 # Data file fallback for legacy/dev paths only.
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 CREDITS_FILE = os.path.join(DATA_DIR, "credits.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-DEFAULT_CREDITS = 10
+DEFAULT_CREDITS = _trial_welcome_credits()
 COST_SINGLE_GENERATION = 2
 COST_DIRECTOR_GENERATION = 3
 COST_COUPLE_LOCAL_GENERATION = 3

@@ -19,6 +19,20 @@ from app.routers import api_router
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# --- Sentry SDK (production only) ---
+if not settings.debug and settings.sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            traces_sample_rate=0.1,
+            environment="production",
+            send_default_pii=False,
+        )
+        logger.info("Sentry SDK initialized")
+    except Exception as exc:
+        logger.warning("Sentry init failed: %s", exc)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -2,21 +2,34 @@
 
 import hashlib
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from jose import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.rate_limit import InMemoryRateLimiter
+from app.core.supabase_auth import (
+    SupabaseAuthError,
+    SupabaseUserClaims,
+    build_supabase_openid,
+    verify_supabase_token,
+)
 from app.models.user import User
-from app.schemas.auth import LoginRequest, LoginResponse
+from app.schemas.auth import LoginRequest, LoginResponse, SupabaseSessionRequest
 
 router = APIRouter()
 settings = get_settings()
 
 # JWT configuration
 ALGORITHM = "HS256"
+NEW_ACCOUNT_IP_LIMITER = InMemoryRateLimiter(limit=settings.new_account_ip_limit_per_hour, window_seconds=3600)
+NEW_ACCOUNT_DEVICE_LIMITER = InMemoryRateLimiter(limit=settings.new_account_device_limit_per_hour, window_seconds=3600)
+DEFAULT_OAUTH_RETURN_PATH = "/pages/account/index"
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -36,6 +49,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: LoginRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
     """
@@ -56,10 +70,12 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user:
+        _enforce_new_account_risk_limits(http_request)
         user = User(openid=openid)
         db.add(user)
         await db.flush()
         await db.refresh(user)
+    user.last_login_at = datetime.now(timezone.utc)
 
     # Create JWT token
     access_token = create_access_token(
@@ -72,3 +88,152 @@ async def login(
         openid=openid,
         user_id=user.id,
     )
+
+
+@router.get("/supabase/google/start")
+async def start_supabase_google_login(next: str | None = None) -> RedirectResponse:
+    """Redirect the browser into Supabase's Google OAuth flow."""
+    if not settings.supabase_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Supabase Auth is not configured",
+        )
+
+    redirect_to = _oauth_return_url(next)
+    query = urlencode(
+        {
+            "provider": "google",
+            "redirect_to": redirect_to,
+        }
+    )
+    authorize_url = f"{settings.supabase_url.rstrip('/')}/auth/v1/authorize?{query}"
+    return RedirectResponse(authorize_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+@router.post("/supabase/session", response_model=LoginResponse)
+async def exchange_supabase_session(
+    request: SupabaseSessionRequest,
+    db: AsyncSession = Depends(get_db),
+) -> LoginResponse:
+    """Exchange a Supabase OAuth access token for this app's JWT session."""
+    try:
+        claims = await verify_supabase_token(request.access_token)
+    except SupabaseAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Supabase session",
+        ) from exc
+
+    user = await _get_or_create_supabase_user(db, claims)
+    await db.refresh(user)
+
+    access_token = create_access_token(
+        data={
+            "sub": str(user.id),
+            "openid": user.openid,
+            "auth_provider": "supabase",
+            "email": user.email,
+        }
+    )
+    return LoginResponse(
+        access_token=access_token,
+        token_type="bearer",
+        openid=user.openid,
+        user_id=user.id,
+    )
+
+
+def _enforce_new_account_risk_limits(request: Request) -> None:
+    client_ip = _client_ip(request)
+    device_key = _device_key(request)
+    if NEW_ACCOUNT_IP_LIMITER.is_limited(client_ip) or NEW_ACCOUNT_DEVICE_LIMITER.is_limited(device_key):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "new_account_rate_limited",
+                "message": "Too many new accounts from this device or network. Please try again later.",
+            },
+        )
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip() or "unknown"
+    return request.client.host if request.client else "unknown"
+
+
+def _device_key(request: Request) -> str:
+    explicit = (
+        request.headers.get("x-device-id")
+        or request.headers.get("x-visitor-id")
+        or request.headers.get("x-client-fingerprint")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit[:128]
+    user_agent = (request.headers.get("user-agent") or "unknown")[:256]
+    return hashlib.sha256(f"{_client_ip(request)}:{user_agent}".encode("utf-8")).hexdigest()
+
+
+def _oauth_return_url(next_path: str | None) -> str:
+    path = (next_path or DEFAULT_OAUTH_RETURN_PATH).strip()
+    if not path.startswith("/") or path.startswith("//"):
+        path = DEFAULT_OAUTH_RETURN_PATH
+    if path.startswith("/api/") or path.startswith("/auth/"):
+        path = DEFAULT_OAUTH_RETURN_PATH
+
+    base = settings.effective_frontend_base_url.rstrip("/")
+    return f"{base}{path}"
+
+
+async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserClaims) -> User:
+    result = await db.execute(
+        select(User).where(
+            User.auth_provider == "supabase",
+            User.auth_subject == claims.subject,
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        openid = build_supabase_openid(claims.subject)
+        result = await db.execute(select(User).where(User.openid == openid))
+        user = result.scalar_one_or_none()
+
+    if user is None:
+        _enforce_new_account_risk_limits_from_claims(claims)
+        user = User(
+            openid=build_supabase_openid(claims.subject),
+            auth_provider="supabase",
+            auth_subject=claims.subject,
+        )
+        db.add(user)
+
+    user.auth_provider = "supabase"
+    user.auth_subject = claims.subject
+    user.email = claims.email
+    if claims.nickname:
+        user.nickname = claims.nickname[:64]
+    if claims.avatar_url:
+        user.avatar_url = claims.avatar_url[:512]
+    if not user.role:
+        user.role = "user"
+    if not user.status:
+        user.status = "active"
+    user.last_login_at = datetime.now(timezone.utc)
+    await db.flush()
+    return user
+
+
+def _enforce_new_account_risk_limits_from_claims(claims: SupabaseUserClaims) -> None:
+    identity = claims.email or claims.subject
+    key = f"supabase:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}"
+    if NEW_ACCOUNT_DEVICE_LIMITER.is_limited(key):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "new_account_rate_limited",
+                "message": "Too many new accounts from this identity. Please try again later.",
+            },
+        )

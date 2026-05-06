@@ -1,4 +1,4 @@
-import { ensureSession, getGuestUserId, getToken, isJwtToken, logout } from './auth';
+import { ensureSession, getClientFingerprint, getGuestUserId, getToken, isJwtToken, logout } from './auth';
 import { API_BASE_URL, isH5Runtime, resolveBackendOrigin } from './apiConfig';
 
 function getRuntimeLocale(): 'zh' | 'en' {
@@ -79,18 +79,6 @@ async function rebootstrapSession(): Promise<boolean> {
     }
 }
 
-function getAdminToken(): string | null {
-    try {
-        const raw = uni.getStorageSync('ADMIN_TOKEN');
-        if (typeof raw === 'string' && raw.trim()) {
-            return raw.trim();
-        }
-    } catch {
-        // ignore
-    }
-    return null;
-}
-
 function shouldBootstrapSession(path: string): boolean {
     const publicPrefixes = ['/templates', '/ops/public_config', '/analytics/click', '/health'];
     return !publicPrefixes.some((prefix) => path.startsWith(prefix));
@@ -117,20 +105,9 @@ async function buildHeaders(path: string): Promise<Record<string, string>> {
     }
 
     const visitorIdentity = getGuestUserId().trim();
+    headers['X-Device-Id'] = getClientFingerprint();
     if (!hasJwt && visitorIdentity) {
         headers['X-Visitor-Id'] = visitorIdentity.slice(0, 64);
-    }
-
-    const adminToken = getAdminToken();
-    if (adminToken) {
-        const needsAdmin =
-            path.startsWith('/admin') ||
-            path.startsWith('/leads') ||
-            path.startsWith('/analytics/stats') ||
-            path.startsWith('/upload/delete');
-        if (needsAdmin) {
-            headers['X-Admin-Token'] = adminToken;
-        }
     }
 
     return headers;

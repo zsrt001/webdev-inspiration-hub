@@ -49,6 +49,9 @@
           </template>
           <view v-if="!orderStore.isCompleted" class="exhibition-tag draft">{{ tr('预览草稿', 'STUDIO 3.0 DRAFT') }}</view>
           <view v-else class="exhibition-tag hd">{{ tr('高清成片', 'HD MASTERPIECE') }}</view>
+          <view v-if="downloadLocked" class="artistic-watermark">
+            <text v-for="n in 9" :key="n" class="watermark-item">AI WEDDING PREVIEW</text>
+          </view>
         </view>
         
         <view class="folio-credenza">
@@ -94,10 +97,21 @@
         <view class="preview-side-col">
           <!-- Exhibition Actions -->
           <view v-if="orderStore.isCompleted" class="exhibition-actions">
-            <button class="btn btn-primary e-action-btn primary shadow-glow" @tap="downloadHD">
+            <button v-if="canDownload" class="btn btn-primary e-action-btn primary shadow-glow" @tap="downloadHD">
               {{ tr('下载高清图', 'DEVELOP HD PRINT') }}
             </button>
-            <button class="btn btn-outline e-action-btn secondary" @tap="openPosterModal">
+            <button v-else class="btn btn-primary e-action-btn primary shadow-glow" @tap="showPaymentModal = true">
+              {{ tr('充值解锁高清下载', 'Unlock HD Download') }}
+            </button>
+            <button
+              v-for="variant in downloadVariants"
+              :key="variant.key"
+              class="btn btn-outline e-action-btn secondary variant-btn"
+              @tap="downloadImageUrl(variant.url, variant.filename)"
+            >
+              {{ variant.label }}
+            </button>
+            <button class="btn btn-outline e-action-btn secondary" :disabled="downloadLocked" @tap="openPosterModal">
               {{ tr('分享海报', 'INVITE POSTER') }}
             </button>
             <button v-if="livePortraitEnabled" class="btn btn-outline e-action-btn secondary" :disabled="livePortraitBusy" @tap="openLivePortrait">
@@ -258,6 +272,9 @@ const progressStep = ref(1);
 
 const onPurchaseComplete = () => {
   navBarRef.value?.refreshBalance();
+  if (orderStore.currentOrder?.id) {
+    orderStore.fetchOrder(orderStore.currentOrder.id);
+  }
 };
 const currentTextIndex = ref(0);
 const revealed = ref(false);
@@ -368,6 +385,26 @@ const hdImageUrl = computed(() => {
 });
 
 const afterImageUrl = computed(() => (orderStore.isCompleted ? hdImageUrl.value : previewImageUrl.value));
+const canDownload = computed(() => orderStore.currentOrder?.can_download === true);
+const downloadLocked = computed(() => orderStore.currentOrder?.download_locked !== false || !canDownload.value);
+const downloadVariants = computed(() => {
+  if (!canDownload.value) return [];
+  const urls = orderStore.currentOrder?.final_image_urls || {};
+  const labels: Record<string, string> = {
+    portrait_2x3: tr('2:3 竖图', '2:3 Portrait'),
+    xhs_3x4: tr('3:4 小红书', '3:4 Social'),
+    wallpaper_9x16: tr('9:16 壁纸', '9:16 Wallpaper'),
+  };
+  return Object.entries(urls)
+    .filter(([key]) => key !== 'image_1')
+    .map(([key, url]) => {
+      const matched = Object.keys(labels).find((suffix) => key.includes(suffix));
+      return matched
+        ? { key, url: String(url), label: labels[matched], filename: `ai-wedding-${matched}.jpg` }
+        : null;
+    })
+    .filter(Boolean) as { key: string; url: string; label: string; filename: string }[];
+});
 const hasRenderableOutput = computed(() => {
   const preview = orderStore.currentOrder?.preview_image_urls;
   const final = orderStore.currentOrder?.final_image_urls;
@@ -447,8 +484,10 @@ const qaReasonLabel = (reason?: string | null) => {
     case 'body_fusion': return tr('肢体融合', 'Body fusion');
     case 'subject_missing': return tr('主体缺失', 'Subject missing');
     case 'identity_swap': return tr('身份错位', 'Identity swap');
+    case 'identity_mismatch': return tr('脸不像本人', 'Identity mismatch');
     case 'extra_limbs': return tr('多余肢体', 'Extra limbs');
     case 'bad_hands': return tr('手部异常', 'Bad hands');
+    case 'dress_exposure_error': return tr('婚纱露出异常', 'Dress exposure issue');
     case 'cropped_face': return tr('裁头', 'Cropped face');
     case 'headless': return tr('无头', 'Headless');
     case 'face_distortion': return tr('脸部变形', 'Face distortion');
@@ -580,7 +619,7 @@ const failureActionHints = computed(() => {
   const reasons = Array.isArray(orderStore.currentOrder?.qa_last_reasons)
     ? orderStore.currentOrder?.qa_last_reasons || []
     : [];
-  if (reasons.includes('fused_faces') || reasons.includes('identity_swap')) {
+  if (reasons.includes('fused_faces') || reasons.includes('identity_swap') || reasons.includes('identity_mismatch')) {
     advice.push(tr('双人请更换差异更明显的正脸自拍', 'Use two more distinct front-facing selfies for couple mode'));
   }
   if (reasons.includes('body_fusion') || reasons.includes('extra_limbs')) {
@@ -591,6 +630,9 @@ const failureActionHints = computed(() => {
   }
   if (reasons.includes('bad_hands')) {
     advice.push(tr('上传更自然的站姿，手部尽量自然下垂', 'Use a more natural standing pose with visible hands'));
+  }
+  if (reasons.includes('dress_exposure_error')) {
+    advice.push(tr('请选择更保守的婚纱模板或换一张遮挡更少的清晰照片', 'Choose a safer dress style or upload a clearer, less occluded photo'));
   }
   return advice;
 });
@@ -842,8 +884,12 @@ const exportPosterForH5 = async (imageUrl: string, qrUrl: string) => {
 };
 // #endif
 
-const downloadHD = async () => {
-  const url = hdImageUrl.value || afterImageUrl.value;
+const downloadImageUrl = async (url: string, fallbackName = 'ai-wedding-studio-hd.jpg') => {
+  if (!canDownload.value) {
+    showPaymentModal.value = true;
+    uni.showToast({ title: tr('请先充值解锁高清下载', 'Top up to unlock HD download'), icon: 'none' });
+    return;
+  }
   if (!url) {
     uni.showToast({ title: tr('暂无可用图片', 'No image available'), icon: 'none' });
     return;
@@ -856,7 +902,7 @@ const downloadHD = async () => {
     if (!doc) throw new Error('document_unavailable');
     const link = doc.createElement('a');
     link.href = url;
-    link.download = guessFileName(url);
+    link.download = guessFileName(url, fallbackName);
     link.target = '_blank';
     link.rel = 'noopener';
     doc.body.appendChild(link);
@@ -897,6 +943,10 @@ const downloadHD = async () => {
     uni.hideLoading();
   }
   // #endif
+};
+
+const downloadHD = async () => {
+  await downloadImageUrl(hdImageUrl.value || afterImageUrl.value, 'ai-wedding-studio-hd.jpg');
 };
 
 const openLivePortraitAssetUrl = (url: string) => {
@@ -1109,6 +1159,11 @@ const openLivePortrait = async () => {
 };
 
 const openPosterModal = async () => {
+  if (!canDownload.value) {
+    showPaymentModal.value = true;
+    uni.showToast({ title: tr('请先充值解锁高清下载', 'Top up to unlock HD download'), icon: 'none' });
+    return;
+  }
   if (!hdImageUrl.value) {
     uni.showToast({ title: tr('暂无可用图片', 'No image available'), icon: 'none' });
     return;
