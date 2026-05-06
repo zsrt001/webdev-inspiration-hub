@@ -124,8 +124,8 @@ def validate_commercial_config_values() -> list[str]:
         if not settings.aws_s3_bucket:
             errors.append("AWS_S3_BUCKET is missing")
     if provider == "vercel":
-        if not settings.vercel_blob_token_effective:
-            errors.append("VERCEL_BLOB_TOKEN is missing")
+        if not settings.blob_token_effective:
+            errors.append("BLOB_READ_WRITE_TOKEN is missing")
 
     frontend_base_url_error = _validate_public_base_url(
         "FRONTEND_BASE_URL",
@@ -214,8 +214,8 @@ def _check_storage_config() -> tuple[bool, str]:
         if not settings.aws_access_key_id or not settings.aws_secret_access_key:
             raise RuntimeError("missing aws credentials")
         return True, "ok"
-    if not settings.vercel_blob_token_effective:
-        raise RuntimeError("missing vercel_blob_token")
+    if not settings.blob_token_effective:
+        raise RuntimeError("missing blob_read_write_token")
     return True, "ok"
 
 

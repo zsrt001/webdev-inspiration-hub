@@ -5,7 +5,6 @@ import uuid
 from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import urlparse, unquote
-import httpx
 
 from app.core.config import get_settings
 
@@ -140,7 +139,7 @@ class StorageService:
         content_type: str,
         folder: str,
     ) -> str:
-        token = settings.vercel_blob_token_effective
+        token = settings.blob_token_effective
         if not token:
             raise Exception("Missing Vercel Blob token")
 
@@ -164,27 +163,8 @@ class StorageService:
                 url = result.get("url")
             if isinstance(url, str) and url.strip():
                 return url.strip()
-        except ImportError:
-            pass
-
-        if not settings.vercel_blob_upload_url_base or not settings.vercel_blob_public_url_base:
-            raise Exception("Vercel Blob SDK unavailable and legacy base URLs are missing")
-
-        upload_url = f"{settings.vercel_blob_upload_url_base.rstrip('/')}/{unique_key}"
-        with httpx.Client(timeout=30.0) as client:
-            response = client.put(
-                upload_url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": content_type,
-                },
-                content=data,
-            )
-
-        if response.status_code < 200 or response.status_code >= 300:
-            raise Exception(f"Vercel Blob upload failed: {response.status_code} {response.text}")
-
-        return f"{settings.vercel_blob_public_url_base.rstrip('/')}/{unique_key}"
+        except ImportError as exc:
+            raise Exception("Vercel Blob SDK unavailable") from exc
 
     def delete_file(self, file_url: str) -> bool:
         """
@@ -239,7 +219,7 @@ class StorageService:
             return False
 
     def _delete_vercel(self, file_url: str) -> bool:
-        token = settings.vercel_blob_token_effective
+        token = settings.blob_token_effective
         if not token:
             return False
         try:
@@ -249,19 +229,7 @@ class StorageService:
                 vercel_delete(file_url, token=token)
                 return True
             except ImportError:
-                pass
-
-            if not settings.vercel_blob_upload_url_base or not settings.vercel_blob_public_url_base:
                 return False
-            base = settings.vercel_blob_public_url_base.rstrip("/")
-            key = file_url.replace(f"{base}/", "")
-            delete_url = f"{settings.vercel_blob_upload_url_base.rstrip('/')}/{key}"
-            with httpx.Client(timeout=15.0) as client:
-                response = client.delete(
-                    delete_url,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-            return 200 <= response.status_code < 300
         except Exception:
             return False
 

@@ -101,10 +101,7 @@ def _build_env_summary(settings: Any) -> dict[str, list[dict[str, Any]]]:
     elif provider == "vercel":
         summary["storage"] = [
             _item("BLOB_READ_WRITE_TOKEN", str(settings.blob_read_write_token), secret=True),
-            _item("VERCEL_BLOB_TOKEN", str(settings.vercel_blob_token), secret=True),
-            _item("VERCEL_BLOB_TOKEN_EFFECTIVE", str(settings.vercel_blob_token_effective), secret=True),
-            _item("VERCEL_BLOB_UPLOAD_URL_BASE", str(settings.vercel_blob_upload_url_base)),
-            _item("VERCEL_BLOB_PUBLIC_URL_BASE", str(settings.vercel_blob_public_url_base)),
+            _item("BLOB_TOKEN_EFFECTIVE", str(settings.blob_token_effective), secret=True),
         ]
     else:
         summary["storage"] = [_item("STORAGE_PROVIDER", str(settings.storage_provider))]

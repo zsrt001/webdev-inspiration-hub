@@ -50,9 +50,6 @@ class Settings(BaseSettings):
     vercel_url: str = ""
     vercel_project_production_url: str = ""
     blob_read_write_token: str = ""
-    vercel_blob_token: str = ""
-    vercel_blob_upload_url_base: str = ""
-    vercel_blob_public_url_base: str = ""
 
     # Primary vision LLM provider
     llm_provider: str = "wenwen"  # jiekou | wenwen
@@ -312,8 +309,8 @@ class Settings(BaseSettings):
         return "http://localhost:8001"
 
     @property
-    def vercel_blob_token_effective(self) -> str:
-        return (self.vercel_blob_token or self.blob_read_write_token or "").strip()
+    def blob_token_effective(self) -> str:
+        return (self.blob_read_write_token or "").strip()
 
     @property
     def generation_execution_mode(self) -> str:
