@@ -1,6 +1,7 @@
 {
     "$schema": "https://openapi.vercel.sh/vercel.json",
-    "buildCommand": "cd frontend && npm ci && npm run build:web",
+    "installCommand": "cd frontend && npm ci",
+    "buildCommand": "cd frontend && npm run build:web",
     "outputDirectory": "frontend/dist/build/h5",
     "functions": {
         "api/index.py": {
