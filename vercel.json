@@ -4,7 +4,6 @@
     "outputDirectory": "frontend/dist/build/h5",
     "functions": {
         "api/index.py": {
-            "runtime": "python3.11",
             "maxDuration": 300
         }
     },
