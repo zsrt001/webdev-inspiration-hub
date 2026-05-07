@@ -6,22 +6,27 @@
       <image :src="heroImageUrl" mode="aspectFill" class="hero-media" />
       <view class="hero-overlay"></view>
       <view class="hero-content">
-        <text class="section-label">{{ tr('AI 婚纱影像 SaaS', 'AI Wedding Photo SaaS') }}</text>
-        <text class="hero-title heading-serif">
-          {{ tr('用 AI 搭建你的高定婚纱影像工作流', 'Launch a couture wedding portrait workflow with AI') }}
-        </text>
-        <text class="hero-subtitle">
-          {{ tr('上传人物照片，选择风格或自由描述服装与场景，从生成、预览、高清下载到订阅充值，一站完成。', 'Upload portraits, choose a style or direct outfit and scene prompts, then generate, preview, download, and pay in one complete flow.') }}
-        </text>
-        <view class="hero-actions">
-          <view class="btn primary" @tap="goToCustom">{{ tr('免费开始创作', 'Start Creating') }}</view>
-          <view class="btn secondary" @tap="scrollToGallery">{{ tr('了解更多', 'View Styles') }}</view>
+        <view class="hero-copy">
+          <text class="section-label">{{ tr('AI 婚纱影像 SaaS', 'AI Wedding Photo SaaS') }}</text>
+          <text class="hero-title heading-serif">
+            {{ tr('一站式 AI 婚纱影像创作与交付平台', 'AI wedding portrait creation and delivery in one workflow') }}
+          </text>
+          <text class="hero-subtitle">
+            {{ tr('从人物上传、风格选择、文字定向，到高清交付、积分包、订阅和 Creem 支付，所有现有能力整合成清晰的商业工作流。', 'Upload portraits, choose styles, direct outfits and scenes, then handle HD delivery, credits, subscriptions, and Creem payments in one clear commercial flow.') }}
+          </text>
+          <view class="hero-actions">
+            <view class="btn primary" @tap="goToCustom">{{ tr('开始创作', 'Start Creating') }}</view>
+            <view class="btn secondary" @tap="scrollToGallery">{{ tr('查看风格库', 'View Styles') }}</view>
+          </view>
         </view>
+
         <view class="hero-preview" @tap="scrollToGallery">
-          <image :src="heroPreviewUrl" mode="aspectFill" class="preview-image" />
+          <view class="preview-frame">
+            <image :src="heroPreviewUrl" mode="aspectFill" class="preview-image" />
+          </view>
           <view class="preview-copy">
-            <text class="preview-title">{{ tr('产品预览', 'Product Preview') }}</text>
-            <text class="preview-text">{{ tr('模板库、异地合拍、参考图定向、高清交付全部保留。', 'Style library, remote couple flow, references, and HD delivery stay connected.') }}</text>
+            <text class="preview-title">{{ tr('完整创作闭环', 'Complete Creation Loop') }}</text>
+            <text class="preview-text">{{ tr('风格库、异地合拍、参考图定向、高清下载和支付权益全部保留。', 'Style library, remote couple flow, references, HD delivery, and payment entitlements stay connected.') }}</text>
           </view>
         </view>
       </view>
@@ -31,7 +36,7 @@
       <section class="benefits-section section-block" id="benefits">
         <view class="section-heading">
           <text class="section-label">{{ tr('核心优势', 'Benefits') }}</text>
-          <text class="section-title heading-serif">{{ tr('从灵感到交付，减少每一步阻力', 'Remove friction from idea to delivery') }}</text>
+          <text class="section-title heading-serif">{{ tr('让婚纱影像从灵感到交付更顺', 'Less friction from idea to delivery') }}</text>
         </view>
         <view class="benefit-grid">
           <view v-for="item in benefitItems" :key="item.title" class="benefit-card">
@@ -45,7 +50,7 @@
       <section class="features-section section-block" id="features">
         <view class="section-heading">
           <text class="section-label">{{ tr('功能介绍', 'Features') }}</text>
-          <text class="section-title heading-serif">{{ tr('把现有能力装进清晰的 SaaS 工作台', 'A clear SaaS surface for every existing capability') }}</text>
+          <text class="section-title heading-serif">{{ tr('保留所有能力，重新组织成 SaaS 工作台', 'Every capability, reorganized as a SaaS workspace') }}</text>
         </view>
 
         <view class="feature-layout">
@@ -54,7 +59,7 @@
             <view class="feature-copy">
               <text class="feature-kicker">{{ tr('AI 设计中心', 'AI Design Center') }}</text>
               <text class="feature-title heading-serif">{{ tr('自由定制服装、场景与参考图', 'Direct outfits, scenes, and references') }}</text>
-              <text class="feature-desc">{{ tr('保留统一创作流：单人、双人同机、双人异地邀请、文字定向和高级参考图。', 'Keeps the unified creation flow: single, local couple, remote couple invite, text direction, and advanced references.') }}</text>
+              <text class="feature-desc">{{ tr('单人、双人同机、双人异地邀请、文字定向和高级参考图仍然在同一条创作流里。', 'Single, local couple, remote couple invite, text direction, and advanced references remain in the same creation flow.') }}</text>
               <view class="feature-action">{{ tr('进入创作', 'Open Studio') }}</view>
             </view>
           </view>
@@ -64,7 +69,7 @@
             <view class="feature-copy">
               <text class="feature-kicker">{{ tr('金婚纪念', 'Legacy Series') }}</text>
               <text class="feature-title heading-serif">{{ tr('长辈纪念照与年代质感重塑', 'Era-aware anniversary portraits') }}</text>
-              <text class="feature-desc">{{ tr('保留金婚入口与年代风格模板，适合父母纪念照、长辈合照和复古影楼感作品。', 'Keeps the golden anniversary entry for parents, elders, and retro studio keepsakes.') }}</text>
+              <text class="feature-desc">{{ tr('金婚入口、复古影楼、庭院合照和现代翻拍都保留，适合父母纪念照和家庭礼物场景。', 'Legacy, retro studio, courtyard keepsakes, and modern remakes stay available for parents and family gifts.') }}</text>
               <view class="feature-action">{{ tr('查看金婚风格', 'View Legacy Styles') }}</view>
             </view>
           </view>
@@ -77,7 +82,7 @@
             <text class="section-label">{{ tr('产品功能演示', 'Product Gallery') }}</text>
             <text class="section-title heading-serif">{{ tr('风格库仍然是首页核心入口', 'The style library remains the main entry') }}</text>
           </view>
-          <text class="section-note">{{ tr('点击任一风格进入详情与上传流程。', 'Open any style to continue into details and upload.') }}</text>
+          <text class="section-note">{{ tr('点击任一风格进入详情页，并继续上传照片或切换创作模式。', 'Open any style to continue into details, upload, or switch creation mode.') }}</text>
         </view>
 
         <view class="category-filter">
@@ -102,12 +107,14 @@
             class="style-card"
             @tap="goToDetail(template)"
           >
-            <image
-              :src="resolveTemplateCardImage(template)"
-              mode="aspectFill"
-              class="style-image"
-              @error="onTemplateImageError(template)"
-            />
+            <view class="style-image-frame">
+              <image
+                :src="resolveTemplateCardImage(template)"
+                mode="aspectFill"
+                class="style-image"
+                @error="onTemplateImageError(template)"
+              />
+            </view>
             <view class="style-copy">
               <text class="style-title heading-serif">{{ displayTemplateTitle(template) }}</text>
               <text v-if="displayTemplateMarketingSubtitle(template)" class="style-desc">{{ displayTemplateMarketingSubtitle(template) }}</text>
@@ -123,8 +130,8 @@
 
       <section class="testimonials-section section-block" id="testimonials">
         <view class="section-heading">
-          <text class="section-label">{{ tr('用户证言', 'Testimonials') }}</text>
-          <text class="section-title heading-serif">{{ tr('面向真实使用场景的信任感', 'Trust for real wedding use cases') }}</text>
+          <text class="section-label">{{ tr('使用场景', 'Use Cases') }}</text>
+          <text class="section-title heading-serif">{{ tr('文案贴近真实功能，不再空泛营销', 'Copy grounded in real product capability') }}</text>
         </view>
         <view class="testimonial-list">
           <view v-for="item in testimonials" :key="item.name" class="testimonial-card">
@@ -136,8 +143,8 @@
 
       <section class="cta-section section-block" id="cta">
         <text class="section-label">{{ tr('行动召唤', 'CTA') }}</text>
-        <text class="cta-title heading-serif">{{ tr('准备好生成第一套婚纱作品了吗？', 'Ready to create your first wedding portrait set?') }}</text>
-        <text class="cta-desc">{{ tr('从免费体验开始，需要高清下载或更多生成额度时，再通过积分包或订阅升级。', 'Start with the current creation flow. Upgrade with credit packs or subscriptions when you need HD delivery or more usage.') }}</text>
+        <text class="cta-title heading-serif">{{ tr('先试生成，再按需要升级额度', 'Start creating, then upgrade when usage grows') }}</text>
+        <text class="cta-desc">{{ tr('免费额度适合首次试用；需要高清下载、更多生成或持续出图时，再选择积分包或月度订阅。', 'Free credits are for first tests. Use credit packs or monthly subscriptions when you need HD downloads, more generations, or steady production.') }}</text>
         <view class="hero-actions centered">
           <view class="btn primary" @tap="goToCustom">{{ tr('立即开始', 'Start Now') }}</view>
           <view class="btn secondary" @tap="showPaymentModal = true">{{ tr('查看套餐', 'View Plans') }}</view>
@@ -147,7 +154,7 @@
       <section class="pricing-section section-block" id="pricing">
         <view class="section-heading">
           <text class="section-label">{{ tr('价格方案', 'Pricing') }}</text>
-          <text class="section-title heading-serif">{{ tr('积分包与订阅并存，价格保持合理梯度', 'Credit packs and subscriptions with a balanced ladder') }}</text>
+          <text class="section-title heading-serif">{{ tr('积分包和订阅保持合理梯度', 'Credit packs and subscriptions with a balanced ladder') }}</text>
         </view>
         <view class="pricing-grid">
           <view v-for="plan in pricingPlans" :key="plan.name" class="pricing-card" :class="{ featured: plan.featured }">
@@ -167,7 +174,7 @@
     <view class="site-footer" id="footer">
       <view class="footer-main">
         <text class="footer-brand heading-serif" @tap="onLogoTap">{{ tr('AI Wedding', 'AI Wedding') }}</text>
-        <text class="footer-copy">{{ tr('AI 婚纱影像生成、远程合拍、高清交付与 Creem 支付测试已接入。', 'AI wedding generation, remote collaboration, HD delivery, and Creem payment testing are connected.') }}</text>
+        <text class="footer-copy">{{ tr('AI 婚纱影像生成、远程合拍、高清交付、积分包、订阅与 Creem 支付已接入。', 'AI wedding generation, remote collaboration, HD delivery, credit packs, subscriptions, and Creem payments are connected.') }}</text>
       </view>
       <view class="footer-links">
         <text @tap="scrollToGallery">{{ tr('功能', 'Features') }}</text>
@@ -249,29 +256,29 @@ const heroPreviewUrl = computed(() => {
 
 const benefitItems = computed(() => [
   {
-    mark: 'AI',
-    title: tr('稳定生成链路', 'Reliable generation'),
-    desc: tr('保留本地质检、积分扣费、失败退款和订单状态追踪。', 'Keeps local quality checks, credit charging, refunds, and order tracking.'),
+    mark: '01',
+    title: tr('创作流完整', 'Complete workflow'),
+    desc: tr('人物上传、本地质检、风格选择、文字定向、参考图和订单状态都保留在同一流程。', 'Portrait upload, local quality checks, style selection, text direction, references, and order states stay in one flow.'),
   },
   {
-    mark: 'HD',
+    mark: '02',
     title: tr('高清交付闭环', 'HD delivery loop'),
-    desc: tr('预览页、高清解锁、支付弹窗和下载权限仍然连贯。', 'Preview, HD unlock, payment modal, and download permissions stay intact.'),
+    desc: tr('预览、高清解锁、下载权限、积分扣费和失败退款逻辑继续串联。', 'Preview, HD unlock, download permissions, credit charging, and refund handling stay connected.'),
   },
   {
-    mark: 'CRM',
+    mark: '03',
     title: tr('商业化可测试', 'Commerce ready'),
-    desc: tr('Creem Test Mode 支持积分包、月订阅和 webhook 入账。', 'Creem Test Mode supports credit packs, subscriptions, and webhook grants.'),
+    desc: tr('Creem Test Mode 支持积分包、月订阅和 webhook 入账，便于上线前完整验证。', 'Creem Test Mode supports credit packs, subscriptions, and webhook grants for pre-launch validation.'),
   },
 ]);
 
 const testimonials = computed(() => [
   {
-    quote: tr('“不用重新拍摄，就能快速看到不同婚纱风格，适合婚礼前期选片和灵感沟通。”', '“We could explore different bridal moods without reshooting. It made early wedding planning much easier.”'),
-    name: tr('准新人用户', 'Bride-to-be user'),
+    quote: tr('适合新娘先看不同婚纱风格，再决定服装、场景和照片用途，不需要一开始就重拍。', 'Useful for exploring bridal styles before deciding outfit, scene, and final use without reshooting first.'),
+    name: tr('婚纱风格打样', 'Bridal style proofing'),
   },
   {
-    quote: tr('“金婚模板对长辈纪念照很友好，复古影楼感和真实纹理都保留得比较自然。”', '“The legacy templates feel respectful for elder anniversary portraits, with natural retro texture.”'),
+    quote: tr('金婚系列能服务父母纪念照，和主婚纱生成功能区分清楚，但仍复用同一套上传与交付链路。', 'The legacy series serves parent anniversary portraits while reusing the same upload and delivery pipeline.'),
     name: tr('家庭纪念场景', 'Family keepsake use case'),
   },
 ]);
@@ -280,8 +287,8 @@ const pricingPlans = computed(() => [
   {
     name: tr('Starter 积分包', 'Starter Pack'),
     price: '$12.90',
-    desc: tr('50 积分，适合首次体验。', '50 credits for first tests.'),
-    lines: [tr('单次购买', 'One-time purchase'), tr('适合试拍与小批量生成', 'Good for trials and small batches')],
+    desc: tr('50 积分，适合首次体验和少量试生成。', '50 credits for first tests and light usage.'),
+    lines: [tr('一次性购买', 'One-time purchase'), tr('约 25 次基础生成', 'About 25 base generations')],
     action: tr('购买积分', 'Buy Credits'),
     badge: '',
     featured: false,
@@ -289,8 +296,8 @@ const pricingPlans = computed(() => [
   {
     name: tr('Creator 月订阅', 'Creator Monthly'),
     price: '$49/mo',
-    desc: tr('300 积分/月，适合持续创作。', '300 credits per month for ongoing creation.'),
-    lines: [tr('订阅制额度', 'Subscription credits'), tr('积分单价低于小包', 'Better unit economics than small packs')],
+    desc: tr('300 积分/月，适合持续创作和成套出图。', '300 credits per month for ongoing creation.'),
+    lines: [tr('订阅积分每月发放', 'Monthly subscription credits'), tr('单价低于小额积分包', 'Better unit economics than small packs')],
     action: tr('查看订阅', 'View Subscription'),
     badge: tr('推荐', 'Popular'),
     featured: true,
@@ -298,8 +305,8 @@ const pricingPlans = computed(() => [
   {
     name: tr('Studio 月订阅', 'Studio Monthly'),
     price: '$129/mo',
-    desc: tr('900 积分/月，适合团队与高频产出。', '900 credits per month for teams and heavier usage.'),
-    lines: [tr('更高月度额度', 'Higher monthly allowance'), tr('适合工作室场景', 'Built for studio workflows')],
+    desc: tr('900 积分/月，适合团队和高频交付。', '900 credits per month for teams and heavier usage.'),
+    lines: [tr('更高月度额度', 'Higher monthly allowance'), tr('适合工作室批量交付', 'Built for studio workflows')],
     action: tr('升级套餐', 'Upgrade'),
     badge: '',
     featured: false,
@@ -495,17 +502,17 @@ onMounted(async () => {
 <style lang="scss" scoped>
 .saas-landing {
   min-height: 100vh;
-  background: #fbf9f8;
-  color: #1b1c1c;
+  background: #f7f8fa;
+  color: #17191f;
 }
 
 .hero-section {
   position: relative;
-  min-height: min(760px, calc(100dvh - 64px));
+  min-height: min(740px, calc(100dvh - 64px));
   display: flex;
-  align-items: center;
+  align-items: stretch;
   overflow: hidden;
-  background: #eae7e1;
+  background: #d9dde3;
 }
 
 .hero-media {
@@ -514,7 +521,9 @@ onMounted(async () => {
   width: 100%;
   height: 100%;
   z-index: 1;
-  filter: saturate(0.92) contrast(1.02);
+  filter: saturate(0.9) contrast(1.06);
+  object-fit: cover;
+  object-position: center;
 }
 
 .hero-overlay {
@@ -522,8 +531,8 @@ onMounted(async () => {
   inset: 0;
   z-index: 2;
   background:
-    linear-gradient(90deg, rgba(251, 249, 248, 0.94) 0%, rgba(251, 249, 248, 0.76) 42%, rgba(251, 249, 248, 0.18) 100%),
-    linear-gradient(0deg, #fbf9f8 0%, rgba(251, 249, 248, 0.06) 30%);
+    linear-gradient(90deg, rgba(247, 248, 250, 0.98) 0%, rgba(247, 248, 250, 0.86) 43%, rgba(247, 248, 250, 0.24) 100%),
+    linear-gradient(0deg, #f7f8fa 0%, rgba(247, 248, 250, 0.04) 34%);
 }
 
 .hero-content {
@@ -531,33 +540,40 @@ onMounted(async () => {
   z-index: 3;
   width: min(1280px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 64px 0 88px;
+  padding: 74px 0 82px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 48px;
+  align-items: end;
+}
+
+.hero-copy {
+  max-width: 760px;
 }
 
 .section-label {
   display: block;
   margin-bottom: 14px;
+  color: #7c4d2f;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 900;
   letter-spacing: 0;
-  color: #735a31;
 }
 
 .hero-title {
   display: block;
-  max-width: 720px;
-  font-size: clamp(42px, 6vw, 76px);
+  font-size: clamp(42px, 6vw, 74px);
   line-height: 1.02;
-  color: #1b1c1c;
+  color: #17191f;
 }
 
 .hero-subtitle {
   display: block;
-  max-width: 580px;
+  max-width: 650px;
   margin-top: 24px;
+  color: #454b57;
   font-size: 18px;
   line-height: 1.75;
-  color: #444845;
 }
 
 .hero-actions {
@@ -574,12 +590,12 @@ onMounted(async () => {
 .btn {
   min-height: 48px;
   padding: 0 26px;
-  border-radius: 999px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 900;
   cursor: pointer;
   transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
 }
@@ -589,35 +605,44 @@ onMounted(async () => {
 }
 
 .btn.primary {
-  background: #735a31;
+  background: #17191f;
   color: #ffffff;
-  border: 1px solid #735a31;
+  border: 1px solid #17191f;
 }
 
 .btn.secondary {
-  background: rgba(255, 255, 255, 0.72);
-  color: #1b1c1c;
-  border: 1px solid #747875;
+  background: rgba(255, 255, 255, 0.78);
+  color: #17191f;
+  border: 1px solid #b8bec8;
 }
 
 .hero-preview {
-  width: min(620px, 100%);
-  margin-top: 48px;
-  display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  gap: 22px;
-  align-items: center;
-  padding: 14px;
-  border: 1px solid rgba(116, 120, 117, 0.24);
-  background: rgba(255, 255, 255, 0.78);
+  align-self: end;
+  padding: 12px;
+  border: 1px solid rgba(32, 43, 62, 0.12);
+  background: rgba(255, 255, 255, 0.82);
   border-radius: 8px;
+  box-shadow: 0 24px 64px rgba(23, 25, 31, 0.12);
   cursor: pointer;
+}
+
+.preview-frame {
+  overflow: hidden;
+  border-radius: 6px;
+  aspect-ratio: 4 / 5;
+  background: #d9dde3;
 }
 
 .preview-image {
   width: 100%;
-  aspect-ratio: 16 / 10;
-  border-radius: 6px;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center;
+}
+
+.preview-copy {
+  padding: 18px 4px 2px;
 }
 
 .preview-title {
@@ -625,6 +650,7 @@ onMounted(async () => {
   margin-bottom: 8px;
   font-size: 16px;
   font-weight: 900;
+  color: #17191f;
 }
 
 .preview-text,
@@ -637,9 +663,9 @@ onMounted(async () => {
 .plan-line,
 .footer-copy {
   display: block;
+  color: #4c5360;
   font-size: 14px;
   line-height: 1.75;
-  color: #444845;
 }
 
 .landing-body {
@@ -652,7 +678,7 @@ onMounted(async () => {
 }
 
 .section-heading {
-  max-width: 760px;
+  max-width: 780px;
   margin: 0 auto 42px;
   text-align: center;
 }
@@ -668,13 +694,13 @@ onMounted(async () => {
 
 .section-title {
   display: block;
+  color: #17191f;
   font-size: clamp(32px, 4vw, 52px);
   line-height: 1.15;
-  color: #1b1c1c;
 }
 
 .section-note {
-  max-width: 320px;
+  max-width: 360px;
 }
 
 .benefit-grid,
@@ -687,7 +713,7 @@ onMounted(async () => {
 .benefit-card,
 .pricing-card,
 .testimonial-card {
-  border: 1px solid #e4e2e1;
+  border: 1px solid #dde1e8;
   background: #ffffff;
   border-radius: 8px;
   padding: 26px;
@@ -695,14 +721,14 @@ onMounted(async () => {
 
 .card-mark {
   display: inline-flex;
-  width: 48px;
-  height: 48px;
+  width: 46px;
+  height: 46px;
   align-items: center;
   justify-content: center;
   margin-bottom: 22px;
-  border-radius: 999px;
-  background: #fddba7;
-  color: #59431c;
+  border-radius: 8px;
+  background: #eef7f5;
+  color: #116a60;
   font-size: 13px;
   font-weight: 900;
 }
@@ -712,9 +738,9 @@ onMounted(async () => {
 .quote-name {
   display: block;
   margin-bottom: 10px;
+  color: #17191f;
   font-size: 18px;
   font-weight: 900;
-  color: #1b1c1c;
 }
 
 .features-section {
@@ -722,9 +748,9 @@ onMounted(async () => {
   margin-left: calc((100% - 100vw) / 2);
   padding-left: max(24px, calc((100vw - 1280px) / 2));
   padding-right: max(24px, calc((100vw - 1280px) / 2));
-  background: #f6f3f2;
-  border-top: 1px solid #e4e2e1;
-  border-bottom: 1px solid #e4e2e1;
+  background: #eef1f4;
+  border-top: 1px solid #dde1e8;
+  border-bottom: 1px solid #dde1e8;
 }
 
 .feature-layout {
@@ -734,17 +760,20 @@ onMounted(async () => {
 }
 
 .feature-panel {
-  background: #ffffff;
-  border: 1px solid #e4e2e1;
-  border-radius: 8px;
   overflow: hidden;
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
+  background: #ffffff;
   cursor: pointer;
 }
 
 .feature-image {
   width: 100%;
   aspect-ratio: 16 / 10;
-  background: #eae7e1;
+  display: block;
+  background: #d9dde3;
+  object-fit: cover;
+  object-position: center;
 }
 
 .feature-copy {
@@ -756,14 +785,15 @@ onMounted(async () => {
 .style-action {
   display: block;
   margin-bottom: 8px;
+  color: #116a60;
   font-size: 12px;
   font-weight: 900;
-  color: #735a31;
 }
 
 .feature-title {
   display: block;
   margin-bottom: 12px;
+  color: #17191f;
   font-size: 30px;
   line-height: 1.2;
 }
@@ -774,11 +804,11 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   padding: 0 18px;
-  border-radius: 999px;
-  background: #1b1c1c;
+  border-radius: 8px;
+  background: #17191f;
   color: #ffffff;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 900;
 }
 
 .category-filter {
@@ -793,19 +823,19 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   padding: 0 16px;
-  border-radius: 999px;
-  border: 1px solid #c4c7c4;
+  border-radius: 8px;
+  border: 1px solid #c8ced8;
   background: #ffffff;
-  color: #444845;
+  color: #4c5360;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 900;
   cursor: pointer;
 }
 
 .cat-chip.active {
   color: #ffffff;
-  background: #735a31;
-  border-color: #735a31;
+  background: #17191f;
+  border-color: #17191f;
 }
 
 .style-grid {
@@ -816,7 +846,7 @@ onMounted(async () => {
 
 .style-card {
   overflow: hidden;
-  border: 1px solid #e4e2e1;
+  border: 1px solid #dde1e8;
   border-radius: 8px;
   background: #ffffff;
   cursor: pointer;
@@ -827,30 +857,38 @@ onMounted(async () => {
   transform: translateY(1px);
 }
 
+.style-image-frame {
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  background: #d9dde3;
+}
+
 .style-image {
   width: 100%;
-  aspect-ratio: 3 / 4;
-  background: #eae7e1;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center top;
 }
 
 .style-copy {
-  padding: 14px;
+  padding: 16px;
 }
 
 .style-title {
   display: block;
   margin-bottom: 6px;
+  color: #17191f;
   font-size: 20px;
   line-height: 1.25;
-  color: #1b1c1c;
 }
 
 .style-desc {
   display: block;
-  min-height: 38px;
+  min-height: 42px;
+  color: #4c5360;
   font-size: 12px;
   line-height: 1.55;
-  color: #444845;
 }
 
 .style-action {
@@ -860,7 +898,7 @@ onMounted(async () => {
 
 .empty-gallery {
   padding: 48px 24px;
-  border: 1px dashed #c4c7c4;
+  border: 1px dashed #aeb6c2;
   border-radius: 8px;
   text-align: center;
 }
@@ -868,18 +906,19 @@ onMounted(async () => {
 .empty-title {
   display: block;
   margin-bottom: 8px;
+  color: #17191f;
   font-size: 18px;
   font-weight: 900;
 }
 
 .empty-desc {
   display: block;
+  color: #4c5360;
   font-size: 14px;
-  color: #444845;
 }
 
 .testimonials-section {
-  border-top: 1px solid #e4e2e1;
+  border-top: 1px solid #dde1e8;
 }
 
 .testimonial-list {
@@ -889,15 +928,15 @@ onMounted(async () => {
 }
 
 .quote-text {
-  min-height: 100px;
+  min-height: 96px;
+  color: #17191f;
   font-size: 17px;
-  color: #1b1c1c;
 }
 
 .quote-name {
   margin-top: 20px;
   margin-bottom: 0;
-  color: #735a31;
+  color: #116a60;
 }
 
 .cta-section {
@@ -906,21 +945,22 @@ onMounted(async () => {
   padding-left: 24px;
   padding-right: 24px;
   text-align: center;
-  background: #fddba7;
-  border-top: 1px solid rgba(89, 67, 28, 0.16);
-  border-bottom: 1px solid rgba(89, 67, 28, 0.16);
+  background: #e8f3f1;
+  border-top: 1px solid rgba(17, 106, 96, 0.16);
+  border-bottom: 1px solid rgba(17, 106, 96, 0.16);
 }
 
 .cta-title {
   display: block;
-  max-width: 720px;
+  max-width: 760px;
   margin: 0 auto 16px;
-  font-size: clamp(34px, 5vw, 60px);
+  color: #17191f;
+  font-size: clamp(34px, 5vw, 58px);
   line-height: 1.1;
 }
 
 .cta-desc {
-  max-width: 620px;
+  max-width: 650px;
   margin: 0 auto;
 }
 
@@ -932,24 +972,25 @@ onMounted(async () => {
 }
 
 .pricing-card.featured {
-  border-color: #735a31;
-  background: #fbf8f2;
-  box-shadow: 0 24px 60px rgba(40, 25, 0, 0.08);
+  border-color: #116a60;
+  background: #f4fbfa;
+  box-shadow: 0 24px 60px rgba(17, 106, 96, 0.1);
 }
 
 .plan-badge {
   width: fit-content;
   padding: 6px 10px;
-  border-radius: 999px;
-  background: #735a31;
+  border-radius: 8px;
+  background: #116a60;
   color: #ffffff;
 }
 
 .plan-price {
   display: block;
   margin: 8px 0 12px;
+  color: #17191f;
   font-size: 42px;
-  color: #1b1c1c;
+  font-variant-numeric: tabular-nums;
 }
 
 .plan-lines {
@@ -966,14 +1007,14 @@ onMounted(async () => {
   height: 7px;
   margin-right: 8px;
   border-radius: 999px;
-  background: #735a31;
+  background: #116a60;
 }
 
 .plan-button {
   min-height: 46px;
   margin-top: auto;
-  border-radius: 999px;
-  background: #1b1c1c;
+  border-radius: 8px;
+  background: #17191f;
   color: #ffffff;
   display: flex;
   align-items: center;
@@ -985,8 +1026,8 @@ onMounted(async () => {
 
 .site-footer {
   padding: 64px 24px 20px;
-  background: #f6f3f2;
-  border-top: 1px solid #e4e2e1;
+  background: #eef1f4;
+  border-top: 1px solid #dde1e8;
 }
 
 .footer-main {
@@ -1000,12 +1041,12 @@ onMounted(async () => {
 
 .footer-brand {
   display: block;
+  color: #17191f;
   font-size: 28px;
-  color: #1b1c1c;
 }
 
 .footer-copy {
-  max-width: 540px;
+  max-width: 560px;
   text-align: right;
 }
 
@@ -1016,9 +1057,9 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 16px;
   justify-content: center;
-  color: #444845;
+  color: #4c5360;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 900;
 }
 
 .footer-links text,
@@ -1029,7 +1070,7 @@ onMounted(async () => {
 .secret-admin {
   margin-top: 16px;
   text-align: center;
-  color: rgba(116, 120, 117, 0.34);
+  color: rgba(76, 83, 96, 0.34);
   font-size: 18px;
 }
 
@@ -1038,12 +1079,20 @@ onMounted(async () => {
   .feature-panel:hover,
   .benefit-card:hover,
   .pricing-card:hover {
-    box-shadow: 0 24px 60px rgba(40, 25, 0, 0.07);
+    box-shadow: 0 24px 60px rgba(23, 25, 31, 0.08);
     transform: translateY(-2px);
   }
 }
 
 @media (max-width: 1180px) {
+  .hero-content {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-preview {
+    width: min(420px, 100%);
+  }
+
   .style-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1058,15 +1107,8 @@ onMounted(async () => {
     padding: 54px 0 66px;
   }
 
-  .hero-preview,
   .section-heading.split,
   .footer-main {
-    grid-template-columns: 1fr;
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .section-heading.split {
     display: block;
   }
 
@@ -1087,6 +1129,7 @@ onMounted(async () => {
   }
 
   .footer-copy {
+    margin-top: 14px;
     text-align: left;
   }
 }

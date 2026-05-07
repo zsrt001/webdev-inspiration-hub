@@ -1,22 +1,22 @@
 /**
- * AI Wedding Studio Design System - UI/UX Pro Max Refactor
- * Theme: Liquid Glass / Romantic Luxury
+ * AI Wedding Studio Design System
+ * Theme: polished SaaS workspace with wedding-grade imagery
  */
 
 // ========================================
-// Colors - Liquid Glass Palette
+// Colors - SaaS Product Palette
 // ========================================
-$uni-color-primary: #DB2777; // Warm pink
-$uni-color-secondary: #F472B6; // Light pink
-$uni-color-accent: #CA8A04; // Elegant gold
+$uni-color-primary: #116A60; // Product teal
+$uni-color-secondary: #2563EB; // Clear action blue
+$uni-color-accent: #A16207; // Restrained gold
 $uni-color-white: #ffffff;
-$uni-color-background: #FDF2F8; // Very soft pink
-$uni-color-border: #FCE7F3;
+$uni-color-background: #F7F8FA;
+$uni-color-border: #DDE1E8;
 
 // Text Colors
-$uni-text-color: #831843; // Deep wine
-$uni-text-color-secondary: #9D174D;
-$uni-text-color-muted: #BE185D;
+$uni-text-color: #17191F;
+$uni-text-color-secondary: #4C5360;
+$uni-text-color-muted: #6B7280;
 
 // ========================================
 // Typography - Bodoni Moda + Jost
@@ -40,8 +40,8 @@ $uni-container-width: 1400px; // Responsive max-width
 $uni-container-padding: 32px;
 
 $uni-border-radius-sm: 8px;
-$uni-border-radius-base: 16px;
-$uni-border-radius-lg: 24px;
+$uni-border-radius-base: 8px;
+$uni-border-radius-lg: 12px;
 
 // ========================================
 // Spacing - Studio Rhythm
@@ -55,12 +55,12 @@ $uni-space-2xl: 48px;
 $uni-space-3xl: 64px;
 
 // ========================================
-// Shadows - Liquid Glass Depth
+// Shadows - Quiet Workspace Depth
 // ========================================
-$uni-shadow-sm: 0 1px 2px rgba(131, 24, 67, 0.05);
-$uni-shadow-base: 0 4px 12px rgba(131, 24, 67, 0.08);
-$uni-shadow-lg: 0 10px 15px rgba(131, 24, 67, 0.1);
-$uni-shadow-xl: 0 20px 25px rgba(131, 24, 67, 0.15);
+$uni-shadow-sm: 0 1px 2px rgba(23, 25, 31, 0.05);
+$uni-shadow-base: 0 6px 18px rgba(23, 25, 31, 0.07);
+$uni-shadow-lg: 0 16px 42px rgba(23, 25, 31, 0.1);
+$uni-shadow-xl: 0 24px 64px rgba(23, 25, 31, 0.14);
 
 // ========================================
 // Transitions

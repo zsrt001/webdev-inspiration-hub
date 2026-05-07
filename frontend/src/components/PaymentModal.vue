@@ -600,7 +600,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   padding: 28px;
-  background: rgba(250, 247, 249, 0.94);
+  background: rgba(247, 248, 250, 0.88);
   backdrop-filter: blur(10px);
 }
 
@@ -609,10 +609,10 @@ onMounted(async () => {
   width: min(1180px, 100%);
   max-height: 92vh;
   overflow-y: auto;
-  border: 1px solid rgba(131, 24, 67, 0.1);
-  border-radius: 20px;
-  background: #fbfaf9;
-  box-shadow: 0 24px 60px rgba(35, 31, 32, 0.14);
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 64px rgba(23, 25, 31, 0.14);
   padding: 42px 36px 30px;
   animation: modalEnter 0.22s ease-out;
 }
@@ -639,9 +639,9 @@ onMounted(async () => {
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: #8a8588;
+  border-radius: 8px;
+  background: #f0f3f6;
+  color: #4c5360;
   font-size: 24px;
   line-height: 1;
 }
@@ -662,14 +662,14 @@ onMounted(async () => {
 }
 
 .pricing-title {
-  color: #161315;
+  color: #17191f;
   font-size: 30px;
   font-weight: 700;
 }
 
 .pricing-subtitle {
   max-width: 620px;
-  color: #6f6870;
+  color: #4c5360;
   font-size: 14px;
   line-height: 1.6;
 }
@@ -679,8 +679,8 @@ onMounted(async () => {
   grid-template-columns: repeat(2, 1fr);
   min-width: 220px;
   padding: 4px;
-  border-radius: 999px;
-  background: #ece9e8;
+  border-radius: 8px;
+  background: #eef1f4;
 }
 
 .billing-tab {
@@ -688,17 +688,17 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
-  color: #8a8588;
+  border-radius: 6px;
+  color: #6b7280;
   font-size: 14px;
   font-weight: 700;
   transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .billing-tab.active {
-  background: #fff;
-  color: #241f22;
-  box-shadow: 0 4px 14px rgba(35, 31, 32, 0.12);
+  background: #ffffff;
+  color: #17191f;
+  box-shadow: 0 4px 14px rgba(23, 25, 31, 0.1);
 }
 
 .balance-strip {
@@ -708,16 +708,16 @@ onMounted(async () => {
   gap: 18px;
   margin-bottom: 22px;
   padding: 16px 18px;
-  border: 1px solid rgba(202, 138, 4, 0.18);
+  border: 1px solid rgba(17, 106, 96, 0.18);
   border-radius: 8px;
-  background: #fffdf8;
+  background: #f3faf8;
 }
 
 .balance-label,
 .plan-caption,
 .price-unit,
 .provider-note {
-  color: #7d747a;
+  color: #6b7280;
 }
 
 .balance-label {
@@ -729,7 +729,7 @@ onMounted(async () => {
 .balance-value {
   display: block;
   margin-top: 2px;
-  color: #161315;
+  color: #17191f;
   font-size: 30px;
   font-weight: 800;
 }
@@ -738,7 +738,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  color: #5f575d;
+  color: #4c5360;
   font-size: 13px;
   text-align: right;
 }
@@ -754,7 +754,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   padding: 24px;
-  border: 1px solid #e7e2e4;
+  border: 1px solid #dde1e8;
   border-radius: 8px;
   background: #fff;
   transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, background 0.18s ease;
@@ -762,14 +762,14 @@ onMounted(async () => {
 
 .pricing-card.selected,
 .pricing-card:hover {
-  border-color: rgba(219, 39, 119, 0.36);
-  box-shadow: 0 14px 34px rgba(35, 31, 32, 0.1);
+  border-color: rgba(17, 106, 96, 0.4);
+  box-shadow: 0 14px 34px rgba(23, 25, 31, 0.1);
   transform: translateY(-2px);
 }
 
 .pricing-card.highlighted {
-  border-color: rgba(129, 121, 233, 0.34);
-  background: #f7f6ff;
+  border-color: rgba(17, 106, 96, 0.34);
+  background: #f3faf8;
 }
 
 .pricing-card.current {
@@ -786,7 +786,7 @@ onMounted(async () => {
 
 .plan-name {
   display: block;
-  color: #161315;
+  color: #17191f;
   font-size: 28px;
   font-weight: 800;
   line-height: 1.2;
@@ -806,8 +806,8 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   padding: 0 10px;
-  border-radius: 999px;
-  background: #241f22;
+  border-radius: 8px;
+  background: #17191f;
   color: #fff;
   font-size: 12px;
   font-weight: 800;
@@ -823,12 +823,12 @@ onMounted(async () => {
   align-items: flex-end;
   gap: 5px;
   margin-top: 24px;
-  color: #101014;
+  color: #17191f;
 }
 
 .currency {
   padding-bottom: 9px;
-  color: #8a8588;
+  color: #6b7280;
   font-size: 20px;
 }
 
@@ -849,7 +849,7 @@ onMounted(async () => {
   display: block;
   min-height: 48px;
   margin-top: 18px;
-  color: #2a2529;
+  color: #4c5360;
   font-size: 15px;
   line-height: 1.55;
 }
@@ -862,10 +862,10 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   margin: 28px 0 22px;
-  border: 1px solid #ded9dc;
-  border-radius: 999px;
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
   background: #fff;
-  color: #3b343a;
+  color: #17191f;
   font-size: 15px;
   font-weight: 800;
   line-height: 1.2;
@@ -874,7 +874,7 @@ onMounted(async () => {
 .plan-button.primary,
 .primary-action {
   border-color: transparent;
-  background: #9d98f2;
+  background: #116a60;
   color: #fff;
 }
 
@@ -893,7 +893,7 @@ onMounted(async () => {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  color: #282329;
+  color: #17191f;
   font-size: 14px;
   line-height: 1.45;
 }
@@ -904,8 +904,8 @@ onMounted(async () => {
   flex: 0 0 9px;
   margin-top: 6px;
   border-radius: 999px;
-  background: #db2777;
-  box-shadow: 0 0 0 4px rgba(219, 39, 119, 0.11);
+  background: #116a60;
+  box-shadow: 0 0 0 4px rgba(17, 106, 96, 0.11);
 }
 
 .pricing-footer {
@@ -935,8 +935,8 @@ onMounted(async () => {
 .loading-ring {
   width: 44px;
   height: 44px;
-  border: 4px solid rgba(219, 39, 119, 0.16);
-  border-top-color: #db2777;
+  border: 4px solid rgba(17, 106, 96, 0.16);
+  border-top-color: #116a60;
   border-radius: 999px;
   animation: spin 0.8s linear infinite;
 }
@@ -963,7 +963,7 @@ onMounted(async () => {
 .state-title {
   display: block;
   margin-top: 18px;
-  color: #161315;
+  color: #17191f;
   font-size: 22px;
   font-weight: 800;
 }
@@ -971,7 +971,7 @@ onMounted(async () => {
 .state-copy {
   display: block;
   margin-top: 8px;
-  color: #5f575d;
+  color: #4c5360;
   font-size: 15px;
 }
 
@@ -998,7 +998,7 @@ onMounted(async () => {
   .pricing-dialog {
     max-height: calc(100vh - 24px);
     padding: 58px 16px 22px;
-    border-radius: 16px;
+    border-radius: 8px;
   }
 
   .pricing-title {

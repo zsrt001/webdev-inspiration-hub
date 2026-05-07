@@ -30,7 +30,7 @@
         </view>
 
         <view class="balance-chip" @tap="showTopUp">
-          <text class="chip-icon">✦</text>
+          <text class="chip-icon">CR</text>
           <text class="chip-val">{{ creditBalance }}</text>
         </view>
 
@@ -162,14 +162,14 @@ defineExpose({ refreshBalance });
 .navbar {
   width: 100%;
   height: 64px;
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(15px);
+  background: rgba(247, 248, 250, 0.92);
+  backdrop-filter: blur(16px);
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 9999;
-  border-bottom: 1px solid rgba(131, 24, 67, 0.06);
+  border-bottom: 1px solid rgba(221, 225, 232, 0.9);
 }
 
 .navbar-inner {
@@ -188,7 +188,7 @@ defineExpose({ refreshBalance });
 
 .logo-main {
   font-size: 22px;
-  color: #1a1a1a;
+  color: #17191f;
   font-weight: 700;
 }
 
@@ -203,19 +203,18 @@ defineExpose({ refreshBalance });
 
 .nav-link {
   font-size: 14px;
-  font-weight: 600;
-  color: $uni-text-color;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 8px 0;
+  font-weight: 800;
+  color: #4c5360;
+  letter-spacing: 0;
+  padding: 9px 0;
   position: relative;
-  opacity: 0.72;
+  opacity: 1;
   transition: all 0.25s;
   cursor: pointer;
 
   &:hover,
   &.active {
-    opacity: 1;
+    color: #17191f;
 
     &::after {
       width: 100%;
@@ -244,18 +243,21 @@ defineExpose({ refreshBalance });
 .auth-chip,
 .balance-chip {
   min-width: 44px;
-  height: 34px;
+  height: 36px;
   padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(131, 24, 67, 0.16);
+  border-radius: 8px;
+  border: 1px solid #d8dde5;
   background: rgba(255, 255, 255, 0.96);
   display: flex;
   align-items: center;
   justify-content: center;
+  box-shadow: 0 1px 2px rgba(23, 25, 31, 0.04);
 }
 
 .balance-chip {
   gap: 6px;
+  border-color: rgba(17, 106, 96, 0.22);
+  background: #f3faf8;
 }
 
 .lang-text,
@@ -267,12 +269,16 @@ defineExpose({ refreshBalance });
   color: $uni-color-primary;
 }
 
+.chip-icon {
+  letter-spacing: 0;
+}
+
 .menu-dots-mobile {
   display: none;
   width: 34px;
   height: 34px;
-  border-radius: 999px;
-  border: 1px solid rgba(131, 24, 67, 0.16);
+  border-radius: 8px;
+  border: 1px solid #d8dde5;
   align-items: center;
   justify-content: center;
   flex-direction: column;
@@ -296,10 +302,10 @@ defineExpose({ refreshBalance });
   right: 20px;
   min-width: 140px;
   background: rgba(255, 255, 255, 0.98);
-  border: 1px solid rgba(131, 24, 67, 0.12);
-  border-radius: 18px;
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 20px 50px rgba(18, 18, 18, 0.12);
+  box-shadow: 0 20px 50px rgba(23, 25, 31, 0.12);
 
   @media (min-width: 961px) {
     display: none;
@@ -310,7 +316,7 @@ defineExpose({ refreshBalance });
   padding: 14px 16px;
   font-size: 14px;
   color: $uni-text-color;
-  border-bottom: 1px solid rgba(131, 24, 67, 0.06);
+  border-bottom: 1px solid #edf0f4;
 
   &:last-child {
     border-bottom: none;

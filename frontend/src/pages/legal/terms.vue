@@ -112,8 +112,8 @@ function activeLines(section: any): string[] {
 <style lang="scss" scoped>
 .legal-page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #fffaf7 0%, #fdf2f8 100%);
-  color: #831843;
+  background: #f7f8fa;
+  color: #17191f;
 }
 
 .legal-shell {
@@ -129,10 +129,9 @@ function activeLines(section: any): string[] {
 .eyebrow {
   display: block;
   font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  color: #ca8a04;
-  text-transform: uppercase;
+  font-weight: 900;
+  letter-spacing: 0;
+  color: #116a60;
 }
 
 .title {
@@ -145,7 +144,7 @@ function activeLines(section: any): string[] {
 .subtitle {
   display: block;
   margin-top: 10px;
-  color: rgba(131, 24, 67, 0.62);
+  color: #4c5360;
 }
 
 .legal-content {
@@ -155,18 +154,18 @@ function activeLines(section: any): string[] {
 
 .section-card {
   padding: 24px;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.86);
-  border: 1px solid rgba(131, 24, 67, 0.08);
-  box-shadow: 0 18px 36px rgba(131, 24, 67, 0.08);
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #dde1e8;
+  box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
 }
 
 .section-index {
   display: block;
-  color: #ca8a04;
+  color: #116a60;
   font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
 }
 
 .section-title {
@@ -178,7 +177,7 @@ function activeLines(section: any): string[] {
 .section-line {
   display: block;
   margin-top: 10px;
-  color: rgba(131, 24, 67, 0.76);
+  color: #4c5360;
   line-height: 1.8;
   font-size: 14px;
 }

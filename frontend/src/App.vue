@@ -43,45 +43,44 @@ watch(() => i18nStore.locale, () => {
 }
 
 page {
-  background-color: var(--color-background, #FDF2F8);
+  background-color: var(--color-background, #F7F8FA);
   font-family: $uni-font-family-sans;
   color: $uni-text-color;
   line-height: 1.6;
 }
 
-/* THE UNIFIER CLASS - The Studio Frame */
 page {
-  background: radial-gradient(circle at top right, #FDF2F8 0%, #FCE7F3 100%);
+  background: #F7F8FA;
   min-height: 100vh;
 }
 
 .app-container {
-  max-width: $uni-container-width;
+  width: 100%;
+  max-width: none;
   margin: 0 auto;
   min-height: 100vh;
-  background-color: #ffffff;
-  box-shadow: 0 0 100px rgba(131, 24, 67, 0.05);
+  background-color: #F7F8FA;
+  box-shadow: none;
   position: relative;
   display: flex;
   flex-direction: column;
   overflow-x: hidden;
 }
 
-/* Common Card Style - Liquid Glass Inspired */
+/* Common Card Style */
 .common-card {
   margin: $uni-space-md;
   padding: $uni-space-lg;
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(10px);
+  background: #ffffff;
   border-radius: $uni-border-radius-base;
   box-shadow: $uni-shadow-base;
-  border: 1px solid rgba(252, 231, 243, 0.5);
+  border: 1px solid $uni-color-border;
   transition: all $uni-transition-base;
   cursor: pointer;
   
   &:hover {
     box-shadow: $uni-shadow-lg;
-    border-color: rgba($uni-color-primary, 0.2);
+    border-color: rgba($uni-color-primary, 0.28);
   }
 }
 
@@ -91,9 +90,9 @@ page {
 .heading-serif {
   font-family: $uni-font-family;
   font-weight: 500;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: $uni-text-color;
-  font-style: italic;
+  font-style: normal;
 }
 
 .heading-1 {
@@ -135,7 +134,7 @@ page {
 }
 
 /* ========================================
-   Button Styles - Liquid Glass CTA
+   Button Styles
    ======================================== */
 .btn {
   display: inline-flex;
@@ -145,7 +144,7 @@ page {
   font-size: $uni-font-size-base;
   font-weight: 600;
   font-family: $uni-font-family-sans;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
   cursor: pointer;
   transition: all $uni-transition-base;
   border: none;
@@ -153,9 +152,9 @@ page {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, $uni-color-primary, $uni-color-secondary);
+  background: $uni-color-primary;
   color: $uni-color-white;
-  box-shadow: 0 8px 20px rgba($uni-color-primary, 0.2);
+  box-shadow: 0 8px 20px rgba($uni-color-primary, 0.16);
   
   &:hover {
     transform: translateY(-2px);
@@ -165,7 +164,7 @@ page {
 }
 
 .btn-gold {
-  background: linear-gradient(135deg, $uni-color-accent, #EAB308);
+  background: $uni-color-accent;
   color: $uni-color-white;
   box-shadow: 0 8px 20px rgba($uni-color-accent, 0.2);
   

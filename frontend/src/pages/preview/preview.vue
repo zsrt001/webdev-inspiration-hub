@@ -375,7 +375,7 @@ const userUploadUrl = computed(() => {
 const previewImageUrl = computed(() => {
   const urls = orderStore.currentOrder?.preview_image_urls;
   if (urls) return Object.values(urls)[0];
-  return 'https://placehold.co/600x800/FDF2F8/831843?text=Developing';
+  return 'https://placehold.co/600x800/F7F8FA/17191F?text=Developing';
 });
 
 const hdImageUrl = computed(() => {
@@ -1743,4 +1743,3 @@ onUnmounted(() => {
   }
 }
 </style>
-

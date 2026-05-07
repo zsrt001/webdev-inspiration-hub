@@ -257,7 +257,7 @@ onMounted(async () => {
 <style lang="scss" scoped>
 .detail-page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #fffdfd 0%, #fdf2f8 100%);
+  background: #f7f8fa;
 }
 
 .detail-shell {
@@ -268,9 +268,10 @@ onMounted(async () => {
 
 .detail-hero,
 .support-card {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(131, 24, 67, 0.08);
-  border-radius: 30px;
+  background: #ffffff;
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
+  box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
 }
 
 .detail-hero {
@@ -286,18 +287,23 @@ onMounted(async () => {
 }
 
 .hero-media {
-  min-height: 700px;
-  border-radius: 24px;
+  aspect-ratio: 4 / 5;
+  min-height: auto;
+  border-radius: 8px;
   overflow: hidden;
+  background: #d9dde3;
 
   @media (max-width: 1120px) {
-    min-height: 520px;
+    max-height: 620px;
   }
 }
 
 .hero-image {
   width: 100%;
   height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center top;
 }
 
 .hero-copy {
@@ -310,10 +316,9 @@ onMounted(async () => {
 .logic-title {
   display: block;
   font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: #ca8a04;
+  font-weight: 900;
+  letter-spacing: 0;
+  color: #116a60;
 }
 
 .hero-kicker {
@@ -324,7 +329,7 @@ onMounted(async () => {
   display: block;
   font-size: 54px;
   line-height: 1.02;
-  color: #831843;
+  color: #17191f;
   margin-bottom: 16px;
 }
 
@@ -335,7 +340,7 @@ onMounted(async () => {
   display: block;
   font-size: 14px;
   line-height: 1.8;
-  color: rgba(131, 24, 67, 0.76);
+  color: #4c5360;
 }
 
 .hero-subtitle {
@@ -365,7 +370,7 @@ onMounted(async () => {
   height: 8px;
   border-radius: 999px;
   margin-top: 9px;
-  background: #db2777;
+  background: #116a60;
   flex-shrink: 0;
 }
 
@@ -382,9 +387,9 @@ onMounted(async () => {
 
 .logic-card {
   padding: 16px 18px;
-  border-radius: 22px;
-  background: rgba(253, 242, 248, 0.68);
-  border: 1px solid rgba(219, 39, 119, 0.12);
+  border-radius: 8px;
+  background: #f3faf8;
+  border: 1px solid rgba(17, 106, 96, 0.16);
 }
 
 .logic-title {
@@ -408,7 +413,7 @@ onMounted(async () => {
 .support-title {
   display: block;
   font-size: 30px;
-  color: #831843;
+  color: #17191f;
   margin-bottom: 12px;
 }
 
@@ -418,9 +423,9 @@ onMounted(async () => {
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 999px;
-  background: rgba(131, 24, 67, 0.08);
-  color: #831843;
+  border-radius: 8px;
+  background: #eef7f5;
+  color: #116a60;
   font-size: 12px;
   font-weight: 800;
   flex-shrink: 0;

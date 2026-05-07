@@ -213,7 +213,7 @@ const refresh = () => {
 <style lang="scss" scoped>
 .orders-page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #fffdfd 0%, #fdf2f8 100%);
+  background: #f7f8fa;
 }
 
 .orders-shell {
@@ -231,17 +231,16 @@ const refresh = () => {
   display: block;
   margin-bottom: 10px;
   font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.18em;
-  color: #ca8a04;
-  text-transform: uppercase;
+  font-weight: 900;
+  letter-spacing: 0;
+  color: #116a60;
 }
 
 .orders-title {
   display: block;
   font-size: 52px;
   line-height: 1;
-  color: #831843;
+  color: #17191f;
   margin-bottom: 10px;
 }
 
@@ -250,7 +249,7 @@ const refresh = () => {
   max-width: 640px;
   font-size: 15px;
   line-height: 1.8;
-  color: rgba(131, 24, 67, 0.72);
+  color: #4c5360;
 }
 
 .orders-stats {
@@ -264,10 +263,10 @@ const refresh = () => {
 .order-card,
 .state-card,
 .inline-error {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(131, 24, 67, 0.08);
-  border-radius: 28px;
-  box-shadow: 0 18px 38px rgba(131, 24, 67, 0.06);
+  background: #ffffff;
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
+  box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
 }
 
 .stat-card {
@@ -278,17 +277,16 @@ const refresh = () => {
   display: block;
   margin-bottom: 8px;
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  color: rgba(131, 24, 67, 0.58);
-  text-transform: uppercase;
+  font-weight: 900;
+  letter-spacing: 0;
+  color: #6b7280;
 }
 
 .stat-value {
   display: block;
   font-size: 34px;
   line-height: 1;
-  color: #831843;
+  color: #17191f;
 }
 
 .orders-grid {
@@ -303,13 +301,15 @@ const refresh = () => {
 
 .order-media-wrap {
   position: relative;
-  background: #f8f4f7;
+  background: #d9dde3;
 }
 
 .order-media {
   width: 100%;
   aspect-ratio: 4 / 5;
   display: block;
+  object-fit: cover;
+  object-position: center top;
 }
 
 .status-badge {
@@ -318,15 +318,15 @@ const refresh = () => {
   right: 16px;
   min-height: 34px;
   padding: 0 12px;
-  border-radius: 999px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   background: rgba(255, 255, 255, 0.95);
-  color: #831843;
+  color: #17191f;
 
   &.completed {
     background: rgba(16, 185, 129, 0.14);
@@ -339,8 +339,8 @@ const refresh = () => {
   }
 
   &.pending {
-    background: rgba(219, 39, 119, 0.12);
-    color: #831843;
+    background: rgba(17, 106, 96, 0.12);
+    color: #116a60;
   }
 }
 
@@ -352,7 +352,7 @@ const refresh = () => {
   display: block;
   font-size: 28px;
   line-height: 1.08;
-  color: #831843;
+  color: #17191f;
   margin-bottom: 12px;
 }
 
@@ -366,13 +366,13 @@ const refresh = () => {
 
 .order-meta {
   font-size: 12px;
-  color: rgba(131, 24, 67, 0.66);
+  color: #6b7280;
   margin-bottom: 14px;
 }
 
 .order-footer {
   padding-top: 14px;
-  border-top: 1px solid rgba(131, 24, 67, 0.08);
+  border-top: 1px solid #edf0f4;
 }
 
 .order-id,
@@ -382,11 +382,11 @@ const refresh = () => {
 }
 
 .order-id {
-  color: rgba(131, 24, 67, 0.55);
+  color: #6b7280;
 }
 
 .order-link {
-  color: #db2777;
+  color: #116a60;
 }
 
 .state-card,
@@ -398,14 +398,14 @@ const refresh = () => {
 .state-icon {
   display: block;
   font-size: 34px;
-  color: #db2777;
+  color: #116a60;
   margin-bottom: 14px;
 }
 
 .state-title {
   display: block;
   font-size: 16px;
-  color: #831843;
+  color: #17191f;
 }
 
 .state-action,

@@ -435,9 +435,7 @@ onMounted(loadAccount);
 <style lang="scss" scoped>
 .account-page {
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 10% 12%, rgba(244, 114, 182, 0.18), transparent 34%),
-    linear-gradient(180deg, #fffdfd 0%, #fdf2f8 100%);
+  background: #f7f8fa;
 }
 
 .account-shell {
@@ -459,10 +457,9 @@ onMounted(loadAccount);
 .section-kicker {
   display: block;
   font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  color: #ca8a04;
-  text-transform: uppercase;
+  font-weight: 900;
+  letter-spacing: 0;
+  color: #116a60;
 }
 
 .account-title {
@@ -471,7 +468,7 @@ onMounted(loadAccount);
   margin-top: 10px;
   font-size: 52px;
   line-height: 1.02;
-  color: #831843;
+  color: #17191f;
 }
 
 .account-subtitle,
@@ -481,7 +478,7 @@ onMounted(loadAccount);
   margin-top: 12px;
   font-size: 13px;
   line-height: 1.8;
-  color: rgba(131, 24, 67, 0.68);
+  color: #4c5360;
 }
 
 .hero-actions,
@@ -517,10 +514,10 @@ onMounted(loadAccount);
 
 .glass-card,
 .state-card {
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(131, 24, 67, 0.08);
-  border-radius: 30px;
-  box-shadow: 0 24px 48px rgba(131, 24, 67, 0.08);
+  background: #ffffff;
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
+  box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
 }
 
 .profile-card,
@@ -541,9 +538,9 @@ onMounted(loadAccount);
 .avatar {
   width: 72px;
   height: 72px;
-  border-radius: 24px;
+  border-radius: 8px;
   overflow: hidden;
-  background: linear-gradient(135deg, #831843, #db2777);
+  background: #17191f;
 }
 
 .fallback-avatar {
@@ -561,7 +558,7 @@ onMounted(loadAccount);
   margin-top: 5px;
   font-size: 24px;
   font-weight: 800;
-  color: #831843;
+  color: #17191f;
 }
 
 .subscription-name {
@@ -574,7 +571,7 @@ onMounted(loadAccount);
 .credit-copy {
   display: block;
   font-size: 13px;
-  color: rgba(131, 24, 67, 0.58);
+  color: #6b7280;
 }
 
 .profile-meta {
@@ -588,13 +585,13 @@ onMounted(loadAccount);
   justify-content: space-between;
   gap: 16px;
   padding: 12px 0;
-  border-bottom: 1px solid rgba(131, 24, 67, 0.06);
+  border-bottom: 1px solid #edf0f4;
   font-size: 14px;
-  color: rgba(131, 24, 67, 0.72);
+  color: #4c5360;
 }
 
 .meta-row text:last-child {
-  color: #831843;
+  color: #17191f;
   font-weight: 700;
   text-align: right;
 }
@@ -608,14 +605,14 @@ onMounted(loadAccount);
   margin-top: 12px;
   font-size: 76px;
   line-height: 0.95;
-  color: #831843;
+  color: #116a60;
 }
 
 .credit-status {
   display: inline-flex;
   margin: 18px 0 10px;
   padding: 8px 12px;
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(22, 163, 74, 0.1);
   color: #166534;
   font-size: 12px;
@@ -644,17 +641,17 @@ onMounted(loadAccount);
   margin-top: 4px;
   font-size: 24px;
   font-weight: 800;
-  color: #831843;
+  color: #17191f;
 }
 
 .mini-link {
   min-width: 60px;
   height: 34px;
   padding: 0 12px;
-  border: 1px solid rgba(131, 24, 67, 0.16);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  color: #831843;
+  border: 1px solid #dde1e8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #116a60;
   font-size: 12px;
   font-weight: 800;
 }
@@ -677,8 +674,8 @@ onMounted(loadAccount);
   justify-content: space-between;
   gap: 14px;
   padding: 14px;
-  border-radius: 20px;
-  background: rgba(253, 242, 248, 0.68);
+  border-radius: 8px;
+  background: #f7f8fa;
 }
 
 .order-row {
@@ -689,7 +686,7 @@ onMounted(loadAccount);
   display: block;
   font-size: 15px;
   font-weight: 800;
-  color: #831843;
+  color: #17191f;
 }
 
 .row-side {
@@ -700,7 +697,7 @@ onMounted(loadAccount);
   display: block;
   font-size: 18px;
   font-weight: 900;
-  color: #831843;
+  color: #17191f;
 }
 
 .amount.positive {
@@ -714,8 +711,8 @@ onMounted(loadAccount);
 .order-thumb {
   width: 58px;
   height: 58px;
-  border-radius: 18px;
-  background: #f8f4f7;
+  border-radius: 8px;
+  background: #d9dde3;
   flex: 0 0 auto;
 }
 
@@ -726,7 +723,7 @@ onMounted(loadAccount);
 
 .order-status {
   padding: 7px 10px;
-  border-radius: 999px;
+  border-radius: 8px;
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
@@ -756,14 +753,14 @@ onMounted(loadAccount);
   gap: 14px;
   min-height: 180px;
   padding: 24px;
-  color: rgba(131, 24, 67, 0.62);
+  color: #6b7280;
   text-align: center;
 }
 
 .state-title {
   font-size: 16px;
   font-weight: 800;
-  color: #831843;
+  color: #17191f;
 }
 
 .error-card {

@@ -42,6 +42,6 @@ onMounted(() => {
 
 .redirect-title {
   font-size: 28px;
-  color: #831843;
+  color: #17191f;
 }
 </style>

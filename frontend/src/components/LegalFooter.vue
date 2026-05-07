@@ -30,7 +30,7 @@ function open(url: string) {
   padding: 28px 20px 34px;
   max-width: 980px;
   text-align: center;
-  color: rgba(131, 24, 67, 0.62);
+  color: #6b7280;
 }
 
 .footer-note {
@@ -48,14 +48,14 @@ function open(url: string) {
 }
 
 .footer-link {
-  color: #db2777;
+  color: #116a60;
   font-size: 12px;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 }
 
 .footer-dot {
-  color: rgba(131, 24, 67, 0.35);
+  color: #aeb6c2;
   font-size: 12px;
 }
 </style>

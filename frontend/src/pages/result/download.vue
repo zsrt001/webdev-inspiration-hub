@@ -98,7 +98,7 @@ onMounted(() => {
   border: 1px solid rgba($uni-color-primary, 0.12);
   border-radius: 32px;
   padding: 40px;
-  box-shadow: 0 24px 60px rgba(131, 24, 67, 0.08);
+  box-shadow: 0 24px 60px rgba(23, 25, 31, 0.1);
 }
 
 .eyebrow {
