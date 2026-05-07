@@ -31,6 +31,7 @@ _SUPABASE_POOLER_REGIONS = (
     "ap-east-1",
     "sa-east-1",
 )
+_SUPABASE_POOLER_PREFIXES = ("aws-0", "aws-1")
 _detected_supabase_pooler_host: str | None = None
 
 
@@ -104,7 +105,11 @@ def _supabase_pooler_hosts() -> list[str]:
     explicit = str(settings.supabase_pooler_host or "").strip()
     if explicit:
         return [explicit]
-    hosts = [f"aws-0-{region}.pooler.supabase.com" for region in _SUPABASE_POOLER_REGIONS]
+    hosts = [
+        f"{prefix}-{region}.pooler.supabase.com"
+        for prefix in _SUPABASE_POOLER_PREFIXES
+        for region in _SUPABASE_POOLER_REGIONS
+    ]
     preferred = _supabase_pooler_host()
     return [preferred, *(host for host in hosts if host != preferred)]
 
