@@ -5,30 +5,30 @@
       <view class="hero-card">
         <view class="hero-main">
           <text class="hero-kicker">{{ tr('AI 婚纱创作台', 'AI Wedding Studio') }}</text>
-          <text class="hero-title heading-serif">{{ tr('先定人数，再选自由创作或模板风格', 'Choose the subject count, then start from free direction or a style') }}</text>
-          <text class="hero-subtitle">{{ tr('自由模式优先保留你的描述权；模板用于快速锁定画面基调。必填只有人物照片，其余服装、场景、参考图都是增强项。', 'Free direction keeps creative control first; templates quickly anchor the mood. Portraits are required, while outfit, scene, and references are optional enhancers.') }}</text>
+          <text class="hero-title heading-serif">{{ tr('先把照片上传好，再决定要不要加风格', 'Upload portraits first, then add style if needed') }}</text>
+          <text class="hero-subtitle">{{ tr('主线只有两步：选择生成对象、上传人物照片。自由文字、模板风格和参考图都是增强项，用来让结果更贴近你的想法。', 'The core path has two steps: choose the subject count and upload portraits. Text direction, style templates, and references are enhancers that refine the result.') }}</text>
           <view class="flow-strip">
-            <view class="flow-step">{{ tr('1 输出人数', '1 Subject count') }}</view>
-            <view class="flow-step">{{ tr('2 自由/模板', '2 Free or style') }}</view>
-            <view class="flow-step">{{ tr('3 上传人物', '3 Upload portraits') }}</view>
-            <view class="flow-step subtle">{{ tr('可选增强', 'Optional enhancers') }}</view>
+            <view class="flow-step primary">{{ tr('1 选人数', '1 Choose count') }}</view>
+            <view class="flow-step primary">{{ tr('2 上传照片', '2 Upload portraits') }}</view>
+            <view class="flow-step subtle">{{ tr('3 风格增强', '3 Style enhancers') }}</view>
+            <view class="flow-step subtle">{{ tr('4 开始生成', '4 Generate') }}</view>
           </view>
         </view>
         <view class="hero-aside">
-          <text class="aside-title">{{ tr('当前流程', 'Current Flow') }}</text>
+          <text class="aside-title">{{ tr('当前主线', 'Core Flow') }}</text>
           <text class="aside-mode">{{ outputModeLabel }}</text>
-          <text class="aside-copy">{{ tr('切换单人或双人后，下方风格库会自动切换对应示例图。', 'After switching solo or couple mode, the style gallery shows matching preview images.') }}</text>
+          <text class="aside-copy">{{ tr('照片齐了就能生成；风格、文字和参考图只负责提升命中率，不再挡住主流程。', 'Once portraits are ready, generation can start. Style, text, and references only improve precision without blocking the core path.') }}</text>
         </view>
       </view>
 
       <view class="layout">
         <view class="main-col">
-          <view class="panel">
+          <view class="panel primary-panel">
             <view class="panel-head">
-              <text class="badge">STEP 01</text>
+              <text class="badge required">{{ tr('必填 01', 'Required 01') }}</text>
               <text class="panel-title heading-serif">{{ tr('选择输出人数', 'Choose Subject Count') }}</text>
             </view>
-            <text class="panel-desc">{{ tr('这一步决定需要上传几张人物照片，也决定下方展示单人还是双人风格。', 'This determines how many portraits are needed and whether the gallery shows solo or couple styles.') }}</text>
+            <text class="panel-desc">{{ tr('先确定是单人还是双人。这个选择会决定需要几张人物照片，也会自动筛选后面的参考风格。', 'First decide solo or couple. This sets the required portraits and filters the optional style references later.') }}</text>
 
             <view class="mode-grid">
               <view v-for="mode in modeOptions" :key="mode.value" class="mode-card" :class="{ active: generationMode === mode.value }" @tap="setMode(mode.value)">
@@ -38,45 +38,19 @@
             </view>
           </view>
 
-          <view class="panel">
+          <view class="panel primary-panel">
             <view class="panel-head">
-              <text class="badge">STEP 02</text>
-              <text class="panel-title heading-serif">{{ tr('选择自由模式或模板风格', 'Choose Free Direction or a Style') }}</text>
-            </view>
-            <text class="panel-desc">{{ styleModeHint }}</text>
-            <view class="free-mode-card" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">
-              <image :src="resolvePublicUrl('/style-previews/custom_mode.jpg')" class="free-mode-image" mode="aspectFill" />
-              <view class="free-mode-copy">
-                <text class="free-mode-label">{{ tr('默认推荐', 'Recommended Default') }}</text>
-                <text class="free-mode-title heading-serif">{{ tr('自由模式', 'Free Direction') }}</text>
-                <text class="free-mode-desc">{{ tr('不锁死模板，优先听从你写的服装、场景和氛围描述。适合有明确想法的用户。', 'No locked template. Your outfit, scene, and mood direction lead the result, ideal when you already have a clear idea.') }}</text>
-              </view>
-            </view>
-
-            <view class="style-section-head">
-              <text>{{ generationMode === 'single' ? tr('单人风格库', 'Solo Styles') : tr('双人风格库', 'Couple Styles') }}</text>
-              <text>{{ tr('已按当前输出人数筛选', 'Filtered by current subject count') }}</text>
-            </view>
-            <view class="style-grid">
-              <view v-for="card in styleCards" :key="card.familyKey" class="style-card" :class="{ active: selectedStyleFamily === card.familyKey }" @tap="selectedStyleFamily = card.familyKey">
-                <image :src="card.imageUrl" class="style-image" mode="aspectFill" />
-                <view class="style-copy">
-                  <text class="style-title heading-serif">{{ card.title }}</text>
-                  <text class="style-subtitle">{{ card.subtitle }}</text>
-                </view>
-              </view>
-            </view>
-          </view>
-
-          <view class="panel">
-            <view class="panel-head">
-              <text class="badge">STEP 03</text>
+              <text class="badge required">{{ tr('必填 02', 'Required 02') }}</text>
               <text class="panel-title heading-serif">{{ tr('上传人物照片', 'Upload Portraits') }}</text>
             </view>
             <text class="panel-desc">{{ portraitHint }}</text>
+            <view class="primary-guidance">
+              <text class="guidance-title">{{ tr('先完成这里', 'Do this first') }}</text>
+              <text class="guidance-copy">{{ primaryPhotoInstruction }}</text>
+            </view>
 
             <view class="portrait-grid" :class="{ single: generationMode === 'single', remote: generationMode === 'couple_remote' }">
-              <view v-for="index in portraitIndexes" :key="index" class="upload-card">
+              <view v-for="index in portraitIndexes" :key="index" class="upload-card main-upload-card">
                 <text class="field-label">{{ portraitLabel(index) }}</text>
                 <view v-if="portraitSlots[index].localPath" class="preview-box">
                   <image :src="portraitSlots[index].localPath" class="preview-image" mode="aspectFill" />
@@ -85,15 +59,16 @@
                     <button class="mini-btn ghost" @tap.stop="clearPortrait(index)">{{ tr('移除', 'Remove') }}</button>
                   </view>
                 </view>
-                <view v-else class="empty-box" @tap="pickPortrait(index)">
+                <view v-else class="empty-box primary-empty" @tap="pickPortrait(index)">
                   <text class="empty-plus">+</text>
                   <text class="empty-title">{{ portraitCta(index) }}</text>
+                  <text class="empty-hint">{{ tr('清晰正脸、无遮挡，生成效果更稳定', 'Clear unobstructed faces produce steadier results') }}</text>
                 </view>
               </view>
 
               <view v-if="generationMode === 'couple_remote'" class="remote-card">
                 <text class="field-label">{{ tr('异地合拍邀请', 'Remote Couple Invite') }}</text>
-                <text class="remote-desc">{{ tr('上传你的照片后创建邀请链接，对方补充照片后再生成。', 'Upload your portrait, create an invite link, then generate after your partner adds theirs.') }}</text>
+                <text class="remote-desc">{{ tr('先上传你的照片，再创建邀请链接。对方补充照片后，右侧检查项会变为就绪。', 'Upload your portrait first, then create an invite link. Once your partner uploads theirs, the checklist will be ready.') }}</text>
                 <view class="remote-actions">
                   <button class="btn btn-outline remote-btn" @tap="createRemoteInvite" :disabled="remoteCreating">
                     {{ remoteSession ? tr('刷新邀请', 'Refresh Invite') : tr('创建邀请', 'Create Invite') }}
@@ -109,16 +84,53 @@
             </view>
           </view>
 
-          <view class="panel optional-panel">
+          <view class="panel enhancer-panel">
             <view class="panel-head">
-              <text class="badge optional">{{ selectedStyleFamily ? 'OPTIONAL' : 'RECOMMENDED' }}</text>
+              <text class="badge optional">{{ tr('增强 03', 'Enhance 03') }}</text>
               <text class="panel-title heading-serif">{{ directionPanelTitle }}</text>
             </view>
             <text class="panel-desc">{{ directionPanelDesc }}</text>
-            <textarea v-model="globalStyleText" class="text-area large" :placeholder="tr('整体方向：如极简高级、法式电影感、复古胶片、低饱和纪实', 'Overall direction: minimal luxury, French cinematic, vintage film, low-saturation documentary...')" maxlength="400" />
-            <view class="dual-inputs">
-              <textarea v-model="outfitText" class="text-area" :placeholder="tr('服装方向：如缎面白纱、黑色鱼尾裙、中式秀禾、复古西装', 'Outfit direction: satin white dress, black mermaid gown, Chinese xiuhe, vintage suit...')" maxlength="300" />
-              <textarea v-model="sceneText" class="text-area" :placeholder="tr('场景方向：如白色画廊、古堡阳台、海边日落、中式庭院', 'Scene direction: white gallery, castle balcony, sunset beach, Chinese courtyard...')" maxlength="300" />
+            <view class="direction-card">
+              <view class="direction-head">
+                <view>
+                  <text class="direction-kicker">{{ tr('推荐先写文字', 'Text first') }}</text>
+                  <text class="direction-title">{{ tr('像和摄影师沟通一样描述即可', 'Describe it like a photographer brief') }}</text>
+                </view>
+                <view class="direction-status" :class="{ active: hasDirectionText }">
+                  {{ hasDirectionText ? tr('已填写', 'Added') : tr('可跳过', 'Optional') }}
+                </view>
+              </view>
+              <textarea v-model="globalStyleText" class="text-area large" :placeholder="tr('整体方向：如极简高级、法式电影感、复古胶片、低饱和纪实', 'Overall direction: minimal luxury, French cinematic, vintage film, low-saturation documentary...')" maxlength="400" />
+              <view class="dual-inputs">
+                <textarea v-model="outfitText" class="text-area" :placeholder="tr('服装方向：如缎面白纱、黑色鱼尾裙、中式秀禾、复古西装', 'Outfit direction: satin white dress, black mermaid gown, Chinese xiuhe, vintage suit...')" maxlength="300" />
+                <textarea v-model="sceneText" class="text-area" :placeholder="tr('场景方向：如白色画廊、古堡阳台、海边日落、中式庭院', 'Scene direction: white gallery, castle balcony, sunset beach, Chinese courtyard...')" maxlength="300" />
+              </view>
+            </view>
+
+            <view class="style-section-head">
+              <text>{{ generationMode === 'single' ? tr('参考风格（单人）', 'Reference Styles (solo)') : tr('参考风格（双人）', 'Reference Styles (couple)') }}</text>
+              <text>{{ tr('可选：不选模板时按文字自由生成', 'Optional: skip templates to follow text freely') }}</text>
+            </view>
+            <view class="free-mode-card compact" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">
+              <view class="free-mode-copy">
+                <text class="free-mode-label">{{ tr('默认', 'Default') }}</text>
+                <text class="free-mode-title heading-serif">{{ tr('不套模板，按文字自由生成', 'No template, follow text freely') }}</text>
+                <text class="free-mode-desc">{{ tr('适合已经有明确服装、场景或氛围想法的用户。', 'Best when you already know the outfit, scene, or mood you want.') }}</text>
+              </view>
+            </view>
+            <view class="style-grid">
+              <view v-for="card in styleCards" :key="card.familyKey" class="style-card" :class="{ active: selectedStyleFamily === card.familyKey }" @tap="selectedStyleFamily = card.familyKey">
+                <image :src="card.imageUrl" class="style-image" mode="aspectFill" />
+                <view class="style-copy">
+                  <text class="style-title heading-serif">{{ card.title }}</text>
+                  <text class="style-subtitle">{{ card.subtitle }}</text>
+                </view>
+              </view>
+            </view>
+
+            <view class="style-section-head reference-head">
+              <text>{{ tr('参考图（可选）', 'Reference Images (optional)') }}</text>
+              <text>{{ tr('只有需要精准复刻服装或场景时再上传', 'Only upload when outfit or scene needs to be very specific') }}</text>
             </view>
             <view class="reference-grid">
               <view class="upload-card">
@@ -157,15 +169,15 @@
           <view class="summary-card">
             <image :src="summaryImageUrl" class="summary-image" mode="aspectFill" />
             <view class="summary-body">
-              <text class="summary-kicker">{{ tr('创作预览', 'Creation Preview') }}</text>
-              <text class="summary-title heading-serif">{{ summaryTitle }}</text>
-              <text class="summary-subtitle">{{ summarySubtitle }}</text>
+              <text class="summary-kicker">{{ tr('提交检查', 'Submit Checklist') }}</text>
+              <text class="summary-title heading-serif">{{ readinessTitle }}</text>
+              <text class="summary-subtitle">{{ readinessSubtitle }}</text>
               <view class="tag-row">
                 <view class="tag">{{ outputModeLabel }}</view>
                 <view class="tag subtle">{{ templateStateLabel }}</view>
               </view>
               <view class="summary-block">
-                <text class="summary-block-title">{{ tr('创作建议', 'Creation Tip') }}</text>
+                <text class="summary-block-title">{{ tr('增强项说明', 'Enhancer Note') }}</text>
                 <text class="summary-block-text">{{ summaryTip }}</text>
               </view>
               <view class="summary-checklist">
@@ -173,13 +185,13 @@
                   <view class="check-dot"></view>
                   <text>{{ outputModeLabel }}</text>
                 </view>
-                <view class="check-row" :class="{ done: selectedStyleFamily || hasDirectionText }">
-                  <view class="check-dot"></view>
-                  <text>{{ selectedStyleFamily ? tr('已选择模板风格', 'Style selected') : hasDirectionText ? tr('已填写自由方向', 'Free direction added') : tr('自由模式：可直接上传生成', 'Free direction: ready to upload') }}</text>
-                </view>
                 <view class="check-row" :class="{ done: portraitRequirementMet }">
                   <view class="check-dot"></view>
                   <text>{{ portraitRequirementText }}</text>
+                </view>
+                <view class="check-row" :class="{ done: selectedStyleFamily || hasDirectionText || sceneReferencePath || outfitReferencePath }">
+                  <view class="check-dot"></view>
+                  <text>{{ enhancerStateText }}</text>
                 </view>
               </view>
               <view v-if="generationMode === 'couple_remote'" class="summary-block">
@@ -191,7 +203,7 @@
                 <text class="credit-value">{{ generationCost }}</text>
               </view>
               <button class="btn btn-primary create-btn shadow-glow" :disabled="!canSubmit || submitting" @tap="submitCreate">
-                {{ submitting ? tr('正在提交…', 'Submitting...') : tr('开始生成', 'Create Masterpiece') }}
+                {{ submitting ? tr('正在提交…', 'Submitting...') : tr('照片齐了，开始生成', 'Generate When Ready') }}
               </button>
               <LegalConsentInline v-model="legalAccepted" mode="generate" />
             </view>
@@ -272,6 +284,15 @@ const portraitHint = computed(() => generationMode.value === 'single'
   : generationMode.value === 'couple_local'
     ? tr('在同一设备上传两张照片，适合情侣、夫妻或纪念照双人生成。', 'Upload two portraits on one device for couple or anniversary portraits.')
     : tr('你先上传自己的照片，再复制邀请链接给对方补充第二张照片。', 'Upload your portrait first, then send the invite link so your partner can add theirs.'));
+const primaryPhotoInstruction = computed(() => {
+  if (generationMode.value === 'single') {
+    return tr('主流程只需要 1 张人物照片。上传后可以直接生成；想控制服装或场景时，再补充下方增强项。', 'The core flow only needs 1 portrait. After upload, you can generate directly; add enhancers only when you want outfit or scene control.');
+  }
+  if (generationMode.value === 'couple_local') {
+    return tr('主流程需要 2 张人物照片。两张照片齐了即可生成；模板、文字和参考图只是帮助画面更精准。', 'The core flow needs 2 portraits. Once both are uploaded, generation is ready; templates, text, and references only improve precision.');
+  }
+  return tr('主流程是：上传你的照片，创建邀请，等待对方补照片。双方照片齐了才能提交生成。', 'The core flow is: upload your portrait, create an invite, and wait for your partner. Generation starts only when both portraits are ready.');
+});
 const selectedTemplate = computed<Template | null>(() => {
   if (!selectedStyleFamily.value) return null;
   return styleCards.value.find((item) => item.familyKey === selectedStyleFamily.value)?.template || null;
@@ -302,19 +323,12 @@ const styleCards = computed(() => {
 });
 const hasDirectionText = computed(() => !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim()));
 const summaryImageUrl = computed(() => resolvePublicUrl(selectedTemplate.value?.image_url || '/style-previews/custom_mode.jpg'));
-const summaryTitle = computed(() => selectedTemplate.value ? getLocalizedTemplateTitle(selectedTemplate.value, i18nStore.locale) : tr('自由模式', 'Free Direction'));
-const summarySubtitle = computed(() => selectedTemplate.value
-  ? (getLocalizedTemplateMarketingSubtitle(selectedTemplate.value, i18nStore.locale) || tr('可以继续补充服装、场景和氛围，让结果更接近你的审美。', 'You can keep refining outfit, scene, and mood to match your taste.'))
-  : tr('不套固定模板，优先按照你的文字描述、人物照片和参考图生成。', 'No fixed template. The result follows your text direction, portraits, and optional references first.'));
-const styleModeHint = computed(() => generationMode.value === 'single'
-  ? tr('当前为单人输出，只展示单人婚纱风格。也可以保持自由模式，用文字直接描述想要的画面。', 'Solo output is selected, so only solo bridal styles are shown. You can also stay in free direction and describe the result directly.')
-  : tr('当前为双人输出，只展示双人合拍与纪念照风格。异地合拍也会沿用同一套双人风格。', 'Couple output is selected, so only couple and anniversary styles are shown. Remote couple uses the same couple style set.'));
 const directionPanelTitle = computed(() => selectedStyleFamily.value
-  ? tr('微调服装、场景与参考', 'Refine Outfit, Scene, and References')
-  : tr('自由描述服装、场景与氛围', 'Describe Outfit, Scene, and Mood Freely'));
+  ? tr('增强创作方向（可选）', 'Enhance Direction (optional)')
+  : tr('补充服装、场景与氛围（可选）', 'Add Outfit, Scene, and Mood (optional)'));
 const directionPanelDesc = computed(() => selectedStyleFamily.value
-  ? tr('已选择模板时，这些内容用于微调画面：服装、场景和参考图会影响细节，但不会覆盖模板的基础风格。', 'With a selected style, these fields refine the result. Outfit, scene, and references influence details without overriding the base style.')
-  : tr('自由模式下，这里是关键输入。建议写清楚服装、场景和整体氛围；不写也能生成，但结果会更依赖 AI 默认审美。', 'In free direction, this is the key input. Describe outfit, scene, and overall mood for better control; leaving it blank relies more on the AI default taste.'));
+  ? tr('你已经选择了参考风格。这里负责补充细节，例如指定礼服、地点、光线或想避开的元素。', 'You already selected a reference style. Use this area only to refine details such as outfit, location, lighting, or what to avoid.')
+  : tr('自由模式不强制选模板。想要更可控的结果时，优先写清楚服装、场景和整体氛围。', 'Free mode does not require a template. For more control, describe outfit, scene, and overall mood first.'));
 const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : tr('双人异地', 'Couple Remote'));
 const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式优先', 'Free Direction First'));
@@ -333,9 +347,21 @@ const portraitRequirementText = computed(() => {
   }
   return portraitRequirementMet.value ? tr('双方照片已就绪', 'Both portraits ready') : tr('需要你的照片和对方上传完成', 'Your portrait and guest upload are required');
 });
+const readinessTitle = computed(() => portraitRequirementMet.value
+  ? tr('主流程已就绪', 'Core Flow Ready')
+  : tr('先完成照片上传', 'Upload Portraits First'));
+const readinessSubtitle = computed(() => portraitRequirementMet.value
+  ? tr('现在可以直接生成。下方增强项会作为加分信息，不影响主流程提交。', 'You can generate now. Enhancers below are helpful extras and do not block the core submission.')
+  : primaryPhotoInstruction.value);
+const enhancerStateText = computed(() => {
+  if (selectedStyleFamily.value) return tr('已选择参考风格', 'Reference style selected');
+  if (hasDirectionText.value) return tr('已填写服装/场景方向', 'Outfit or scene direction added');
+  if (sceneReferencePath.value || outfitReferencePath.value) return tr('已上传参考图', 'Reference image added');
+  return tr('增强项未填写，可跳过', 'No enhancers added, can skip');
+});
 const summaryTip = computed(() => selectedTemplate.value
-  ? tr('模板决定基础风格；下方增强项会作为细节修正，不会覆盖人物照片的核心身份。', 'The template anchors the base look. Optional enhancers refine details without replacing the portrait identity.')
-  : tr('自由模式下，人物照片是基础；文字方向和参考图会获得更高优先级，用来决定服装、场景和氛围。', 'In free direction, portraits are the base. Text direction and references get higher priority for outfit, scene, and mood.'));
+  ? tr('参考风格只用来确定画面基调；人物照片仍是主体。服装、场景文字和参考图会作为细节补充。', 'The reference style only anchors the look; portraits remain the subject. Outfit, scene text, and references refine the details.')
+  : tr('不选择模板也可以生成。若想减少随机性，优先填写服装方向和场景方向，再上传参考图。', 'You can generate without a template. To reduce randomness, add outfit and scene direction first, then reference images if needed.'));
 const remoteStatusText = computed(() => {
   if (generationMode.value !== 'couple_remote') return '';
   const status = remoteStatus.value?.status || '';
@@ -646,6 +672,12 @@ onUnmounted(() => stopRemotePolling());
   font-weight: 900;
 }
 
+.flow-step.primary {
+  border-color: rgba(17, 106, 96, 0.32);
+  background: #eaf6f3;
+  color: #0b5e55;
+}
+
 .flow-step.subtle {
   border-color: #dde1e8;
   color: #4c5360;
@@ -751,6 +783,15 @@ onUnmounted(() => stopRemotePolling());
   padding: 20px;
 }
 
+.primary-panel {
+  border-color: rgba(17, 106, 96, 0.24);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfefd 100%);
+}
+
+.enhancer-panel {
+  background: #fcfcfd;
+}
+
 .panel-head {
   display: flex;
   align-items: center;
@@ -768,6 +809,10 @@ onUnmounted(() => stopRemotePolling());
   letter-spacing: 0;
 }
 
+.badge.required {
+  background: #0f1720;
+}
+
 .badge.optional {
   background: #f3faf8;
   color: #116a60;
@@ -777,6 +822,32 @@ onUnmounted(() => stopRemotePolling());
 .panel-title {
   color: #17191f;
   font-size: 28px;
+}
+
+.primary-guidance {
+  margin: 16px 0;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 106, 96, 0.2);
+  background: #f3faf8;
+}
+
+.guidance-title,
+.guidance-copy {
+  display: block;
+}
+
+.guidance-title {
+  margin-bottom: 4px;
+  color: #0b5e55;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.guidance-copy {
+  color: #38414d;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .collapse-toggle {
@@ -827,6 +898,13 @@ onUnmounted(() => stopRemotePolling());
   margin: 16px 0;
   border-radius: 8px;
   border: 1px solid #dde1e8;
+  background: #ffffff;
+}
+
+.free-mode-card.compact {
+  display: block;
+  grid-template-columns: none;
+  margin-top: 12px;
   background: #ffffff;
 }
 
@@ -881,12 +959,72 @@ onUnmounted(() => stopRemotePolling());
   font-weight: 900;
 }
 
+.direction-card {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #dde1e8;
+  background: #ffffff;
+}
+
+.direction-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.direction-kicker,
+.direction-title {
+  display: block;
+}
+
+.direction-kicker {
+  margin-bottom: 4px;
+  color: #116a60;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.direction-title {
+  color: #17191f;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.direction-status {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid #dde1e8;
+  background: #f7f8fa;
+  color: #4c5360;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.direction-status.active {
+  border-color: rgba(17, 106, 96, 0.3);
+  background: #eaf6f3;
+  color: #0b5e55;
+}
+
 .upload-card,
 .remote-card {
   border-radius: 8px;
   border: 1px solid #dde1e8;
   background: #fafbfc;
   padding: 16px;
+}
+
+.main-upload-card {
+  background: #ffffff;
+  border-color: rgba(17, 106, 96, 0.22);
 }
 
 .empty-box {
@@ -898,6 +1036,12 @@ onUnmounted(() => stopRemotePolling());
   align-items: center;
   justify-content: center;
   gap: 8px;
+}
+
+.primary-empty {
+  min-height: 320px;
+  border-color: rgba(17, 106, 96, 0.34);
+  background: #f8fcfb;
 }
 
 .empty-box.short {
@@ -914,6 +1058,14 @@ onUnmounted(() => stopRemotePolling());
   color: #17191f;
   font-size: 14px;
   font-weight: 800;
+}
+
+.empty-hint {
+  max-width: 240px;
+  color: #657080;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
 }
 
 .preview-box {
