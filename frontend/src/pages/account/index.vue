@@ -13,7 +13,10 @@
         </view>
 
         <view class="hero-actions">
-          <button v-if="!supabaseAuthed && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
+          <button v-if="!accountAuthed" class="btn btn-primary hero-btn" @tap="goLogin">
+            {{ tr('登录 / 注册', 'Sign in / Register') }}
+          </button>
+          <button v-if="!accountAuthed && supabaseEnabled" class="btn btn-outline hero-btn" @tap="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
           <button class="btn btn-outline hero-btn" @tap="refresh">{{ tr('刷新', 'Refresh') }}</button>
@@ -63,7 +66,7 @@
               </view>
             </view>
 
-            <button v-if="supabaseAuthed" class="btn btn-outline logout-btn" @tap="signOut">
+            <button v-if="accountAuthed" class="btn btn-outline logout-btn" @tap="signOut">
               {{ tr('退出登录', 'Sign out') }}
             </button>
           </view>
@@ -179,7 +182,7 @@ import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { useSubscriptionStore } from '../../stores/subscription';
 import { del, get, resolvePublicUrl } from '../../utils/api';
-import { getAuthProvider, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
+import { getAuthProvider, getUsername, isPasswordLoggedIn, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
 import { isSupabaseConfigured } from '../../utils/supabase';
 
 interface UserProfile {
@@ -251,9 +254,11 @@ const transactions = ref<CreditTransaction[]>([]);
 const orders = ref<Order[]>([]);
 const legalPolicies = ref<LegalPolicies | null>(null);
 const supabaseAuthed = ref(false);
+const passwordAuthed = ref(false);
 const supabaseEnabled = isSupabaseConfigured();
 
-const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('访客用户', 'Guest user'));
+const accountAuthed = computed(() => passwordAuthed.value || supabaseAuthed.value);
+const displayName = computed(() => profile.value?.nickname || profile.value?.email || getUsername() || tr('访客用户', 'Guest user'));
 const profileInitial = computed(() => (displayName.value || 'A').slice(0, 1).toUpperCase());
 const activePlanName = computed(() => subscriptionStore.activePlan?.name || tr('未订阅', 'No subscription'));
 const retentionNotice = computed(() => {
@@ -266,7 +271,9 @@ const retentionNotice = computed(() => {
 
 const providerLabel = computed(() => {
   if (supabaseAuthed.value) return 'Google / Supabase';
+  if (passwordAuthed.value) return tr('用户名密码', 'Username/password');
   const provider = getAuthProvider() || profile.value?.auth_provider || 'local';
+  if (provider === 'password') return tr('用户名密码', 'Username/password');
   return provider === 'local' ? tr('本地访客', 'Local guest') : provider;
 });
 
@@ -339,6 +346,7 @@ async function loadAccount(): Promise<void> {
   loading.value = true;
   error.value = '';
   supabaseAuthed.value = isSupabaseLoggedIn();
+  passwordAuthed.value = isPasswordLoggedIn();
 
   try {
     const [
@@ -366,6 +374,7 @@ async function loadAccount(): Promise<void> {
       : [];
     legalPolicies.value = legalResult.status === 'fulfilled' ? legalResult.value : null;
     supabaseAuthed.value = isSupabaseLoggedIn();
+    passwordAuthed.value = isPasswordLoggedIn();
   } catch (err: any) {
     error.value = err?.message || tr('账户数据加载失败', 'Failed to load account data');
   } finally {
@@ -383,6 +392,10 @@ async function signIn(): Promise<void> {
   } catch (err: any) {
     uni.showToast({ title: err?.message || tr('登录失败', 'Sign-in failed'), icon: 'none' });
   }
+}
+
+function goLogin(): void {
+  uni.navigateTo({ url: '/pages/auth/login' });
 }
 
 async function signOut(): Promise<void> {

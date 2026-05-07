@@ -15,6 +15,7 @@ const USER_ID_KEY = 'ai_wedding_user_id';
 const TOKEN_KEY = 'ai_wedding_token';
 const GUEST_ID_KEY = 'ai_wedding_guest_id';
 const AUTH_PROVIDER_KEY = 'ai_wedding_auth_provider';
+const AUTH_USERNAME_KEY = 'ai_wedding_username';
 
 let pendingSessionPromise: Promise<{ userId: string; token: string }> | null = null;
 
@@ -31,22 +32,38 @@ function resolveLoginUrl(apiBaseUrl?: string): string {
     return `${baseUrl}/auth/login`;
 }
 
-function normalizeLoginResponse(payload: any): { userId: string; token: string } {
+function resolveRegisterUrl(apiBaseUrl?: string): string {
+    const baseUrl = normalizeBaseUrl(apiBaseUrl) || resolveDefaultApiBaseUrl();
+    return `${baseUrl}/auth/register`;
+}
+
+function normalizeLoginResponse(payload: any): { userId: string; token: string; username?: string } {
     const data = payload?.data ?? payload ?? {};
     const userId = String(data?.user_id || data?.userId || '').trim();
     const token = String(data?.access_token || data?.accessToken || data?.token || '').trim();
+    const username = String(data?.username || '').trim();
 
     if (!userId || !isJwtToken(token)) {
         throw new Error('Invalid authentication response');
     }
 
-    return { userId, token };
+    return { userId, token, username };
 }
 
-function storeSession(userId: string, token: string, provider: 'local' | 'supabase' = 'local'): { userId: string; token: string } {
+function storeSession(
+    userId: string,
+    token: string,
+    provider: 'local' | 'password' | 'supabase' = 'local',
+    username?: string
+): { userId: string; token: string } {
     uni.setStorageSync(USER_ID_KEY, userId);
     uni.setStorageSync(TOKEN_KEY, token);
     uni.setStorageSync(AUTH_PROVIDER_KEY, provider);
+    if (username) {
+        uni.setStorageSync(AUTH_USERNAME_KEY, username);
+    } else if (provider !== 'password') {
+        uni.removeStorageSync(AUTH_USERNAME_KEY);
+    }
     return { userId, token };
 }
 
@@ -147,6 +164,51 @@ export async function login(apiBaseUrl?: string): Promise<{ userId: string; toke
     // #endif
 }
 
+async function submitPasswordAuth(
+    url: string,
+    username: string,
+    password: string
+): Promise<{ userId: string; token: string }> {
+    const cleanUsername = String(username || '').trim();
+    const response = await uni.request({
+        url,
+        method: 'POST',
+        data: { username: cleanUsername, password },
+        header: {
+            'Content-Type': 'application/json',
+            'X-Device-Id': getClientFingerprint(),
+        },
+    });
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+        const payload: any = response.data || {};
+        const detail = payload?.detail;
+        const message = typeof detail === 'string'
+            ? detail
+            : detail?.message || detail?.error || '账号或密码不正确';
+        throw new Error(message);
+    }
+
+    const session = normalizeLoginResponse(response.data);
+    return storeSession(session.userId, session.token, 'password', session.username || cleanUsername);
+}
+
+export async function registerWithPassword(
+    username: string,
+    password: string,
+    apiBaseUrl?: string
+): Promise<{ userId: string; token: string }> {
+    return submitPasswordAuth(resolveRegisterUrl(apiBaseUrl), username, password);
+}
+
+export async function loginWithPassword(
+    username: string,
+    password: string,
+    apiBaseUrl?: string
+): Promise<{ userId: string; token: string }> {
+    return submitPasswordAuth(resolveLoginUrl(apiBaseUrl), username, password);
+}
+
 export async function ensureSession(apiBaseUrl?: string): Promise<{ userId: string; token: string } | null> {
     // #ifdef H5
     const supabaseSession = await restoreSupabaseSession();
@@ -183,8 +245,22 @@ export function getAuthProvider(): string | null {
     return provider || null;
 }
 
+export function getUsername(): string | null {
+    const username = String(uni.getStorageSync(AUTH_USERNAME_KEY) || '').trim();
+    return username || null;
+}
+
 export function isSupabaseLoggedIn(): boolean {
     return getAuthProvider() === 'supabase' && isJwtToken(getToken());
+}
+
+export function isPasswordLoggedIn(): boolean {
+    return getAuthProvider() === 'password' && isJwtToken(getToken());
+}
+
+export function isGuestSession(): boolean {
+    const provider = getAuthProvider();
+    return !!getUserId() && isJwtToken(getToken()) && provider !== 'password' && provider !== 'supabase';
 }
 
 export function isLoggedIn(): boolean {
@@ -195,6 +271,7 @@ export function logout(): void {
     uni.removeStorageSync(USER_ID_KEY);
     uni.removeStorageSync(TOKEN_KEY);
     uni.removeStorageSync(AUTH_PROVIDER_KEY);
+    uni.removeStorageSync(AUTH_USERNAME_KEY);
     void signOutFromSupabase();
 }
 
@@ -209,10 +286,15 @@ export default {
     getToken,
     getUserId,
     getAuthProvider,
+    getUsername,
     getClientFingerprint,
     isLoggedIn,
+    isGuestSession,
+    isPasswordLoggedIn,
     isSupabaseLoggedIn,
     isJwtToken,
     getGuestUserId,
+    registerWithPassword,
+    loginWithPassword,
     signInWithGoogle,
 };

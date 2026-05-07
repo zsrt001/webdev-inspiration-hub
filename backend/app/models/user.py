@@ -28,6 +28,18 @@ class User(Base):
         index=True,
         comment="Stable local identity key",
     )
+    username: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+        index=True,
+        comment="Username for password-based sign-in",
+    )
+    password: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Bcrypt password hash for password-based sign-in",
+    )
     auth_provider: Mapped[str | None] = mapped_column(
         String(32),
         nullable=True,

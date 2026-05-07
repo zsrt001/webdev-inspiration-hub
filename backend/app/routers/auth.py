@@ -1,6 +1,9 @@
 """Authentication API routes."""
 
 import hashlib
+import importlib
+import re
+import sys
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -8,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from jose import jwt
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -20,16 +24,45 @@ from app.core.supabase_auth import (
     verify_supabase_token,
 )
 from app.models.user import User
-from app.schemas.auth import LoginRequest, LoginResponse, SupabaseSessionRequest
+from app.schemas.auth import LoginRequest, LoginResponse, RegisterRequest, SupabaseSessionRequest
 
 router = APIRouter()
 settings = get_settings()
 
 # JWT configuration
 ALGORITHM = "HS256"
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{2,63}$")
 NEW_ACCOUNT_IP_LIMITER = InMemoryRateLimiter(limit=settings.new_account_ip_limit_per_hour, window_seconds=3600)
 NEW_ACCOUNT_DEVICE_LIMITER = InMemoryRateLimiter(limit=settings.new_account_device_limit_per_hour, window_seconds=3600)
 DEFAULT_OAUTH_RETURN_PATH = "/pages/account/index"
+
+
+def _load_bcrypt():
+    try:
+        return importlib.import_module("bcrypt")
+    except ModuleNotFoundError as exc:
+        if exc.name != "bcrypt._bcrypt":
+            raise
+
+        for module_name in list(sys.modules):
+            if module_name == "bcrypt" or module_name.startswith("bcrypt."):
+                sys.modules.pop(module_name, None)
+
+        removed_paths: list[str] = []
+        for path in list(sys.path):
+            normalized = path.replace("\\", "/").lower()
+            if "/app/_vendor" in normalized:
+                sys.path.remove(path)
+                removed_paths.append(path)
+
+        try:
+            return importlib.import_module("bcrypt")
+        finally:
+            for path in reversed(removed_paths):
+                sys.path.insert(0, path)
+
+
+bcrypt = _load_bcrypt()
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -46,6 +79,40 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     return encoded_jwt
 
 
+@router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    request: RegisterRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> LoginResponse:
+    """Create a username/password account and immediately issue an app JWT."""
+    username = _normalize_username(request.username)
+    _validate_password(request.password)
+
+    result = await db.execute(select(User).where(User.username == username))
+    if result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    _enforce_new_account_risk_limits(http_request)
+    user = User(
+        openid=_local_openid_for_username(username),
+        username=username,
+        password=_hash_password(request.password),
+        auth_provider="password",
+        auth_subject=username,
+        nickname=username,
+        last_login_at=datetime.now(timezone.utc),
+    )
+    db.add(user)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Username already exists") from exc
+    await db.refresh(user)
+    return _build_login_response(user)
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: LoginRequest,
@@ -57,7 +124,11 @@ async def login(
 
     For current Web/MiniProgram flow, `code` is used as identity seed.
     A deterministic openid is derived from the provided code.
+    If username/password are provided, this endpoint performs password login.
     """
+    if request.username is not None or request.password is not None:
+        return await _login_with_password(request, db)
+
     raw_code = (request.code or "").strip()
     if not raw_code:
         raise HTTPException(status_code=400, detail="Missing login code")
@@ -87,6 +158,7 @@ async def login(
         token_type="bearer",
         openid=openid,
         user_id=user.id,
+        username=user.username,
     )
 
 
@@ -140,6 +212,79 @@ async def exchange_supabase_session(
         token_type="bearer",
         openid=user.openid,
         user_id=user.id,
+        username=user.username,
+    )
+
+
+async def _login_with_password(request: LoginRequest, db: AsyncSession) -> LoginResponse:
+    username = _normalize_username(request.username or "")
+    password = request.password or ""
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    stored_hash = user.password if user else None
+
+    if not user or not stored_hash or not _verify_password(password, stored_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+
+    user.last_login_at = datetime.now(timezone.utc)
+    await db.flush()
+    return _build_login_response(user)
+
+
+def _normalize_username(value: str) -> str:
+    username = (value or "").strip().lower()
+    if not USERNAME_RE.fullmatch(username):
+        raise HTTPException(
+            status_code=422,
+            detail="Username must be 3-64 characters and use letters, numbers, underscore, dot, or hyphen",
+        )
+    return username
+
+
+def _validate_password(value: str) -> None:
+    password = value or ""
+    if len(password) < 6 or len(password) > 128:
+        raise HTTPException(status_code=422, detail="Password must be 6-128 characters")
+
+
+def _hash_password(value: str) -> str:
+    return bcrypt.hashpw(_password_material(value), bcrypt.gensalt(rounds=12)).decode("ascii")
+
+
+def _verify_password(value: str, password_hash: str) -> bool:
+    if not value or not password_hash:
+        return False
+    try:
+        return bcrypt.checkpw(_password_material(value), password_hash.encode("ascii"))
+    except (TypeError, ValueError):
+        return False
+
+
+def _password_material(value: str) -> bytes:
+    # Bcrypt only accepts 72 input bytes. Pre-hashing keeps long Unicode passwords stable.
+    return hashlib.sha256(value.encode("utf-8")).hexdigest().encode("ascii")
+
+
+def _local_openid_for_username(username: str) -> str:
+    digest = hashlib.sha256(username.encode("utf-8")).hexdigest()[:32]
+    return f"local_{digest}"
+
+
+def _build_login_response(user: User) -> LoginResponse:
+    access_token = create_access_token(
+        data={
+            "sub": str(user.id),
+            "openid": user.openid,
+            "auth_provider": user.auth_provider or "password",
+            "username": user.username,
+        }
+    )
+    return LoginResponse(
+        access_token=access_token,
+        token_type="bearer",
+        openid=user.openid,
+        user_id=user.id,
+        username=user.username,
     )
 
 

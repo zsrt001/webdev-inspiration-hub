@@ -57,6 +57,20 @@
             }
         },
         {
+            "path": "pages/auth/login",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
+            "path": "pages/auth/register",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
             "path": "pages/join/landing",
             "style": {
                 "navigationStyle": "custom",

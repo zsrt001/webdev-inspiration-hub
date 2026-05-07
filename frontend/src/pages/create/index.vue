@@ -3,16 +3,21 @@
     <NavBar ref="navBarRef" @show-payment="showPaymentModal = true" />
     <view class="create-shell">
       <view class="hero-card">
-        <view>
+        <view class="hero-main">
           <text class="hero-kicker">{{ tr('AI 婚纱创作台', 'AI Wedding Studio') }}</text>
-          <text class="hero-title heading-serif">{{ tr('选择风格，上传照片，生成你的婚纱照', 'Choose a style, upload photos, create wedding portraits') }}</text>
-          <text class="hero-subtitle">{{ tr('从喜欢的风格开始，也可以用文字补充服装、场景和氛围。想要更接近你的想法时，再上传参考图。', 'Start from a style, add outfit, scene, and mood guidance, then use references when you want more control.') }}</text>
-        </view>
-        <view class="mode-grid">
-          <view v-for="mode in modeOptions" :key="mode.value" class="mode-card" :class="{ active: generationMode === mode.value }" @tap="setMode(mode.value)">
-            <text class="mode-title">{{ mode.title }}</text>
-            <text class="mode-desc">{{ mode.desc }}</text>
+          <text class="hero-title heading-serif">{{ tr('先定人数，再选自由创作或模板风格', 'Choose the subject count, then start from free direction or a style') }}</text>
+          <text class="hero-subtitle">{{ tr('自由模式优先保留你的描述权；模板用于快速锁定画面基调。必填只有人物照片，其余服装、场景、参考图都是增强项。', 'Free direction keeps creative control first; templates quickly anchor the mood. Portraits are required, while outfit, scene, and references are optional enhancers.') }}</text>
+          <view class="flow-strip">
+            <view class="flow-step">{{ tr('1 输出人数', '1 Subject count') }}</view>
+            <view class="flow-step">{{ tr('2 自由/模板', '2 Free or style') }}</view>
+            <view class="flow-step">{{ tr('3 上传人物', '3 Upload portraits') }}</view>
+            <view class="flow-step subtle">{{ tr('可选增强', 'Optional enhancers') }}</view>
           </view>
+        </view>
+        <view class="hero-aside">
+          <text class="aside-title">{{ tr('当前流程', 'Current Flow') }}</text>
+          <text class="aside-mode">{{ outputModeLabel }}</text>
+          <text class="aside-copy">{{ tr('切换单人或双人后，下方风格库会自动切换对应示例图。', 'After switching solo or couple mode, the style gallery shows matching preview images.') }}</text>
         </view>
       </view>
 
@@ -21,6 +26,51 @@
           <view class="panel">
             <view class="panel-head">
               <text class="badge">STEP 01</text>
+              <text class="panel-title heading-serif">{{ tr('选择输出人数', 'Choose Subject Count') }}</text>
+            </view>
+            <text class="panel-desc">{{ tr('这一步决定需要上传几张人物照片，也决定下方展示单人还是双人风格。', 'This determines how many portraits are needed and whether the gallery shows solo or couple styles.') }}</text>
+
+            <view class="mode-grid">
+              <view v-for="mode in modeOptions" :key="mode.value" class="mode-card" :class="{ active: generationMode === mode.value }" @tap="setMode(mode.value)">
+                <text class="mode-title">{{ mode.title }}</text>
+                <text class="mode-desc">{{ mode.desc }}</text>
+              </view>
+            </view>
+          </view>
+
+          <view class="panel">
+            <view class="panel-head">
+              <text class="badge">STEP 02</text>
+              <text class="panel-title heading-serif">{{ tr('选择自由模式或模板风格', 'Choose Free Direction or a Style') }}</text>
+            </view>
+            <text class="panel-desc">{{ styleModeHint }}</text>
+            <view class="free-mode-card" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">
+              <image :src="resolvePublicUrl('/style-previews/custom_mode.jpg')" class="free-mode-image" mode="aspectFill" />
+              <view class="free-mode-copy">
+                <text class="free-mode-label">{{ tr('默认推荐', 'Recommended Default') }}</text>
+                <text class="free-mode-title heading-serif">{{ tr('自由模式', 'Free Direction') }}</text>
+                <text class="free-mode-desc">{{ tr('不锁死模板，优先听从你写的服装、场景和氛围描述。适合有明确想法的用户。', 'No locked template. Your outfit, scene, and mood direction lead the result, ideal when you already have a clear idea.') }}</text>
+              </view>
+            </view>
+
+            <view class="style-section-head">
+              <text>{{ generationMode === 'single' ? tr('单人风格库', 'Solo Styles') : tr('双人风格库', 'Couple Styles') }}</text>
+              <text>{{ tr('已按当前输出人数筛选', 'Filtered by current subject count') }}</text>
+            </view>
+            <view class="style-grid">
+              <view v-for="card in styleCards" :key="card.familyKey" class="style-card" :class="{ active: selectedStyleFamily === card.familyKey }" @tap="selectedStyleFamily = card.familyKey">
+                <image :src="card.imageUrl" class="style-image" mode="aspectFill" />
+                <view class="style-copy">
+                  <text class="style-title heading-serif">{{ card.title }}</text>
+                  <text class="style-subtitle">{{ card.subtitle }}</text>
+                </view>
+              </view>
+            </view>
+          </view>
+
+          <view class="panel">
+            <view class="panel-head">
+              <text class="badge">STEP 03</text>
               <text class="panel-title heading-serif">{{ tr('上传人物照片', 'Upload Portraits') }}</text>
             </view>
             <text class="panel-desc">{{ portraitHint }}</text>
@@ -43,7 +93,7 @@
 
               <view v-if="generationMode === 'couple_remote'" class="remote-card">
                 <text class="field-label">{{ tr('异地合拍邀请', 'Remote Couple Invite') }}</text>
-                <text class="remote-desc">{{ tr('先上传你的照片，再创建邀请链接发给对方补第二张。', 'Upload your own portrait first, then create an invite link for the second portrait.') }}</text>
+                <text class="remote-desc">{{ tr('上传你的照片后创建邀请链接，对方补充照片后再生成。', 'Upload your portrait, create an invite link, then generate after your partner adds theirs.') }}</text>
                 <view class="remote-actions">
                   <button class="btn btn-outline remote-btn" @tap="createRemoteInvite" :disabled="remoteCreating">
                     {{ remoteSession ? tr('刷新邀请', 'Refresh Invite') : tr('创建邀请', 'Create Invite') }}
@@ -59,49 +109,21 @@
             </view>
           </view>
 
-          <view class="panel">
+          <view class="panel optional-panel">
             <view class="panel-head">
-              <text class="badge">STEP 02</text>
-              <text class="panel-title heading-serif">{{ tr('选择婚纱风格', 'Choose a Style') }}</text>
+              <text class="badge optional">{{ selectedStyleFamily ? 'OPTIONAL' : 'RECOMMENDED' }}</text>
+              <text class="panel-title heading-serif">{{ directionPanelTitle }}</text>
             </view>
-            <text class="panel-desc">{{ tr('先选一个接近你审美的风格，再用文字或参考图做细节调整。', 'Choose a style close to your taste, then refine it with text or references.') }}</text>
-            <view class="pill-row">
-              <view class="template-pill" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">{{ tr('自由发挥', 'Free Style') }}</view>
-            </view>
-            <view class="style-grid">
-              <view v-for="card in styleCards" :key="card.familyKey" class="style-card" :class="{ active: selectedStyleFamily === card.familyKey }" @tap="selectedStyleFamily = card.familyKey">
-                <image :src="card.imageUrl" class="style-image" mode="aspectFill" />
-                <view class="style-copy">
-                  <text class="style-title heading-serif">{{ card.title }}</text>
-                  <text class="style-subtitle">{{ card.subtitle }}</text>
-                </view>
-              </view>
-            </view>
-          </view>
-
-          <view class="panel">
-            <view class="panel-head">
-              <text class="badge">STEP 03</text>
-              <text class="panel-title heading-serif">{{ tr('补充你的想法', 'Add Your Direction') }}</text>
-            </view>
-            <text class="panel-desc">{{ tr('不用写复杂提示词，像和摄影师沟通一样描述你想要的服装、场景和氛围即可。', 'No complex prompting required. Describe the outfit, scene, and mood like you would brief a photographer.') }}</text>
-            <textarea v-model="globalStyleText" class="text-area large" :placeholder="tr('整体氛围（可选）：如电影感、法式、清冷、高级、胶片', 'Overall mood (optional): cinematic, French editorial, minimal, filmic...')" maxlength="400" />
+            <text class="panel-desc">{{ directionPanelDesc }}</text>
+            <textarea v-model="globalStyleText" class="text-area large" :placeholder="tr('整体方向：如极简高级、法式电影感、复古胶片、低饱和纪实', 'Overall direction: minimal luxury, French cinematic, vintage film, low-saturation documentary...')" maxlength="400" />
             <view class="dual-inputs">
-              <textarea v-model="outfitText" class="text-area" :placeholder="tr('服装描述（可选）：如黑纱、秀禾、缎面白纱', 'Outfit direction (optional): black gown, xiuhe, satin bridal dress...')" maxlength="300" />
-              <textarea v-model="sceneText" class="text-area" :placeholder="tr('场景描述（可选）：如城堡阳台、白色画廊、海边落日', 'Scene direction (optional): castle balcony, white gallery, sunset beach...')" maxlength="300" />
+              <textarea v-model="outfitText" class="text-area" :placeholder="tr('服装方向：如缎面白纱、黑色鱼尾裙、中式秀禾、复古西装', 'Outfit direction: satin white dress, black mermaid gown, Chinese xiuhe, vintage suit...')" maxlength="300" />
+              <textarea v-model="sceneText" class="text-area" :placeholder="tr('场景方向：如白色画廊、古堡阳台、海边日落、中式庭院', 'Scene direction: white gallery, castle balcony, sunset beach, Chinese courtyard...')" maxlength="300" />
             </view>
-          </view>
-
-          <view class="panel">
-            <view class="panel-head">
-              <text class="badge">STEP 04</text>
-              <text class="panel-title heading-serif">{{ tr('上传参考图', 'Upload References') }}</text>
-              <text class="collapse-toggle" @tap="advancedOpen = !advancedOpen">{{ advancedOpen ? tr('收起', 'Collapse') : tr('展开', 'Expand') }}</text>
-            </view>
-            <view v-if="advancedOpen" class="dual-inputs">
+            <view class="reference-grid">
               <view class="upload-card">
-                <text class="field-label">{{ tr('场景参考', 'Scene Reference') }}</text>
-                <view v-if="sceneReferencePath" class="preview-box">
+                <text class="field-label">{{ tr('场景参考图（可选）', 'Scene Reference (optional)') }}</text>
+                <view v-if="sceneReferencePath" class="preview-box ref-box">
                   <image :src="sceneReferencePath" class="preview-image" mode="aspectFill" />
                   <view class="preview-actions">
                     <button class="mini-btn" @tap.stop="pickSceneReference">{{ tr('更换', 'Replace') }}</button>
@@ -110,12 +132,12 @@
                 </view>
                 <view v-else class="empty-box short" @tap="pickSceneReference">
                   <text class="empty-plus">+</text>
-                  <text class="empty-title">{{ tr('上传场景参考图', 'Upload scene reference') }}</text>
+                  <text class="empty-title">{{ tr('上传场景参考', 'Upload scene reference') }}</text>
                 </view>
               </view>
               <view class="upload-card">
-                <text class="field-label">{{ tr('服装参考', 'Outfit Reference') }}</text>
-                <view v-if="outfitReferencePath" class="preview-box">
+                <text class="field-label">{{ tr('服装参考图（可选）', 'Outfit Reference (optional)') }}</text>
+                <view v-if="outfitReferencePath" class="preview-box ref-box">
                   <image :src="outfitReferencePath" class="preview-image" mode="aspectFill" />
                   <view class="preview-actions">
                     <button class="mini-btn" @tap.stop="pickOutfitReference">{{ tr('更换', 'Replace') }}</button>
@@ -124,7 +146,7 @@
                 </view>
                 <view v-else class="empty-box short" @tap="pickOutfitReference">
                   <text class="empty-plus">+</text>
-                  <text class="empty-title">{{ tr('上传服装参考图', 'Upload outfit reference') }}</text>
+                  <text class="empty-title">{{ tr('上传服装参考', 'Upload outfit reference') }}</text>
                 </view>
               </view>
             </view>
@@ -144,7 +166,21 @@
               </view>
               <view class="summary-block">
                 <text class="summary-block-title">{{ tr('创作建议', 'Creation Tip') }}</text>
-                <text class="summary-block-text">{{ tr('参考图和文字描述会帮助 AI 更贴近你的想法；不确定时，先选风格直接生成预览。', 'References and text help the AI follow your idea more closely. If unsure, choose a style and create a preview first.') }}</text>
+                <text class="summary-block-text">{{ summaryTip }}</text>
+              </view>
+              <view class="summary-checklist">
+                <view class="check-row done">
+                  <view class="check-dot"></view>
+                  <text>{{ outputModeLabel }}</text>
+                </view>
+                <view class="check-row" :class="{ done: selectedStyleFamily || hasDirectionText }">
+                  <view class="check-dot"></view>
+                  <text>{{ selectedStyleFamily ? tr('已选择模板风格', 'Style selected') : hasDirectionText ? tr('已填写自由方向', 'Free direction added') : tr('自由模式：可直接上传生成', 'Free direction: ready to upload') }}</text>
+                </view>
+                <view class="check-row" :class="{ done: portraitRequirementMet }">
+                  <view class="check-dot"></view>
+                  <text>{{ portraitRequirementText }}</text>
+                </view>
               </view>
               <view v-if="generationMode === 'couple_remote'" class="summary-block">
                 <text class="summary-block-title">{{ tr('异地状态', 'Remote Status') }}</text>
@@ -214,7 +250,6 @@ const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const navBarRef = ref<InstanceType<typeof NavBar> | null>(null);
 const showPaymentModal = ref(false);
-const advancedOpen = ref(false);
 const legalAccepted = ref(false);
 const submitting = ref(false);
 
@@ -239,11 +274,10 @@ const portraitHint = computed(() => generationMode.value === 'single'
     : tr('你先上传自己的照片，再复制邀请链接给对方补充第二张照片。', 'Upload your portrait first, then send the invite link so your partner can add theirs.'));
 const selectedTemplate = computed<Template | null>(() => {
   if (!selectedStyleFamily.value) return null;
-  const matched = templateStore.templates.find((item) => getTemplateFamilyKey(item) === selectedStyleFamily.value);
-  if (!matched) return null;
-  return templateStore.resolveTemplateForMode(matched, generationMode.value === 'single' ? 'single' : 'couple') || matched;
+  return styleCards.value.find((item) => item.familyKey === selectedStyleFamily.value)?.template || null;
 });
 const styleCards = computed(() => {
+  const desiredCategories = generationMode.value === 'single' ? ['single'] : ['couple', 'vintage'];
   const ordered = templateStore.templates.slice().sort((a, b) => {
     const ar = STYLE_ORDER.indexOf(getTemplateFamilyKey(a));
     const br = STYLE_ORDER.indexOf(getTemplateFamilyKey(b));
@@ -253,25 +287,55 @@ const styleCards = computed(() => {
   return ordered.flatMap((item) => {
     const familyKey = getTemplateFamilyKey(item);
     if (!familyKey || familyKey === 'custom_mode' || familyKey === 'custom' || seen.has(familyKey)) return [];
+    const category = String(item.category || '').toLowerCase();
+    if (!desiredCategories.includes(category)) return [];
     seen.add(familyKey);
-    const actual = templateStore.resolveTemplateForMode(item, generationMode.value === 'single' ? 'single' : 'couple') || item;
+    const actual = item;
     return [{
       familyKey,
+      template: actual,
       title: getLocalizedTemplateTitle(actual, i18nStore.locale),
       subtitle: STYLE_SUBTITLE[familyKey] ? (i18nStore.locale === 'zh' ? STYLE_SUBTITLE[familyKey].zh : STYLE_SUBTITLE[familyKey].en) : getLocalizedTemplateMarketingSubtitle(actual, i18nStore.locale),
       imageUrl: resolvePublicUrl(actual.image_url),
     }];
   });
 });
-const summaryImageUrl = computed(() => resolvePublicUrl(selectedTemplate.value?.image_url || '/hero_banner.jpg'));
-const summaryTitle = computed(() => selectedTemplate.value ? getLocalizedTemplateTitle(selectedTemplate.value, i18nStore.locale) : tr('未锁定模板', 'No Template Locked'));
+const hasDirectionText = computed(() => !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim()));
+const summaryImageUrl = computed(() => resolvePublicUrl(selectedTemplate.value?.image_url || '/style-previews/custom_mode.jpg'));
+const summaryTitle = computed(() => selectedTemplate.value ? getLocalizedTemplateTitle(selectedTemplate.value, i18nStore.locale) : tr('自由模式', 'Free Direction'));
 const summarySubtitle = computed(() => selectedTemplate.value
   ? (getLocalizedTemplateMarketingSubtitle(selectedTemplate.value, i18nStore.locale) || tr('可以继续补充服装、场景和氛围，让结果更接近你的审美。', 'You can keep refining outfit, scene, and mood to match your taste.'))
-  : tr('未选择风格时，你可以直接用文字描述想要的服装、场景和氛围。', 'Without a selected style, describe the outfit, scene, and mood you want.'));
+  : tr('不套固定模板，优先按照你的文字描述、人物照片和参考图生成。', 'No fixed template. The result follows your text direction, portraits, and optional references first.'));
+const styleModeHint = computed(() => generationMode.value === 'single'
+  ? tr('当前为单人输出，只展示单人婚纱风格。也可以保持自由模式，用文字直接描述想要的画面。', 'Solo output is selected, so only solo bridal styles are shown. You can also stay in free direction and describe the result directly.')
+  : tr('当前为双人输出，只展示双人合拍与纪念照风格。异地合拍也会沿用同一套双人风格。', 'Couple output is selected, so only couple and anniversary styles are shown. Remote couple uses the same couple style set.'));
+const directionPanelTitle = computed(() => selectedStyleFamily.value
+  ? tr('微调服装、场景与参考', 'Refine Outfit, Scene, and References')
+  : tr('自由描述服装、场景与氛围', 'Describe Outfit, Scene, and Mood Freely'));
+const directionPanelDesc = computed(() => selectedStyleFamily.value
+  ? tr('已选择模板时，这些内容用于微调画面：服装、场景和参考图会影响细节，但不会覆盖模板的基础风格。', 'With a selected style, these fields refine the result. Outfit, scene, and references influence details without overriding the base style.')
+  : tr('自由模式下，这里是关键输入。建议写清楚服装、场景和整体氛围；不写也能生成，但结果会更依赖 AI 默认审美。', 'In free direction, this is the key input. Describe outfit, scene, and overall mood for better control; leaving it blank relies more on the AI default taste.'));
 const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : tr('双人异地', 'Couple Remote'));
-const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择风格', 'Style Selected') : tr('自由描述模式', 'Free Direction'));
+const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式优先', 'Free Direction First'));
 const generationCost = computed(() => selectedTemplate.value?.category === 'vintage' || generationMode.value === 'couple_remote' ? 4 : 2);
+const portraitRequirementMet = computed(() => {
+  if (generationMode.value === 'single') return !!portraitSlots.value[0].localPath;
+  if (generationMode.value === 'couple_local') return !!portraitSlots.value[0].localPath && !!portraitSlots.value[1].localPath;
+  return !!portraitSlots.value[0].localPath && !!remoteSession.value && remoteStatus.value?.status === 'ready';
+});
+const portraitRequirementText = computed(() => {
+  if (generationMode.value === 'single') {
+    return portraitRequirementMet.value ? tr('已上传 1 张人物照片', '1 portrait uploaded') : tr('需要上传 1 张人物照片', 'Upload 1 portrait');
+  }
+  if (generationMode.value === 'couple_local') {
+    return portraitRequirementMet.value ? tr('已上传 2 张人物照片', '2 portraits uploaded') : tr('需要上传 2 张人物照片', 'Upload 2 portraits');
+  }
+  return portraitRequirementMet.value ? tr('双方照片已就绪', 'Both portraits ready') : tr('需要你的照片和对方上传完成', 'Your portrait and guest upload are required');
+});
+const summaryTip = computed(() => selectedTemplate.value
+  ? tr('模板决定基础风格；下方增强项会作为细节修正，不会覆盖人物照片的核心身份。', 'The template anchors the base look. Optional enhancers refine details without replacing the portrait identity.')
+  : tr('自由模式下，人物照片是基础；文字方向和参考图会获得更高优先级，用来决定服装、场景和氛围。', 'In free direction, portraits are the base. Text direction and references get higher priority for outfit, scene, and mood.'));
 const remoteStatusText = computed(() => {
   if (generationMode.value !== 'couple_remote') return '';
   const status = remoteStatus.value?.status || '';
@@ -285,9 +349,7 @@ const remoteStatusText = computed(() => {
 });
 const canSubmit = computed(() => {
   if (!legalAccepted.value || submitting.value) return false;
-  if (generationMode.value === 'single') return !!portraitSlots.value[0].localPath;
-  if (generationMode.value === 'couple_local') return !!portraitSlots.value[0].localPath && !!portraitSlots.value[1].localPath;
-  return !!portraitSlots.value[0].localPath && !!remoteSession.value && remoteStatus.value?.status === 'ready';
+  return portraitRequirementMet.value;
 });
 const modeOptions = computed(() => [
   { value: 'single' as GenerationMode, title: tr('单人生成', 'Single'), desc: tr('一张照片，直接生成个人婚纱风格', 'One portrait, direct solo bridal output') },
@@ -306,7 +368,17 @@ function setMode(mode: GenerationMode) {
   if (generationMode.value === mode) return;
   generationMode.value = mode;
   portraitSlots.value[1] = { localPath: '', uploadedUrl: '' };
+  if (selectedStyleFamily.value && !hasStyleForMode(selectedStyleFamily.value, mode)) {
+    selectedStyleFamily.value = '';
+  }
   if (mode !== 'couple_remote') resetRemote();
+}
+function hasStyleForMode(familyKey: string, mode: GenerationMode) {
+  const desiredCategories = mode === 'single' ? ['single'] : ['couple', 'vintage'];
+  return templateStore.templates.some((item) => {
+    if (getTemplateFamilyKey(item) !== familyKey) return false;
+    return desiredCategories.includes(String(item.category || '').toLowerCase());
+  });
 }
 function stopRemotePolling() {
   if (remotePollTimer) clearInterval(remotePollTimer);
@@ -513,11 +585,71 @@ onUnmounted(() => stopRemotePolling());
 
 .hero-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: 24px;
   padding: 24px;
   margin-bottom: 20px;
   align-items: start;
+}
+
+.hero-main {
+  min-width: 0;
+}
+
+.hero-aside {
+  height: 100%;
+  padding: 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 106, 96, 0.18);
+  background: #f3faf8;
+}
+
+.aside-title,
+.aside-copy {
+  display: block;
+  color: #4c5360;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.aside-title {
+  margin-bottom: 10px;
+  color: #116a60;
+  font-weight: 900;
+}
+
+.aside-mode {
+  display: block;
+  margin-bottom: 10px;
+  color: #17191f;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.flow-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.flow-step {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 106, 96, 0.18);
+  background: #ffffff;
+  color: #116a60;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.flow-step.subtle {
+  border-color: #dde1e8;
+  color: #4c5360;
+  background: #f7f8fa;
 }
 
 .hero-kicker,
@@ -563,7 +695,7 @@ onUnmounted(() => stopRemotePolling());
 
 .mode-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -580,7 +712,7 @@ onUnmounted(() => stopRemotePolling());
 
 .mode-card.active,
 .style-card.active,
-.template-pill.active {
+.free-mode-card.active {
   border-color: rgba(17, 106, 96, 0.46);
   background: #f3faf8;
   box-shadow: 0 14px 34px rgba(17, 106, 96, 0.08);
@@ -636,6 +768,12 @@ onUnmounted(() => stopRemotePolling());
   letter-spacing: 0;
 }
 
+.badge.optional {
+  background: #f3faf8;
+  color: #116a60;
+  border: 1px solid rgba(17, 106, 96, 0.22);
+}
+
 .panel-title {
   color: #17191f;
   font-size: 28px;
@@ -650,6 +788,7 @@ onUnmounted(() => stopRemotePolling());
 
 .portrait-grid,
 .dual-inputs,
+.reference-grid,
 .style-grid {
   display: grid;
   gap: 16px;
@@ -671,8 +810,75 @@ onUnmounted(() => stopRemotePolling());
   grid-template-columns: 1fr 1fr;
 }
 
+.reference-grid {
+  grid-template-columns: 1fr 1fr;
+  margin-top: 16px;
+}
+
 .style-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.free-mode-card {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 18px;
+  padding: 14px;
+  margin: 16px 0;
+  border-radius: 8px;
+  border: 1px solid #dde1e8;
+  background: #ffffff;
+}
+
+.free-mode-image {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.free-mode-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.free-mode-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #116a60;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.free-mode-title {
+  display: block;
+  margin-bottom: 8px;
+  color: #17191f;
+  font-size: 28px;
+}
+
+.free-mode-desc {
+  color: #4c5360;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.style-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 18px 0 12px;
+  color: #4c5360;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.style-section-head text:first-child {
+  color: #17191f;
+  font-size: 14px;
+  font-weight: 900;
 }
 
 .upload-card,
@@ -716,6 +922,10 @@ onUnmounted(() => stopRemotePolling());
   border-radius: 8px;
   aspect-ratio: 4 / 5;
   background: #d9dde3;
+}
+
+.preview-box.ref-box {
+  aspect-ratio: 4 / 3;
 }
 
 .preview-image,
@@ -762,14 +972,12 @@ onUnmounted(() => stopRemotePolling());
 }
 
 .remote-actions,
-.pill-row,
 .tag-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.template-pill,
 .tag {
   display: inline-flex;
   align-items: center;
@@ -848,6 +1056,41 @@ onUnmounted(() => stopRemotePolling());
   border-top: 1px solid #edf0f4;
 }
 
+.summary-checklist {
+  padding: 14px 0;
+  border-top: 1px solid #edf0f4;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #4c5360;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.check-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid #aeb6c2;
+  background: #ffffff;
+}
+
+.check-row.done {
+  color: #17191f;
+  font-weight: 800;
+}
+
+.check-row.done .check-dot {
+  border-color: #116a60;
+  background: #116a60;
+}
+
 .credit-value {
   display: block;
   color: #116a60;
@@ -884,7 +1127,13 @@ onUnmounted(() => stopRemotePolling());
   .portrait-grid,
   .portrait-grid.remote,
   .dual-inputs,
+  .reference-grid,
   .style-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-grid,
+  .free-mode-card {
     grid-template-columns: 1fr;
   }
 

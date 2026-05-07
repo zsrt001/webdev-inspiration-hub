@@ -35,6 +35,7 @@ class UserRead(UserBase):
 
     id: UUID
     openid: str
+    username: str | None = None
     unionid: str | None = None
     auth_provider: str | None = None
     auth_subject: str | None = None

@@ -33,7 +33,7 @@ class DatabaseConfigTest(unittest.TestCase):
         self.assertEqual(url, "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_wedding")
         self.assertEqual(connect_args, {})
 
-    def test_supabase_placeholder_password_does_not_break_url_parsing(self) -> None:
+    def test_supabase_placeholder_password_keeps_ssl_for_direct_host(self) -> None:
         url, connect_args = normalize_database_url(
             "postgresql://postgres:[YOUR-PASSWORD]@db.example.supabase.co:5432/postgres"
         )
@@ -42,7 +42,7 @@ class DatabaseConfigTest(unittest.TestCase):
             url,
             "postgresql+asyncpg://postgres:%5BYOUR-PASSWORD%5D@db.example.supabase.co:5432/postgres",
         )
-        self.assertEqual(connect_args, {})
+        self.assertIsInstance(connect_args.get("ssl"), ssl.SSLContext)
 
 
 if __name__ == "__main__":

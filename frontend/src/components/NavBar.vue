@@ -25,7 +25,7 @@
           <text class="lang-text">{{ localeButtonText }}</text>
         </view>
 
-        <view v-if="supabaseEnabled" class="auth-chip" @tap.stop="handleAuthTap">
+        <view class="auth-chip" @tap.stop="handleAuthTap">
           <text class="auth-text">{{ authLabel }}</text>
         </view>
 
@@ -45,7 +45,7 @@
         <view class="menu-item" @tap="navigate('/pages/index/index')">{{ t('nav.home') }}</view>
         <view class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
         <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
-        <view class="menu-item" @tap="navigate('/pages/account/index')">{{ accountLabel }}</view>
+        <view class="menu-item" @tap="handleAuthTap">{{ authLabel }}</view>
         <view class="menu-item" @tap="navigate('/pages/legal/refund')">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</view>
       </view>
     </view>
@@ -56,20 +56,19 @@
 import { computed, onMounted, ref } from 'vue';
 import { useI18nStore } from '../stores/i18n';
 import { get } from '../utils/api';
-import { isSupabaseLoggedIn, signInWithGoogle } from '../utils/auth';
-import { isSupabaseConfigured } from '../utils/supabase';
+import { getUsername, isPasswordLoggedIn, isSupabaseLoggedIn } from '../utils/auth';
 
 const creditBalance = ref(0);
 const showMenu = ref(false);
-const googleAuthed = ref(false);
-const supabaseEnabled = isSupabaseConfigured();
+const accountAuthed = ref(false);
+const username = ref('');
 const i18nStore = useI18nStore();
 const t = i18nStore.t;
 const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
 const accountLabel = computed(() => (i18nStore.locale === 'zh' ? '账户' : 'Account'));
 
 const authLabel = computed(() => {
-  if (googleAuthed.value) return accountLabel.value;
+  if (accountAuthed.value) return username.value || accountLabel.value;
   return i18nStore.locale === 'zh' ? '登录' : 'Sign in';
 });
 
@@ -92,6 +91,8 @@ const pushPages = new Set([
   '/pages/join/landing',
   '/pages/admin/index',
   '/pages/account/index',
+  '/pages/auth/login',
+  '/pages/auth/register',
 ]);
 
 const goHome = () => {
@@ -125,23 +126,17 @@ const fetchBalance = async () => {
 };
 
 const refreshAuthState = () => {
-  googleAuthed.value = isSupabaseLoggedIn();
+  accountAuthed.value = isPasswordLoggedIn() || isSupabaseLoggedIn();
+  username.value = getUsername() || '';
 };
 
 const handleAuthTap = async () => {
-  if (googleAuthed.value) {
+  showMenu.value = false;
+  if (accountAuthed.value) {
     navigate('/pages/account/index');
     return;
   }
-
-  try {
-    await signInWithGoogle();
-  } catch (error: any) {
-    uni.showToast({
-      title: error?.message || 'Sign in failed',
-      icon: 'none',
-    });
-  }
+  navigate('/pages/auth/login');
 };
 
 const showTopUp = () => {
