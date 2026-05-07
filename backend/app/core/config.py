@@ -85,7 +85,7 @@ class Settings(BaseSettings):
         "Submit the order reference to customer support after payment. Credits are issued after review."
     )
     manual_payment_contact: str = ""
-    support_contact_email: str = ""
+    support_contact_email: str = "zst000001@gmail.com"
     support_contact_url: str = ""
     refund_policy_url: str = ""
     creem_api_key: str = ""
@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     creem_subscription_starter_product_id: str = ""
     creem_subscription_creator_product_id: str = ""
     creem_subscription_studio_product_id: str = ""
+    supabase_pooler_region: str = "us-east-1"
+    supabase_pooler_host: str = ""
 
     # Generation engine
     generation_engine: str = "wenwen"  # comfyui | wenwen

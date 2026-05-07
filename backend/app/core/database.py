@@ -35,6 +35,37 @@ def _quote_url_userinfo(raw: str) -> str:
     return f"{scheme}://{safe_userinfo}@{hostport}{suffix}"
 
 
+def _supabase_pooler_host() -> str:
+    explicit = str(settings.supabase_pooler_host or "").strip()
+    if explicit:
+        return explicit
+    region = str(settings.supabase_pooler_region or "us-east-1").strip() or "us-east-1"
+    return f"aws-0-{region}.pooler.supabase.com"
+
+
+def _route_supabase_direct_to_pooler(raw: str) -> str:
+    """Use Supabase's IPv4 pooler on Vercel when DATABASE_URL is the direct host."""
+    if not settings.is_vercel_runtime:
+        return raw
+
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    if not host.startswith("db.") or not host.endswith(".supabase.co"):
+        return raw
+
+    project_ref = host.removeprefix("db.").removesuffix(".supabase.co")
+    username = parts.username or "postgres"
+    if project_ref and "." not in username:
+        username = f"{username}.{project_ref}"
+
+    userinfo = quote(username, safe="%")
+    if parts.password is not None:
+        userinfo = f"{userinfo}:{quote(parts.password, safe='%')}"
+
+    netloc = f"{userinfo}@{_supabase_pooler_host()}:5432"
+    return urlunsplit((parts.scheme, netloc, parts.path or "/postgres", parts.query, parts.fragment))
+
+
 def normalize_database_url(database_url: str) -> tuple[str, dict]:
     """Normalize common hosted Postgres URLs for SQLAlchemy's asyncpg driver."""
     raw = str(database_url or "").strip()
@@ -47,6 +78,7 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
         return raw, {}
 
     raw = _quote_url_userinfo(raw)
+    raw = _route_supabase_direct_to_pooler(raw)
     parts = urlsplit(raw)
     query_pairs = parse_qsl(parts.query, keep_blank_values=True)
     connect_args: dict = {}
