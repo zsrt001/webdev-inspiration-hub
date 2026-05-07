@@ -3,12 +3,35 @@
 import ssl
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+import asyncpg
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import get_settings
 
 settings = get_settings()
+
+_SUPABASE_POOLER_REGIONS = (
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "ca-central-1",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "eu-central-1",
+    "eu-north-1",
+    "ap-south-1",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-southeast-3",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-east-1",
+    "sa-east-1",
+)
+_detected_supabase_pooler_host: str | None = None
 
 
 def _quote_url_userinfo(raw: str) -> str:
@@ -43,6 +66,10 @@ def _supabase_pooler_host() -> str:
     return f"aws-0-{region}.pooler.supabase.com"
 
 
+def _is_supabase_direct_host(host: str) -> bool:
+    return host.startswith("db.") and host.endswith(".supabase.co")
+
+
 def _route_supabase_direct_to_pooler(raw: str) -> str:
     """Use Supabase's IPv4 pooler on Vercel when DATABASE_URL is the direct host."""
     if not settings.is_vercel_runtime:
@@ -50,7 +77,7 @@ def _route_supabase_direct_to_pooler(raw: str) -> str:
 
     parts = urlsplit(raw)
     host = (parts.hostname or "").lower()
-    if not host.startswith("db.") or not host.endswith(".supabase.co"):
+    if not _is_supabase_direct_host(host):
         return raw
 
     project_ref = host.removeprefix("db.").removesuffix(".supabase.co")
@@ -64,6 +91,75 @@ def _route_supabase_direct_to_pooler(raw: str) -> str:
 
     netloc = f"{userinfo}@{_supabase_pooler_host()}:5432"
     return urlunsplit((parts.scheme, netloc, parts.path or "/postgres", parts.query, parts.fragment))
+
+
+def _ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def _supabase_pooler_hosts() -> list[str]:
+    explicit = str(settings.supabase_pooler_host or "").strip()
+    if explicit:
+        return [explicit]
+    hosts = [f"aws-0-{region}.pooler.supabase.com" for region in _SUPABASE_POOLER_REGIONS]
+    preferred = _supabase_pooler_host()
+    return [preferred, *(host for host in hosts if host != preferred)]
+
+
+def _build_supabase_pooler_async_creator(database_url: str):
+    """Build a Vercel-only connector that finds the correct Supabase pooler region."""
+    if not settings.is_vercel_runtime:
+        return None
+
+    raw = str(database_url or "").strip()
+    if raw.startswith("postgres://"):
+        raw = f"postgresql+asyncpg://{raw[len('postgres://'):]}"
+    elif raw.startswith("postgresql://"):
+        raw = f"postgresql+asyncpg://{raw[len('postgresql://'):]}"
+    raw = _quote_url_userinfo(raw)
+
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    if not _is_supabase_direct_host(host):
+        return None
+
+    project_ref = host.removeprefix("db.").removesuffix(".supabase.co")
+    username = parts.username or "postgres"
+    if project_ref and "." not in username:
+        username = f"{username}.{project_ref}"
+    password = parts.password or ""
+    database = (parts.path or "/postgres").lstrip("/") or "postgres"
+    ssl_arg = _ssl_context()
+
+    async def creator():
+        global _detected_supabase_pooler_host
+
+        hosts = [_detected_supabase_pooler_host] if _detected_supabase_pooler_host else _supabase_pooler_hosts()
+        errors: list[str] = []
+        for pooler_host in [host for host in hosts if host]:
+            try:
+                connection = await asyncpg.connect(
+                    user=username,
+                    password=password,
+                    database=database,
+                    host=pooler_host,
+                    port=5432,
+                    ssl=ssl_arg,
+                    statement_cache_size=0,
+                    timeout=4.0,
+                )
+                _detected_supabase_pooler_host = pooler_host
+                return connection
+            except Exception as exc:
+                errors.append(f"{pooler_host}: {type(exc).__name__}: {exc}")
+
+        detail = " | ".join(errors[-3:]) if errors else "no pooler hosts configured"
+        raise RuntimeError(f"supabase_pooler_detection_failed: {detail}")
+
+    return creator
 
 
 def normalize_database_url(database_url: str) -> tuple[str, dict]:
@@ -117,15 +213,20 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
 
 
 database_url, connect_args = normalize_database_url(settings.database_url)
+supabase_pooler_async_creator = _build_supabase_pooler_async_creator(settings.database_url)
 
 # Create async engine
-engine = create_async_engine(
-    database_url,
-    echo=settings.debug,
-    future=True,
-    pool_pre_ping=True,
-    connect_args=connect_args,
-)
+engine_kwargs = {
+    "echo": settings.debug,
+    "future": True,
+    "pool_pre_ping": True,
+}
+if supabase_pooler_async_creator is not None:
+    engine_kwargs["async_creator"] = supabase_pooler_async_creator
+else:
+    engine_kwargs["connect_args"] = connect_args
+
+engine = create_async_engine(database_url, **engine_kwargs)
 
 # Create async session factory
 async_session_maker = async_sessionmaker(
