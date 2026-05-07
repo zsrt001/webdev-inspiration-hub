@@ -36,11 +36,11 @@ const sections = computed(() => [
     titleZh: '服务说明',
     titleEn: 'Service Description',
     zh: [
-      '本服务提供 AI 婚纱影像生成、异地合拍、作品历史、积分包和订阅制商业化能力。',
+      '本服务提供 AI 婚纱照生成、双人合拍、作品历史、积分包和月度套餐等功能。',
       '平台可基于成本、风控、模型能力和商业策略调整模板、价格、积分扣减、保留周期和功能入口。',
     ],
     en: [
-      'The service provides AI wedding image generation, remote couple join, image history, credit packs, and subscription billing.',
+      'The service provides AI wedding portrait generation, couple creation, image history, credit packs, and monthly plans.',
       'The platform may adjust templates, prices, credit costs, retention periods, and feature entry points based on cost, safety, model capability, and commercial strategy.',
     ],
   },
@@ -52,12 +52,12 @@ const sections = computed(() => [
     zh: [
       '积分是平台内的使用额度，不是现金、储值卡或可提现资产。',
       '当前扣费规则：单人基础生成 2 积分，Director/高级单人 3 积分，双人本地合拍 3 积分，异地合拍 4 积分，高级场景 5 积分，Live Portrait 5 秒 6 积分，每额外 5 秒加 4 积分。',
-      '积分在任务成功入队后扣减；如果任务在入队前失败，应自动退回。支付成功后的发放以支付 webhook 和后台账本为准。',
+      '积分会在生成任务开始处理后扣减；如果任务未能开始，会按系统记录自动退回。支付成功后的积分发放以支付记录和账户流水为准。',
     ],
     en: [
       'Credits are in-product usage units, not cash, stored value, or withdrawable assets.',
       'Current costs: base single image 2 credits, Director/advanced single 3, local couple 3, remote couple 4, premium scene 5, Live Portrait 5 seconds 6, and each extra 5 seconds +4.',
-      'Credits are deducted after a task is accepted into the queue. Queue-start failures should be refunded automatically. Payment grants are based on provider webhooks and the backend ledger.',
+      'Credits are deducted after a generation task starts processing. If the task cannot start, credits are returned based on system records. Payment grants are based on payment records and account ledger entries.',
     ],
   },
   {

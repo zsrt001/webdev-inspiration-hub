@@ -50,11 +50,11 @@ const sections = [
     titleZh: '可申请处理的情况',
     titleEn: 'Eligible Cases',
     zh: [
-      '重复扣款、支付成功但积分未到账、订阅 webhook 异常、平台侧任务无法进入队列、平台侧存储或生成链路确认失败，可申请退款、补发积分或人工调整。',
+      '重复扣款、支付成功但积分未到账、订阅扣款异常、任务无法开始、生成或交付失败等情况，可申请退款、补发积分或人工调整。',
       '如果任务已经成功生成并交付，通常不因主观审美、提示词选择、用户上传素材质量或第三方支付通道延迟直接退款。',
     ],
     en: [
-      'Duplicate charges, paid credits not delivered, subscription webhook failures, platform-side queue failures, and confirmed storage/generation delivery failures can be reviewed for refund, credit reissue, or manual adjustment.',
+      'Duplicate charges, paid credits not delivered, subscription billing issues, tasks that cannot start, and confirmed generation or delivery failures can be reviewed for refund, credit reissue, or manual adjustment.',
       'If a job was generated and delivered successfully, refunds are generally not issued solely for subjective preference, prompt choices, upload quality, or payment-provider delays.',
     ],
   },
@@ -78,12 +78,12 @@ const sections = [
     titleZh: '客服入口',
     titleEn: 'Support Contact',
     zh: [
-      '正式部署时，请在网站页脚、支付页和账户中心展示客服邮箱或工单链接。',
-      '如果你的部署尚未配置客服渠道，请先暂停真实收款，只保留测试支付或人工审核模式。',
+      '如需退款、补发积分或查询订单，请通过网站页脚、支付页或账户中心提供的客服邮箱 / 工单入口联系我们。',
+      '为了保护你的账户安全，请不要在客服沟通中发送银行卡号、CVV、完整证件号或支付密码。',
     ],
     en: [
-      'For production, show the support email or ticket link in the footer, checkout page, and account center.',
-      'If support contact is not configured yet, pause real-money collection and keep only test checkout or manual-review mode.',
+      'For refunds, credit reissues, or order checks, contact us through the support email or ticket link shown in the footer, checkout page, or account center.',
+      'For account safety, do not send card numbers, CVV, full ID numbers, or payment passwords in support conversations.',
     ],
   },
 ];

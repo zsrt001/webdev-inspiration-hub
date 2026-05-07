@@ -4,7 +4,7 @@
       <button class="close-button" aria-label="Close" @tap="handleClose">x</button>
 
       <view class="pricing-header">
-        <text class="pricing-title heading-serif">{{ tr('升级套餐', 'Upgrade Plan') }}</text>
+        <text class="pricing-title heading-serif">{{ tr('选择适合你的套餐', 'Choose Your Plan') }}</text>
         <text class="pricing-subtitle">{{ modeSummary }}</text>
 
         <view class="billing-tabs" role="tablist">
@@ -79,7 +79,7 @@
             </view>
 
             <text class="plan-description">
-              {{ pkg.credits }} {{ tr('积分到账，可用于当前所有生成类型', 'credits for the current generation pricing') }}
+              {{ pkg.credits }} {{ tr('积分，可用于生成预览、继续出图和高清权益', 'credits for previews, more generations, and HD access') }}
             </text>
 
             <button
@@ -160,7 +160,7 @@
         <view class="pricing-footer">
           <LegalConsentInline v-model="paymentConsentAccepted" mode="payment" compact />
           <text class="provider-note">
-            {{ tr('支付成功后，积分以服务端确认结果为准。', 'Credits are issued after server-side payment confirmation.') }}
+            {{ tr('支付完成后通常会自动到账，如遇延迟可在账户中心查看记录。', 'Credits are usually added automatically after payment. Check your account if there is a delay.') }}
           </text>
         </view>
       </template>
@@ -251,9 +251,9 @@ const activePlanName = computed(() => {
 
 const modeSummary = computed(() => {
   if (activeBillingMode.value === 'credits') {
-    return tr('按现有积分包定价购买，适合临时加量。', 'Buy from the current credit-pack catalog for one-time top-ups.');
+    return tr('一次性补充积分，适合临时生成、试片或解锁高清。', 'One-time credits for extra generations, proofing, or HD access.');
   }
-  return tr('订阅每月发放固定积分，不是无限使用。', 'Subscriptions grant fixed monthly credits, not unlimited usage.');
+  return tr('每月自动获得固定积分，适合持续创作和成套出图。', 'Monthly credits for ongoing creation and portrait sets.');
 });
 
 function isH5(): boolean {
@@ -352,11 +352,11 @@ function packageShortName(pkg: CreditPackage): string {
 
 function packageFeatureLines(pkg: CreditPackage): string[] {
   return [
-    `${pkg.credits} ${tr('积分一次性到账', 'one-time credits')}`,
+    `${pkg.credits} ${tr('积分一次性到账', 'credits added once')}`,
     unitPriceLabel(pkg.price, pkg.credits, 'USD'),
     generationEstimate(pkg.credits),
-    tr('可用于高清下载和继续生成', 'Usable for downloads and new generations'),
-    tr('支付确认后自动入账', 'Issued after payment confirmation'),
+    tr('适合试风格、继续生成和高清权益', 'Good for style tests, more generations, and HD access'),
+    tr('支付完成后自动加入账户', 'Added to your account after payment'),
   ];
 }
 
@@ -400,10 +400,10 @@ function planFeatureLines(plan: SubscriptionPlan): string[] {
     unitPriceLabel(Number(plan.price_cents || 0) / 100, plan.monthly_credits, plan.currency),
     generationEstimate(plan.monthly_credits),
   ];
-  if (flags.remote_join) lines.push(tr('支持远程合照流程', 'Remote couple join enabled'));
-  if (flags.live_portrait) lines.push(tr('支持动态人像额度消耗', 'Live portrait usage enabled'));
-  if (flags.priority_generation) lines.push(tr('优先生成权益', 'Priority generation entitlement'));
-  lines.push(tr('订阅积分进入同一余额', 'Subscription credits share the same balance'));
+  if (flags.remote_join) lines.push(tr('支持双人异地合拍', 'Remote couple creation included'));
+  if (flags.live_portrait) lines.push(tr('适合动态人像等进阶玩法', 'Works for advanced portrait features'));
+  if (flags.priority_generation) lines.push(tr('高峰期享有更高处理优先级', 'Higher processing priority during busy periods'));
+  lines.push(tr('每月积分自动加入账户余额', 'Monthly credits are added to your account balance'));
   return lines;
 }
 

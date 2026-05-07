@@ -6,7 +6,7 @@
       <view class="account-hero">
         <view>
           <text class="account-kicker">{{ tr('账户中心', 'Account Center') }}</text>
-          <text class="account-title heading-serif">{{ tr('我的 AI 婚纱工作台', 'My AI Wedding Workspace') }}</text>
+          <text class="account-title heading-serif">{{ tr('我的 AI 婚纱空间', 'My AI Wedding Space') }}</text>
           <text class="account-subtitle">
             {{ tr('查看登录状态、积分余额、订阅、积分流水和生成历史。', 'Review sign-in status, credits, subscription, ledger entries, and generation history.') }}
           </text>

@@ -88,7 +88,7 @@ page {
    Typography Classes
    ======================================== */
 .heading-serif {
-  font-family: $uni-font-family;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', $uni-font-family;
   font-weight: 500;
   letter-spacing: 0;
   color: $uni-text-color;

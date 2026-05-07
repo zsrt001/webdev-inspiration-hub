@@ -4,9 +4,9 @@
     <view class="create-shell">
       <view class="hero-card">
         <view>
-          <text class="hero-kicker">{{ tr('统一创作流', 'Unified Creation Flow') }}</text>
-          <text class="hero-title heading-serif">{{ tr('上传人物、设定风格、直接生成', 'Upload portraits, shape the style, generate directly') }}</text>
-          <text class="hero-subtitle">{{ tr('模板是默认基线；文字描述优先；若没有模板也没有描述，系统会自动随机保底。', 'Templates are only the default baseline; text direction overrides them; if neither template nor text is provided, the system will fall back safely.') }}</text>
+          <text class="hero-kicker">{{ tr('AI 婚纱创作台', 'AI Wedding Studio') }}</text>
+          <text class="hero-title heading-serif">{{ tr('选择风格，上传照片，生成你的婚纱照', 'Choose a style, upload photos, create wedding portraits') }}</text>
+          <text class="hero-subtitle">{{ tr('从喜欢的风格开始，也可以用文字补充服装、场景和氛围。想要更接近你的想法时，再上传参考图。', 'Start from a style, add outfit, scene, and mood guidance, then use references when you want more control.') }}</text>
         </view>
         <view class="mode-grid">
           <view v-for="mode in modeOptions" :key="mode.value" class="mode-card" :class="{ active: generationMode === mode.value }" @tap="setMode(mode.value)">
@@ -21,7 +21,7 @@
           <view class="panel">
             <view class="panel-head">
               <text class="badge">STEP 01</text>
-              <text class="panel-title heading-serif">{{ tr('人物输入', 'Portrait Input') }}</text>
+              <text class="panel-title heading-serif">{{ tr('上传人物照片', 'Upload Portraits') }}</text>
             </view>
             <text class="panel-desc">{{ portraitHint }}</text>
 
@@ -42,7 +42,7 @@
               </view>
 
               <view v-if="generationMode === 'couple_remote'" class="remote-card">
-                <text class="field-label">{{ tr('异地邀请', 'Remote Invite') }}</text>
+                <text class="field-label">{{ tr('异地合拍邀请', 'Remote Couple Invite') }}</text>
                 <text class="remote-desc">{{ tr('先上传你的照片，再创建邀请链接发给对方补第二张。', 'Upload your own portrait first, then create an invite link for the second portrait.') }}</text>
                 <view class="remote-actions">
                   <button class="btn btn-outline remote-btn" @tap="createRemoteInvite" :disabled="remoteCreating">
@@ -52,8 +52,7 @@
                   <button v-if="remoteSession" class="btn btn-outline remote-btn" @tap="openJoinLink">{{ tr('打开访客页', 'Open Guest Page') }}</button>
                 </view>
                 <view v-if="remoteSession" class="remote-info">
-                  <text>{{ tr('会话编号', 'Session ID') }}：{{ remoteSession.session_id }}</text>
-                  <text>{{ tr('当前状态', 'Current Status') }}：{{ remoteStatusText }}</text>
+                  <text>{{ tr('邀请状态', 'Invite Status') }}：{{ remoteStatusText }}</text>
                   <text class="remote-link">{{ remoteSession.join_url }}</text>
                 </view>
               </view>
@@ -63,11 +62,11 @@
           <view class="panel">
             <view class="panel-head">
               <text class="badge">STEP 02</text>
-              <text class="panel-title heading-serif">{{ tr('风格基线', 'Style Baseline') }}</text>
+              <text class="panel-title heading-serif">{{ tr('选择婚纱风格', 'Choose a Style') }}</text>
             </view>
-            <text class="panel-desc">{{ tr('每个风格家族都支持单人和双人输出。模式影响上传与生成路径，不改变风格本身。', 'Every style family supports single and couple output. Mode changes the path, not the style itself.') }}</text>
+            <text class="panel-desc">{{ tr('先选一个接近你审美的风格，再用文字或参考图做细节调整。', 'Choose a style close to your taste, then refine it with text or references.') }}</text>
             <view class="pill-row">
-              <view class="template-pill" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">{{ tr('不选模板', 'No template') }}</view>
+              <view class="template-pill" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">{{ tr('自由发挥', 'Free Style') }}</view>
             </view>
             <view class="style-grid">
               <view v-for="card in styleCards" :key="card.familyKey" class="style-card" :class="{ active: selectedStyleFamily === card.familyKey }" @tap="selectedStyleFamily = card.familyKey">
@@ -83,10 +82,10 @@
           <view class="panel">
             <view class="panel-head">
               <text class="badge">STEP 03</text>
-              <text class="panel-title heading-serif">{{ tr('文字定向', 'Text Direction') }}</text>
+              <text class="panel-title heading-serif">{{ tr('补充你的想法', 'Add Your Direction') }}</text>
             </view>
-            <text class="panel-desc">{{ tr('你可以直接描述整体风格，也可以分别写服装与场景。文字优先于模板默认。', 'Describe the overall style, or split it into outfit and scene. Text overrides template defaults.') }}</text>
-            <textarea v-model="globalStyleText" class="text-area large" :placeholder="tr('整体风格描述（可选）：如电影感、法式、高级、胶片', 'Global direction (optional): cinematic, French editorial, minimal, filmic...')" maxlength="400" />
+            <text class="panel-desc">{{ tr('不用写复杂提示词，像和摄影师沟通一样描述你想要的服装、场景和氛围即可。', 'No complex prompting required. Describe the outfit, scene, and mood like you would brief a photographer.') }}</text>
+            <textarea v-model="globalStyleText" class="text-area large" :placeholder="tr('整体氛围（可选）：如电影感、法式、清冷、高级、胶片', 'Overall mood (optional): cinematic, French editorial, minimal, filmic...')" maxlength="400" />
             <view class="dual-inputs">
               <textarea v-model="outfitText" class="text-area" :placeholder="tr('服装描述（可选）：如黑纱、秀禾、缎面白纱', 'Outfit direction (optional): black gown, xiuhe, satin bridal dress...')" maxlength="300" />
               <textarea v-model="sceneText" class="text-area" :placeholder="tr('场景描述（可选）：如城堡阳台、白色画廊、海边落日', 'Scene direction (optional): castle balcony, white gallery, sunset beach...')" maxlength="300" />
@@ -96,7 +95,7 @@
           <view class="panel">
             <view class="panel-head">
               <text class="badge">STEP 04</text>
-              <text class="panel-title heading-serif">{{ tr('高级参考', 'Advanced References') }}</text>
+              <text class="panel-title heading-serif">{{ tr('上传参考图', 'Upload References') }}</text>
               <text class="collapse-toggle" @tap="advancedOpen = !advancedOpen">{{ advancedOpen ? tr('收起', 'Collapse') : tr('展开', 'Expand') }}</text>
             </view>
             <view v-if="advancedOpen" class="dual-inputs">
@@ -136,7 +135,7 @@
           <view class="summary-card">
             <image :src="summaryImageUrl" class="summary-image" mode="aspectFill" />
             <view class="summary-body">
-              <text class="summary-kicker">{{ tr('当前风格', 'Current Style') }}</text>
+              <text class="summary-kicker">{{ tr('创作预览', 'Creation Preview') }}</text>
               <text class="summary-title heading-serif">{{ summaryTitle }}</text>
               <text class="summary-subtitle">{{ summarySubtitle }}</text>
               <view class="tag-row">
@@ -144,8 +143,8 @@
                 <view class="tag subtle">{{ templateStateLabel }}</view>
               </view>
               <view class="summary-block">
-                <text class="summary-block-title">{{ tr('执行优先级', 'Execution Priority') }}</text>
-                <text class="summary-block-text">{{ tr('参考图 > 文字描述 > 模板默认 > 随机保底', 'References > Text Direction > Template Defaults > Random Fallback') }}</text>
+                <text class="summary-block-title">{{ tr('创作建议', 'Creation Tip') }}</text>
+                <text class="summary-block-text">{{ tr('参考图和文字描述会帮助 AI 更贴近你的想法；不确定时，先选风格直接生成预览。', 'References and text help the AI follow your idea more closely. If unsure, choose a style and create a preview first.') }}</text>
               </view>
               <view v-if="generationMode === 'couple_remote'" class="summary-block">
                 <text class="summary-block-title">{{ tr('异地状态', 'Remote Status') }}</text>
@@ -234,10 +233,10 @@ let remotePollTimer: ReturnType<typeof setInterval> | null = null;
 
 const portraitIndexes = computed(() => (generationMode.value === 'single' ? [0] : generationMode.value === 'couple_local' ? [0, 1] : [0]));
 const portraitHint = computed(() => generationMode.value === 'single'
-  ? tr('上传一张清晰正脸照片，系统会先做本地质检。', 'Upload one clear portrait. A local quality check runs first.')
+  ? tr('上传一张清晰正脸照片，建议光线自然、五官无遮挡。', 'Upload one clear portrait with natural light and an unobstructed face.')
   : generationMode.value === 'couple_local'
-    ? tr('在同一设备上传两张人像，适合同机双传。', 'Upload two portraits on the same device for local couple generation.')
-    : tr('异地合拍会先创建邀请会话。你上传主照片后，可复制链接给另一位参与者。', 'Remote join creates an invite session. Upload your portrait first, then send the invite link.'));
+    ? tr('在同一设备上传两张照片，适合情侣、夫妻或纪念照双人生成。', 'Upload two portraits on one device for couple or anniversary portraits.')
+    : tr('你先上传自己的照片，再复制邀请链接给对方补充第二张照片。', 'Upload your portrait first, then send the invite link so your partner can add theirs.'));
 const selectedTemplate = computed<Template | null>(() => {
   if (!selectedStyleFamily.value) return null;
   const matched = templateStore.templates.find((item) => getTemplateFamilyKey(item) === selectedStyleFamily.value);
@@ -267,11 +266,11 @@ const styleCards = computed(() => {
 const summaryImageUrl = computed(() => resolvePublicUrl(selectedTemplate.value?.image_url || '/hero_banner.jpg'));
 const summaryTitle = computed(() => selectedTemplate.value ? getLocalizedTemplateTitle(selectedTemplate.value, i18nStore.locale) : tr('未锁定模板', 'No Template Locked'));
 const summarySubtitle = computed(() => selectedTemplate.value
-  ? (getLocalizedTemplateMarketingSubtitle(selectedTemplate.value, i18nStore.locale) || tr('模板提供默认风格基线，文字与参考图仍可覆盖服装和场景方向。', 'The template provides a baseline; text and references can still override outfit and scene.'))
-  : tr('你可以直接描述服装与场景；若不提供模板与文字，系统会使用安全的随机保底。', 'You can describe outfit and scene directly; if neither template nor text is provided, the system uses a safe random fallback.'));
+  ? (getLocalizedTemplateMarketingSubtitle(selectedTemplate.value, i18nStore.locale) || tr('可以继续补充服装、场景和氛围，让结果更接近你的审美。', 'You can keep refining outfit, scene, and mood to match your taste.'))
+  : tr('未选择风格时，你可以直接用文字描述想要的服装、场景和氛围。', 'Without a selected style, describe the outfit, scene, and mood you want.'));
 const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : tr('双人异地', 'Couple Remote'));
-const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('模板基线已锁定', 'Template Baseline Ready') : tr('随机保底已启用', 'Random Fallback Ready'));
+const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择风格', 'Style Selected') : tr('自由描述模式', 'Free Direction'));
 const generationCost = computed(() => selectedTemplate.value?.category === 'vintage' || generationMode.value === 'couple_remote' ? 4 : 2);
 const remoteStatusText = computed(() => {
   if (generationMode.value !== 'couple_remote') return '';

@@ -33,9 +33,9 @@
           </view>
 
           <view class="logic-card">
-            <text class="logic-title">{{ tr('生成逻辑', 'Generation Logic') }}</text>
+            <text class="logic-title">{{ tr('创作建议', 'Creation Tip') }}</text>
             <text class="logic-line">
-              {{ tr('参考图 > 文字描述 > 模板默认 > 随机保底', 'References > Text Direction > Template Defaults > Random Fallback') }}
+              {{ tr('进入创作页后，可继续补充服装、场景或参考图，让结果更贴近你的想法。', 'After opening the studio, add outfit, scene, or reference guidance to make the result closer to your idea.') }}
             </text>
           </view>
         </view>
@@ -74,11 +74,11 @@
             </view>
             <view class="support-row">
               <text class="step-chip">02</text>
-              <text class="support-copy">{{ tr('保留当前模板，或继续写服装 / 场景描述', 'Keep this template, or further direct outfit and scene') }}</text>
+              <text class="support-copy">{{ tr('使用当前风格，或继续补充服装 / 场景描述', 'Use this style, or add outfit and scene direction') }}</text>
             </view>
             <view class="support-row">
               <text class="step-chip">03</text>
-              <text class="support-copy">{{ tr('如需更强控制，再补参考图后生成', 'Add references only when stronger control is needed') }}</text>
+              <text class="support-copy">{{ tr('想要更接近参考效果时，再上传参考图生成', 'Upload references when you want the result to follow a specific look') }}</text>
             </view>
           </view>
         </view>
@@ -116,8 +116,8 @@ const DETAIL_COPY: Record<string, DetailCopyEntry> = {
   chn_xiuhe: {
     kickerZh: '中式仪式感',
     kickerEn: 'Chinese Ceremony',
-    subtitleZh: '礼服纹样、庭院空间与东方婚礼氛围会作为默认基线，适合做庄重正式的纪念表达。',
-    subtitleEn: 'Chinese attire, courtyard texture, and ceremonial atmosphere become the default baseline.',
+    subtitleZh: '礼服纹样、庭院空间与东方婚礼氛围更突出，适合庄重正式的纪念表达。',
+    subtitleEn: 'Chinese attire, courtyard texture, and ceremonial atmosphere create a formal keepsake look.',
     usageZh: '适合强调礼服细节、传统庭院氛围与正面人物展示。',
     usageEn: 'Best for ornate bridal attire, traditional courtyards, and ceremonial portrait framing.',
     pointsZh: ['适合正面站姿与服装展示。', '可继续用文字强化喜庆、典礼、传统感。', '适合单人、双人和长辈纪念改造。'],
@@ -127,7 +127,7 @@ const DETAIL_COPY: Record<string, DetailCopyEntry> = {
     kickerZh: '极简高定',
     kickerEn: 'Refined Minimalism',
     subtitleZh: '干净空间、柔和光线和克制构图会成为默认走向，适合高级感、画廊感、轻 editorial 风格。',
-    subtitleEn: 'Clean interiors, soft lighting, and restrained composition define the baseline.',
+    subtitleEn: 'Clean interiors, soft lighting, and restrained composition create a refined bridal look.',
     usageZh: '适合室内白空间、极简礼服、轻法式或韩系高级婚纱表达。',
     usageEn: 'Best for white interiors, minimal gowns, and quiet editorial bridal styling.',
     pointsZh: ['适合轻柔、克制、干净的婚纱风格。', '可以用文字继续指定法式、胶片、画廊感。', '非常适合网页端首发和社交分享图。'],
@@ -156,8 +156,8 @@ const DETAIL_COPY: Record<string, DetailCopyEntry> = {
   gothic_romance: {
     kickerZh: '暗黑浪漫',
     kickerEn: 'Dark Romance',
-    subtitleZh: '深色礼服、教堂空间与戏剧性光影会成为默认基线，适合更强烈、更风格化的婚纱表达。',
-    subtitleEn: 'Dark gowns, cathedral architecture, and dramatic light form the default baseline.',
+    subtitleZh: '深色礼服、教堂空间与戏剧性光影更突出，适合更强烈、更风格化的婚纱表达。',
+    subtitleEn: 'Dark gowns, cathedral architecture, and dramatic light create a more stylized bridal mood.',
     usageZh: '适合哥特、教堂、烛光、暗调婚纱与风格强烈的人像表现。',
     usageEn: 'Best for gothic bridal styling, cathedral scenes, candlelight, and dramatic portraits.',
     pointsZh: ['适合强风格化而非日常写实路线。', '可继续补充烛光、暗红、宗教建筑等文本。', '人物姿态与情绪会比场景更重要。'],
@@ -166,8 +166,8 @@ const DETAIL_COPY: Record<string, DetailCopyEntry> = {
   hk_retro: {
     kickerZh: '港风霓虹',
     kickerEn: 'Neon Retro',
-    subtitleZh: '夜街、霓虹灯牌与都市电影感是默认基线，适合做复古港片感和情侣街头叙事。',
-    subtitleEn: 'Night streets, neon signs, and retro city energy form the baseline.',
+    subtitleZh: '夜街、霓虹灯牌与都市电影感更突出，适合复古港片感和情侣街头叙事。',
+    subtitleEn: 'Night streets, neon signs, and retro city energy create a cinematic couple story.',
     usageZh: '适合街头情侣、雨夜霓虹、电影海报感与都市叙事。',
     usageEn: 'Best for neon streets, rainy nights, and couple poster-style storytelling.',
     pointsZh: ['更适合双人关系感表达。', '可补充雨夜、出租车、胶片霓虹等方向。', '对服装风格和站位关系很敏感。'],
@@ -206,19 +206,19 @@ const heroSubtitle = computed(() => {
   if (copy.value) return i18nStore.locale === 'zh' ? copy.value.subtitleZh : copy.value.subtitleEn;
   const subtitle = getLocalizedTemplateMarketingSubtitle(template.value, i18nStore.locale);
   return subtitle || tr(
-    '模板是默认基线；你仍然可以在统一创作页里继续补充文字与参考图，覆盖服装和场景方向。',
-    'This template is only the baseline. Text and references can still override outfit and scene direction.',
+    '进入创作页后，你可以继续补充服装、场景和参考图，让画面更贴近你的想法。',
+    'After opening the studio, you can add outfit, scene, and reference guidance to shape the result.',
   );
 });
 const differentiatedPoints = computed(() => {
   if (copy.value) return i18nStore.locale === 'zh' ? copy.value.pointsZh : copy.value.pointsEn;
   return i18nStore.locale === 'zh'
-    ? ['适合作为默认风格基线。', '可继续补充服装与场景描述。', '如无模板与文字，系统会自动随机保底。']
-    : ['Works as a clean style baseline.', 'You can still add outfit and scene direction.', 'If no template or text is provided, the system falls back safely.'];
+    ? ['适合作为婚纱照起始风格。', '可继续补充服装与场景描述。', '上传清晰照片，预览效果会更稳定。']
+    : ['Works as a starting style for wedding portraits.', 'You can still add outfit and scene direction.', 'Clear source photos usually produce steadier previews.'];
 });
 const supportUsage = computed(() => {
   if (copy.value) return i18nStore.locale === 'zh' ? copy.value.usageZh : copy.value.usageEn;
-  return tr('适合作为默认风格基线，再用文字和参考图做细化。', 'Best used as a baseline and refined with text or references.');
+  return tr('适合作为起始风格，再用文字和参考图继续细化。', 'Best used as a starting style and refined with text or references.');
 });
 
 function currentQuery(): Record<string, string> {

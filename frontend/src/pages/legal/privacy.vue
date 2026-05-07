@@ -36,11 +36,11 @@ const sections = computed(() => [
     titleZh: '适用范围',
     titleEn: 'Scope',
     zh: [
-      '本政策适用于 AI 婚纱网页 SaaS、上传、生成、支付、订阅、账户中心和运营支持流程。',
+      '本政策适用于 AI Wedding 的照片上传、AI 生成、支付、订阅、账户中心和客服支持流程。',
       '你使用本服务即表示同意我们按本政策处理必要信息。',
     ],
     en: [
-      'This policy applies to the AI Wedding web SaaS, upload, generation, payment, subscription, account, and support workflows.',
+      'This policy applies to AI Wedding photo uploads, AI generation, payments, subscriptions, account center, and support workflows.',
       'By using the service, you agree that we process necessary information under this policy.',
     ],
   },
@@ -83,11 +83,11 @@ const sections = computed(() => [
     titleEn: 'Your Rights',
     zh: [
       '你可以查看账户、订单、生成历史和积分流水，也可以请求删除图片、停止使用账号或联系客服处理隐私问题。',
-      '如果你的部署配置了客服邮箱或官方渠道，应通过该渠道发起隐私、退款或侵权投诉。',
+      '如需处理隐私、退款或侵权投诉，请通过网站页脚、支付页或账户中心提供的官方客服入口联系我们。',
     ],
     en: [
       'You can view account data, orders, generated history, and credit ledger entries, and request image deletion, account closure, or privacy support.',
-      'If support email or official channels are configured for your deployment, use them for privacy, refund, or infringement requests.',
+      'For privacy, refund, or infringement requests, contact us through the official support channel shown in the footer, checkout page, or account center.',
     ],
   },
 ]);

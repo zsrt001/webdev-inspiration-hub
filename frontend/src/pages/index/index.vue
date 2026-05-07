@@ -1,5 +1,5 @@
 <template>
-  <view class="app-container saas-landing" style="padding-top: 64px;">
+  <view class="app-container product-landing" style="padding-top: 64px;">
     <NavBar ref="navBarRef" @show-payment="showPaymentModal = true" />
 
     <view v-if="homeBanner.enabled" class="hero-section">
@@ -7,16 +7,16 @@
       <view class="hero-overlay"></view>
       <view class="hero-content">
         <view class="hero-copy">
-          <text class="section-label">{{ tr('AI 婚纱影像 SaaS', 'AI Wedding Photo SaaS') }}</text>
+          <text class="section-label">{{ tr('AI 婚纱照生成', 'AI Wedding Portraits') }}</text>
           <text class="hero-title heading-serif">
-            {{ tr('一站式 AI 婚纱影像创作与交付平台', 'AI wedding portrait creation and delivery in one workflow') }}
+            {{ tr('上传照片，生成你的高定婚纱大片', 'Turn your photos into premium wedding portraits') }}
           </text>
           <text class="hero-subtitle">
-            {{ tr('从人物上传、风格选择、文字定向，到高清交付、积分包、订阅和 Creem 支付，所有现有能力整合成清晰的商业工作流。', 'Upload portraits, choose styles, direct outfits and scenes, then handle HD delivery, credits, subscriptions, and Creem payments in one clear commercial flow.') }}
+            {{ tr('无需预约影棚，选择喜欢的风格或描述你的想法，AI 帮你生成适合请柬、头像、纪念日和社交分享的婚纱影像。', 'No studio booking required. Choose a style or describe your idea, then create wedding portraits for invitations, profiles, anniversaries, and social sharing.') }}
           </text>
           <view class="hero-actions">
-            <view class="btn primary" @tap="goToCustom">{{ tr('开始创作', 'Start Creating') }}</view>
-            <view class="btn secondary" @tap="scrollToGallery">{{ tr('查看风格库', 'View Styles') }}</view>
+            <view class="btn primary" @tap="goToCustom">{{ tr('立即免费试用', 'Try It Free') }}</view>
+            <view class="btn secondary" @tap="scrollToGallery">{{ tr('浏览风格灵感', 'Browse Styles') }}</view>
           </view>
         </view>
 
@@ -25,8 +25,8 @@
             <image :src="heroPreviewUrl" mode="aspectFill" class="preview-image" />
           </view>
           <view class="preview-copy">
-            <text class="preview-title">{{ tr('完整创作闭环', 'Complete Creation Loop') }}</text>
-            <text class="preview-text">{{ tr('风格库、异地合拍、参考图定向、高清下载和支付权益全部保留。', 'Style library, remote couple flow, references, HD delivery, and payment entitlements stay connected.') }}</text>
+            <text class="preview-title">{{ tr('热门风格预览', 'Popular Style Preview') }}</text>
+            <text class="preview-text">{{ tr('中式秀禾、韩系极简、古堡、海边、金婚纪念等风格都可以直接开始。', 'Start from Chinese, Korean minimal, castle, beach, legacy anniversary, and more curated styles.') }}</text>
           </view>
         </view>
       </view>
@@ -35,8 +35,8 @@
     <view class="landing-body">
       <section class="benefits-section section-block" id="benefits">
         <view class="section-heading">
-          <text class="section-label">{{ tr('核心优势', 'Benefits') }}</text>
-          <text class="section-title heading-serif">{{ tr('让婚纱影像从灵感到交付更顺', 'Less friction from idea to delivery') }}</text>
+          <text class="section-label">{{ tr('为什么选择 AI Wedding', 'Why AI Wedding') }}</text>
+          <text class="section-title heading-serif">{{ tr('先看到成片灵感，再决定要不要继续升级', 'See finished portrait ideas before you commit') }}</text>
         </view>
         <view class="benefit-grid">
           <view v-for="item in benefitItems" :key="item.title" class="benefit-card">
@@ -49,28 +49,28 @@
 
       <section class="features-section section-block" id="features">
         <view class="section-heading">
-          <text class="section-label">{{ tr('功能介绍', 'Features') }}</text>
-          <text class="section-title heading-serif">{{ tr('保留所有能力，重新组织成 SaaS 工作台', 'Every capability, reorganized as a SaaS workspace') }}</text>
+          <text class="section-label">{{ tr('核心功能', 'Core Features') }}</text>
+          <text class="section-title heading-serif">{{ tr('从一张照片到婚纱大片，只需要几步', 'From one photo to wedding portraits in a few steps') }}</text>
         </view>
 
         <view class="feature-layout">
           <view class="feature-panel" @tap="goToCustom">
-            <image src="/static/style-previews/custom_mode.jpg" mode="aspectFill" class="feature-image" />
+            <image src="/static/style-previews/couple_old_money.jpg" mode="aspectFill" class="feature-image" />
             <view class="feature-copy">
-              <text class="feature-kicker">{{ tr('AI 设计中心', 'AI Design Center') }}</text>
-              <text class="feature-title heading-serif">{{ tr('自由定制服装、场景与参考图', 'Direct outfits, scenes, and references') }}</text>
-              <text class="feature-desc">{{ tr('单人、双人同机、双人异地邀请、文字定向和高级参考图仍然在同一条创作流里。', 'Single, local couple, remote couple invite, text direction, and advanced references remain in the same creation flow.') }}</text>
-              <view class="feature-action">{{ tr('进入创作', 'Open Studio') }}</view>
+              <text class="feature-kicker">{{ tr('自由定制', 'Custom Creation') }}</text>
+              <text class="feature-title heading-serif">{{ tr('描述你想要的婚纱、场景和氛围', 'Describe the dress, scene, and mood you want') }}</text>
+              <text class="feature-desc">{{ tr('上传人物照片后，可以选择模板，也可以补充服装、场景和参考图，让画面更接近你的审美。', 'Upload portraits, choose a style, then add outfit, scene, or reference guidance to bring the result closer to your taste.') }}</text>
+              <view class="feature-action">{{ tr('开始定制', 'Start Customizing') }}</view>
             </view>
           </view>
 
           <view class="feature-panel alt" @tap="focusCategory('vintage')">
-            <image src="/static/legacy_promo_banner.jpg" mode="aspectFill" class="feature-image" />
+            <image src="/static/style-previews/golden_chinese_courtyard.jpg" mode="aspectFill" class="feature-image" />
             <view class="feature-copy">
               <text class="feature-kicker">{{ tr('金婚纪念', 'Legacy Series') }}</text>
-              <text class="feature-title heading-serif">{{ tr('长辈纪念照与年代质感重塑', 'Era-aware anniversary portraits') }}</text>
-              <text class="feature-desc">{{ tr('金婚入口、复古影楼、庭院合照和现代翻拍都保留，适合父母纪念照和家庭礼物场景。', 'Legacy, retro studio, courtyard keepsakes, and modern remakes stay available for parents and family gifts.') }}</text>
-              <view class="feature-action">{{ tr('查看金婚风格', 'View Legacy Styles') }}</view>
+              <text class="feature-title heading-serif">{{ tr('为父母和长辈重做一组纪念婚纱照', 'Create anniversary portraits for parents and elders') }}</text>
+              <text class="feature-desc">{{ tr('适合结婚纪念日、金婚礼物和家庭相册，用更体面的方式留下珍贵关系与家庭记忆。', 'Perfect for anniversaries, legacy gifts, and family albums, with a more polished way to preserve important memories.') }}</text>
+              <view class="feature-action">{{ tr('查看纪念风格', 'View Legacy Styles') }}</view>
             </view>
           </view>
         </view>
@@ -79,10 +79,10 @@
       <section class="gallery-section section-block" id="gallery">
         <view class="section-heading split">
           <view>
-            <text class="section-label">{{ tr('产品功能演示', 'Product Gallery') }}</text>
-            <text class="section-title heading-serif">{{ tr('风格库仍然是首页核心入口', 'The style library remains the main entry') }}</text>
+            <text class="section-label">{{ tr('风格灵感', 'Style Inspiration') }}</text>
+            <text class="section-title heading-serif">{{ tr('选择一个喜欢的风格，马上开始生成', 'Choose a style and start creating') }}</text>
           </view>
-          <text class="section-note">{{ tr('点击任一风格进入详情页，并继续上传照片或切换创作模式。', 'Open any style to continue into details, upload, or switch creation mode.') }}</text>
+          <text class="section-note">{{ tr('支持单人婚纱照、双人合拍和异地合拍。进入详情后可继续上传照片。', 'Supports solo portraits, couple portraits, and remote couple creation. Open a style to upload photos.') }}</text>
         </view>
 
         <view class="category-filter">
@@ -130,8 +130,8 @@
 
       <section class="testimonials-section section-block" id="testimonials">
         <view class="section-heading">
-          <text class="section-label">{{ tr('使用场景', 'Use Cases') }}</text>
-          <text class="section-title heading-serif">{{ tr('文案贴近真实功能，不再空泛营销', 'Copy grounded in real product capability') }}</text>
+          <text class="section-label">{{ tr('适用场景', 'Use Cases') }}</text>
+          <text class="section-title heading-serif">{{ tr('适合这些真实需求', 'Made for real wedding moments') }}</text>
         </view>
         <view class="testimonial-list">
           <view v-for="item in testimonials" :key="item.name" class="testimonial-card">
@@ -142,9 +142,9 @@
       </section>
 
       <section class="cta-section section-block" id="cta">
-        <text class="section-label">{{ tr('行动召唤', 'CTA') }}</text>
-        <text class="cta-title heading-serif">{{ tr('先试生成，再按需要升级额度', 'Start creating, then upgrade when usage grows') }}</text>
-        <text class="cta-desc">{{ tr('免费额度适合首次试用；需要高清下载、更多生成或持续出图时，再选择积分包或月度订阅。', 'Free credits are for first tests. Use credit packs or monthly subscriptions when you need HD downloads, more generations, or steady production.') }}</text>
+        <text class="section-label">{{ tr('开始体验', 'Start Now') }}</text>
+        <text class="cta-title heading-serif">{{ tr('先生成预览，满意后再解锁高清', 'Create a preview first, unlock HD when you love it') }}</text>
+        <text class="cta-desc">{{ tr('新用户可以先体验生成效果。需要更多次数、高清下载或持续创作时，再选择积分包或月度套餐。', 'Try the generation flow first. Choose credit packs or monthly plans when you need more attempts, HD downloads, or ongoing creation.') }}</text>
         <view class="hero-actions centered">
           <view class="btn primary" @tap="goToCustom">{{ tr('立即开始', 'Start Now') }}</view>
           <view class="btn secondary" @tap="showPaymentModal = true">{{ tr('查看套餐', 'View Plans') }}</view>
@@ -154,7 +154,7 @@
       <section class="pricing-section section-block" id="pricing">
         <view class="section-heading">
           <text class="section-label">{{ tr('价格方案', 'Pricing') }}</text>
-          <text class="section-title heading-serif">{{ tr('积分包和订阅保持合理梯度', 'Credit packs and subscriptions with a balanced ladder') }}</text>
+          <text class="section-title heading-serif">{{ tr('按使用频率选择更合适的套餐', 'Choose the plan that fits your usage') }}</text>
         </view>
         <view class="pricing-grid">
           <view v-for="plan in pricingPlans" :key="plan.name" class="pricing-card" :class="{ featured: plan.featured }">
@@ -174,7 +174,7 @@
     <view class="site-footer" id="footer">
       <view class="footer-main">
         <text class="footer-brand heading-serif" @tap="onLogoTap">{{ tr('AI Wedding', 'AI Wedding') }}</text>
-        <text class="footer-copy">{{ tr('AI 婚纱影像生成、远程合拍、高清交付、积分包、订阅与 Creem 支付已接入。', 'AI wedding generation, remote collaboration, HD delivery, credit packs, subscriptions, and Creem payments are connected.') }}</text>
+        <text class="footer-copy">{{ tr('AI Wedding 提供 AI 婚纱照生成、双人合拍、高清下载、积分包和月度套餐服务。', 'AI Wedding offers AI wedding portraits, couple creation, HD downloads, credit packs, and monthly plans.') }}</text>
       </view>
       <view class="footer-links">
         <text @tap="scrollToGallery">{{ tr('功能', 'Features') }}</text>
@@ -257,29 +257,29 @@ const heroPreviewUrl = computed(() => {
 const benefitItems = computed(() => [
   {
     mark: '01',
-    title: tr('创作流完整', 'Complete workflow'),
-    desc: tr('人物上传、本地质检、风格选择、文字定向、参考图和订单状态都保留在同一流程。', 'Portrait upload, local quality checks, style selection, text direction, references, and order states stay in one flow.'),
+    title: tr('先看效果再决定', 'Preview before deciding'),
+    desc: tr('先用自己的照片试不同婚纱风格，看清楚氛围、构图和人物感觉，再决定是否继续高清下载。', 'Try styles with your own photos first, then decide whether to continue with HD downloads.'),
   },
   {
     mark: '02',
-    title: tr('高清交付闭环', 'HD delivery loop'),
-    desc: tr('预览、高清解锁、下载权限、积分扣费和失败退款逻辑继续串联。', 'Preview, HD unlock, download permissions, credit charging, and refund handling stay connected.'),
+    title: tr('风格选择更自由', 'More style freedom'),
+    desc: tr('可选择现成风格，也能用文字补充服装、场景和氛围，适合婚礼灵感、情侣写真和纪念礼物。', 'Choose curated styles or add text guidance for outfits, scenes, and mood.'),
   },
   {
     mark: '03',
-    title: tr('商业化可测试', 'Commerce ready'),
-    desc: tr('Creem Test Mode 支持积分包、月订阅和 webhook 入账，便于上线前完整验证。', 'Creem Test Mode supports credit packs, subscriptions, and webhook grants for pre-launch validation.'),
+    title: tr('额度清楚，按需升级', 'Clear usage plans'),
+    desc: tr('积分包适合偶尔生成，月度套餐适合持续创作；先体验，再按使用频率选择。', 'Use credit packs for occasional creation, or monthly plans for ongoing needs.'),
   },
 ]);
 
 const testimonials = computed(() => [
   {
-    quote: tr('适合新娘先看不同婚纱风格，再决定服装、场景和照片用途，不需要一开始就重拍。', 'Useful for exploring bridal styles before deciding outfit, scene, and final use without reshooting first.'),
-    name: tr('婚纱风格打样', 'Bridal style proofing'),
+    quote: tr('婚礼前想快速试不同风格，可以先用 AI 看一版效果，再和伴侣、化妆师或摄影师沟通方向。', 'Explore several bridal directions before the wedding, then discuss the look with your partner, stylist, or photographer.'),
+    name: tr('婚礼灵感与试片', 'Wedding planning and style proofing'),
   },
   {
-    quote: tr('金婚系列能服务父母纪念照，和主婚纱生成功能区分清楚，但仍复用同一套上传与交付链路。', 'The legacy series serves parent anniversary portraits while reusing the same upload and delivery pipeline.'),
-    name: tr('家庭纪念场景', 'Family keepsake use case'),
+    quote: tr('给父母准备结婚纪念日礼物时，可以用一组更正式的纪念婚纱照，补上过去没有好好拍过的遗憾。', 'Create a more formal anniversary portrait set for parents and family milestones.'),
+    name: tr('金婚 / 结婚周年纪念', 'Anniversary and legacy gifts'),
   },
 ]);
 
@@ -287,8 +287,8 @@ const pricingPlans = computed(() => [
   {
     name: tr('Starter 积分包', 'Starter Pack'),
     price: '$12.90',
-    desc: tr('50 积分，适合首次体验和少量试生成。', '50 credits for first tests and light usage.'),
-    lines: [tr('一次性购买', 'One-time purchase'), tr('约 25 次基础生成', 'About 25 base generations')],
+    desc: tr('50 积分，适合第一次体验、少量试片和挑选风格。', '50 credits for first tests, light proofing, and style selection.'),
+    lines: [tr('一次性购买', 'One-time purchase'), tr('适合偶尔生成', 'Good for occasional creation')],
     action: tr('购买积分', 'Buy Credits'),
     badge: '',
     featured: false,
@@ -296,8 +296,8 @@ const pricingPlans = computed(() => [
   {
     name: tr('Creator 月订阅', 'Creator Monthly'),
     price: '$49/mo',
-    desc: tr('300 积分/月，适合持续创作和成套出图。', '300 credits per month for ongoing creation.'),
-    lines: [tr('订阅积分每月发放', 'Monthly subscription credits'), tr('单价低于小额积分包', 'Better unit economics than small packs')],
+    desc: tr('300 积分/月，适合持续尝试风格、成套出图和高清下载。', '300 credits per month for ongoing styles, sets, and HD downloads.'),
+    lines: [tr('每月自动获得积分', 'Monthly credits included'), tr('适合持续创作', 'Best for regular creation')],
     action: tr('查看订阅', 'View Subscription'),
     badge: tr('推荐', 'Popular'),
     featured: true,
@@ -305,8 +305,8 @@ const pricingPlans = computed(() => [
   {
     name: tr('Studio 月订阅', 'Studio Monthly'),
     price: '$129/mo',
-    desc: tr('900 积分/月，适合团队和高频交付。', '900 credits per month for teams and heavier usage.'),
-    lines: [tr('更高月度额度', 'Higher monthly allowance'), tr('适合工作室批量交付', 'Built for studio workflows')],
+    desc: tr('900 积分/月，适合高频生成、多人试片和商业素材准备。', '900 credits per month for frequent creation and larger content needs.'),
+    lines: [tr('更高月度额度', 'Higher monthly allowance'), tr('适合高频使用', 'For heavier usage')],
     action: tr('升级套餐', 'Upgrade'),
     badge: '',
     featured: false,
@@ -500,19 +500,19 @@ onMounted(async () => {
 </script>
 
 <style lang="scss" scoped>
-.saas-landing {
+.product-landing {
   min-height: 100vh;
-  background: #f7f8fa;
+  background: #f6f7f8;
   color: #17191f;
 }
 
 .hero-section {
   position: relative;
-  min-height: min(740px, calc(100dvh - 64px));
+  min-height: min(720px, calc(100dvh - 64px));
   display: flex;
   align-items: stretch;
   overflow: hidden;
-  background: #d9dde3;
+  background: #e4e8eb;
 }
 
 .hero-media {
@@ -531,8 +531,8 @@ onMounted(async () => {
   inset: 0;
   z-index: 2;
   background:
-    linear-gradient(90deg, rgba(247, 248, 250, 0.98) 0%, rgba(247, 248, 250, 0.86) 43%, rgba(247, 248, 250, 0.24) 100%),
-    linear-gradient(0deg, #f7f8fa 0%, rgba(247, 248, 250, 0.04) 34%);
+    linear-gradient(90deg, rgba(246, 247, 248, 0.98) 0%, rgba(246, 247, 248, 0.82) 45%, rgba(246, 247, 248, 0.2) 100%),
+    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.05) 36%);
 }
 
 .hero-content {
@@ -554,7 +554,7 @@ onMounted(async () => {
 .section-label {
   display: block;
   margin-bottom: 14px;
-  color: #7c4d2f;
+  color: #9a5b16;
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0;
@@ -695,7 +695,7 @@ onMounted(async () => {
 .section-title {
   display: block;
   color: #17191f;
-  font-size: clamp(32px, 4vw, 52px);
+  font-size: clamp(32px, 4vw, 48px);
   line-height: 1.15;
 }
 
@@ -748,7 +748,7 @@ onMounted(async () => {
   margin-left: calc((100% - 100vw) / 2);
   padding-left: max(24px, calc((100vw - 1280px) / 2));
   padding-right: max(24px, calc((100vw - 1280px) / 2));
-  background: #eef1f4;
+  background: #edf1f2;
   border-top: 1px solid #dde1e8;
   border-bottom: 1px solid #dde1e8;
 }
@@ -761,6 +761,9 @@ onMounted(async () => {
 
 .feature-panel {
   overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(190px, 0.46fr) minmax(0, 1fr);
+  min-height: 340px;
   border: 1px solid #dde1e8;
   border-radius: 8px;
   background: #ffffff;
@@ -769,15 +772,19 @@ onMounted(async () => {
 
 .feature-image {
   width: 100%;
-  aspect-ratio: 16 / 10;
+  height: 100%;
+  min-height: 340px;
   display: block;
   background: #d9dde3;
   object-fit: cover;
-  object-position: center;
+  object-position: center top;
 }
 
 .feature-copy {
-  padding: 24px;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .feature-kicker,
@@ -794,7 +801,7 @@ onMounted(async () => {
   display: block;
   margin-bottom: 12px;
   color: #17191f;
-  font-size: 30px;
+  font-size: 28px;
   line-height: 1.2;
 }
 
@@ -945,7 +952,7 @@ onMounted(async () => {
   padding-left: 24px;
   padding-right: 24px;
   text-align: center;
-  background: #e8f3f1;
+  background: #e6f1ef;
   border-top: 1px solid rgba(17, 106, 96, 0.16);
   border-bottom: 1px solid rgba(17, 106, 96, 0.16);
 }
@@ -1118,9 +1125,12 @@ onMounted(async () => {
   }
 
   .benefit-grid,
-  .feature-layout,
   .testimonial-list,
   .pricing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1146,6 +1156,16 @@ onMounted(async () => {
 
   .hero-subtitle {
     font-size: 16px;
+  }
+
+  .feature-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-image {
+    min-height: auto;
+    height: auto;
+    aspect-ratio: 4 / 5;
   }
 
   .hero-actions,
