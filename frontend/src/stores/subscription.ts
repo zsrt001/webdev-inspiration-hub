@@ -27,6 +27,43 @@ export interface SubscriptionCheckoutResponse {
   checkout_url: string;
 }
 
+const DEFAULT_SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
+  {
+    code: 'starter_monthly',
+    name: 'Starter Monthly',
+    billing_interval: 'month',
+    price_cents: 1900,
+    currency: 'USD',
+    monthly_credits: 80,
+    feature_flags: { tier: 'starter' },
+  },
+  {
+    code: 'creator_monthly',
+    name: 'Creator Monthly',
+    billing_interval: 'month',
+    price_cents: 4900,
+    currency: 'USD',
+    monthly_credits: 260,
+    feature_flags: { tier: 'creator' },
+  },
+  {
+    code: 'studio_monthly',
+    name: 'Studio Monthly',
+    billing_interval: 'month',
+    price_cents: 12900,
+    currency: 'USD',
+    monthly_credits: 900,
+    feature_flags: { tier: 'studio', priority_generation: true },
+  },
+];
+
+function defaultSubscriptionPlans(): SubscriptionPlan[] {
+  return DEFAULT_SUBSCRIPTION_PLANS.map((plan) => ({
+    ...plan,
+    feature_flags: { ...plan.feature_flags },
+  }));
+}
+
 export const useSubscriptionStore = defineStore('subscription', () => {
   const plans = ref<SubscriptionPlan[]>([]);
   const current = ref<CurrentSubscription | null>(null);
@@ -40,11 +77,15 @@ export const useSubscriptionStore = defineStore('subscription', () => {
 
   async function fetchPlans(force = false): Promise<SubscriptionPlan[]> {
     if (plans.value.length > 0 && !force) return plans.value;
-    const res = await get<SubscriptionPlan[]>('/subscriptions/plans', {
-      showLoading: false,
-      showError: false,
-    });
-    plans.value = Array.isArray(res) ? res : [];
+    try {
+      const res = await get<SubscriptionPlan[]>('/subscriptions/plans', {
+        showLoading: false,
+        showError: false,
+      });
+      plans.value = Array.isArray(res) && res.length > 0 ? res : defaultSubscriptionPlans();
+    } catch {
+      plans.value = defaultSubscriptionPlans();
+    }
     return plans.value;
   }
 

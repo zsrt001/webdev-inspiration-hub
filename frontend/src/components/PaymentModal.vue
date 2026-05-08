@@ -192,6 +192,16 @@ interface PackagesResponse {
   packages: CreditPackage[];
 }
 
+const DEFAULT_CREDIT_PACKAGES: CreditPackage[] = [
+  { id: 'pack_50', credits: 50, price: 12.90, label: 'AI Wedding Starter', popular: false },
+  { id: 'pack_120', credits: 120, price: 24.90, label: 'AI Wedding Popular', popular: true },
+  { id: 'pack_300', credits: 300, price: 49.90, label: 'AI Wedding Premium', popular: false },
+];
+
+function defaultCreditPackages(): CreditPackage[] {
+  return DEFAULT_CREDIT_PACKAGES.map((pkg) => ({ ...pkg }));
+}
+
 interface CheckoutResponse {
   purchase_id: string;
   provider: string;
@@ -447,7 +457,11 @@ async function fetchData() {
   ]);
 
   if (packagesResult.status === 'fulfilled') {
-    packages.value = Array.isArray(packagesResult.value.packages) ? packagesResult.value.packages : [];
+    packages.value = Array.isArray(packagesResult.value.packages) && packagesResult.value.packages.length > 0
+      ? packagesResult.value.packages
+      : defaultCreditPackages();
+  } else {
+    packages.value = defaultCreditPackages();
   }
   normalizeSelections();
 
