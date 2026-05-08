@@ -21,6 +21,13 @@
         <text class="state-title">{{ t('orders.loading') }}</text>
       </view>
 
+      <view v-else-if="authRequired" class="state-card">
+        <text class="state-icon">◇</text>
+        <text class="state-title">{{ t('orders.signin_required') }}</text>
+        <text class="state-subtitle">{{ t('orders.signin_required_subtitle') }}</text>
+        <button class="btn btn-primary state-action" @tap="goLogin">{{ t('orders.signin') }}</button>
+      </view>
+
       <view v-else-if="orders.length === 0" class="state-card">
         <text class="state-icon">◇</text>
         <text class="state-title">{{ t('orders.empty') }}</text>
@@ -86,6 +93,7 @@ interface DisplayOrder {
 const orders = ref<DisplayOrder[]>([]);
 const loading = ref(true);
 const error = ref('');
+const authRequired = ref(false);
 const i18nStore = useI18nStore();
 const templateStore = useTemplateStore();
 const t = i18nStore.t;
@@ -153,6 +161,8 @@ const orderStats = computed(() => {
 const fetchOrders = async () => {
   loading.value = true;
   error.value = '';
+  authRequired.value = false;
+  const hadExistingOrders = orders.value.length > 0;
 
   try {
     if (!templateStore.templates.length) {
@@ -169,7 +179,15 @@ const fetchOrders = async () => {
     }));
   } catch (err) {
     console.error('Failed to fetch orders:', err);
-    error.value = t('orders.load_failed');
+    const statusCode = Number((err as any)?.statusCode || 0);
+    if (statusCode === 401 || statusCode === 403) {
+      authRequired.value = true;
+      error.value = '';
+    } else if (hadExistingOrders) {
+      error.value = t('orders.load_failed');
+    } else {
+      error.value = '';
+    }
     orders.value = [];
   } finally {
     loading.value = false;
@@ -199,6 +217,10 @@ const badgeClass = (status: string) => {
 
 const goToHome = () => {
   uni.reLaunch({ url: '/pages/index/index' });
+};
+
+const goLogin = () => {
+  uni.navigateTo({ url: '/pages/auth/login' });
 };
 
 const viewOrder = (orderId: string) => {
@@ -406,6 +428,15 @@ const refresh = () => {
   display: block;
   font-size: 16px;
   color: #17191f;
+}
+
+.state-subtitle {
+  display: block;
+  max-width: 460px;
+  margin: 10px auto 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #6b7280;
 }
 
 .state-action,

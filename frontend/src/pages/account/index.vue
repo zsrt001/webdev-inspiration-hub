@@ -365,8 +365,7 @@ async function loadAccount(): Promise<void> {
       subscriptionStore.fetchCurrentSubscription(true),
     ]);
 
-    if (profileResult.status === 'rejected') throw profileResult.reason;
-    profile.value = profileResult.value;
+    profile.value = profileResult.status === 'fulfilled' ? profileResult.value : null;
     balance.value = balanceResult.status === 'fulfilled' ? balanceResult.value : null;
     transactions.value = transactionsResult.status === 'fulfilled' ? (transactionsResult.value.transactions || []) : [];
     orders.value = ordersResult.status === 'fulfilled' && Array.isArray(ordersResult.value)
