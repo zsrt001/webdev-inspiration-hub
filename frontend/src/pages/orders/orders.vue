@@ -90,6 +90,8 @@ interface DisplayOrder {
   createdAt: string;
 }
 
+type OrdersResponse = Order[] | { value?: Order[]; items?: Order[]; results?: Order[]; orders?: Order[] };
+
 const orders = ref<DisplayOrder[]>([]);
 const loading = ref(true);
 const error = ref('');
@@ -146,6 +148,15 @@ const resolveStyleName = (order: Order): string => {
   return t('orders.custom');
 };
 
+const normalizeOrderRows = (response: OrdersResponse): Order[] => {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.value)) return response.value;
+  if (Array.isArray(response?.items)) return response.items;
+  if (Array.isArray(response?.results)) return response.results;
+  if (Array.isArray(response?.orders)) return response.orders;
+  return [];
+};
+
 const orderStats = computed(() => {
   const completed = orders.value.filter((order) => order.status === 'COMPLETED').length;
   const generating = orders.value.filter((order) => ['CREATED', 'CHECKING', 'GENERATING'].includes(order.status)).length;
@@ -168,8 +179,8 @@ const fetchOrders = async () => {
     if (!templateStore.templates.length) {
       await templateStore.fetchTemplates();
     }
-    const response = await get<Order[]>('/orders/', { showLoading: false, showError: false });
-    const rows = Array.isArray(response) ? response : [];
+    const response = await get<OrdersResponse>('/orders/', { showLoading: false, showError: false });
+    const rows = normalizeOrderRows(response);
     orders.value = rows.map((order) => ({
       id: order.id,
       styleName: resolveStyleName(order),

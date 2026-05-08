@@ -100,7 +100,7 @@
           </view>
 
           <view v-if="packages.length === 0" class="empty-pricing">
-            <text>{{ tr('暂未配置积分包', 'No credit packs configured yet') }}</text>
+            <text>{{ tr('套餐正在更新，请稍后再试', 'Plans are being refreshed. Please try again shortly.') }}</text>
           </view>
         </view>
 
@@ -153,7 +153,7 @@
           </view>
 
           <view v-if="subscriptionStore.plans.length === 0" class="empty-pricing">
-            <text>{{ tr('暂未配置订阅套餐', 'No subscription plans configured yet') }}</text>
+            <text>{{ tr('订阅套餐正在更新，请稍后再试', 'Subscription plans are being refreshed. Please try again shortly.') }}</text>
           </view>
         </view>
 

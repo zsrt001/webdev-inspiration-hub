@@ -232,6 +232,8 @@ interface Order {
   status: string;
 }
 
+type OrdersResponse = Order[] | { value?: Order[]; items?: Order[]; results?: Order[]; orders?: Order[] };
+
 interface LegalPolicies {
   retention?: {
     source_images_days?: number;
@@ -322,6 +324,15 @@ function orderPreview(order: Order): string {
   return resolvePublicUrl('/style-previews/couple_royal_castle.jpg');
 }
 
+function normalizeOrderRows(response: OrdersResponse): Order[] {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.value)) return response.value;
+  if (Array.isArray(response?.items)) return response.items;
+  if (Array.isArray(response?.results)) return response.results;
+  if (Array.isArray(response?.orders)) return response.orders;
+  return [];
+}
+
 function statusText(status: string): string {
   const normalized = String(status || '').toUpperCase();
   const map: Record<string, string> = {
@@ -359,7 +370,7 @@ async function loadAccount(): Promise<void> {
       get<UserProfile>('/users/me', { showLoading: false, showError: false }),
       get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false }),
       get<TransactionsResponse>('/credits/transactions?limit=8', { showLoading: false, showError: false }),
-      get<Order[]>('/orders/', { showLoading: false, showError: false }),
+      get<OrdersResponse>('/orders/', { showLoading: false, showError: false }),
       get<LegalPolicies>('/legal/policies', { showLoading: false, showError: false }),
       subscriptionStore.fetchPlans(true),
       subscriptionStore.fetchCurrentSubscription(true),
@@ -368,14 +379,14 @@ async function loadAccount(): Promise<void> {
     profile.value = profileResult.status === 'fulfilled' ? profileResult.value : null;
     balance.value = balanceResult.status === 'fulfilled' ? balanceResult.value : null;
     transactions.value = transactionsResult.status === 'fulfilled' ? (transactionsResult.value.transactions || []) : [];
-    orders.value = ordersResult.status === 'fulfilled' && Array.isArray(ordersResult.value)
-      ? ordersResult.value.slice(0, 6)
+    orders.value = ordersResult.status === 'fulfilled'
+      ? normalizeOrderRows(ordersResult.value).slice(0, 6)
       : [];
     legalPolicies.value = legalResult.status === 'fulfilled' ? legalResult.value : null;
     supabaseAuthed.value = isSupabaseLoggedIn();
     passwordAuthed.value = isPasswordLoggedIn();
   } catch (err: any) {
-    error.value = err?.message || tr('账户数据加载失败', 'Failed to load account data');
+    error.value = err?.message || tr('账户暂时无法刷新，请稍后重试', 'Account details are temporarily unavailable. Please try again shortly.');
   } finally {
     loading.value = false;
   }
