@@ -78,7 +78,42 @@
             }
         },
         {
+            "path": "admin",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
+            "path": "admin/users",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
+            "path": "admin/orders",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
             "path": "pages/admin/index",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
+            "path": "pages/admin/users",
+            "style": {
+                "navigationStyle": "custom",
+                "navigationBarTitleText": ""
+            }
+        },
+        {
+            "path": "pages/admin/orders",
             "style": {
                 "navigationStyle": "custom",
                 "navigationBarTitleText": ""

@@ -2,13 +2,18 @@
 
 from typing import Any, List
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin_token
 from app.core.database import get_db
+from app.models.order import Order, OrderStatus
+from app.models.user import User
+from app.models.user_credit import UserCredit
 from app.services.admin_service import (
     get_dashboard_stats,
     grant_credits_to_user,
@@ -35,6 +40,10 @@ class DashboardStats(BaseModel):
     total_revenue_credits: int
     estimated_revenue_usd: float
     total_users: int
+    recent_users: int = 0
+    recent_orders: int = 0
+    total_revenue_cents: int = 0
+    recent_revenue_cents: int = 0
     active_users_24h: int
     total_credits_in_circulation: int
     template_breakdown: dict
@@ -71,6 +80,73 @@ class UsersListResponse(BaseModel):
     """List of users response."""
     users: List[UserInfo]
     total: int
+
+
+class AdminUserItem(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    username: str | None = None
+    email: str | None = None
+    status: str
+    role: str
+    balance: int = 0
+    created_at: datetime | None = None
+    last_login_at: datetime | None = None
+
+
+class AdminUsersResponse(BaseModel):
+    users: list[AdminUserItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class UpdateStatusRequest(BaseModel):
+    status: str
+
+
+class AdminOrderUser(BaseModel):
+    id: str
+    name: str
+    email: str | None = None
+    username: str | None = None
+
+
+class AdminOrderItem(BaseModel):
+    id: str
+    order_no: str
+    user: AdminOrderUser | None = None
+    amount_cents: int | None = None
+    amount_usd: float | None = None
+    status: str
+    template_id: str | None = None
+    created_at: datetime | None = None
+    paid_at: datetime | None = None
+
+
+class AdminOrdersResponse(BaseModel):
+    orders: list[AdminOrderItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminOrderDetail(AdminOrderItem):
+    user_id: str
+    style_template: str | None = None
+    generation_params: dict[str, Any] | None = None
+    source_image_urls: dict[str, Any] | None = None
+    preview_image_urls: dict[str, Any] | None = None
+    final_image_urls: dict[str, Any] | None = None
+    payment_id: str | None = None
+    task_id: str | None = None
+    error_message: str | None = None
+    storage_cleanup_status: str | None = None
+    source_images_expires_at: datetime | None = None
+    expires_at: datetime | None = None
+    deleted_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class OpsConfigResponse(BaseModel):
@@ -139,6 +215,112 @@ class AdminAuditLogItem(BaseModel):
     created_at: datetime
 
 
+USER_STATUS_VALUES = {"active", "disabled", "suspended", "blocked"}
+ORDER_STATUS_VALUES = {status.value for status in OrderStatus}
+
+
+def _pagination(page: int, page_size: int) -> tuple[int, int, int]:
+    clean_page = max(1, int(page or 1))
+    clean_page_size = max(1, min(100, int(page_size or 20)))
+    return clean_page, clean_page_size, (clean_page - 1) * clean_page_size
+
+
+def _user_display_name(user: User | None) -> str:
+    if user is None:
+        return "Unknown user"
+    return (
+        (user.nickname or "").strip()
+        or (user.username or "").strip()
+        or (user.email or "").strip()
+        or (user.openid or "").strip()
+        or str(user.id)
+    )
+
+
+def _user_item(user: User, balance: int | None = None) -> AdminUserItem:
+    return AdminUserItem(
+        id=str(user.id),
+        user_id=user.openid or str(user.id),
+        name=_user_display_name(user),
+        username=user.username,
+        email=user.email,
+        status=user.status or "active",
+        role=user.role or "user",
+        balance=int(balance or 0),
+        created_at=user.created_at,
+        last_login_at=user.last_login_at,
+    )
+
+
+def _order_status_value(order: Order) -> str:
+    return order.status.value if hasattr(order.status, "value") else str(order.status)
+
+
+def _order_item(order: Order, user: User | None) -> AdminOrderItem:
+    amount_cents = int(order.price_cents or 0)
+    return AdminOrderItem(
+        id=str(order.id),
+        order_no=str(order.id),
+        user=AdminOrderUser(
+            id=str(user.id),
+            name=_user_display_name(user),
+            email=user.email,
+            username=user.username,
+        ) if user else None,
+        amount_cents=amount_cents,
+        amount_usd=round(amount_cents / 100, 2),
+        status=_order_status_value(order),
+        template_id=order.template_id,
+        created_at=order.created_at,
+        paid_at=order.paid_at,
+    )
+
+
+def _order_detail(order: Order, user: User | None) -> AdminOrderDetail:
+    base = _order_item(order, user).model_dump()
+    return AdminOrderDetail(
+        **base,
+        user_id=str(order.user_id),
+        style_template=order.style_template,
+        generation_params=order.generation_params,
+        source_image_urls=order.source_image_urls,
+        preview_image_urls=order.preview_image_urls,
+        final_image_urls=order.final_image_urls,
+        payment_id=order.payment_id,
+        task_id=order.task_id,
+        error_message=order.error_message,
+        storage_cleanup_status=order.storage_cleanup_status,
+        source_images_expires_at=order.source_images_expires_at,
+        expires_at=order.expires_at,
+        deleted_at=order.deleted_at,
+        updated_at=order.updated_at,
+    )
+
+
+async def _get_admin_user(db: AsyncSession, user_id: str) -> User:
+    try:
+        user_uuid = uuid.UUID(str(user_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+    result = await db.execute(select(User).where(User.id == user_uuid))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+async def _get_admin_order(db: AsyncSession, order_id: str) -> Order:
+    try:
+        order_uuid = uuid.UUID(str(order_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid order ID")
+    result = await db.execute(select(Order).where(Order.id == order_uuid))
+    order = result.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
 @router.get("/dashboard", response_model=DashboardStats)
 async def get_dashboard(db: AsyncSession = Depends(get_db)):
     """
@@ -146,6 +328,22 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     Includes order counts, revenue, user stats, and recent activity.
     """
     stats = await get_dashboard_stats(db)
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    stats["recent_users"] = int(
+        await db.scalar(select(func.count(User.id)).where(User.created_at >= since)) or 0
+    )
+    stats["recent_orders"] = int(
+        await db.scalar(select(func.count(Order.id)).where(Order.created_at >= since)) or 0
+    )
+    stats["total_revenue_cents"] = int(
+        await db.scalar(select(func.coalesce(func.sum(Order.price_cents), 0))) or 0
+    )
+    stats["recent_revenue_cents"] = int(
+        await db.scalar(
+            select(func.coalesce(func.sum(Order.price_cents), 0)).where(Order.created_at >= since)
+        )
+        or 0
+    )
     return DashboardStats(**stats)
 
 
@@ -177,16 +375,179 @@ async def grant_credits(
     return GrantCreditsResponse(**result)
 
 
-@router.get("/users", response_model=UsersListResponse)
-async def list_users(db: AsyncSession = Depends(get_db)):
-    """
-    Get list of all users with their credit balances.
-    """
-    users = await get_all_users(db)
-    return UsersListResponse(
-        users=[UserInfo(**u) for u in users],
-        total=len(users)
+@router.get("/users", response_model=AdminUsersResponse)
+async def list_users(
+    search: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """List users for the admin table with search, status filter, and pagination."""
+    clean_page, clean_page_size, offset = _pagination(page, page_size)
+    filters = []
+    clean_search = (search or "").strip()
+    if clean_search:
+        pattern = f"%{clean_search}%"
+        filters.append(
+            or_(
+                User.nickname.ilike(pattern),
+                User.username.ilike(pattern),
+                User.email.ilike(pattern),
+                User.openid.ilike(pattern),
+                cast(User.id, String).ilike(pattern),
+            )
+        )
+    clean_status = (status or "").strip().lower()
+    if clean_status:
+        filters.append(User.status == clean_status)
+
+    total = int(await db.scalar(select(func.count(User.id)).where(*filters)) or 0)
+    rows = (
+        await db.execute(
+            select(User, func.coalesce(UserCredit.balance, 0).label("balance"))
+            .outerjoin(UserCredit, UserCredit.user_id == User.id)
+            .where(*filters)
+            .order_by(User.created_at.desc(), User.id.desc())
+            .offset(offset)
+            .limit(clean_page_size)
+        )
+    ).all()
+
+    return AdminUsersResponse(
+        users=[_user_item(user, int(balance or 0)) for user, balance in rows],
+        total=total,
+        page=clean_page,
+        page_size=clean_page_size,
     )
+
+
+@router.patch("/users/{user_id}/status", response_model=AdminUserItem)
+@router.post("/users/{user_id}/status", response_model=AdminUserItem)
+async def update_user_status(
+    user_id: str,
+    payload: UpdateStatusRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update only the operational status of a user."""
+    clean_status = (payload.status or "").strip().lower()
+    if clean_status not in USER_STATUS_VALUES:
+        raise HTTPException(status_code=422, detail=f"Invalid status. Allowed: {', '.join(sorted(USER_STATUS_VALUES))}")
+
+    user = await _get_admin_user(db, user_id)
+    previous_status = user.status
+    user.status = clean_status
+    await db.flush()
+    await log_admin_action(
+        db,
+        action="update_user_status",
+        request=request,
+        details={"target_user_id": str(user.id), "from": previous_status, "to": clean_status},
+    )
+
+    balance = int(
+        await db.scalar(select(func.coalesce(UserCredit.balance, 0)).where(UserCredit.user_id == user.id))
+        or 0
+    )
+    return _user_item(user, balance)
+
+
+@router.get("/orders", response_model=AdminOrdersResponse)
+async def list_admin_orders(
+    search: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """List orders with user information for admin operations."""
+    clean_page, clean_page_size, offset = _pagination(page, page_size)
+    filters = []
+    clean_search = (search or "").strip()
+    if clean_search:
+        pattern = f"%{clean_search}%"
+        filters.append(
+            or_(
+                cast(Order.id, String).ilike(pattern),
+                cast(Order.user_id, String).ilike(pattern),
+                User.nickname.ilike(pattern),
+                User.username.ilike(pattern),
+                User.email.ilike(pattern),
+                User.openid.ilike(pattern),
+            )
+        )
+    clean_status = (status or "").strip().upper()
+    if clean_status:
+        if clean_status not in ORDER_STATUS_VALUES:
+            raise HTTPException(status_code=422, detail=f"Invalid order status. Allowed: {', '.join(sorted(ORDER_STATUS_VALUES))}")
+        filters.append(Order.status == clean_status)
+
+    total = int(
+        await db.scalar(
+            select(func.count(Order.id))
+            .select_from(Order)
+            .join(User, User.id == Order.user_id)
+            .where(*filters)
+        )
+        or 0
+    )
+    rows = (
+        await db.execute(
+            select(Order, User)
+            .join(User, User.id == Order.user_id)
+            .where(*filters)
+            .order_by(Order.created_at.desc(), Order.id.desc())
+            .offset(offset)
+            .limit(clean_page_size)
+        )
+    ).all()
+
+    return AdminOrdersResponse(
+        orders=[_order_item(order, user) for order, user in rows],
+        total=total,
+        page=clean_page,
+        page_size=clean_page_size,
+    )
+
+
+@router.get("/orders/{order_id}", response_model=AdminOrderDetail)
+async def get_admin_order_detail(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return an admin-safe order detail payload."""
+    order = await _get_admin_order(db, order_id)
+    user = await db.get(User, order.user_id)
+    return _order_detail(order, user)
+
+
+@router.patch("/orders/{order_id}/status", response_model=AdminOrderDetail)
+@router.post("/orders/{order_id}/status", response_model=AdminOrderDetail)
+async def update_order_status(
+    order_id: str,
+    payload: UpdateStatusRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an order status using the existing OrderStatus enum."""
+    clean_status = (payload.status or "").strip().upper()
+    if clean_status not in ORDER_STATUS_VALUES:
+        raise HTTPException(status_code=422, detail=f"Invalid order status. Allowed: {', '.join(sorted(ORDER_STATUS_VALUES))}")
+
+    order = await _get_admin_order(db, order_id)
+    previous_status = _order_status_value(order)
+    order.status = OrderStatus(clean_status)
+    await db.flush()
+    await log_admin_action(
+        db,
+        action="update_order_status",
+        request=request,
+        details={"order_id": str(order.id), "from": previous_status, "to": clean_status},
+    )
+
+    user = await db.get(User, order.user_id)
+    return _order_detail(order, user)
 
 
 @router.post("/cleanup_expired_assets", response_model=CleanupAssetsResponse)
