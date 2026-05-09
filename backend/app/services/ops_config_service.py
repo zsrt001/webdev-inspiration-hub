@@ -285,6 +285,9 @@ def get_public_ops_config() -> dict[str, Any]:
             "local_recommendations": bool(feature_flags.get("local_recommendations", True)),
             "director_mode": bool(feature_flags.get("director_mode", True)),
         },
+        "auth": {
+            "google_oauth_enabled": settings.supabase_oauth_enabled,
+        },
     }
 
 

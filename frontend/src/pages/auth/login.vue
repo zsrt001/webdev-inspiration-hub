@@ -44,14 +44,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useI18nStore } from '../../stores/i18n';
 import { loginWithPassword, signInWithGoogle } from '../../utils/auth';
-import { isSupabaseConfigured } from '../../utils/supabase';
+import { refreshSupabaseConfig } from '../../utils/supabase';
 
 const i18nStore = useI18nStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
-const supabaseEnabled = isSupabaseConfigured();
+const supabaseEnabled = ref(false);
 
 const username = ref('');
 const password = ref('');
@@ -101,6 +101,10 @@ function goRegister() {
 function goHome() {
   uni.reLaunch({ url: '/pages/index/index' });
 }
+
+onMounted(async () => {
+  supabaseEnabled.value = await refreshSupabaseConfig();
+});
 </script>
 
 <style lang="scss" scoped>

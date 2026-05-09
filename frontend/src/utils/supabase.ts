@@ -13,6 +13,10 @@ type OAuthParams = {
     error: string;
 };
 
+let googleAuthConfigured = false;
+let publicConfigLoaded = false;
+let pendingPublicConfig: Promise<boolean> | null = null;
+
 function getOAuthParams(): OAuthParams {
     if (!isH5Runtime()) return { accessToken: '', error: '' };
 
@@ -98,7 +102,43 @@ async function exchangeSupabaseAccessToken(accessToken: string): Promise<Session
 }
 
 export function isSupabaseConfigured(): boolean {
-    return isH5Runtime();
+    return isH5Runtime() && googleAuthConfigured;
+}
+
+function readGoogleAuthEnabled(payload: any): boolean {
+    const auth = payload?.auth;
+    if (!auth || typeof auth !== 'object') return false;
+    return Boolean(auth.google_oauth_enabled || auth.google_enabled || auth.supabase_enabled);
+}
+
+export async function refreshSupabaseConfig(force = false): Promise<boolean> {
+    if (!isH5Runtime()) {
+        googleAuthConfigured = false;
+        publicConfigLoaded = true;
+        return false;
+    }
+
+    if (publicConfigLoaded && !force) return googleAuthConfigured;
+    if (pendingPublicConfig && !force) return pendingPublicConfig;
+
+    pendingPublicConfig = uni.request({
+        url: `${API_BASE_URL}/ops/public_config`,
+        method: 'GET',
+    }).then((response) => {
+        googleAuthConfigured = response.statusCode >= 200
+            && response.statusCode < 300
+            && readGoogleAuthEnabled(response.data);
+        publicConfigLoaded = true;
+        return googleAuthConfigured;
+    }).catch(() => {
+        googleAuthConfigured = false;
+        publicConfigLoaded = true;
+        return false;
+    }).finally(() => {
+        pendingPublicConfig = null;
+    });
+
+    return pendingPublicConfig;
 }
 
 export function getSupabaseClient(): null {
@@ -131,6 +171,11 @@ export function getSupabaseRedirectUrl(): string {
 export async function signInWithGoogle(): Promise<void> {
     if (!isH5Runtime()) {
         throw new Error('Google sign-in is only available in the web app');
+    }
+
+    const available = await refreshSupabaseConfig();
+    if (!available) {
+        throw new Error('Google sign-in is not available. Please use username and password.');
     }
 
     const backendOrigin = resolveBackendOrigin();

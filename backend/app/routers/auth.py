@@ -165,10 +165,10 @@ async def login(
 @router.get("/supabase/google/start")
 async def start_supabase_google_login(next: str | None = None) -> RedirectResponse:
     """Redirect the browser into Supabase's Google OAuth flow."""
-    if not settings.supabase_url:
+    if not settings.supabase_oauth_enabled:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Supabase Auth is not configured",
+            detail="Supabase Auth is not fully configured",
         )
 
     redirect_to = _oauth_return_url(next)

@@ -183,7 +183,7 @@ import { useI18nStore } from '../../stores/i18n';
 import { useSubscriptionStore } from '../../stores/subscription';
 import { del, get, resolvePublicUrl } from '../../utils/api';
 import { getAuthProvider, getUsername, isPasswordLoggedIn, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
-import { isSupabaseConfigured } from '../../utils/supabase';
+import { refreshSupabaseConfig } from '../../utils/supabase';
 
 interface UserProfile {
   id: string;
@@ -257,7 +257,7 @@ const orders = ref<Order[]>([]);
 const legalPolicies = ref<LegalPolicies | null>(null);
 const supabaseAuthed = ref(false);
 const passwordAuthed = ref(false);
-const supabaseEnabled = isSupabaseConfigured();
+const supabaseEnabled = ref(false);
 
 const accountAuthed = computed(() => passwordAuthed.value || supabaseAuthed.value);
 const displayName = computed(() => profile.value?.nickname || profile.value?.email || getUsername() || tr('访客用户', 'Guest user'));
@@ -452,7 +452,14 @@ function viewOrder(orderId: string): void {
   uni.navigateTo({ url: `/pages/preview/preview?id=${orderId}` });
 }
 
-onMounted(loadAccount);
+onMounted(async () => {
+  await Promise.all([
+    loadAccount(),
+    refreshSupabaseConfig().then((enabled) => {
+      supabaseEnabled.value = enabled;
+    }),
+  ]);
+});
 </script>
 
 <style lang="scss" scoped>

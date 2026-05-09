@@ -6,7 +6,6 @@
 import { normalizeBaseUrl, resolveDefaultApiBaseUrl } from './apiConfig';
 import {
     getCurrentSupabaseSession,
-    isSupabaseConfigured,
     signInWithGoogle as startSupabaseGoogleSignIn,
     signOutFromSupabase,
 } from './supabase';
@@ -68,7 +67,6 @@ function storeSession(
 }
 
 async function restoreSupabaseSession(): Promise<{ userId: string; token: string } | null> {
-    if (!isSupabaseConfigured()) return null;
     const session = await getCurrentSupabaseSession();
     const token = session?.access_token || '';
     const userId = session?.user?.id || '';

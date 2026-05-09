@@ -33,6 +33,37 @@ class RemoteJoinConfigTest(unittest.TestCase):
             ops_config_service.settings = original_settings
             ops_config_service.DEFAULT_OPS_CONFIG["feature_flags"]["remote_join"] = original_default
 
+    def test_public_config_hides_google_oauth_until_exchange_is_configured(self) -> None:
+        original_settings = ops_config_service.settings
+        try:
+            ops_config_service.settings = Settings(
+                _env_file=None,
+                supabase_url="https://example.supabase.co",
+                supabase_anon_key="",
+                supabase_jwt_secret="",
+            )
+
+            config = ops_config_service.get_public_ops_config()
+
+            self.assertFalse(config["auth"]["google_oauth_enabled"])
+        finally:
+            ops_config_service.settings = original_settings
+
+    def test_public_config_exposes_google_oauth_when_exchange_is_configured(self) -> None:
+        original_settings = ops_config_service.settings
+        try:
+            ops_config_service.settings = Settings(
+                _env_file=None,
+                supabase_url="https://example.supabase.co",
+                supabase_anon_key="anon-key",
+            )
+
+            config = ops_config_service.get_public_ops_config()
+
+            self.assertTrue(config["auth"]["google_oauth_enabled"])
+        finally:
+            ops_config_service.settings = original_settings
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -222,6 +222,14 @@ class Settings(BaseSettings):
         return bool(self.admin_user_id_list or self.admin_openid_list or self.admin_email_list)
 
     @property
+    def supabase_oauth_enabled(self) -> bool:
+        """Whether Google OAuth can complete both redirect and token exchange."""
+        return bool(
+            self.supabase_url.strip()
+            and (self.supabase_jwt_secret.strip() or self.supabase_anon_key.strip())
+        )
+
+    @property
     def s3_public_url_base(self) -> str:
         """Get base URL for public S3 objects."""
         if self.aws_s3_public_url_base:
