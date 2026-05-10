@@ -39,21 +39,25 @@ jobs:
     needs: [backend-test, frontend-build]
     runs-on: ubuntu-latest
     environment: production
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
+      - name: Skip manual Vercel deploy when token is not configured
+        if: env.VERCEL_TOKEN == ''
+        run: echo "VERCEL_TOKEN is not configured; relying on Vercel Git integration."
       - uses: actions/checkout@v4
+        if: env.VERCEL_TOKEN != ''
       - uses: actions/setup-node@v4
+        if: env.VERCEL_TOKEN != ''
         with:
           node-version: "20"
-      - run: npm i -g vercel
-      - run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - if: env.VERCEL_TOKEN != ''
+        run: npm i -g vercel
+      - if: env.VERCEL_TOKEN != ''
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - if: env.VERCEL_TOKEN != ''
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+      - if: env.VERCEL_TOKEN != ''
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
