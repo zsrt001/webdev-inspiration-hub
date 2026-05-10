@@ -533,7 +533,7 @@ async def probe_creem_checkout():
     payload = {
         "product_id": product_id,
         "request_id": f"launch_probe_{uuid.uuid4().hex[:16]}",
-        "success_url": f"{settings.effective_frontend_base_url.rstrip('/')}?payment=success&probe=1",
+        "success_url": f"{settings.effective_frontend_base_url.rstrip('/')}/?payment=success&probe=1",
         "metadata": {
             "source": "admin_launch_probe",
             "package_id": "pack_50",
