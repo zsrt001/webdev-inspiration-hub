@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin_token
@@ -68,6 +68,14 @@ class GrantCreditsResponse(BaseModel):
     user_id: str
     credits_granted: int
     new_balance: int
+
+
+class ResetTestDataResponse(BaseModel):
+    """One-off production launch data reset result."""
+    before: dict[str, int]
+    after: dict[str, int]
+    preserved_users: int
+    deleted_users: int
 
 
 class UserInfo(BaseModel):
@@ -345,6 +353,85 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
         or 0
     )
     return DashboardStats(**stats)
+
+
+@router.post("/reset_test_data", response_model=ResetTestDataResponse)
+async def reset_test_data_for_launch(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """One-off launch cleanup for test business data."""
+
+    cleanup_tables = [
+        "subscription_credit_grants",
+        "user_subscriptions",
+        "credit_purchases",
+        "live_portrait_jobs",
+        "orders",
+        "credit_transactions",
+        "user_credits",
+        "payment_events",
+        "leads",
+        "click_stats",
+        "admin_audit_logs",
+    ]
+    count_tables = [*cleanup_tables, "users", "subscription_plans"]
+
+    existing_tables = set(
+        (
+            await db.execute(
+                text(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    """
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    async def table_count(table_name: str) -> int:
+        if table_name not in existing_tables:
+            return 0
+        return int(await db.scalar(text(f'SELECT count(*) FROM "{table_name}"')) or 0)
+
+    before = {table_name: await table_count(table_name) for table_name in count_tables}
+
+    for table_name in cleanup_tables:
+        if table_name in existing_tables:
+            await db.execute(text(f'DELETE FROM "{table_name}"'))
+
+    if "users" in existing_tables:
+        await db.execute(
+            text(
+                """
+                DELETE FROM users
+                WHERE NOT (
+                    lower(coalesce(email, '')) = 'zst000001@gmail.com'
+                    OR lower(coalesce(username, '')) = 'zst000001'
+                    OR lower(coalesce(role, '')) IN ('admin', 'owner', 'operator')
+                )
+                """
+            )
+        )
+
+    await log_admin_action(
+        db,
+        action="reset_test_data_for_launch",
+        request=request,
+        details={"before": before},
+    )
+
+    after = {table_name: await table_count(table_name) for table_name in count_tables}
+    return ResetTestDataResponse(
+        before=before,
+        after=after,
+        preserved_users=after.get("users", 0),
+        deleted_users=max(before.get("users", 0) - after.get("users", 0), 0),
+    )
 
 
 @router.post("/grant_credits", response_model=GrantCreditsResponse)
