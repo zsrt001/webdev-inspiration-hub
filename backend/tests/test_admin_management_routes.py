@@ -31,6 +31,19 @@ class AdminManagementRoutesTest(unittest.TestCase):
 
         self.assertEqual({item.value for item in OrderStatus}, admin.ORDER_STATUS_VALUES)
 
+    def test_payment_config_summary_does_not_expose_secrets(self) -> None:
+        import asyncio
+
+        from app.routers.admin import get_payment_config_summary
+
+        summary = asyncio.run(get_payment_config_summary()).model_dump()
+        serialized = str(summary).lower()
+
+        self.assertIn(summary["creem_api_key_mode"], {"missing", "test", "live", "unknown"})
+        self.assertNotIn("api_key", summary)
+        self.assertNotIn("webhook_secret", summary)
+        self.assertNotIn("creem_test_", serialized)
+
 
 if __name__ == "__main__":
     unittest.main()
