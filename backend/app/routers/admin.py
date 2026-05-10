@@ -4,6 +4,7 @@ from typing import Any, List
 
 from datetime import datetime, timedelta, timezone
 import uuid
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import String, cast, func, or_, select
@@ -60,6 +61,7 @@ class DashboardStats(BaseModel):
 class PaymentConfigSummary(BaseModel):
     """Safe payment configuration summary for launch checks."""
     payment_provider: str
+    debug: bool
     creem_api_base_url: str
     creem_api_key_mode: str
     creem_webhook_secret_configured: bool
@@ -68,6 +70,25 @@ class PaymentConfigSummary(BaseModel):
     subscription_products_configured: dict[str, bool]
     frontend_base_url: str
     webhook_base_url: str
+
+
+class CreemProductCheckItem(BaseModel):
+    key: str
+    configured: bool
+    ok: bool
+    http_status: int | None = None
+    product_id_suffix: str | None = None
+    name: str | None = None
+    status: str | None = None
+    price_cents: int | None = None
+    error: str | None = None
+
+
+class CreemProductCheckResponse(BaseModel):
+    api_base_url: str
+    api_key_mode: str
+    all_ok: bool
+    products: list[CreemProductCheckItem]
 
 
 class GrantCreditsRequest(BaseModel):
@@ -376,6 +397,7 @@ async def get_payment_config_summary():
 
     return PaymentConfigSummary(
         payment_provider=settings.payment_mode,
+        debug=bool(settings.debug),
         creem_api_base_url=(settings.creem_api_base_url or "").rstrip("/"),
         creem_api_key_mode=api_key_mode,
         creem_webhook_secret_configured=bool((settings.creem_webhook_secret or "").strip()),
@@ -392,6 +414,100 @@ async def get_payment_config_summary():
         },
         frontend_base_url=settings.effective_frontend_base_url,
         webhook_base_url=settings.effective_webhook_base_url,
+    )
+
+
+@router.get("/creem_product_check", response_model=CreemProductCheckResponse)
+async def check_creem_products():
+    """Verify configured Creem products using the configured API key."""
+    api_key = (settings.creem_api_key or "").strip()
+    if api_key.startswith("creem_test_"):
+        api_key_mode = "test"
+    elif api_key.startswith("creem_"):
+        api_key_mode = "live"
+    elif api_key:
+        api_key_mode = "unknown"
+    else:
+        api_key_mode = "missing"
+
+    base_url = (settings.creem_api_base_url or "https://api.creem.io").rstrip("/")
+    configured_products = [
+        ("pack_50", settings.creem_product_pack_50),
+        ("pack_120", settings.creem_product_pack_120),
+        ("pack_300", settings.creem_product_pack_300),
+        ("starter_monthly", settings.creem_subscription_starter_product_id),
+        ("creator_monthly", settings.creem_subscription_creator_product_id),
+        ("studio_monthly", settings.creem_subscription_studio_product_id),
+    ]
+
+    if not api_key:
+        return CreemProductCheckResponse(
+            api_base_url=base_url,
+            api_key_mode=api_key_mode,
+            all_ok=False,
+            products=[
+                CreemProductCheckItem(key=key, configured=bool(product_id), ok=False, error="creem_api_key_missing")
+                for key, product_id in configured_products
+            ],
+        )
+
+    items: list[CreemProductCheckItem] = []
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for key, raw_product_id in configured_products:
+            product_id = str(raw_product_id or "").strip()
+            suffix = product_id[-8:] if product_id else None
+            if not product_id:
+                items.append(
+                    CreemProductCheckItem(
+                        key=key,
+                        configured=False,
+                        ok=False,
+                        product_id_suffix=suffix,
+                        error="product_id_missing",
+                    )
+                )
+                continue
+
+            try:
+                response = await client.get(
+                    f"{base_url}/v1/products",
+                    params={"product_id": product_id},
+                    headers={"x-api-key": api_key, "Accept": "application/json"},
+                )
+                payload = response.json() if response.content else {}
+                product = payload.get("product") if isinstance(payload, dict) and isinstance(payload.get("product"), dict) else payload
+                name = product.get("name") or product.get("title") if isinstance(product, dict) else None
+                status_value = product.get("status") if isinstance(product, dict) else None
+                price_value = product.get("price") or product.get("amount") if isinstance(product, dict) else None
+                items.append(
+                    CreemProductCheckItem(
+                        key=key,
+                        configured=True,
+                        ok=response.status_code == 200 and product_id in response.text,
+                        http_status=response.status_code,
+                        product_id_suffix=suffix,
+                        name=str(name) if name else None,
+                        status=str(status_value) if status_value else None,
+                        price_cents=int(price_value) if isinstance(price_value, int) else None,
+                        error=None if response.status_code == 200 else response.text[:240],
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - network diagnostics only
+                items.append(
+                    CreemProductCheckItem(
+                        key=key,
+                        configured=True,
+                        ok=False,
+                        product_id_suffix=suffix,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+
+    return CreemProductCheckResponse(
+        api_base_url=base_url,
+        api_key_mode=api_key_mode,
+        all_ok=all(item.ok for item in items),
+        products=items,
     )
 
 
