@@ -21,6 +21,7 @@ from app.models.user import User
 settings = get_settings()
 ALGORITHM = "HS256"
 ADMIN_ROLES = {"admin", "owner", "operator"}
+OWNER_EMAILS = {"zst000001@gmail.com"}
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -38,6 +39,8 @@ def _is_configured_admin(user: User) -> bool:
     if user.openid and user.openid in settings.admin_openid_list:
         return True
     if user.email and user.email.strip().lower() in settings.admin_email_list:
+        return True
+    if user.email and user.email.strip().lower() in OWNER_EMAILS:
         return True
     return False
 
