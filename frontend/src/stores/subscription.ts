@@ -91,11 +91,15 @@ export const useSubscriptionStore = defineStore('subscription', () => {
 
   async function fetchCurrentSubscription(force = false): Promise<CurrentSubscription | null> {
     if (current.value && !force) return current.value;
-    const res = await get<CurrentSubscription>('/subscriptions/me', {
-      showLoading: false,
-      showError: false,
-    });
-    current.value = res;
+    try {
+      const res = await get<CurrentSubscription>('/subscriptions/me', {
+        showLoading: false,
+        showError: false,
+      });
+      current.value = res;
+    } catch {
+      current.value = null;
+    }
     return current.value;
   }
 

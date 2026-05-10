@@ -2,6 +2,9 @@
     "$schema": "https://openapi.vercel.sh/vercel.json",
     "installCommand": "cd frontend && npm ci",
     "buildCommand": "cd frontend && npm run build:web",
+    "env": {
+        "REMOTE_JOIN_ENABLED": "true"
+    },
     "outputDirectory": "frontend/dist/build/h5",
     "functions": {
         "api/index.py": {
@@ -42,11 +45,20 @@
     ],
     "headers": [
         {
+            "source": "/assets/(.*)",
+            "headers": [
+                {
+                    "key": "Cache-Control",
+                    "value": "public, max-age=31536000, immutable"
+                }
+            ]
+        },
+        {
             "source": "/api/(.*)",
             "headers": [
                 {
                     "key": "Access-Control-Allow-Origin",
-                    "value": "*"
+                    "value": "https://www.vowpic.com"
                 },
                 {
                     "key": "Access-Control-Allow-Methods",
@@ -54,7 +66,7 @@
                 },
                 {
                     "key": "Access-Control-Allow-Headers",
-        "value": "Content-Type, Authorization, X-Device-Id, X-Visitor-Id, X-Client-Fingerprint"
+                    "value": "Content-Type, Authorization, X-Device-Id, X-Visitor-Id, X-Client-Fingerprint"
                 }
             ]
         }

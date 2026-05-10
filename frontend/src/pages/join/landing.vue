@@ -50,7 +50,7 @@
               {{ selectedImage ? tr('重新选择', 'Replace') : tr('选择照片', 'Choose Portrait') }}
             </button>
             <button class="btn btn-primary action-btn shadow-glow" @tap="confirmUpload" :disabled="!selectedImage || uploading">
-              {{ uploading ? tr('上传中…', 'Uploading...') : tr('确认上传', 'Confirm Upload') }}
+              {{ uploading ? tr('上传中...', 'Uploading...') : tr('确认上传', 'Confirm Upload') }}
             </button>
           </view>
 
@@ -83,15 +83,15 @@
         <button v-if="orderId" class="btn btn-primary result-btn shadow-glow" @tap="goToResult">
           {{ tr('查看结果', 'View Result') }}
         </button>
-        <text v-else class="status-hint">{{ tr('等待主设备发起生成…', 'Waiting for the host to start generation...') }}</text>
+        <text v-else class="status-hint">{{ tr('等待主设备发起生成...', 'Waiting for the host to start generation...') }}</text>
       </view>
     </view>
   </view>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { post, get, uploadFile } from '../../utils/api';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { get, post, uploadFile } from '../../utils/api';
 import { useI18nStore } from '../../stores/i18n';
 import { runLocalSmartInputCheck } from '../../utils/local_smart_input';
 
@@ -115,6 +115,56 @@ const sessionStatusText = computed(() => {
   if (sessionStatus.value === 'expired') return tr('已过期', 'Expired');
   return tr('等待上传', 'Waiting for upload');
 });
+
+const stopPolling = () => {
+  if (!pollTimer) return;
+  clearInterval(pollTimer);
+  pollTimer = null;
+};
+
+const startPollingOrderId = () => {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    if (!sessionId.value) return;
+    try {
+      const res = await get<any>(`/session/${sessionId.value}/status`, {
+        showLoading: false,
+        showError: false,
+      } as any);
+
+      if (res?.status) sessionStatus.value = res.status;
+      if (res?.status === 'expired' || res?.exists === false) {
+        sessionInvalid.value = true;
+        stopPolling();
+      }
+      if (res?.order_id) {
+        orderId.value = res.order_id;
+      }
+      if (res?.status === 'completed') {
+        stopPolling();
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }, 2000);
+};
+
+const readSessionFromBrowserUrl = () => {
+  if (typeof window === 'undefined') return '';
+  const fromSearch = new URLSearchParams(window.location.search).get('session');
+  if (fromSearch) return fromSearch;
+
+  const hashQuery = window.location.hash.includes('?') ? window.location.hash.split('?').slice(1).join('?') : '';
+  if (!hashQuery) return '';
+  return new URLSearchParams(hashQuery).get('session') || '';
+};
+
+const resolveSessionId = () => {
+  const pages = getCurrentPages();
+  const currentPage = pages[pages.length - 1];
+  const pageSession = String((currentPage as any)?.options?.session || '').trim();
+  return pageSession || readSessionFromBrowserUrl().trim();
+};
 
 const restoreSessionState = async () => {
   if (!sessionId.value) return;
@@ -149,9 +199,7 @@ const restoreSessionState = async () => {
 };
 
 onMounted(() => {
-  const pages = getCurrentPages();
-  const currentPage = pages[pages.length - 1];
-  const session = String((currentPage as any).options?.session || '').trim();
+  const session = resolveSessionId();
 
   if (!session) {
     sessionInvalid.value = true;
@@ -163,7 +211,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer);
+  stopPolling();
 });
 
 const selectPhoto = async () => {
@@ -206,33 +254,6 @@ const confirmUpload = async () => {
   } finally {
     uploading.value = false;
   }
-};
-
-const startPollingOrderId = () => {
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
-    if (!sessionId.value) return;
-    try {
-      const res = await get<any>(`/session/${sessionId.value}/status`, {
-        showLoading: false,
-        showError: false,
-      } as any);
-
-      if (res?.status) sessionStatus.value = res.status;
-      if (res?.status === 'expired') {
-        sessionInvalid.value = true;
-      }
-      if (res?.order_id) {
-        orderId.value = res.order_id;
-      }
-      if (res?.status === 'completed' && pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
-    } catch (error) {
-      console.error(error);
-    }
-  }, 2000);
 };
 
 const goToResult = () => {

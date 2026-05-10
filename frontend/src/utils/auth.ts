@@ -165,13 +165,23 @@ export async function login(apiBaseUrl?: string): Promise<{ userId: string; toke
 async function submitPasswordAuth(
     url: string,
     username: string,
-    password: string
+    password: string,
+    extra?: Record<string, string | undefined>
 ): Promise<{ userId: string; token: string }> {
     const cleanUsername = String(username || '').trim();
+    const data: Record<string, string | undefined> = { username: cleanUsername, password };
+    if (extra) {
+        Object.assign(data, extra);
+    }
+    // Always include previous_guest_id for account merge
+    const guestId = String(uni.getStorageSync(GUEST_ID_KEY) || '').trim();
+    if (guestId) {
+        data.previous_guest_id = guestId;
+    }
     const response = await uni.request({
         url,
         method: 'POST',
-        data: { username: cleanUsername, password },
+        data,
         header: {
             'Content-Type': 'application/json',
             'X-Device-Id': getClientFingerprint(),
@@ -194,9 +204,14 @@ async function submitPasswordAuth(
 export async function registerWithPassword(
     username: string,
     password: string,
+    email: string,
+    verificationCode: string,
     apiBaseUrl?: string
 ): Promise<{ userId: string; token: string }> {
-    return submitPasswordAuth(resolveRegisterUrl(apiBaseUrl), username, password);
+    return submitPasswordAuth(resolveRegisterUrl(apiBaseUrl), username, password, {
+        email,
+        verification_code: verificationCode,
+    });
 }
 
 export async function loginWithPassword(
@@ -205,6 +220,22 @@ export async function loginWithPassword(
     apiBaseUrl?: string
 ): Promise<{ userId: string; token: string }> {
     return submitPasswordAuth(resolveLoginUrl(apiBaseUrl), username, password);
+}
+
+export async function sendVerificationCode(email: string, apiBaseUrl?: string): Promise<void> {
+    const baseUrl = normalizeBaseUrl(apiBaseUrl) || resolveDefaultApiBaseUrl();
+    const response = await uni.request({
+        url: `${baseUrl}/auth/send-verification`,
+        method: 'POST',
+        data: { email },
+        header: { 'Content-Type': 'application/json' },
+    });
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+        const payload: any = response.data || {};
+        const detail = payload?.detail;
+        const message = typeof detail === 'string' ? detail : '发送验证码失败';
+        throw new Error(message);
+    }
 }
 
 export async function ensureSession(apiBaseUrl?: string): Promise<{ userId: string; token: string } | null> {
@@ -294,5 +325,6 @@ export default {
     getGuestUserId,
     registerWithPassword,
     loginWithPassword,
+    sendVerificationCode,
     signInWithGoogle,
 };

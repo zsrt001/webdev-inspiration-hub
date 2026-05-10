@@ -107,8 +107,12 @@ app = FastAPI(
 )
 
 cors_origins = settings.cors_origins
-if settings.debug and not cors_origins:
-    cors_origins = ["*"]
+if settings.debug:
+    local_debug_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    if not cors_origins:
+        cors_origins = local_debug_origins
+    else:
+        cors_origins = [*cors_origins, *(origin for origin in local_debug_origins if origin not in cors_origins)]
 
 # CORS middleware
 app.add_middleware(

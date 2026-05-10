@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     rate_limit_exempt_paths: str = "/health,/health/ready,/api/v1/ops/readiness,/api/v1/ops/public_config"
     new_account_ip_limit_per_hour: int = 8
     new_account_device_limit_per_hour: int = 3
+    resend_api_key: str = ""
+    verification_code_ttl_seconds: int = 600
+    verification_code_rate_limit: int = 3  # max sends per email per hour
     trial_welcome_credits: int = 6
     trial_daily_generation_limit: int = 3
     trial_preview_max_width: int = 900

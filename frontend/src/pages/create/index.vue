@@ -227,6 +227,7 @@ import { useOpsStore } from '../../stores/ops';
 import { useOrderStore } from '../../stores/order';
 import { type Template, getLocalizedTemplateMarketingSubtitle, getLocalizedTemplateTitle, getTemplateFamilyKey, useTemplateStore } from '../../stores/template';
 import { get, post, resolvePublicUrl, uploadFile, type ApiError } from '../../utils/api';
+import { isPasswordLoggedIn, isSupabaseLoggedIn } from '../../utils/auth';
 import { runLocalSmartInputCheck } from '../../utils/local_smart_input';
 
 type GenerationMode = 'single' | 'couple_local' | 'couple_remote';
@@ -332,7 +333,13 @@ const directionPanelDesc = computed(() => selectedStyleFamily.value
 const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : tr('双人异地', 'Couple Remote'));
 const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式优先', 'Free Direction First'));
-const generationCost = computed(() => selectedTemplate.value?.category === 'vintage' || generationMode.value === 'couple_remote' ? 4 : 2);
+const generationCost = computed(() => {
+  if (selectedTemplate.value?.category === 'vintage') return 5;
+  if (generationMode.value === 'couple_remote') return 4;
+  if (generationMode.value === 'couple_local') return 3;
+  if (hasDirectionText.value || sceneReferencePath.value || outfitReferencePath.value) return 3;
+  return 2;
+});
 const portraitRequirementMet = computed(() => {
   if (generationMode.value === 'single') return !!portraitSlots.value[0].localPath;
   if (generationMode.value === 'couple_local') return !!portraitSlots.value[0].localPath && !!portraitSlots.value[1].localPath;
@@ -515,6 +522,18 @@ async function syncRemoteHost() {
   await post(`/session/${remoteSession.value.session_id}/upload/host?image_url=${encodeURIComponent(hostUrl)}`, {}, { showLoading: false, showError: false });
 }
 async function submitCreate() {
+  if (!isPasswordLoggedIn() && !isSupabaseLoggedIn()) {
+    uni.showModal({
+      title: i18nStore.locale === 'zh' ? '需要注册' : 'Registration Required',
+      content: i18nStore.locale === 'zh' ? '注册账号后即可获得免费积分并开始生成。' : 'Sign up to get free credits and start generating.',
+      confirmText: i18nStore.locale === 'zh' ? '去注册' : 'Sign Up',
+      cancelText: i18nStore.locale === 'zh' ? '取消' : 'Cancel',
+      success: (res) => {
+        if (res.confirm) uni.navigateTo({ url: '/pages/auth/register' });
+      },
+    });
+    return;
+  }
   if (!legalAccepted.value) {
     uni.showToast({ title: tr('请先勾选隐私政策与服务条款', 'Please accept the Privacy Policy and Terms first'), icon: 'none' });
     return;

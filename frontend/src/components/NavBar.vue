@@ -29,9 +29,12 @@
           <text class="auth-text">{{ authLabel }}</text>
         </view>
 
-        <view class="balance-chip" @tap="showTopUp">
+        <view v-if="accountAuthed" class="balance-chip" @tap="showTopUp">
           <text class="chip-icon">CR</text>
           <text class="chip-val">{{ creditBalance }}</text>
+        </view>
+        <view v-else class="balance-chip balance-chip-cta" @tap="handleAuthTap">
+          <text class="chip-val">{{ i18nStore.locale === 'zh' ? '注册领积分' : 'Sign up for credits' }}</text>
         </view>
 
         <view class="menu-dots-mobile" @tap="toggleMenu">
@@ -117,6 +120,10 @@ const navigate = (path: string) => {
 };
 
 const fetchBalance = async () => {
+  if (!accountAuthed.value) {
+    creditBalance.value = 0;
+    return;
+  }
   try {
     const res = await get<{ balance: number }>('/credits/balance', { showLoading: false, showError: false });
     creditBalance.value = res.balance;
@@ -146,6 +153,7 @@ const showTopUp = () => {
 const refreshBalance = () => fetchBalance();
 
 onMounted(async () => {
+  refreshAuthState();
   await fetchBalance();
   refreshAuthState();
 });

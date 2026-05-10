@@ -16,6 +16,7 @@ from app.services.credit_service import (  # noqa: E402
     DEFAULT_CREDITS,
     add_credits_async,
     deduct_credits_async,
+    grant_welcome_bonus,
     get_balance_async,
 )
 
@@ -40,6 +41,12 @@ class _FakeDb:
         self.transactions = []
 
     async def execute(self, _statement):
+        statement_text = str(_statement)
+        if "credit_transactions" in statement_text:
+            for transaction in self.transactions:
+                if transaction.transaction_type == CreditTransactionType.WELCOME_BONUS:
+                    return _ScalarResult(transaction)
+            return _ScalarResult(None)
         return _ScalarResult(self.credit_row)
 
     def add(self, value):
@@ -57,8 +64,10 @@ class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
         db = _FakeDb()
         user_id = uuid.uuid4()
 
+        granted = await grant_welcome_bonus(db, user_id)
         balance = await get_balance_async(db, user_id)
 
+        self.assertTrue(granted)
         self.assertEqual(balance, DEFAULT_CREDITS)
         self.assertEqual(len(db.transactions), 1)
         self.assertEqual(db.transactions[0].transaction_type, CreditTransactionType.WELCOME_BONUS)
@@ -68,7 +77,7 @@ class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
     async def test_deduct_records_negative_generation_debit(self) -> None:
         db = _FakeDb()
         user_id = uuid.uuid4()
-        await get_balance_async(db, user_id)
+        await grant_welcome_bonus(db, user_id)
 
         success = await deduct_credits_async(db, user_id, 2)
 
@@ -81,7 +90,7 @@ class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
     async def test_failed_deduct_does_not_write_transaction(self) -> None:
         db = _FakeDb()
         user_id = uuid.uuid4()
-        await get_balance_async(db, user_id)
+        await grant_welcome_bonus(db, user_id)
 
         success = await deduct_credits_async(db, user_id, DEFAULT_CREDITS + 1)
 
@@ -92,7 +101,7 @@ class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
     async def test_add_records_purchase_credit(self) -> None:
         db = _FakeDb()
         user_id = uuid.uuid4()
-        await get_balance_async(db, user_id)
+        await grant_welcome_bonus(db, user_id)
 
         balance = await add_credits_async(
             db,

@@ -2,15 +2,17 @@
 
 import hashlib
 import importlib
+import logging
 import re
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from jose import jwt
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,8 +26,24 @@ from app.core.supabase_auth import (
     verify_supabase_token,
 )
 from app.models.user import User
-from app.schemas.auth import LoginRequest, LoginResponse, RegisterRequest, SupabaseSessionRequest
+from app.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    RegisterRequest,
+    SendVerificationRequest,
+    SupabaseSessionRequest,
+)
+from app.services.credit_service import grant_welcome_bonus
+from app.services.email_service import (
+    is_disposable_email,
+    is_ip_verification_rate_limited,
+    is_verification_rate_limited,
+    record_ip_verification,
+    send_verification_code,
+    verify_email_code,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 settings = get_settings()
 
@@ -34,6 +52,8 @@ ALGORITHM = "HS256"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{2,63}$")
 NEW_ACCOUNT_IP_LIMITER = InMemoryRateLimiter(limit=settings.new_account_ip_limit_per_hour, window_seconds=3600)
 NEW_ACCOUNT_DEVICE_LIMITER = InMemoryRateLimiter(limit=settings.new_account_device_limit_per_hour, window_seconds=3600)
+LOGIN_IP_LIMITER = InMemoryRateLimiter(limit=20, window_seconds=900)  # 20 attempts per 15min per IP
+LOGIN_USER_LIMITER = InMemoryRateLimiter(limit=10, window_seconds=900)  # 10 attempts per 15min per username
 DEFAULT_OAUTH_RETURN_PATH = "/pages/account/index"
 
 
@@ -79,25 +99,88 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     return encoded_jwt
 
 
+# ---------------------------------------------------------------------------
+# Email verification endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/send-verification", status_code=status.HTTP_200_OK)
+async def send_verification(request: SendVerificationRequest, http_request: Request):
+    """Send a 6-digit verification code to the given email."""
+    email = request.email.strip().lower()
+
+    # Block disposable email providers
+    if is_disposable_email(email):
+        raise HTTPException(
+            status_code=422,
+            detail="Disposable email addresses are not allowed. Please use a permanent email.",
+        )
+
+    # Per-email rate limit
+    if is_verification_rate_limited(email):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many verification requests. Please wait before trying again.",
+        )
+
+    # Per-IP rate limit (prevents mass farming from one IP)
+    client_ip = _client_ip(http_request)
+    if is_ip_verification_rate_limited(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many verification requests from this network. Please try again later.",
+        )
+
+    result = await send_verification_code(email)
+    if not result.get("sent"):
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to send verification email. Please try again later.",
+        )
+
+    record_ip_verification(client_ip)
+    return {"message": "Verification code sent", "email": email}
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
 @router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     request: RegisterRequest,
     http_request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
-    """Create a username/password account and immediately issue an app JWT."""
+    """Create a username/password account with verified email."""
     username = _normalize_username(request.username)
     _validate_password(request.password)
+    email = request.email.strip().lower()
 
+    # Block disposable email providers
+    if is_disposable_email(email):
+        raise HTTPException(status_code=422, detail="Disposable email addresses are not allowed")
+
+    # Verify the email code
+    if not verify_email_code(email, request.verification_code):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+
+    # Check username uniqueness
     result = await db.execute(select(User).where(User.username == username))
     if result.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="Username already exists")
+
+    # Check email uniqueness
+    result = await db.execute(select(User).where(User.email == email))
+    if result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Email already registered")
 
     _enforce_new_account_risk_limits(http_request)
     user = User(
         openid=_local_openid_for_username(username),
         username=username,
         password=_hash_password(request.password),
+        email=email,
+        email_verified_at=datetime.now(timezone.utc),
         auth_provider="password",
         auth_subject=username,
         nickname=username,
@@ -108,10 +191,25 @@ async def register(
         await db.flush()
     except IntegrityError as exc:
         await db.rollback()
-        raise HTTPException(status_code=409, detail="Username already exists") from exc
+        detail = "Username already exists"
+        if "email" in str(exc).lower():
+            detail = "Email already registered"
+        raise HTTPException(status_code=409, detail=detail) from exc
     await db.refresh(user)
+
+    # Grant welcome bonus
+    await grant_welcome_bonus(db, user.id)
+
+    # Merge guest account if provided
+    if request.previous_guest_id:
+        await _merge_guest_account(db, request.previous_guest_id, user.id)
+
     return _build_login_response(user)
 
+
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
@@ -127,7 +225,11 @@ async def login(
     If username/password are provided, this endpoint performs password login.
     """
     if request.username is not None or request.password is not None:
-        return await _login_with_password(request, db)
+        response = await _login_with_password(request, db, http_request)
+        if request.previous_guest_id:
+            user_id = response.user_id
+            await _merge_guest_account(db, request.previous_guest_id, user_id)
+        return response
 
     raw_code = (request.code or "").strip()
     if not raw_code:
@@ -161,6 +263,10 @@ async def login(
         username=user.username,
     )
 
+
+# ---------------------------------------------------------------------------
+# Supabase / Google OAuth
+# ---------------------------------------------------------------------------
 
 @router.get("/supabase/google/start")
 async def start_supabase_google_login(next: str | None = None) -> RedirectResponse:
@@ -196,8 +302,16 @@ async def exchange_supabase_session(
             detail="Invalid Supabase session",
         ) from exc
 
-    user = await _get_or_create_supabase_user(db, claims)
+    is_new_user, user = await _get_or_create_supabase_user(db, claims)
     await db.refresh(user)
+
+    # Grant welcome bonus for first-time Google users
+    if is_new_user:
+        await grant_welcome_bonus(db, user.id)
+
+    # Merge guest account if provided
+    if request.previous_guest_id:
+        await _merge_guest_account(db, request.previous_guest_id, user.id)
 
     access_token = create_access_token(
         data={
@@ -216,14 +330,31 @@ async def exchange_supabase_session(
     )
 
 
-async def _login_with_password(request: LoginRequest, db: AsyncSession) -> LoginResponse:
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+async def _login_with_password(request: LoginRequest, db: AsyncSession, http_request: Request | None = None) -> LoginResponse:
     username = _normalize_username(request.username or "")
     password = request.password or ""
+
+    # Rate limit login attempts (only failed attempts count)
+    if http_request:
+        client_ip = _client_ip(http_request)
+        if LOGIN_IP_LIMITER.check_only(client_ip) or LOGIN_USER_LIMITER.check_only(username):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many login attempts. Please wait a few minutes.",
+            )
+
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     stored_hash = user.password if user else None
 
     if not user or not stored_hash or not _verify_password(password, stored_hash):
+        if http_request:
+            LOGIN_IP_LIMITER.record(_client_ip(http_request))
+            LOGIN_USER_LIMITER.record(username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
     user.last_login_at = datetime.now(timezone.utc)
@@ -261,7 +392,6 @@ def _verify_password(value: str, password_hash: str) -> bool:
 
 
 def _password_material(value: str) -> bytes:
-    # Bcrypt only accepts 72 input bytes. Pre-hashing keeps long Unicode passwords stable.
     return hashlib.sha256(value.encode("utf-8")).hexdigest().encode("ascii")
 
 
@@ -332,7 +462,9 @@ def _oauth_return_url(next_path: str | None) -> str:
     return f"{base}{path}"
 
 
-async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserClaims) -> User:
+async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserClaims) -> tuple[bool, User]:
+    """Returns (is_new_user, user)."""
+    is_new = False
     result = await db.execute(
         select(User).where(
             User.auth_provider == "supabase",
@@ -354,10 +486,12 @@ async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserCla
             auth_subject=claims.subject,
         )
         db.add(user)
+        is_new = True
 
     user.auth_provider = "supabase"
     user.auth_subject = claims.subject
     user.email = claims.email
+    user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
     if claims.nickname:
         user.nickname = claims.nickname[:64]
     if claims.avatar_url:
@@ -368,7 +502,7 @@ async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserCla
         user.status = "active"
     user.last_login_at = datetime.now(timezone.utc)
     await db.flush()
-    return user
+    return is_new, user
 
 
 def _enforce_new_account_risk_limits_from_claims(claims: SupabaseUserClaims) -> None:
@@ -382,3 +516,62 @@ def _enforce_new_account_risk_limits_from_claims(claims: SupabaseUserClaims) -> 
                 "message": "Too many new accounts from this identity. Please try again later.",
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# Guest account merge
+# ---------------------------------------------------------------------------
+
+async def _merge_guest_account(db: AsyncSession, guest_id: str, new_user_id: uuid.UUID) -> None:
+    """Transfer orders and live portrait jobs from a guest user to the registered user."""
+    guest_id = (guest_id or "").strip()
+    if not guest_id:
+        return
+
+    # Try to find the guest user by possible openid formats
+    possible_openids = []
+
+    # Format from X-Visitor-Id header: visitor_guest_<uuid>
+    if guest_id.startswith("guest_"):
+        possible_openids.append(f"visitor_{guest_id}")
+
+    # Format from /auth/login code exchange: wx_<sha256("web_<guest_id>")>
+    code_seed = f"web_{guest_id}"
+    wx_openid = f"wx_{hashlib.sha256(code_seed.encode('utf-8')).hexdigest()[:32]}"
+    possible_openids.append(wx_openid)
+
+    if not possible_openids:
+        return
+
+    # Find the guest user
+    guest_user: User | None = None
+    for openid in possible_openids:
+        result = await db.execute(select(User).where(User.openid == openid))
+        guest_user = result.scalar_one_or_none()
+        if guest_user:
+            break
+
+    if not guest_user or guest_user.id == new_user_id:
+        return
+
+    # Only merge if the target is truly a guest (no password, no verified email)
+    if guest_user.password or guest_user.email_verified_at:
+        logger.warning("Refused merge: guest_id %s points to a non-guest account %s", guest_id, guest_user.id)
+        return
+
+    guest_user_id = guest_user.id
+
+    # Transfer orders
+    from app.models.order import Order
+    await db.execute(
+        update(Order).where(Order.user_id == guest_user_id).values(user_id=new_user_id)
+    )
+
+    # Transfer live portrait jobs
+    from app.models.live_portrait_job import LivePortraitJob
+    await db.execute(
+        update(LivePortraitJob).where(LivePortraitJob.user_id == guest_user_id).values(user_id=new_user_id)
+    )
+
+    await db.flush()
+    logger.info("Merged guest account %s -> %s (orders + live_portrait_jobs)", guest_user_id, new_user_id)

@@ -71,10 +71,19 @@ function decodeJwtPayload(token: string): Record<string, any> {
 }
 
 async function exchangeSupabaseAccessToken(accessToken: string): Promise<Session | null> {
+    // Include previous guest ID for account merge
+    let previousGuestId = '';
+    try {
+        previousGuestId = String(uni.getStorageSync('ai_wedding_guest_id') || '').trim();
+    } catch {}
+    const data: Record<string, string> = { access_token: accessToken };
+    if (previousGuestId) {
+        data.previous_guest_id = previousGuestId;
+    }
     const response = await uni.request({
         url: `${API_BASE_URL}/auth/supabase/session`,
         method: 'POST',
-        data: { access_token: accessToken },
+        data,
         header: {
             'Content-Type': 'application/json',
         },

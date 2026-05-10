@@ -46,6 +46,19 @@ class InMemoryRateLimiter:
         events.append(current)
         return False
 
+    def check_only(self, key: str) -> bool:
+        """Check if key is rate limited without recording a new event."""
+        current = time.monotonic()
+        cutoff = current - self.window_seconds
+        events = self._events[key]
+        while events and events[0] <= cutoff:
+            events.popleft()
+        return len(events) >= self.limit
+
+    def record(self, key: str) -> None:
+        """Record an event without checking the limit."""
+        self._events[key].append(time.monotonic())
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """FastAPI/Starlette middleware for coarse per-IP rate limits."""

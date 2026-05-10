@@ -261,6 +261,7 @@ class SubscriptionBillingServiceTest(unittest.IsolatedAsyncioTestCase):
             provider_subscription_id="sub_1",
             status=SubscriptionStatus.ACTIVE,
         )
+        db.credit_row = UserCredit(user_id=user_id, balance=DEFAULT_CREDITS)
         service = SubscriptionService()
 
         first = await service.grant_period_credits(

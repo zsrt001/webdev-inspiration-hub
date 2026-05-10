@@ -69,19 +69,39 @@ async def _get_or_create_credit_row(db: AsyncSession, user_id: uuid.UUID | str) 
     result = await db.execute(select(UserCredit).where(UserCredit.user_id == user_uuid))
     row = result.scalar_one_or_none()
     if row is None:
-        row = UserCredit(user_id=user_uuid, balance=DEFAULT_CREDITS)
+        row = UserCredit(user_id=user_uuid, balance=0)
         db.add(row)
         await db.flush()
-        await _record_credit_transaction(
-            db,
-            user_uuid,
-            transaction_type=CreditTransactionType.WELCOME_BONUS,
-            amount=DEFAULT_CREDITS,
-            balance_after=DEFAULT_CREDITS,
-            source="system",
-            description="Initial welcome credits",
-        )
     return row
+
+
+async def grant_welcome_bonus(db: AsyncSession, user_id: uuid.UUID | str) -> bool:
+    """Grant welcome bonus credits. Returns True if granted, False if already claimed."""
+    user_uuid = _to_user_uuid(user_id)
+
+    # Check if user already received welcome bonus
+    existing = await db.execute(
+        select(CreditTransaction).where(
+            CreditTransaction.user_id == user_uuid,
+            CreditTransaction.transaction_type == CreditTransactionType.WELCOME_BONUS,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return False
+
+    row = await _get_or_create_credit_row(db, user_uuid)
+    row.balance += DEFAULT_CREDITS
+    await db.flush()
+    await _record_credit_transaction(
+        db,
+        user_uuid,
+        transaction_type=CreditTransactionType.WELCOME_BONUS,
+        amount=DEFAULT_CREDITS,
+        balance_after=row.balance,
+        source="system",
+        description="Welcome bonus for verified account",
+    )
+    return True
 
 
 async def _record_credit_transaction(

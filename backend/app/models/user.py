@@ -55,7 +55,12 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
+        unique=True,
         index=True,
+    )
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     unionid: Mapped[str | None] = mapped_column(
         String(64),

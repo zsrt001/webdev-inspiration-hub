@@ -15,6 +15,8 @@ ENV/
 .vscode/
 .agent/
 .antigravity/
+.claude/
+.codex-screenshots/
 *.swp
 *.swo
 *~
@@ -46,6 +48,7 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+backend/test_wenwen_apis.py
 
 # Build
 build/

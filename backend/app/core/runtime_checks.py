@@ -53,7 +53,7 @@ def _cors_origin_hosts() -> set[str]:
 
 
 def _redis_required() -> bool:
-    return settings.using_background_queue or bool(settings.remote_join_enabled)
+    return settings.using_background_queue
 
 
 def _task_queue_required() -> bool:

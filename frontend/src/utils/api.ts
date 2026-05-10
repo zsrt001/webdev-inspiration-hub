@@ -1,4 +1,4 @@
-import { ensureSession, getClientFingerprint, getGuestUserId, getToken, isJwtToken, logout } from './auth';
+import { ensureSession, getAuthProvider, getClientFingerprint, getGuestUserId, getToken, isJwtToken, logout } from './auth';
 import { API_BASE_URL, isH5Runtime, resolveBackendOrigin } from './apiConfig';
 
 function getRuntimeLocale(): 'zh' | 'en' {
@@ -70,6 +70,10 @@ function canRecoverUnauthorized(path: string): boolean {
 }
 
 async function rebootstrapSession(): Promise<boolean> {
+    const provider = getAuthProvider();
+    if (provider === 'password' || provider === 'supabase') {
+        return false;
+    }
     logout();
     try {
         const session = await ensureSession(API_BASE_URL);

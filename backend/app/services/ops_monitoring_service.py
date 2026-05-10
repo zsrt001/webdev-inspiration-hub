@@ -24,7 +24,7 @@ async def _runtime_checks() -> dict[str, Any]:
         "task_queue": {"ok": False, "detail": "not_checked"},
         "generation": {"ok": False, "detail": "not_checked"},
     }
-    if settings.using_background_queue or settings.remote_join_enabled:
+    if settings.using_background_queue:
         try:
             redis = await get_redis()
             pong = await redis.ping()

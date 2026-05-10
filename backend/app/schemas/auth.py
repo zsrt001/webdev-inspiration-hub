@@ -1,7 +1,7 @@
 """Authentication Pydantic schemas."""
 
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 
 
 class LoginRequest(BaseModel):
@@ -10,6 +10,7 @@ class LoginRequest(BaseModel):
     code: str | None = None
     username: str | None = Field(default=None, min_length=3, max_length=64)
     password: str | None = Field(default=None, min_length=6, max_length=128)
+    previous_guest_id: str | None = Field(default=None, max_length=128)
 
 
 class RegisterRequest(BaseModel):
@@ -17,6 +18,15 @@ class RegisterRequest(BaseModel):
 
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=6, max_length=128)
+    email: EmailStr
+    verification_code: str = Field(min_length=6, max_length=6)
+    previous_guest_id: str | None = Field(default=None, max_length=128)
+
+
+class SendVerificationRequest(BaseModel):
+    """Schema for sending email verification code."""
+
+    email: EmailStr
 
 
 class LoginResponse(BaseModel):
@@ -33,3 +43,4 @@ class SupabaseSessionRequest(BaseModel):
     """Supabase OAuth access token exchange request."""
 
     access_token: str = Field(min_length=16, max_length=8192)
+    previous_guest_id: str | None = Field(default=None, max_length=128)

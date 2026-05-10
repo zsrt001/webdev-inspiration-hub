@@ -17,6 +17,7 @@ settings = get_settings()
 
 
 @router.get("/readiness")
+@router.get("/health")
 async def readiness(probe_storage: bool = False, probe_generation_queue: bool = False, strict: bool = True):
     report = await run_readiness_checks(
         probe_storage=probe_storage,
@@ -29,6 +30,7 @@ async def readiness(probe_storage: bool = False, probe_generation_queue: bool = 
 
 
 @router.get("/public_config")
+@router.get("/config")
 async def public_config():
     """Return sanitized operator-managed config for the storefront."""
     return get_public_ops_config()
