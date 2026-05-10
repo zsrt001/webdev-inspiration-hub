@@ -56,6 +56,19 @@ class DashboardStats(BaseModel):
     recent_failed_payment_events: list[dict[str, Any]] = []
 
 
+class PaymentConfigSummary(BaseModel):
+    """Safe payment configuration summary for launch checks."""
+    payment_provider: str
+    creem_api_base_url: str
+    creem_api_key_mode: str
+    creem_webhook_secret_configured: bool
+    subscription_billing_enabled: bool
+    credit_products_configured: dict[str, bool]
+    subscription_products_configured: dict[str, bool]
+    frontend_base_url: str
+    webhook_base_url: str
+
+
 class GrantCreditsRequest(BaseModel):
     """Request to grant credits."""
     user_id: str
@@ -345,6 +358,40 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
         or 0
     )
     return DashboardStats(**stats)
+
+
+@router.get("/payment_config_summary", response_model=PaymentConfigSummary)
+async def get_payment_config_summary():
+    """Return non-secret payment config metadata for production verification."""
+    api_key = (settings.creem_api_key or "").strip()
+    if api_key.startswith("creem_test_"):
+        api_key_mode = "test"
+    elif api_key.startswith("creem_"):
+        api_key_mode = "live"
+    elif api_key:
+        api_key_mode = "unknown"
+    else:
+        api_key_mode = "missing"
+
+    return PaymentConfigSummary(
+        payment_provider=settings.payment_mode,
+        creem_api_base_url=(settings.creem_api_base_url or "").rstrip("/"),
+        creem_api_key_mode=api_key_mode,
+        creem_webhook_secret_configured=bool((settings.creem_webhook_secret or "").strip()),
+        subscription_billing_enabled=bool(settings.subscription_billing_enabled),
+        credit_products_configured={
+            "pack_50": bool((settings.creem_product_pack_50 or "").strip()),
+            "pack_120": bool((settings.creem_product_pack_120 or "").strip()),
+            "pack_300": bool((settings.creem_product_pack_300 or "").strip()),
+        },
+        subscription_products_configured={
+            "starter_monthly": bool((settings.creem_subscription_starter_product_id or "").strip()),
+            "creator_monthly": bool((settings.creem_subscription_creator_product_id or "").strip()),
+            "studio_monthly": bool((settings.creem_subscription_studio_product_id or "").strip()),
+        },
+        frontend_base_url=settings.effective_frontend_base_url,
+        webhook_base_url=settings.effective_webhook_base_url,
+    )
 
 
 @router.post("/grant_credits", response_model=GrantCreditsResponse)
