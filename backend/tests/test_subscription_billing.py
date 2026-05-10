@@ -228,6 +228,16 @@ class SubscriptionBillingModelTest(unittest.TestCase):
             payment_settings.frontend_base_url = old_frontend
             payment_settings.payment_provider = old_provider
 
+    def test_creem_success_urls_keep_root_path_before_query(self) -> None:
+        self.assertEqual(
+            PaymentService()._append_query("https://frontend.example.test", payment="success"),
+            "https://frontend.example.test/?payment=success",
+        )
+        self.assertEqual(
+            SubscriptionService()._append_query("https://frontend.example.test", subscription="success"),
+            "https://frontend.example.test/?subscription=success",
+        )
+
     def test_subscription_router_is_registered(self) -> None:
         routers_module = importlib.import_module("app.routers")
 

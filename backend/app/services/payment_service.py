@@ -157,7 +157,7 @@ class PaymentService:
         parsed = urlparse(url)
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         query.update({k: v for k, v in params.items() if v})
-        return urlunparse(parsed._replace(query=urlencode(query), fragment=parsed.fragment))
+        return urlunparse(parsed._replace(path=parsed.path or "/", query=urlencode(query), fragment=parsed.fragment))
 
     def _extract_checkout_dict(self, payload: Any, checkout_id: str | None = None) -> dict[str, Any]:
         if isinstance(payload, list):

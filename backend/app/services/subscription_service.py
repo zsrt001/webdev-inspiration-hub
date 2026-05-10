@@ -272,7 +272,7 @@ class SubscriptionService:
         parsed = urlparse(url)
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         query.update({k: v for k, v in params.items() if v})
-        return urlunparse(parsed._replace(query=urlencode(query), fragment=parsed.fragment))
+        return urlunparse(parsed._replace(path=parsed.path or "/", query=urlencode(query), fragment=parsed.fragment))
 
     def _safe_return_url(self, return_url: str | None) -> str:
         candidate = str(return_url or "").strip()
