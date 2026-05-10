@@ -91,6 +91,16 @@ class CreemProductCheckResponse(BaseModel):
     products: list[CreemProductCheckItem]
 
 
+class CreemCheckoutProbeResponse(BaseModel):
+    ok: bool
+    http_status: int | None = None
+    mode: str | None = None
+    checkout_status: str | None = None
+    checkout_id: str | None = None
+    checkout_url_prefix: str | None = None
+    error: str | None = None
+
+
 class GrantCreditsRequest(BaseModel):
     """Request to grant credits."""
     user_id: str
@@ -508,6 +518,48 @@ async def check_creem_products():
         api_key_mode=api_key_mode,
         all_ok=all(item.ok for item in items),
         products=items,
+    )
+
+
+@router.post("/creem_checkout_probe", response_model=CreemCheckoutProbeResponse)
+async def probe_creem_checkout():
+    """Create a provider-only checkout session to validate outbound live checkout."""
+    api_key = (settings.creem_api_key or "").strip()
+    product_id = (settings.creem_product_pack_50 or "").strip()
+    if not api_key or not product_id:
+        return CreemCheckoutProbeResponse(ok=False, error="creem_api_key_or_product_missing")
+
+    base_url = (settings.creem_api_base_url or "https://api.creem.io").rstrip("/")
+    payload = {
+        "product_id": product_id,
+        "request_id": f"launch_probe_{uuid.uuid4().hex[:16]}",
+        "success_url": f"{settings.effective_frontend_base_url.rstrip('/')}?payment=success&probe=1",
+        "metadata": {
+            "source": "admin_launch_probe",
+            "package_id": "pack_50",
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                f"{base_url}/v1/checkouts",
+                json=payload,
+                headers={"x-api-key": api_key, "Content-Type": "application/json", "Accept": "application/json"},
+            )
+        data = response.json() if response.content else {}
+    except Exception as exc:  # pragma: no cover - network diagnostics only
+        return CreemCheckoutProbeResponse(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+    checkout_url = str(data.get("checkout_url") or "")
+    return CreemCheckoutProbeResponse(
+        ok=response.status_code == 200 and bool(checkout_url),
+        http_status=response.status_code,
+        mode=str(data.get("mode")) if data.get("mode") else None,
+        checkout_status=str(data.get("status")) if data.get("status") else None,
+        checkout_id=str(data.get("id")) if data.get("id") else None,
+        checkout_url_prefix=checkout_url[:32] if checkout_url else None,
+        error=None if response.status_code == 200 else response.text[:240],
     )
 
 
