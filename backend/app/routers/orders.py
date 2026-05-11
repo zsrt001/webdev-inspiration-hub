@@ -142,6 +142,10 @@ async def list_orders(
         .order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
+    for order in orders:
+        if order.status == OrderStatus.GENERATING:
+            await generation_service.refresh_order(str(order.id))
+            await db.refresh(order)
     return [await _serialize_order_for_user(db, o, current_user.id) for o in orders]
 
 
@@ -162,6 +166,9 @@ async def get_order(
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Order not found")
+    if order.status == OrderStatus.GENERATING:
+        await generation_service.refresh_order(str(order.id))
+        await db.refresh(order)
     return await _serialize_order_for_user(db, order, current_user.id)
 
 

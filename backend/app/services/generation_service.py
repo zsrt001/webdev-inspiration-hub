@@ -36,6 +36,12 @@ class GenerationService:
     async def generate_photo(self, **kwargs: Any) -> None:
         await self._provider().generate_photo(**kwargs)
 
+    async def refresh_order(self, order_id: str) -> bool:
+        refresh = getattr(self._provider(), "refresh_order_from_provider", None)
+        if not callable(refresh):
+            return False
+        return bool(await refresh(order_id))
+
     def supports_live_portrait(self) -> bool:
         return not settings.using_wenwen_generation
 

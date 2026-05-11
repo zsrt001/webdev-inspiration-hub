@@ -963,6 +963,10 @@ async def list_admin_orders(
             .limit(clean_page_size)
         )
     ).all()
+    for order, _user in rows:
+        if order.status == OrderStatus.GENERATING:
+            await generation_service.refresh_order(str(order.id))
+            await db.refresh(order)
 
     return AdminOrdersResponse(
         orders=[_order_item(order, user) for order, user in rows],
@@ -979,6 +983,7 @@ async def get_admin_order_detail(
 ):
     """Return an admin-safe order detail payload."""
     await ensure_user_account_columns(db)
+    await generation_service.refresh_order(order_id)
     order = await _get_admin_order(db, order_id)
     user = await db.get(User, order.user_id)
     return _order_detail(order, user)

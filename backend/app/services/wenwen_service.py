@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import time
 import uuid
+from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -219,6 +220,121 @@ class WenwenService:
                         urls.append(item)
         return urls
 
+    async def _submit_provider_task(
+        self,
+        *,
+        template: Any,
+        user_images: list[str],
+        subject_count: int | None,
+        couple_flow: str | None,
+        prompt_override: str | None,
+        global_style_text: str | None,
+        scene_text: str | None,
+        outfit_text: str | None,
+        scene_image_url: str | None,
+        clothing_image_url: str | None,
+    ) -> tuple[str | None, list[str], dict[str, Any], str, str]:
+        payload, prompt_text, negative_prompt = await self._build_payload(
+            template=template,
+            user_images=list(user_images or []),
+            subject_count=subject_count,
+            prompt_override=prompt_override,
+            global_style_text=global_style_text,
+            scene_text=scene_text,
+            outfit_text=outfit_text,
+            scene_image_url=scene_image_url,
+            clothing_image_url=clothing_image_url,
+            couple_flow=couple_flow,
+        )
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=45.0, write=30.0, pool=10.0),
+            follow_redirects=True,
+            trust_env=False,
+        ) as client:
+            response = await client.post(self._generation_url(), json=payload, headers=self._headers())
+        if response.status_code in {401, 403}:
+            raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
+        if response.status_code in {402, 429}:
+            raise RuntimeError(f"wenwen_quota_rejected:{response.status_code}:{response.text[:200]}")
+        response.raise_for_status()
+
+        submission = response.json()
+        task_id = self._extract_task_id(submission)
+        output_urls = self._extract_output_urls(submission)
+        return task_id, output_urls, payload, prompt_text, negative_prompt
+
+    @staticmethod
+    def _order_source_images(order: Order) -> list[str]:
+        source = order.source_image_urls
+        if isinstance(source, dict):
+            images = source.get("images")
+            if isinstance(images, list):
+                return [str(url) for url in images if str(url or "").strip()]
+            values: list[str] = []
+            for value in source.values():
+                if isinstance(value, str) and value.strip():
+                    values.append(value.strip())
+            return values
+        if isinstance(source, list):
+            return [str(url) for url in source if str(url or "").strip()]
+        return []
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @classmethod
+    def _extract_error_message(cls, payload: Any) -> str | None:
+        for key, value in cls._walk_values(payload):
+            lowered = key.lower()
+            if lowered in {"error", "message", "detail", "reason"} and value is not None:
+                if isinstance(value, str) and value.strip():
+                    return value.strip()[:500]
+                if isinstance(value, (dict, list)):
+                    return str(value)[:500]
+        return None
+
+    async def _complete_provider_urls(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        provider_urls: list[str],
+        user_images: list[str],
+        subject_count: int | None,
+        couple_flow: str | None,
+        qa_attempt_count: int,
+    ) -> None:
+        if not provider_urls:
+            raise RuntimeError("wenwen_outputs_missing")
+        is_couple = bool(subject_count and int(subject_count) >= 2)
+        primary_image_url = provider_urls[0]
+        qa_ok, qa_reasons = await output_passes(
+            primary_image_url,
+            is_couple=is_couple,
+            source_image_urls=[str(url) for url in user_images if url],
+        )
+        if not qa_ok:
+            await self._record_qa_failure(
+                order_uuid,
+                attempt=qa_attempt_count,
+                reasons=qa_reasons,
+                candidate_url=primary_image_url,
+            )
+            raise ValueError(f"QA failed: {','.join(qa_reasons)}")
+
+        delivered_urls = await self._persist_outputs_to_storage(provider_urls, order_uuid)
+        if not delivered_urls:
+            raise RuntimeError("wenwen_outputs_missing")
+        await self._complete_order(
+            order_uuid,
+            delivered_urls=delivered_urls,
+            provider_urls=provider_urls,
+            qa_attempt_count=qa_attempt_count,
+            is_couple=is_couple,
+            subject_count=subject_count,
+            couple_flow=couple_flow,
+        )
+
     @staticmethod
     def _status_terminal_success(value: str | None, *, has_outputs: bool) -> bool:
         lowered = str(value or "").strip().lower()
@@ -408,6 +524,9 @@ class WenwenService:
         payload: dict[str, Any],
         prompt_text: str,
         negative_prompt: str,
+        provider_task_id: str | None = None,
+        provider_task_status: str | None = None,
+        generation_mode: str | None = None,
     ) -> None:
         async with async_session_maker() as db:
             result = await db.execute(select(Order).where(Order.id == order_uuid))
@@ -416,20 +535,31 @@ class WenwenService:
                 return
             order.status = OrderStatus.GENERATING
             order.task_id = task_id
-            params = order.generation_params if isinstance(order.generation_params, dict) else {}
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+            debug.update(
+                {
+                    "wenwen_submit_payload_keys": sorted(payload.keys()),
+                    "wenwen_model": settings.wenwen_image_model,
+                    "wenwen_submitted_at": self._utc_now_iso(),
+                }
+            )
             params.update(
                 {
                     "engine": "wenwen",
                     "provider": "wenwen",
                     "prompt": prompt_text,
                     "negative_prompt": negative_prompt,
-                    "debug": {
-                        **(params.get("debug") if isinstance(params.get("debug"), dict) else {}),
-                        "wenwen_submit_payload_keys": sorted(payload.keys()),
-                        "wenwen_model": settings.wenwen_image_model,
-                    },
+                    "debug": debug,
                 }
             )
+            if provider_task_id:
+                params["provider_task_id"] = provider_task_id
+                params["wenwen_task_id"] = provider_task_id
+            if provider_task_status:
+                params["provider_task_status"] = provider_task_status
+            if generation_mode:
+                params["generation_mode"] = generation_mode
             order.generation_params = params
             await db.commit()
 
@@ -473,6 +603,29 @@ class WenwenService:
             }
             order.generation_params = params
             await db.commit()
+
+    async def _queue_completion_email(self, order_uuid: uuid.UUID) -> None:
+        try:
+            from app.services.email_service import send_order_completed
+
+            async with async_session_maker() as db:
+                order = (await db.execute(select(Order).where(Order.id == order_uuid))).scalar_one_or_none()
+                if not order or not order.user_id:
+                    return
+                from app.models.user import User
+
+                user = await db.get(User, order.user_id)
+                if user and user.email:
+                    preview = (order.preview_image_urls or {}).get("image_1")
+                    asyncio.create_task(
+                        send_order_completed(
+                            to=user.email,
+                            order_id=str(order.id),
+                            preview_url=preview,
+                        )
+                    )
+        except Exception as mail_exc:
+            logger.debug("Order completion email skipped: %s", mail_exc)
 
     def _classify_error(self, error: Exception) -> str:
         text = str(error or "").strip().lower()
@@ -557,6 +710,132 @@ class WenwenService:
             order.generation_params = params
             await db.commit()
 
+    @staticmethod
+    def _recently_polled(debug: dict[str, Any], *, min_interval_seconds: int = 10) -> bool:
+        raw = debug.get("last_task_poll_at")
+        if not raw:
+            return False
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc).timestamp() - parsed.timestamp() < min_interval_seconds
+        except Exception:
+            return False
+
+    async def _record_provider_poll(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        params: dict[str, Any],
+        status_value: str | None,
+        output_count: int,
+        payload: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return
+            next_params = dict(order.generation_params) if isinstance(order.generation_params, dict) else dict(params)
+            debug = dict(next_params.get("debug")) if isinstance(next_params.get("debug"), dict) else {}
+            debug["last_task_poll_at"] = self._utc_now_iso()
+            if status_value:
+                debug["last_task_status"] = status_value
+                next_params["provider_task_status"] = status_value
+            debug["last_task_output_count"] = output_count
+            if isinstance(payload, dict):
+                debug["last_task_payload_keys"] = sorted(payload.keys())
+            if error_message:
+                debug["last_task_poll_error"] = error_message[:500]
+            next_params["debug"] = debug
+            order.generation_params = next_params
+            await db.commit()
+
+    async def refresh_order_from_provider(self, order_id: str) -> bool:
+        try:
+            order_uuid = uuid.UUID(str(order_id))
+        except (TypeError, ValueError):
+            return False
+
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return False
+            status_value = order.status.value if isinstance(order.status, OrderStatus) else str(order.status or "")
+            if status_value != OrderStatus.GENERATING.value:
+                return False
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            task_id = str(params.get("provider_task_id") or params.get("wenwen_task_id") or "").strip()
+            if not task_id:
+                return False
+            debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+            if self._recently_polled(debug):
+                return False
+            user_images = self._order_source_images(order)
+            try:
+                subject_count = int(params.get("subject_count") or len(user_images) or 0) or None
+            except Exception:
+                subject_count = len(user_images) or None
+            couple_flow = str(params.get("couple_flow") or "") or None
+            qa_attempt_count = int(params.get("qa_attempt_count") or 1)
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+                follow_redirects=True,
+                trust_env=False,
+            ) as client:
+                response = await client.get(self._task_url(task_id), headers=self._headers())
+            if response.status_code in {401, 403}:
+                raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+        except Exception as exc:
+            await self._record_provider_poll(
+                order_uuid,
+                params=params,
+                status_value=None,
+                output_count=0,
+                error_message=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+
+        task_status = self._extract_status_value(payload)
+        source_set = {url.strip() for url in user_images if url and url.strip()}
+        output_urls = [url for url in self._extract_output_urls(payload) if url not in source_set]
+        await self._record_provider_poll(
+            order_uuid,
+            params=params,
+            status_value=task_status,
+            output_count=len(output_urls),
+            payload=payload if isinstance(payload, dict) else None,
+        )
+
+        if self._status_terminal_failure(task_status):
+            error_message = self._extract_error_message(payload) or f"wenwen_task_failed:{task_status or 'unknown'}"
+            await self._fail_order(order_uuid, error_message, self._classify_error(RuntimeError(error_message)))
+            return True
+
+        if self._status_terminal_success(task_status, has_outputs=bool(output_urls)):
+            try:
+                await self._complete_provider_urls(
+                    order_uuid,
+                    provider_urls=output_urls,
+                    user_images=user_images,
+                    subject_count=subject_count,
+                    couple_flow=couple_flow,
+                    qa_attempt_count=qa_attempt_count,
+                )
+                await self._queue_completion_email(order_uuid)
+            except Exception as exc:
+                await self._fail_order(order_uuid, str(exc), self._classify_error(exc))
+            return True
+
+        return False
+
     async def generate_photo(
         self,
         order_id: str,
@@ -582,6 +861,47 @@ class WenwenService:
             template = get_template_by_id(template_id)
             if not template:
                 raise ValueError("template_not_found")
+
+            if settings.is_vercel_runtime:
+                task_id, output_urls, provider_payload, prompt_text, negative_prompt = await self._submit_provider_task(
+                    template=template,
+                    user_images=list(user_images or []),
+                    subject_count=subject_count,
+                    prompt_override=prompt_override,
+                    global_style_text=global_style_text,
+                    scene_text=scene_text,
+                    outfit_text=outfit_text,
+                    scene_image_url=scene_image_url,
+                    clothing_image_url=clothing_image_url,
+                    couple_flow=couple_flow,
+                )
+                if not task_id and not output_urls:
+                    raise RuntimeError("wenwen_task_missing")
+
+                stored_task_id = task_id or f"provider-immediate-{order_id}"
+                await self._update_order_generating(
+                    order_uuid,
+                    task_id=stored_task_id,
+                    payload=provider_payload,
+                    prompt_text=prompt_text,
+                    negative_prompt=negative_prompt,
+                    provider_task_id=task_id,
+                    provider_task_status="submitted" if task_id else "completed",
+                    generation_mode="provider_task",
+                )
+                if output_urls:
+                    await self._complete_provider_urls(
+                        order_uuid,
+                        provider_urls=output_urls,
+                        user_images=list(user_images or []),
+                        subject_count=subject_count,
+                        couple_flow=couple_flow,
+                        qa_attempt_count=1,
+                    )
+                    await self._queue_completion_email(order_uuid)
+                self._consecutive_failures = 0
+                self._circuit_open_until = 0
+                return
 
             native_payload, prompt_text, negative_prompt = await self._build_native_payload(
                 template=template,
@@ -680,20 +1000,7 @@ class WenwenService:
             else:
                 raise RuntimeError("wenwen_generation_exhausted")
 
-            try:
-                from app.services.email_service import send_order_completed
-                async with async_session_maker() as db:
-                    order = (await db.execute(select(Order).where(Order.id == order_uuid))).scalar_one_or_none()
-                    if order and order.user_id:
-                        from app.models.user import User
-                        user = await db.get(User, order.user_id)
-                        if user and user.email:
-                            preview = (order.preview_image_urls or {}).get("image_1")
-                            asyncio.create_task(send_order_completed(
-                                to=user.email, order_id=str(order.id), preview_url=preview,
-                            ))
-            except Exception as mail_exc:
-                logger.debug("Order completion email skipped: %s", mail_exc)
+            await self._queue_completion_email(order_uuid)
 
             self._consecutive_failures = 0
             self._circuit_open_until = 0
