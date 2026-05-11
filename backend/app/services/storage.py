@@ -62,6 +62,8 @@ class StorageService:
         """
         provider = settings.effective_storage_provider
         if provider == "local":
+            if settings.is_vercel_runtime or not settings.debug:
+                raise Exception("Local storage is disabled in production. Configure STORAGE_PROVIDER=vercel.")
             return self._upload_local(file_content, filename, content_type, folder)
         if provider == "vercel":
             return self._upload_vercel(file_content, filename, content_type, folder)
@@ -183,6 +185,8 @@ class StorageService:
         """
         provider = settings.effective_storage_provider
         if provider == "local":
+            if settings.is_vercel_runtime or not settings.debug:
+                return False
             return self._delete_local(file_url)
         if provider == "vercel":
             return self._delete_vercel(file_url)

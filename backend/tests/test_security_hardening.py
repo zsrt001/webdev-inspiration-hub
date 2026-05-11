@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib
 import sys
 import unittest
+from io import BytesIO
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -88,6 +89,24 @@ class SecurityHardeningTest(unittest.TestCase):
             runtime_checks.settings = original_settings
 
         self.assertIn("AWS_S3_ENDPOINT points to local storage", str(ctx.exception))
+
+    def test_storage_upload_rejects_local_provider_in_production(self) -> None:
+        storage_module = importlib.import_module("app.services.storage")
+        config_module = importlib.import_module("app.core.config")
+        original_settings = storage_module.settings
+        storage_module.settings = config_module.Settings(debug=False, storage_provider="local")
+        try:
+            with self.assertRaises(Exception) as ctx:
+                storage_module.storage_service.upload_file(
+                    BytesIO(b"test"),
+                    "test.txt",
+                    "text/plain",
+                    "security-test",
+                )
+        finally:
+            storage_module.settings = original_settings
+
+        self.assertIn("Local storage is disabled in production", str(ctx.exception))
 
     def test_commercial_config_allows_admin_identity_without_frontend_token(self) -> None:
         runtime_checks = importlib.import_module("app.core.runtime_checks")
