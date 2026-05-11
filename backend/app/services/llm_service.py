@@ -393,7 +393,8 @@ async def verify_generated_image_quality(
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
         '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
-        "- Use bad_hands for malformed hands, too many fingers, missing fingers, or impossible finger geometry.\n"
+        "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
+        "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
         f"{couple_rules}"
         f"{identity_rules}"
