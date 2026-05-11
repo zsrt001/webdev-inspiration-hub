@@ -60,11 +60,16 @@ class StorageService:
         Returns:
             Public URL of uploaded file
         """
-        provider = settings.storage_provider.lower().strip()
+        provider = settings.effective_storage_provider
         if provider == "local":
             return self._upload_local(file_content, filename, content_type, folder)
         if provider == "vercel":
             return self._upload_vercel(file_content, filename, content_type, folder)
+        if settings.is_vercel_runtime and settings.aws_s3_endpoint_is_loopback:
+            raise Exception(
+                "Production storage points to a local S3 endpoint. Configure STORAGE_PROVIDER=vercel "
+                "with BLOB_READ_WRITE_TOKEN, or configure real S3/R2 credentials and clear AWS_S3_ENDPOINT."
+            )
         return self._upload_s3(file_content, filename, content_type, folder)
 
     def _upload_local(
@@ -176,11 +181,13 @@ class StorageService:
         Returns:
             True if deleted successfully
         """
-        provider = settings.storage_provider.lower().strip()
+        provider = settings.effective_storage_provider
         if provider == "local":
             return self._delete_local(file_url)
         if provider == "vercel":
             return self._delete_vercel(file_url)
+        if settings.is_vercel_runtime and settings.aws_s3_endpoint_is_loopback:
+            return False
         return self._delete_s3(file_url)
 
     def _delete_local(self, file_url: str) -> bool:

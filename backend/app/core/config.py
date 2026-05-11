@@ -279,6 +279,27 @@ class Settings(BaseSettings):
     def is_vercel_runtime(self) -> bool:
         return str(self.vercel or "").strip().lower() in {"1", "true", "yes"}
 
+    @property
+    def aws_s3_endpoint_is_loopback(self) -> bool:
+        raw = str(self.aws_s3_endpoint or "").strip()
+        if not raw:
+            return False
+        parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+        host = (parsed.hostname or "").strip().lower()
+        return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host.startswith("127.")
+
+    @property
+    def effective_storage_provider(self) -> str:
+        provider = (self.storage_provider or "").strip().lower()
+        if (
+            provider == "s3"
+            and self.is_vercel_runtime
+            and self.aws_s3_endpoint_is_loopback
+            and self.blob_token_effective
+        ):
+            return "vercel"
+        return provider
+
     @staticmethod
     def _normalize_public_base_url(value: str) -> str:
         raw = str(value or "").strip()

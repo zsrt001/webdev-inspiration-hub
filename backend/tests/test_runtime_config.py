@@ -38,6 +38,28 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertEqual(settings.effective_cleanup_cron_token, "vercel-cron-secret")
 
+    def test_vercel_s3_loopback_endpoint_can_fall_back_to_blob_when_token_exists(self) -> None:
+        settings = Settings(
+            vercel="1",
+            storage_provider="s3",
+            aws_s3_endpoint="http://127.0.0.1:9000",
+            blob_read_write_token="vercel_blob_rw_token",
+        )
+
+        self.assertTrue(settings.aws_s3_endpoint_is_loopback)
+        self.assertEqual(settings.effective_storage_provider, "vercel")
+
+    def test_vercel_s3_loopback_endpoint_stays_s3_without_blob_token(self) -> None:
+        settings = Settings(
+            vercel="1",
+            storage_provider="s3",
+            aws_s3_endpoint="http://127.0.0.1:9000",
+            blob_read_write_token="",
+        )
+
+        self.assertTrue(settings.aws_s3_endpoint_is_loopback)
+        self.assertEqual(settings.effective_storage_provider, "s3")
+
 
 if __name__ == "__main__":
     unittest.main()
