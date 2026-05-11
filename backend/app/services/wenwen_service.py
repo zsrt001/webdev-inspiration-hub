@@ -70,7 +70,7 @@ class WenwenService:
         template = str(settings.wenwen_native_image_generate_path_template or "").strip()
         if not template:
             template = "/v1beta/models/{model}:generateContent"
-        path = template.replace("{model}", settings.wenwen_image_model)
+        path = template.replace("{model}", cls._effective_image_model())
         if path.startswith("http://") or path.startswith("https://"):
             return path
         return f"{cls._origin_url()}{cls._normalize_path(path)}"
@@ -90,8 +90,15 @@ class WenwenService:
 
     @staticmethod
     def _supports_provider_task_submission() -> bool:
-        model = str(settings.wenwen_image_model or "").strip().lower()
+        model = WenwenService._effective_image_model().lower()
         return bool(model and not model.startswith("gemini"))
+
+    @staticmethod
+    def _effective_image_model() -> str:
+        configured = str(settings.wenwen_image_model or "").strip()
+        if settings.is_vercel_runtime and configured == "gemini-3-pro-image-preview":
+            return "gemini-3.1-flash-image-preview"
+        return configured
 
     @staticmethod
     def _headers() -> dict[str, str]:
@@ -121,7 +128,7 @@ class WenwenService:
         if response.status_code in {401, 403}:
             raise RuntimeError(
                 f"wenwen_auth_failed:{response.status_code} "
-                f"(base_url={self._base_url()}, model={settings.wenwen_image_model})"
+                f"(base_url={self._base_url()}, model={self._effective_image_model()})"
             )
         response.raise_for_status()
         return True, "ok"
@@ -408,7 +415,7 @@ class WenwenService:
             refs.append(await self._coerce_remote_image_ref(value))
 
         payload: dict[str, Any] = {
-            "model": settings.wenwen_image_model,
+            "model": self._effective_image_model(),
             "prompt": prompt_text,
             "size": self._build_size(is_couple),
             "n": 1,
@@ -549,7 +556,8 @@ class WenwenService:
             debug.update(
                 {
                     "wenwen_submit_payload_keys": sorted(payload.keys()),
-                    "wenwen_model": settings.wenwen_image_model,
+                    "wenwen_model": self._effective_image_model(),
+                    "wenwen_configured_model": settings.wenwen_image_model,
                     "wenwen_submitted_at": self._utc_now_iso(),
                 }
             )
@@ -950,7 +958,7 @@ class WenwenService:
                         lowered = response.text.lower()
                         if "model_not_found" in lowered or "no available channel" in lowered or "not supported model for image generation" in lowered:
                             raise RuntimeError(
-                                f"wenwen_model_unavailable:{settings.wenwen_image_model}:{response.status_code}:{response.text[:240]}"
+                                f"wenwen_model_unavailable:{self._effective_image_model()}:{response.status_code}:{response.text[:240]}"
                             )
                         if response.status_code >= 500 and attempt < max_retries:
                             logger.warning("Wenwen 5xx (attempt %d/%d): %s", attempt + 1, 1 + max_retries, response.status_code)
