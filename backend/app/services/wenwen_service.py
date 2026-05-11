@@ -95,10 +95,7 @@ class WenwenService:
 
     @staticmethod
     def _effective_image_model() -> str:
-        configured = str(settings.wenwen_image_model or "").strip()
-        if settings.is_vercel_runtime and configured == "gemini-3-pro-image-preview":
-            return "gemini-3.1-flash-image-preview"
-        return configured
+        return str(settings.wenwen_image_model or "").strip()
 
     @staticmethod
     def _headers() -> dict[str, str]:
@@ -346,6 +343,37 @@ class WenwenService:
             subject_count=subject_count,
             couple_flow=couple_flow,
         )
+
+    async def _record_native_raw_outputs(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        delivered_urls: list[str],
+        provider_payload_keys: list[str],
+        qa_attempt_count: int,
+    ) -> None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+            debug.update(
+                {
+                    "native_raw_output_recorded_at": self._utc_now_iso(),
+                    "native_raw_output_count": len(delivered_urls),
+                    "wenwen_model": self._effective_image_model(),
+                    "wenwen_configured_model": settings.wenwen_image_model,
+                    "wenwen_submit_payload_keys": sorted(provider_payload_keys),
+                }
+            )
+            params["debug"] = debug
+            params["native_raw_output_urls"] = list(delivered_urls)
+            params["native_raw_output_status"] = "stored"
+            params["qa_attempt_count"] = int(qa_attempt_count)
+            order.generation_params = params
+            await db.commit()
 
     @staticmethod
     def _status_terminal_success(value: str | None, *, has_outputs: bool) -> bool:
@@ -742,6 +770,20 @@ class WenwenService:
         except Exception:
             return False
 
+    @staticmethod
+    def _seconds_since(value: Any) -> float | None:
+        if not value:
+            return None
+        try:
+            parsed = value
+            if isinstance(value, str):
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc).timestamp() - parsed.timestamp()
+        except Exception:
+            return None
+
     async def _record_provider_poll(
         self,
         order_uuid: uuid.UUID,
@@ -787,8 +829,39 @@ class WenwenService:
             if status_value != OrderStatus.GENERATING.value:
                 return False
             params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            native_raw_output_urls = params.get("native_raw_output_urls")
+            if isinstance(native_raw_output_urls, list) and native_raw_output_urls:
+                user_images = self._order_source_images(order)
+                try:
+                    subject_count = int(params.get("subject_count") or len(user_images) or 0) or None
+                except Exception:
+                    subject_count = len(user_images) or None
+                couple_flow = str(params.get("couple_flow") or "") or None
+                qa_attempt_count = int(params.get("qa_attempt_count") or 1)
+                try:
+                    await self._complete_provider_urls(
+                        order_uuid,
+                        provider_urls=[str(url) for url in native_raw_output_urls if str(url or "").strip()],
+                        user_images=user_images,
+                        subject_count=subject_count,
+                        couple_flow=couple_flow,
+                        qa_attempt_count=qa_attempt_count,
+                    )
+                    await self._queue_completion_email(order_uuid)
+                except Exception as exc:
+                    await self._fail_order(order_uuid, str(exc), self._classify_error(exc))
+                return True
             task_id = str(params.get("provider_task_id") or params.get("wenwen_task_id") or "").strip()
             if not task_id:
+                if str(params.get("execution_mode") or "").strip() == "inline":
+                    age_seconds = self._seconds_since(order.updated_at)
+                    if age_seconds is not None and age_seconds > 20 * 60:
+                        await self._fail_order(
+                            order_uuid,
+                            "generation_runtime_interrupted_before_output",
+                            "generation_timeout",
+                        )
+                        return True
                 return False
             debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
             if self._recently_polled(debug):
@@ -982,6 +1055,12 @@ class WenwenService:
                     delivered_urls = await self._persist_inline_outputs_to_storage(parts, order_uuid)
                     if not delivered_urls:
                         raise RuntimeError("wenwen_outputs_missing")
+                    await self._record_native_raw_outputs(
+                        order_uuid,
+                        delivered_urls=delivered_urls,
+                        provider_payload_keys=list(native_payload.keys()),
+                        qa_attempt_count=attempt + 1,
+                    )
 
                     primary_image_url = delivered_urls[0]
                     qa_ok, qa_reasons = await output_passes(
