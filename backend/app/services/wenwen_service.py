@@ -497,9 +497,12 @@ class WenwenService:
             result = await db.execute(select(Order).where(Order.id == order_uuid))
             order = result.scalar_one_or_none()
             refund_amount = COST_PER_GENERATION
+            clean_error_message = str(error_message or "").strip() or failure_code or "unknown_generation_error"
             if order and isinstance(order.generation_params, dict):
+                params = order.generation_params
                 try:
-                    refund_amount = int(order.generation_params.get("credits_cost") or refund_amount)
+                    if "credits_cost" in params:
+                        refund_amount = max(0, int(params.get("credits_cost") or 0))
                 except Exception:
                     refund_amount = COST_PER_GENERATION
             if order and order.user_id and refund_amount:
@@ -514,8 +517,8 @@ class WenwenService:
                 )
             if order:
                 order.status = OrderStatus.CREATED
-                order.error_message = error_message
-                params = order.generation_params if isinstance(order.generation_params, dict) else {}
+                order.error_message = clean_error_message
+                params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
                 params["failure_code"] = failure_code
                 params["failure_provider"] = "wenwen"
                 if refund_amount:
@@ -598,8 +601,9 @@ class WenwenService:
             delivered_urls: list[str] = []
             for attempt in range(1 + max_retries):
                 try:
+                    read_timeout = max(120.0, float(settings.wenwen_poll_timeout or 240))
                     async with httpx.AsyncClient(
-                        timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
+                        timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=30.0, pool=10.0),
                         follow_redirects=True,
                         trust_env=False,
                     ) as client:

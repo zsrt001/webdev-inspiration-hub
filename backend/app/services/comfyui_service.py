@@ -1429,9 +1429,12 @@ class ComfyUIService:
                 order = result.scalar_one_or_none()
                 refund_amount = COST_PER_GENERATION
                 failure_code = self._classify_generation_error(e)
+                clean_error_message = str(e).strip() or failure_code or type(e).__name__
                 if order and isinstance(order.generation_params, dict):
+                    params = order.generation_params
                     try:
-                        refund_amount = int(order.generation_params.get("credits_cost") or refund_amount)
+                        if "credits_cost" in params:
+                            refund_amount = max(0, int(params.get("credits_cost") or 0))
                     except Exception:
                         refund_amount = COST_PER_GENERATION
                 if refund_amount:
@@ -1440,8 +1443,8 @@ class ComfyUIService:
                         await add_credits_async(db, target_user_id, refund_amount)
                 if order:
                     order.status = OrderStatus.CREATED
-                    order.error_message = str(e)
-                    base_params = order.generation_params if isinstance(order.generation_params, dict) else {}
+                    order.error_message = clean_error_message
+                    base_params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
                     base_params["failure_code"] = failure_code
                     base_params["failure_provider"] = settings.generation_provider_name
                     if refund_amount:
