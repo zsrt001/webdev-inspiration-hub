@@ -16,6 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.models.user import User  # noqa: E402
 from app.models.account_risk_event import AccountRiskEvent  # noqa: E402
 from app.routers import auth as auth_router  # noqa: E402
+from app.core.config import Settings  # noqa: E402
 from app.schemas.auth import LoginRequest, RegisterRequest  # noqa: E402
 
 
@@ -84,6 +85,8 @@ class PasswordAuthTest(unittest.IsolatedAsyncioTestCase):
         self._original_verify_email_code = auth_router.verify_email_code
         self._original_grant_welcome_bonus = auth_router.grant_welcome_bonus
         self._original_check_new_account_risk_limits = auth_router.check_new_account_risk_limits
+        self._original_settings = auth_router.settings
+        auth_router.settings = Settings(_env_file=None, password_auth_enabled=True)
         auth_router.verify_email_code = lambda _email, _code: True
 
         async def _grant_welcome_bonus_noop(_db, _user_id, **_kwargs):
@@ -99,6 +102,7 @@ class PasswordAuthTest(unittest.IsolatedAsyncioTestCase):
         auth_router.verify_email_code = self._original_verify_email_code
         auth_router.grant_welcome_bonus = self._original_grant_welcome_bonus
         auth_router.check_new_account_risk_limits = self._original_check_new_account_risk_limits
+        auth_router.settings = self._original_settings
 
     def _register_request(self, username: str, password: str) -> RegisterRequest:
         return RegisterRequest(
@@ -213,6 +217,18 @@ class PasswordAuthTest(unittest.IsolatedAsyncioTestCase):
             await auth_router.login(LoginRequest(username="safeuser", password="wrong123"), _request("10.0.0.7"), db)
 
         self.assertEqual(raised.exception.status_code, 401)
+
+    async def test_password_auth_can_be_disabled(self) -> None:
+        db = _FakeDb()
+        auth_router.settings = Settings(_env_file=None, password_auth_enabled=False)
+
+        with self.assertRaises(HTTPException) as register_error:
+            await auth_router.register(self._register_request("closeduser", "secret123"), _request("10.0.0.30"), db)
+        self.assertEqual(register_error.exception.status_code, 403)
+
+        with self.assertRaises(HTTPException) as login_error:
+            await auth_router.login(LoginRequest(username="closeduser", password="secret123"), _request("10.0.0.31"), db)
+        self.assertEqual(login_error.exception.status_code, 403)
 
 
 if __name__ == "__main__":

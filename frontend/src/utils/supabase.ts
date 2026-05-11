@@ -184,7 +184,7 @@ export async function signInWithGoogle(): Promise<void> {
 
     const available = await refreshSupabaseConfig();
     if (!available) {
-        throw new Error('Google sign-in is not available. Please use username and password.');
+        throw new Error('Google sign-in is not available on this deployment.');
     }
 
     const backendOrigin = resolveBackendOrigin();

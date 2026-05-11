@@ -117,6 +117,7 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str = ""
     supabase_jwt_audience: str = "authenticated"
     supabase_auth_timeout: float = 5.0
+    password_auth_enabled: bool = False
     rate_limit_enabled: bool = False
     rate_limit_default_requests: int = 240
     rate_limit_default_window_seconds: int = 60

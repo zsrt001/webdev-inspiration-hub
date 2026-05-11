@@ -59,6 +59,14 @@ LOGIN_USER_LIMITER = InMemoryRateLimiter(limit=10, window_seconds=900)  # 10 att
 DEFAULT_OAUTH_RETURN_PATH = "/pages/account/index"
 
 
+def _ensure_password_auth_enabled() -> None:
+    if not settings.password_auth_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password sign-in is disabled. Please use Google sign-in.",
+        )
+
+
 def _load_bcrypt():
     try:
         return importlib.import_module("bcrypt")
@@ -112,6 +120,7 @@ async def send_verification(
     db: AsyncSession = Depends(get_db),
 ):
     """Send a 6-digit verification code to the given email."""
+    _ensure_password_auth_enabled()
     email = request.email.strip().lower()
 
     # Block disposable email providers
@@ -203,6 +212,7 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
     """Create a username/password account with verified email."""
+    _ensure_password_auth_enabled()
     await ensure_user_account_columns(db)
     username = _normalize_username(request.username)
     _validate_password(request.password)
@@ -333,6 +343,7 @@ async def login(
     """
     await ensure_user_account_columns(db)
     if request.username is not None or request.password is not None:
+        _ensure_password_auth_enabled()
         response = await _login_with_password(request, db, http_request)
         if request.previous_guest_id:
             user_id = response.user_id

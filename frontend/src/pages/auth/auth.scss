@@ -107,6 +107,53 @@
   margin-top: -4px;
 }
 
+.google-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.google-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #116a60;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.auth-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #f3f6f5;
+  border: 1px solid #dce7e4;
+}
+
+.auth-note-title,
+.auth-note-line {
+  display: block;
+}
+
+.auth-note-title {
+  color: #17191f;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.auth-note-line {
+  color: #4c5360;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .auth-footer {
   display: flex;
   gap: 8px;
