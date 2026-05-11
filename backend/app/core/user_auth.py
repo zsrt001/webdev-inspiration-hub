@@ -20,6 +20,7 @@ from app.core.supabase_auth import (
     verify_supabase_token,
 )
 from app.models.user import User
+from app.services.schema_guard_service import ensure_user_account_columns
 
 settings = get_settings()
 ALGORITHM = "HS256"
@@ -105,6 +106,7 @@ async def get_request_user(
     x_visitor_id: str | None = Header(default=None, alias="X-Visitor-Id"),
 ) -> User:
     """Resolve request user from JWT first, then deterministic visitor identity."""
+    await ensure_user_account_columns(db)
     token_error: str | None = None
 
     def _raise_unauthorized(detail: str) -> None:

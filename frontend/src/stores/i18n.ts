@@ -162,10 +162,9 @@ function detectDefaultLocale(): Locale {
   try {
     const stored = uni.getStorageSync(LOCALE_STORAGE_KEY);
     if (stored === 'zh' || stored === 'en') return stored;
-    const language = (uni.getSystemInfoSync().language || '').toLowerCase();
-    return language.startsWith('zh') ? 'zh' : 'en';
+    return 'en';
   } catch {
-    return 'zh';
+    return 'en';
   }
 }
 

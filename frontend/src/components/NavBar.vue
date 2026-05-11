@@ -37,7 +37,7 @@
           <text class="chip-val">{{ creditBalance }}</text>
         </view>
         <view v-else class="balance-chip balance-chip-cta" @tap="handleAuthTap">
-          <text class="chip-val">{{ i18nStore.locale === 'zh' ? '注册领积分' : 'Sign up for credits' }}</text>
+          <text class="chip-val">{{ i18nStore.locale === 'zh' ? '注册' : 'Sign up' }}</text>
         </view>
 
         <view class="menu-dots-mobile" @tap="toggleMenu">
@@ -214,6 +214,7 @@ defineExpose({ refreshBalance });
   font-size: 22px;
   color: #17191f;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .nav-links-permanent {
@@ -344,6 +345,43 @@ defineExpose({ refreshBalance });
 
   &:last-child {
     border-bottom: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .navbar-inner {
+    padding: 0 16px;
+    gap: 12px;
+  }
+
+  .logo-area {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .logo-main {
+    font-size: 20px;
+  }
+
+  .nav-actions {
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+
+  .auth-chip {
+    display: none;
+  }
+
+  .lang-toggle,
+  .balance-chip {
+    min-width: 40px;
+    height: 36px;
+    padding: 0 10px;
+  }
+
+  .menu-dots-mobile {
+    width: 34px;
+    height: 34px;
   }
 }
 </style>

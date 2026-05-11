@@ -36,6 +36,7 @@ from app.services.retention_service import apply_order_retention, cleanup_expire
 from app.services.email_service import get_email_diagnostics, list_email_logs, send_test_email
 from app.services.template_service import get_template_by_id
 from app.services.generation_service import generation_service
+from app.services.schema_guard_service import ensure_user_account_columns
 from app.core.task_queue import enqueue_generate_order
 from app.worker_tasks import run_order_generation
 
@@ -435,6 +436,7 @@ def _validate_public_image_url(value: str, *, field_name: str) -> str:
 
 
 async def _get_or_create_generation_probe_user(db: AsyncSession) -> User:
+    await ensure_user_account_columns(db)
     result = await db.execute(select(User).where(User.openid == "admin_generation_probe"))
     user = result.scalar_one_or_none()
     if user is not None:
@@ -840,6 +842,7 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List users for the admin table with search, status filter, and pagination."""
+    await ensure_user_account_columns(db)
     clean_page, clean_page_size, offset = _pagination(page, page_size)
     filters = []
     clean_search = (search or "").strip()
@@ -887,6 +890,7 @@ async def update_user_status(
     db: AsyncSession = Depends(get_db),
 ):
     """Update only the operational status of a user."""
+    await ensure_user_account_columns(db)
     clean_status = (payload.status or "").strip().lower()
     if clean_status not in USER_STATUS_VALUES:
         raise HTTPException(status_code=422, detail=f"Invalid status. Allowed: {', '.join(sorted(USER_STATUS_VALUES))}")
@@ -918,6 +922,7 @@ async def list_admin_orders(
     db: AsyncSession = Depends(get_db),
 ):
     """List orders with user information for admin operations."""
+    await ensure_user_account_columns(db)
     clean_page, clean_page_size, offset = _pagination(page, page_size)
     filters = []
     clean_search = (search or "").strip()
@@ -973,6 +978,7 @@ async def get_admin_order_detail(
     db: AsyncSession = Depends(get_db),
 ):
     """Return an admin-safe order detail payload."""
+    await ensure_user_account_columns(db)
     order = await _get_admin_order(db, order_id)
     user = await db.get(User, order.user_id)
     return _order_detail(order, user)
@@ -987,6 +993,7 @@ async def update_order_status(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an order status using the existing OrderStatus enum."""
+    await ensure_user_account_columns(db)
     clean_status = (payload.status or "").strip().upper()
     if clean_status not in ORDER_STATUS_VALUES:
         raise HTTPException(status_code=422, detail=f"Invalid order status. Allowed: {', '.join(sorted(ORDER_STATUS_VALUES))}")

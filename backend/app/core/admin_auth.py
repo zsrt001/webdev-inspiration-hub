@@ -17,6 +17,7 @@ from app.core.supabase_auth import (
     verify_supabase_token,
 )
 from app.models.user import User
+from app.services.schema_guard_service import ensure_user_account_columns
 
 settings = get_settings()
 ALGORITHM = "HS256"
@@ -84,6 +85,7 @@ async def _admin_user_from_authorization(db: AsyncSession, authorization: str | 
     token = _extract_bearer_token(authorization)
     if not token:
         return None
+    await ensure_user_account_columns(db)
     return await _local_user_from_token(db, token) or await _supabase_user_from_token(db, token)
 
 

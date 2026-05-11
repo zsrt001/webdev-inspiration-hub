@@ -7,16 +7,22 @@
       <view class="hero-overlay"></view>
       <view class="hero-content">
         <view class="hero-copy">
-          <text class="section-label">{{ tr('AI 婚纱照生成', 'AI Wedding Portraits') }}</text>
+          <text class="section-label">{{ tr('AI 婚纱照生成', 'AI Wedding Studio') }}</text>
           <text class="hero-title heading-serif">
-            {{ tr('上传照片，生成你的高定婚纱大片', 'Turn your photos into premium wedding portraits') }}
+            {{ tr('上传照片，生成你的高定婚纱大片', 'Wedding portraits, made from your photos') }}
           </text>
           <text class="hero-subtitle">
-            {{ tr('无需预约影棚，选择喜欢的风格或描述你的想法，AI 帮你生成适合请柬、头像、纪念日和社交分享的婚纱影像。', 'No studio booking required. Choose a style or describe your idea, then create wedding portraits for invitations, profiles, anniversaries, and social sharing.') }}
+            {{ tr('无需预约影棚。上传人像、选择风格或描述想法，快速生成适合请柬、头像、纪念日和社交分享的婚纱影像。', 'Upload a portrait, choose a look, and generate polished AI wedding images for invitations, profiles, anniversaries, and keepsakes.') }}
           </text>
           <view class="hero-actions">
-            <view class="btn primary" @tap="goToCustom">{{ tr('立即免费试用', 'Try It Free') }}</view>
-            <view class="btn secondary" @tap="scrollToGallery">{{ tr('浏览风格灵感', 'Browse Styles') }}</view>
+            <view class="btn primary" @tap="goToCustom">{{ tr('开始免费预览', 'Start a Free Preview') }}</view>
+            <view class="btn secondary" @tap="scrollToGallery">{{ tr('浏览婚纱风格', 'Explore Styles') }}</view>
+          </view>
+          <view class="hero-proof-grid">
+            <view v-for="item in heroProofs" :key="item.title" class="proof-item">
+              <text class="proof-title">{{ item.title }}</text>
+              <text class="proof-desc">{{ item.desc }}</text>
+            </view>
           </view>
         </view>
 
@@ -25,8 +31,8 @@
             <image :src="heroPreviewUrl" mode="aspectFill" class="preview-image" />
           </view>
           <view class="preview-copy">
-            <text class="preview-title">{{ tr('热门风格预览', 'Popular Style Preview') }}</text>
-            <text class="preview-text">{{ tr('中式秀禾、韩系极简、古堡、海边、金婚纪念等风格都可以直接开始。', 'Start from Chinese, Korean minimal, castle, beach, legacy anniversary, and more curated styles.') }}</text>
+            <text class="preview-title">{{ tr('精选婚纱风格', 'Curated Wedding Looks') }}</text>
+            <text class="preview-text">{{ tr('中式秀禾、韩系极简、古堡、海边、金婚纪念等风格都可以直接开始。', 'Chinese Xiuhe, Korean minimal, castle romance, beach sunset, and anniversary remakes are ready to try.') }}</text>
           </view>
         </view>
       </view>
@@ -36,7 +42,7 @@
       <section class="benefits-section section-block" id="benefits">
         <view class="section-heading">
           <text class="section-label">{{ tr('为什么选择 AI Wedding', 'Why AI Wedding') }}</text>
-          <text class="section-title heading-serif">{{ tr('先看到成片灵感，再决定要不要继续升级', 'See finished portrait ideas before you commit') }}</text>
+          <text class="section-title heading-serif">{{ tr('先看到成片灵感，再决定要不要继续升级', 'Preview the look before you spend more credits') }}</text>
         </view>
         <view class="benefit-grid">
           <view v-for="item in benefitItems" :key="item.title" class="benefit-card">
@@ -50,7 +56,7 @@
       <section class="features-section section-block" id="features">
         <view class="section-heading">
           <text class="section-label">{{ tr('核心功能', 'Core Features') }}</text>
-          <text class="section-title heading-serif">{{ tr('从一张照片到婚纱大片，只需要几步', 'From one photo to wedding portraits in a few steps') }}</text>
+          <text class="section-title heading-serif">{{ tr('从一张照片到婚纱大片，只需要几步', 'From upload to keepsake in a few guided steps') }}</text>
         </view>
 
         <view class="feature-layout">
@@ -80,7 +86,7 @@
         <view class="section-heading split">
           <view>
             <text class="section-label">{{ tr('风格灵感', 'Style Inspiration') }}</text>
-            <text class="section-title heading-serif">{{ tr('选择一个喜欢的风格，马上开始生成', 'Choose a style and start creating') }}</text>
+            <text class="section-title heading-serif">{{ tr('选择一个喜欢的风格，马上开始生成', 'Choose a direction, then make it yours') }}</text>
           </view>
           <text class="section-note">{{ tr('支持单人婚纱照、双人合拍和异地合拍。进入详情后可继续上传照片。', 'Supports solo portraits, couple portraits, and remote couple creation. Open a style to upload photos.') }}</text>
         </view>
@@ -130,8 +136,8 @@
 
       <section class="testimonials-section section-block" id="testimonials">
         <view class="section-heading">
-          <text class="section-label">{{ tr('适用场景', 'Use Cases') }}</text>
-          <text class="section-title heading-serif">{{ tr('适合这些真实需求', 'Made for real wedding moments') }}</text>
+          <text class="section-label">{{ tr('适用场景', 'When to use it') }}</text>
+          <text class="section-title heading-serif">{{ tr('适合这些真实需求', 'Useful before and after the wedding') }}</text>
         </view>
         <view class="testimonial-list">
           <view v-for="item in testimonials" :key="item.name" class="testimonial-card">
@@ -143,8 +149,8 @@
 
       <section class="cta-section section-block" id="cta">
         <text class="section-label">{{ tr('开始体验', 'Start Now') }}</text>
-        <text class="cta-title heading-serif">{{ tr('先生成预览，满意后再解锁高清', 'Create a preview first, unlock HD when you love it') }}</text>
-        <text class="cta-desc">{{ tr('新用户可以先体验生成效果。需要更多次数、高清下载或持续创作时，再选择积分包或月度套餐。', 'Try the generation flow first. Choose credit packs or monthly plans when you need more attempts, HD downloads, or ongoing creation.') }}</text>
+        <text class="cta-title heading-serif">{{ tr('先生成预览，满意后再解锁高清', 'Generate a preview, then unlock the image you love') }}</text>
+        <text class="cta-desc">{{ tr('新用户可以先体验生成效果。需要更多次数、高清下载或持续创作时，再选择积分包或月度套餐。', 'Start with a real preview using your own photo. Add credits only when you need more attempts, HD downloads, or ongoing creation.') }}</text>
         <view class="hero-actions centered">
           <view class="btn primary" @tap="goToCustom">{{ tr('立即开始', 'Start Now') }}</view>
           <view class="btn secondary" @tap="showPaymentModal = true">{{ tr('查看套餐', 'View Plans') }}</view>
@@ -254,28 +260,43 @@ const heroPreviewUrl = computed(() => {
   return resolvePublicUrl(candidate);
 });
 
+const heroProofs = computed(() => [
+  {
+    title: tr('先预览', 'Preview first'),
+    desc: tr('先看真实照片效果，再决定是否继续。', 'See the look with your own photo before buying more credits.'),
+  },
+  {
+    title: tr('支持双人', 'Couple-ready'),
+    desc: tr('支持单人、双人和异地邀请合拍。', 'Create solo, couple, or remote partner sessions.'),
+  },
+  {
+    title: tr('高清解锁', 'HD unlock'),
+    desc: tr('满意后再解锁高清下载。', 'Unlock high-resolution delivery only when it feels right.'),
+  },
+]);
+
 const benefitItems = computed(() => [
   {
     mark: '01',
-    title: tr('先看效果再决定', 'Preview before deciding'),
-    desc: tr('先用自己的照片试不同婚纱风格，看清楚氛围、构图和人物感觉，再决定是否继续高清下载。', 'Try styles with your own photos first, then decide whether to continue with HD downloads.'),
+    title: tr('先看效果再决定', 'Preview with your real photos'),
+    desc: tr('先用自己的照片试不同婚纱风格，看清楚氛围、构图和人物感觉，再决定是否继续高清下载。', 'Test the look with your own portrait before buying more credits or unlocking HD.'),
   },
   {
     mark: '02',
-    title: tr('风格选择更自由', 'More style freedom'),
-    desc: tr('可选择现成风格，也能用文字补充服装、场景和氛围，适合婚礼灵感、情侣写真和纪念礼物。', 'Choose curated styles or add text guidance for outfits, scenes, and mood.'),
+    title: tr('风格选择更自由', 'Solo, couple, or remote'),
+    desc: tr('可选择现成风格，也能用文字补充服装、场景和氛围，适合婚礼灵感、情侣写真和纪念礼物。', 'Create individual portraits, local couple sessions, or invite a partner from another device.'),
   },
   {
     mark: '03',
-    title: tr('额度清楚，按需升级', 'Clear usage plans'),
-    desc: tr('积分包适合偶尔生成，月度套餐适合持续创作；先体验，再按使用频率选择。', 'Use credit packs for occasional creation, or monthly plans for ongoing needs.'),
+    title: tr('额度清楚，按需升级', 'Clear credits, no guesswork'),
+    desc: tr('积分包适合偶尔生成，月度套餐适合持续创作；先体验，再按使用频率选择。', 'Starter credits cover a base solo preview; larger modes show their credit cost before generation.'),
   },
 ]);
 
 const testimonials = computed(() => [
   {
     quote: tr('婚礼前想快速试不同风格，可以先用 AI 看一版效果，再和伴侣、化妆师或摄影师沟通方向。', 'Explore several bridal directions before the wedding, then discuss the look with your partner, stylist, or photographer.'),
-    name: tr('婚礼灵感与试片', 'Wedding planning and style proofing'),
+    name: tr('婚礼灵感与试片', 'Style proofing before the shoot'),
   },
   {
     quote: tr('给父母准备结婚纪念日礼物时，可以用一组更正式的纪念婚纱照，补上过去没有好好拍过的遗憾。', 'Create a more formal anniversary portrait set for parents and family milestones.'),
@@ -508,7 +529,7 @@ onMounted(async () => {
 
 .hero-section {
   position: relative;
-  min-height: min(720px, calc(100dvh - 64px));
+  min-height: min(540px, calc(100dvh - 230px));
   display: flex;
   align-items: stretch;
   overflow: hidden;
@@ -540,15 +561,15 @@ onMounted(async () => {
   z-index: 3;
   width: min(1280px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 74px 0 82px;
+  padding: 46px 0 44px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 420px;
-  gap: 48px;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 40px;
+  align-items: start;
 }
 
 .hero-copy {
-  max-width: 760px;
+  max-width: 740px;
 }
 
 .section-label {
@@ -562,25 +583,27 @@ onMounted(async () => {
 
 .hero-title {
   display: block;
-  font-size: clamp(42px, 6vw, 74px);
+  max-width: 720px;
+  font-size: clamp(40px, 4.8vw, 62px);
   line-height: 1.02;
   color: #17191f;
+  text-wrap: balance;
 }
 
 .hero-subtitle {
   display: block;
-  max-width: 650px;
-  margin-top: 24px;
+  max-width: 620px;
+  margin-top: 22px;
   color: #454b57;
-  font-size: 18px;
-  line-height: 1.75;
+  font-size: 17px;
+  line-height: 1.65;
 }
 
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  margin-top: 34px;
+  margin-top: 30px;
 }
 
 .hero-actions.centered {
@@ -616,8 +639,41 @@ onMounted(async () => {
   border: 1px solid #b8bec8;
 }
 
+.hero-proof-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  max-width: 650px;
+  margin-top: 22px;
+}
+
+.proof-item {
+  min-height: 84px;
+  padding: 14px;
+  border: 1px solid rgba(32, 43, 62, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-sizing: border-box;
+}
+
+.proof-title {
+  display: block;
+  margin-bottom: 6px;
+  color: #17191f;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.proof-desc {
+  display: block;
+  color: #4c5360;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .hero-preview {
-  align-self: end;
+  align-self: center;
   padding: 12px;
   border: 1px solid rgba(32, 43, 62, 0.12);
   background: rgba(255, 255, 255, 0.82);
@@ -629,7 +685,7 @@ onMounted(async () => {
 .preview-frame {
   overflow: hidden;
   border-radius: 6px;
-  aspect-ratio: 4 / 5;
+  aspect-ratio: 1 / 1.05;
   background: #d9dde3;
 }
 
@@ -642,7 +698,7 @@ onMounted(async () => {
 }
 
 .preview-copy {
-  padding: 18px 4px 2px;
+  padding: 16px 4px 12px;
 }
 
 .preview-title {
@@ -1094,10 +1150,12 @@ onMounted(async () => {
 @media (max-width: 1180px) {
   .hero-content {
     grid-template-columns: 1fr;
+    align-items: start;
   }
 
   .hero-preview {
     width: min(420px, 100%);
+    justify-self: start;
   }
 
   .style-grid {
@@ -1111,7 +1169,7 @@ onMounted(async () => {
   }
 
   .hero-content {
-    padding: 54px 0 66px;
+    padding: 48px 0 56px;
   }
 
   .section-heading.split,
@@ -1154,8 +1212,41 @@ onMounted(async () => {
     padding: 64px 0;
   }
 
+  .hero-content {
+    padding: 36px 0 42px;
+  }
+
+  .hero-title {
+    font-size: 38px;
+    line-height: 1.06;
+  }
+
   .hero-subtitle {
     font-size: 16px;
+  }
+
+  .hero-proof-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .proof-item {
+    min-height: auto;
+    padding: 10px 8px;
+    text-align: center;
+  }
+
+  .proof-title {
+    margin-bottom: 0;
+    font-size: 12px;
+  }
+
+  .proof-desc {
+    display: none;
+  }
+
+  .hero-preview {
+    display: none;
   }
 
   .feature-panel {
@@ -1194,3 +1285,4 @@ onMounted(async () => {
   }
 }
 </style>
+  margin-bottom: 8px;

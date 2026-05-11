@@ -43,6 +43,7 @@ from app.services.email_service import (
     send_verification_code,
     verify_email_code,
 )
+from app.services.schema_guard_service import ensure_user_account_columns
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -202,6 +203,7 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
     """Create a username/password account with verified email."""
+    await ensure_user_account_columns(db)
     username = _normalize_username(request.username)
     _validate_password(request.password)
     email = request.email.strip().lower()
@@ -329,6 +331,7 @@ async def login(
     A deterministic openid is derived from the provided code.
     If username/password are provided, this endpoint performs password login.
     """
+    await ensure_user_account_columns(db)
     if request.username is not None or request.password is not None:
         response = await _login_with_password(request, db, http_request)
         if request.previous_guest_id:
@@ -400,6 +403,7 @@ async def exchange_supabase_session(
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
     """Exchange a Supabase OAuth access token for this app's JWT session."""
+    await ensure_user_account_columns(db)
     try:
         claims = await verify_supabase_token(request.access_token)
     except SupabaseAuthError as exc:
