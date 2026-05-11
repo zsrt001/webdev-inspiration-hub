@@ -89,6 +89,11 @@ class WenwenService:
         return f"{cls._base_url()}{cls._normalize_path(path)}"
 
     @staticmethod
+    def _supports_provider_task_submission() -> bool:
+        model = str(settings.wenwen_image_model or "").strip().lower()
+        return bool(model and not model.startswith("gemini"))
+
+    @staticmethod
     def _headers() -> dict[str, str]:
         return {
             "Authorization": f"Bearer {settings.wenwen_api_key}",
@@ -377,6 +382,7 @@ class WenwenService:
         scene_image_url: str | None,
         clothing_image_url: str | None,
         couple_flow: str | None,
+        prompt_enrichment: bool = True,
     ) -> tuple[dict[str, Any], str, str]:
         is_couple = bool(subject_count and int(subject_count) >= 2)
         prompt_text = build_prompt(
@@ -386,12 +392,13 @@ class WenwenService:
             clothing_text=outfit_text,
             is_couple=is_couple,
         )
-        prompt_text = await llm_service.optimize_generation_prompt(prompt_text, is_couple=is_couple)
         negative_prompt = get_negative_prompt()
 
-        subject_hints = await self._build_subject_hints(user_images)
-        if subject_hints:
-            prompt_text = f"{prompt_text} Identity guidance: {' '.join(subject_hints)}."
+        if prompt_enrichment:
+            prompt_text = await llm_service.optimize_generation_prompt(prompt_text, is_couple=is_couple)
+            subject_hints = await self._build_subject_hints(user_images)
+            if subject_hints:
+                prompt_text = f"{prompt_text} Identity guidance: {' '.join(subject_hints)}."
 
         refs: list[str] = []
         for candidate in [*(user_images or []), scene_image_url or "", clothing_image_url or ""]:
@@ -429,6 +436,7 @@ class WenwenService:
         scene_image_url: str | None,
         clothing_image_url: str | None,
         couple_flow: str | None,
+        prompt_enrichment: bool = True,
     ) -> tuple[dict[str, Any], str, str]:
         payload, prompt_text, negative_prompt = await self._build_payload(
             template=template,
@@ -441,6 +449,7 @@ class WenwenService:
             scene_image_url=scene_image_url,
             clothing_image_url=clothing_image_url,
             couple_flow=couple_flow,
+            prompt_enrichment=prompt_enrichment,
         )
         refs = list(payload.get("images") or [])
         parts: list[dict[str, Any]] = [{"text": f"{prompt_text}\nNegative prompt: {negative_prompt}"}]
@@ -628,6 +637,8 @@ class WenwenService:
             logger.debug("Order completion email skipped: %s", mail_exc)
 
     def _classify_error(self, error: Exception) -> str:
+        if isinstance(error, (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError)):
+            return "generation_timeout"
         text = str(error or "").strip().lower()
         if not text:
             return "unknown_error"
@@ -862,7 +873,7 @@ class WenwenService:
             if not template:
                 raise ValueError("template_not_found")
 
-            if settings.is_vercel_runtime:
+            if settings.is_vercel_runtime and self._supports_provider_task_submission():
                 task_id, output_urls, provider_payload, prompt_text, negative_prompt = await self._submit_provider_task(
                     template=template,
                     user_images=list(user_images or []),
@@ -914,6 +925,7 @@ class WenwenService:
                 scene_image_url=scene_image_url,
                 clothing_image_url=clothing_image_url,
                 couple_flow=couple_flow,
+                prompt_enrichment=not settings.is_vercel_runtime,
             )
 
             max_retries = max(0, settings.wenwen_max_retries)
@@ -921,7 +933,7 @@ class WenwenService:
             delivered_urls: list[str] = []
             for attempt in range(1 + max_retries):
                 try:
-                    read_timeout = max(120.0, float(settings.wenwen_poll_timeout or 240))
+                    read_timeout = 285.0 if settings.is_vercel_runtime else max(120.0, float(settings.wenwen_poll_timeout or 240))
                     async with httpx.AsyncClient(
                         timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=30.0, pool=10.0),
                         follow_redirects=True,
@@ -1015,7 +1027,8 @@ class WenwenService:
                 sentry_sdk.capture_exception(exc)
             except ImportError:
                 pass
-            await self._fail_order(order_uuid, str(exc), self._classify_error(exc))
+            error_text = str(exc).strip() or type(exc).__name__
+            await self._fail_order(order_uuid, error_text, self._classify_error(exc))
 
     async def generate_live_portrait(self, *args: Any, **kwargs: Any) -> None:
         raise NotImplementedError("wenwen_live_portrait_unsupported")
