@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
@@ -29,6 +30,33 @@ COST_VINTAGE_GENERATION = 5
 COST_LIVE_PORTRAIT = 6
 COST_LIVE_PORTRAIT_EXTRA_BLOCK = 4
 COST_PER_GENERATION = COST_SINGLE_GENERATION
+logger = logging.getLogger(__name__)
+_credit_guardrails_ready = False
+
+
+async def ensure_credit_guardrails(db: AsyncSession) -> None:
+    """Best-effort DB guardrail for the one-time welcome bonus."""
+    global _credit_guardrails_ready
+    if _credit_guardrails_ready:
+        return
+    if not hasattr(db, "begin_nested"):
+        _credit_guardrails_ready = True
+        return
+    try:
+        async with db.begin_nested():
+            await db.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_credit_transactions_welcome_once
+                    ON credit_transactions (user_id)
+                    WHERE transaction_type = 'WELCOME_BONUS'
+                    """
+                )
+            )
+        _credit_guardrails_ready = True
+    except Exception as exc:
+        logger.warning("welcome_bonus_unique_index_unavailable: %s", exc)
+        _credit_guardrails_ready = True
 
 
 def _to_user_uuid(user_id: uuid.UUID | str) -> uuid.UUID:
@@ -83,6 +111,7 @@ async def grant_welcome_bonus(
 ) -> bool:
     """Grant welcome bonus credits. Returns True if granted, False if already claimed."""
     user_uuid = _to_user_uuid(user_id)
+    await ensure_credit_guardrails(db)
 
     # Check if user already received welcome bonus
     existing = await db.execute(

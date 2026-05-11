@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import Request
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account_risk_event import AccountRiskEvent
@@ -19,6 +19,47 @@ NEW_ACCOUNT_EVENT_TYPES = (
     "password_register_created",
     "google_register_created",
 )
+
+_risk_table_ready = False
+
+
+async def ensure_account_risk_table(db: AsyncSession) -> None:
+    """Create the risk monitoring table on production runtimes that have not run migrations yet."""
+    global _risk_table_ready
+    if _risk_table_ready:
+        return
+    await db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS account_risk_events (
+                id UUID PRIMARY KEY,
+                user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                event_type VARCHAR(64) NOT NULL,
+                provider VARCHAR(32),
+                ip_hash VARCHAR(64),
+                device_hash VARCHAR(64),
+                email_hash VARCHAR(64),
+                email_domain VARCHAR(255),
+                risk_score INTEGER NOT NULL DEFAULT 0,
+                metadata_json JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+            """
+        )
+    )
+    for column in (
+        "user_id",
+        "event_type",
+        "provider",
+        "ip_hash",
+        "device_hash",
+        "email_hash",
+        "email_domain",
+        "created_at",
+    ):
+        await db.execute(text(f'CREATE INDEX IF NOT EXISTS "ix_account_risk_events_{column}" ON account_risk_events ("{column}")'))
+    await db.flush()
+    _risk_table_ready = True
 
 
 def _client_ip(request: Request | None) -> str:
@@ -70,6 +111,7 @@ async def record_account_risk_event(
     risk_score: int = 0,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    await ensure_account_risk_table(db)
     db.add(
         AccountRiskEvent(
             user_id=user.id if user and user.id else None,
@@ -95,6 +137,7 @@ async def check_new_account_risk_limits(
     window_seconds: int = 3600,
 ) -> dict[str, Any] | None:
     """Return the first DB-backed new-account limit hit, if any."""
+    await ensure_account_risk_table(db)
     since = datetime.now(timezone.utc) - timedelta(seconds=max(60, int(window_seconds or 3600)))
     ip_hash = _hash(_client_ip(request))
     device_hash = _hash(_device_key(request))
@@ -131,6 +174,7 @@ async def check_new_account_risk_limits(
 
 
 async def get_account_risk_summary(db: AsyncSession, *, days: int = 7, limit: int = 12) -> dict[str, Any]:
+    await ensure_account_risk_table(db)
     clean_days = max(1, min(90, int(days or 7)))
     clean_limit = max(1, min(50, int(limit or 12)))
     since = datetime.now(timezone.utc) - timedelta(days=clean_days)

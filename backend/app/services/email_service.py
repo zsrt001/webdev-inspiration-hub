@@ -11,7 +11,7 @@ from email.utils import parseaddr
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -20,6 +20,37 @@ from app.models.email_delivery_log import EmailDeliveryLog
 logger = logging.getLogger(__name__)
 
 RESEND_API_URL = "https://api.resend.com/emails"
+_email_log_table_ready = False
+
+
+async def ensure_email_delivery_log_table(db: AsyncSession) -> None:
+    """Create email log storage on production runtimes that have not run migrations yet."""
+    global _email_log_table_ready
+    if _email_log_table_ready:
+        return
+    await db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS email_delivery_logs (
+                id UUID PRIMARY KEY,
+                purpose VARCHAR(64) NOT NULL,
+                provider VARCHAR(32) NOT NULL,
+                to_email VARCHAR(255) NOT NULL,
+                subject VARCHAR(255) NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                provider_message_id VARCHAR(128),
+                error_code VARCHAR(64),
+                error_message TEXT,
+                metadata_json JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+            """
+        )
+    )
+    for column in ("purpose", "to_email", "status", "provider_message_id", "error_code", "created_at"):
+        await db.execute(text(f'CREATE INDEX IF NOT EXISTS "ix_email_delivery_logs_{column}" ON email_delivery_logs ("{column}")'))
+    await db.flush()
+    _email_log_table_ready = True
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +185,7 @@ async def _record_email_log(
 ) -> None:
     if db is None:
         return
+    await ensure_email_delivery_log_table(db)
     status_value = "sent" if result.get("sent") else "failed"
     error_code = str(result.get("reason") or result.get("status") or result.get("error_code") or "")[:64] or None
     error_message = str(result.get("error") or result.get("message") or "")[:2000] or None
@@ -381,6 +413,7 @@ def get_email_diagnostics() -> dict[str, Any]:
 
 
 async def list_email_logs(db: AsyncSession, *, limit: int = 50) -> list[EmailDeliveryLog]:
+    await ensure_email_delivery_log_table(db)
     clean_limit = max(1, min(200, int(limit or 50)))
     rows = (
         await db.execute(
