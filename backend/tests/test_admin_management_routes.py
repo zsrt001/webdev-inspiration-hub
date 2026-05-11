@@ -18,9 +18,11 @@ class AdminManagementRoutesTest(unittest.TestCase):
         paths = {path for path, _methods in routes}
 
         self.assertIn("/admin/dashboard", paths)
+        self.assertIn("/admin/me", paths)
         self.assertIn("/admin/payment_config_summary", paths)
         self.assertIn("/admin/creem_product_check", paths)
         self.assertIn("/admin/creem_checkout_probe", paths)
+        self.assertIn("/admin/generation_probe", paths)
         self.assertIn("/admin/users", paths)
         self.assertIn("/admin/users/{user_id}/status", paths)
         self.assertIn("/admin/orders", paths)

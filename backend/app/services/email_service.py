@@ -7,11 +7,15 @@ import logging
 import secrets
 import time
 from collections import defaultdict, deque
+from email.utils import parseaddr
 from typing import Any
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.models.email_delivery_log import EmailDeliveryLog
 
 logger = logging.getLogger(__name__)
 
@@ -127,12 +131,64 @@ def record_ip_verification(ip: str) -> None:
     _ip_verification_limiter.record(ip)
 
 
-async def _send_email(*, to: str, subject: str, html: str) -> dict[str, Any]:
+def _normalize_email(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _email_domain(value: str) -> str:
+    _, address = parseaddr(str(value or ""))
+    normalized = _normalize_email(address or value)
+    if "@" not in normalized:
+        return ""
+    return normalized.rsplit("@", 1)[-1]
+
+
+async def _record_email_log(
+    db: AsyncSession | None,
+    *,
+    to: str,
+    subject: str,
+    purpose: str,
+    result: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if db is None:
+        return
+    status_value = "sent" if result.get("sent") else "failed"
+    error_code = str(result.get("reason") or result.get("status") or result.get("error_code") or "")[:64] or None
+    error_message = str(result.get("error") or result.get("message") or "")[:2000] or None
+    db.add(
+        EmailDeliveryLog(
+            purpose=purpose,
+            provider="resend",
+            to_email=_normalize_email(to),
+            subject=str(subject)[:255],
+            status=status_value,
+            provider_message_id=str(result.get("id") or "")[:128] or None,
+            error_code=error_code,
+            error_message=error_message,
+            metadata_json=metadata,
+        )
+    )
+    await db.flush()
+
+
+async def _send_email(
+    *,
+    to: str,
+    subject: str,
+    html: str,
+    purpose: str = "notification",
+    db: AsyncSession | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     settings = get_settings()
     api_key = (settings.resend_api_key or "").strip()
     if not api_key:
         logger.debug("Email skipped (no RESEND_API_KEY): %s -> %s", subject, to)
-        return {"sent": False, "reason": "no_api_key"}
+        result = {"sent": False, "reason": "no_api_key"}
+        await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
+        return result
 
     payload = {
         "from": f"{settings.email_from_name} <{settings.email_from_address}>",
@@ -148,12 +204,18 @@ async def _send_email(*, to: str, subject: str, html: str) -> dict[str, Any]:
                 headers={"Authorization": f"Bearer {api_key}"},
             )
         if resp.status_code in {200, 201}:
-            return {"sent": True, "id": resp.json().get("id")}
+            result = {"sent": True, "id": resp.json().get("id")}
+            await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
+            return result
         logger.warning("Resend API error %d: %s", resp.status_code, resp.text[:200])
-        return {"sent": False, "status": resp.status_code}
+        result = {"sent": False, "status": resp.status_code, "message": resp.text[:500]}
+        await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
+        return result
     except Exception as exc:
         logger.warning("Email send failed: %s", exc)
-        return {"sent": False, "error": str(exc)}
+        result = {"sent": False, "error": str(exc)}
+        await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
+        return result
 
 
 async def send_payment_confirmation(*, to: str, credits: int, package_name: str, amount_display: str) -> dict[str, Any]:
@@ -171,7 +233,12 @@ async def send_payment_confirmation(*, to: str, credits: int, package_name: str,
       <p style="margin-top:24px;color:#666;font-size:13px">Your credits are ready to use. Start creating your AI wedding photos now!</p>
     </div>
     """
-    return await _send_email(to=to, subject=f"Payment Confirmed - {int(credits)} Credits Added", html=html_body)
+    return await _send_email(
+        to=to,
+        subject=f"Payment Confirmed - {int(credits)} Credits Added",
+        html=html_body,
+        purpose="payment_confirmation",
+    )
 
 
 async def send_order_completed(*, to: str, order_id: str, preview_url: str | None = None) -> dict[str, Any]:
@@ -187,7 +254,7 @@ async def send_order_completed(*, to: str, order_id: str, preview_url: str | Non
       <p>Order <code>{safe_id}</code> has been completed. Log in to view and download your full-resolution photo.</p>
     </div>
     """
-    return await _send_email(to=to, subject="Your AI Wedding Photo is Ready", html=html_body)
+    return await _send_email(to=to, subject="Your AI Wedding Photo is Ready", html=html_body, purpose="order_completed")
 
 
 async def send_welcome_email(*, to: str, credits: int) -> dict[str, Any]:
@@ -198,7 +265,7 @@ async def send_welcome_email(*, to: str, credits: int) -> dict[str, Any]:
       <p>Upload your photo, pick a style, and see the magic happen.</p>
     </div>
     """
-    return await _send_email(to=to, subject=f"Welcome! {credits} Free Credits Added", html=html)
+    return await _send_email(to=to, subject=f"Welcome! {credits} Starter Credits Added", html=html, purpose="welcome")
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +276,12 @@ def is_verification_rate_limited(email: str) -> bool:
     return _code_store.is_rate_limited(email)
 
 
-async def send_verification_code(email: str) -> dict[str, Any]:
+async def send_verification_code(
+    email: str,
+    *,
+    db: AsyncSession | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     code = _code_store.generate_and_store(email)
     html_body = f"""
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
@@ -220,8 +292,101 @@ async def send_verification_code(email: str) -> dict[str, Any]:
       <p style="color:#666;font-size:13px">This code expires in 10 minutes. If you did not request this, please ignore.</p>
     </div>
     """
-    return await _send_email(to=email, subject=f"Your verification code: {code}", html=html_body)
+    return await _send_email(
+        to=email,
+        subject=f"Your verification code: {code}",
+        html=html_body,
+        purpose="email_verification",
+        db=db,
+        metadata=metadata,
+    )
 
 
 def verify_email_code(email: str, code: str) -> bool:
     return _code_store.verify(email, code)
+
+
+async def send_test_email(
+    *,
+    to: str,
+    db: AsyncSession | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    html_body = f"""
+    <div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+      <h2>AI Wedding Studio email test</h2>
+      <p>This message confirms that production email sending is reachable.</p>
+      <p style="color:#666;font-size:13px">From: {html.escape(settings.email_from_address)}</p>
+    </div>
+    """
+    return await _send_email(
+        to=to,
+        subject="AI Wedding Studio email test",
+        html=html_body,
+        purpose="admin_test",
+        db=db,
+        metadata=metadata,
+    )
+
+
+def _query_dns_records(name: str, record_type: str) -> list[str]:
+    try:
+        import dns.resolver  # type: ignore
+    except Exception:
+        return []
+    try:
+        answers = dns.resolver.resolve(name, record_type, lifetime=4.0)
+    except Exception:
+        return []
+    records: list[str] = []
+    for answer in answers:
+        if record_type.upper() == "TXT":
+            records.append("".join(part.decode("utf-8", errors="ignore") for part in getattr(answer, "strings", [])))
+        else:
+            records.append(str(answer).rstrip("."))
+    return records
+
+
+def get_email_diagnostics() -> dict[str, Any]:
+    settings = get_settings()
+    api_key_configured = bool((settings.resend_api_key or "").strip())
+    from_address = (settings.email_from_address or "").strip()
+    domain = _email_domain(from_address)
+    txt_records = _query_dns_records(domain, "TXT") if domain else []
+    dmarc_records = _query_dns_records(f"_dmarc.{domain}", "TXT") if domain else []
+    mx_records = _query_dns_records(domain, "MX") if domain else []
+
+    return {
+        "provider": "resend",
+        "resend_api_key_configured": api_key_configured,
+        "from_address": from_address,
+        "from_domain": domain,
+        "from_domain_usable": bool(domain and domain != "example.com"),
+        "dns": {
+            "spf_found": any(record.lower().startswith("v=spf1") for record in txt_records),
+            "dmarc_found": any(record.lower().startswith("v=dmarc1") for record in dmarc_records),
+            "mx_found": bool(mx_records),
+            "txt_count": len(txt_records),
+            "dmarc_count": len(dmarc_records),
+            "mx_count": len(mx_records),
+            "dns_checker": "dnspython" if _query_dns_records("example.com", "TXT") else "unavailable",
+        },
+        "ready": bool(api_key_configured and domain and domain != "example.com"),
+        "notes": [
+            "Verify the sending domain in Resend and keep SPF, DKIM, and DMARC green before production launch.",
+            "MX is only required if this domain also receives mail; SPF/DKIM/DMARC affect deliverability.",
+        ],
+    }
+
+
+async def list_email_logs(db: AsyncSession, *, limit: int = 50) -> list[EmailDeliveryLog]:
+    clean_limit = max(1, min(200, int(limit or 50)))
+    rows = (
+        await db.execute(
+            select(EmailDeliveryLog)
+            .order_by(EmailDeliveryLog.created_at.desc(), EmailDeliveryLog.id.desc())
+            .limit(clean_limit)
+        )
+    ).scalars().all()
+    return list(rows)

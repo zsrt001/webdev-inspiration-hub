@@ -19,6 +19,9 @@
           <button v-if="!accountAuthed && supabaseEnabled" class="btn btn-outline hero-btn" @tap="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
+          <button v-if="adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">
+            Admin console
+          </button>
           <button class="btn btn-outline hero-btn" @tap="refresh">{{ tr('刷新', 'Refresh') }}</button>
         </view>
       </view>
@@ -258,6 +261,7 @@ const legalPolicies = ref<LegalPolicies | null>(null);
 const supabaseAuthed = ref(false);
 const passwordAuthed = ref(false);
 const supabaseEnabled = ref(false);
+const adminAccess = ref(false);
 
 const accountAuthed = computed(() => passwordAuthed.value || supabaseAuthed.value);
 const displayName = computed(() => profile.value?.nickname || profile.value?.email || getUsername() || tr('访客用户', 'Guest user'));
@@ -358,6 +362,7 @@ async function loadAccount(): Promise<void> {
   error.value = '';
   supabaseAuthed.value = isSupabaseLoggedIn();
   passwordAuthed.value = isPasswordLoggedIn();
+  adminAccess.value = false;
 
   try {
     const [
@@ -366,12 +371,14 @@ async function loadAccount(): Promise<void> {
       transactionsResult,
       ordersResult,
       legalResult,
+      adminResult,
     ] = await Promise.allSettled([
       get<UserProfile>('/users/me', { showLoading: false, showError: false }),
       get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false }),
       get<TransactionsResponse>('/credits/transactions?limit=8', { showLoading: false, showError: false }),
       get<OrdersResponse>('/orders/', { showLoading: false, showError: false }),
       get<LegalPolicies>('/legal/policies', { showLoading: false, showError: false }),
+      get('/admin/me', { showLoading: false, showError: false }),
       subscriptionStore.fetchPlans(true),
       subscriptionStore.fetchCurrentSubscription(true),
     ]);
@@ -383,6 +390,7 @@ async function loadAccount(): Promise<void> {
       ? normalizeOrderRows(ordersResult.value).slice(0, 6)
       : [];
     legalPolicies.value = legalResult.status === 'fulfilled' ? legalResult.value : null;
+    adminAccess.value = adminResult.status === 'fulfilled';
     supabaseAuthed.value = isSupabaseLoggedIn();
     passwordAuthed.value = isPasswordLoggedIn();
   } catch (err: any) {
@@ -446,6 +454,10 @@ function goCreate(): void {
 
 function goOrders(): void {
   uni.reLaunch({ url: '/pages/orders/orders' });
+}
+
+function goAdmin(): void {
+  uni.navigateTo({ url: '/admin' });
 }
 
 function viewOrder(orderId: string): void {

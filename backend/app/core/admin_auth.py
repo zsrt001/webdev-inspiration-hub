@@ -70,6 +70,7 @@ async def _supabase_user_from_token(db: AsyncSession, token: str) -> User | None
             or_(
                 (User.auth_provider == "supabase") & (User.auth_subject == claims.subject),
                 User.openid == build_supabase_openid(claims.subject),
+                User.email == claims.email if claims.email else False,
             )
         )
     )

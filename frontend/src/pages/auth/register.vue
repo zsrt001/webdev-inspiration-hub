@@ -8,8 +8,8 @@
 
       <view class="auth-card">
         <text class="auth-kicker">{{ tr('创建账号', 'Create Account') }}</text>
-        <text class="auth-title heading-serif">{{ tr('注册即送 6 积分', 'Sign up and get 6 free credits') }}</text>
-        <text class="auth-copy">{{ tr('需要验证邮箱后才能获得积分。密码使用 bcrypt 加密存储。', 'Verify your email to receive credits. Passwords are stored as bcrypt hashes.') }}</text>
+        <text class="auth-title heading-serif">{{ tr('注册即送 2 体验积分', 'Sign up and get 2 starter credits') }}</text>
+        <text class="auth-copy">{{ tr('体验积分仅用于一次基础单人生成。双人、异地、金婚重塑和导演模式需要充值或管理员授权积分。', 'Starter credits cover one base single portrait. Couple, remote, vintage, and director mode require top-up or admin-granted credits.') }}</text>
 
         <view class="form-stack">
           <view class="field">
@@ -34,7 +34,7 @@
 
           <view class="field">
             <text class="field-label">{{ tr('密码', 'Password') }}</text>
-            <input v-model="password" class="field-input" password maxlength="128" :placeholder="tr('至少 6 位', 'At least 6 characters')" />
+            <input v-model="password" class="field-input" password maxlength="128" :placeholder="tr('至少 8 位', 'At least 8 characters')" />
           </view>
 
           <view class="field">
@@ -127,8 +127,8 @@ function validate(): boolean {
     error.value = tr('请输入 6 位验证码。', 'Please enter the 6-digit verification code.');
     return false;
   }
-  if (password.value.length < 6) {
-    error.value = tr('密码至少 6 位。', 'Password must be at least 6 characters.');
+  if (password.value.length < 8) {
+    error.value = tr('密码至少 8 位。', 'Password must be at least 8 characters.');
     return false;
   }
   if (password.value !== confirmPassword.value) {

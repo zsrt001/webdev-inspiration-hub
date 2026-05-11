@@ -57,6 +57,7 @@ async def _get_or_create_user_by_openid(db: AsyncSession, openid: str) -> User:
 
 
 async def _get_or_create_user_by_supabase_claims(db: AsyncSession, claims: SupabaseUserClaims) -> User:
+    normalized_email = (claims.email or "").strip().lower() or None
     result = await db.execute(
         select(User).where(
             User.auth_provider == "supabase",
@@ -68,6 +69,9 @@ async def _get_or_create_user_by_supabase_claims(db: AsyncSession, claims: Supab
         openid = build_supabase_openid(claims.subject)
         result = await db.execute(select(User).where(User.openid == openid))
         user = result.scalar_one_or_none()
+    if user is None and normalized_email:
+        result = await db.execute(select(User).where(User.email == normalized_email))
+        user = result.scalar_one_or_none()
     if user is None:
         user = User(
             openid=build_supabase_openid(claims.subject),
@@ -78,7 +82,8 @@ async def _get_or_create_user_by_supabase_claims(db: AsyncSession, claims: Supab
 
     user.auth_provider = "supabase"
     user.auth_subject = claims.subject
-    user.email = claims.email
+    user.email = normalized_email
+    user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
     if claims.nickname:
         user.nickname = claims.nickname[:64]
     if claims.avatar_url:

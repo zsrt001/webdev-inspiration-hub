@@ -9,12 +9,12 @@
       <view class="auth-card">
         <text class="auth-kicker">{{ tr('账号登录', 'Account Sign In') }}</text>
         <text class="auth-title heading-serif">{{ tr('欢迎回来', 'Welcome back') }}</text>
-        <text class="auth-copy">{{ tr('使用用户名和密码登录，继续管理你的婚纱照创作。', 'Use your username and password to continue your wedding portrait workspace.') }}</text>
+        <text class="auth-copy">{{ tr('使用邮箱或用户名登录，继续管理你的婚纱照创作。', 'Use your email or username to continue your wedding portrait workspace.') }}</text>
 
         <view class="form-stack">
           <view class="field">
-            <text class="field-label">{{ tr('用户名', 'Username') }}</text>
-            <input v-model="username" class="field-input" maxlength="64" :placeholder="tr('请输入用户名', 'Enter username')" />
+            <text class="field-label">{{ tr('邮箱或用户名', 'Email or username') }}</text>
+            <input v-model="username" class="field-input" maxlength="255" :placeholder="tr('请输入邮箱或用户名', 'Enter email or username')" />
           </view>
 
           <view class="field">
@@ -61,7 +61,7 @@ const error = ref('');
 function validate(): boolean {
   const cleanUsername = username.value.trim();
   if (cleanUsername.length < 3) {
-    error.value = tr('用户名至少 3 位。', 'Username must be at least 3 characters.');
+    error.value = tr('请输入有效的邮箱或用户名。', 'Enter a valid email or username.');
     return false;
   }
   if (password.value.length < 6) {
@@ -80,7 +80,7 @@ async function submit() {
     uni.showToast({ title: tr('登录成功', 'Signed in'), icon: 'success' });
     uni.reLaunch({ url: '/pages/index/index' });
   } catch (err: any) {
-    error.value = err?.message || tr('用户名或密码不正确。', 'Invalid username or password.');
+    error.value = err?.message || tr('邮箱/用户名或密码不正确。', 'Invalid email/username or password.');
   } finally {
     submitting.value = false;
   }

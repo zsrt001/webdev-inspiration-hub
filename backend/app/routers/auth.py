@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from jose import jwt
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from app.schemas.auth import (
     SupabaseSessionRequest,
 )
 from app.services.credit_service import grant_welcome_bonus
+from app.services.account_risk_service import check_new_account_risk_limits, record_account_risk_event
 from app.services.email_service import (
     is_disposable_email,
     is_ip_verification_rate_limited,
@@ -104,12 +105,24 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 # ---------------------------------------------------------------------------
 
 @router.post("/send-verification", status_code=status.HTTP_200_OK)
-async def send_verification(request: SendVerificationRequest, http_request: Request):
+async def send_verification(
+    request: SendVerificationRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Send a 6-digit verification code to the given email."""
     email = request.email.strip().lower()
 
     # Block disposable email providers
     if is_disposable_email(email):
+        await record_account_risk_event(
+            db,
+            event_type="email_verification_blocked_disposable",
+            request=http_request,
+            email=email,
+            provider="password",
+            risk_score=80,
+        )
         raise HTTPException(
             status_code=422,
             detail="Disposable email addresses are not allowed. Please use a permanent email.",
@@ -117,6 +130,14 @@ async def send_verification(request: SendVerificationRequest, http_request: Requ
 
     # Per-email rate limit
     if is_verification_rate_limited(email):
+        await record_account_risk_event(
+            db,
+            event_type="email_verification_blocked_email_rate",
+            request=http_request,
+            email=email,
+            provider="password",
+            risk_score=60,
+        )
         raise HTTPException(
             status_code=429,
             detail="Too many verification requests. Please wait before trying again.",
@@ -125,19 +146,48 @@ async def send_verification(request: SendVerificationRequest, http_request: Requ
     # Per-IP rate limit (prevents mass farming from one IP)
     client_ip = _client_ip(http_request)
     if is_ip_verification_rate_limited(client_ip):
+        await record_account_risk_event(
+            db,
+            event_type="email_verification_blocked_ip_rate",
+            request=http_request,
+            email=email,
+            provider="password",
+            risk_score=70,
+        )
         raise HTTPException(
             status_code=429,
             detail="Too many verification requests from this network. Please try again later.",
         )
 
-    result = await send_verification_code(email)
+    result = await send_verification_code(
+        email,
+        db=db,
+        metadata=_welcome_bonus_metadata(http_request, provider="password"),
+    )
     if not result.get("sent"):
+        await record_account_risk_event(
+            db,
+            event_type="email_verification_send_failed",
+            request=http_request,
+            email=email,
+            provider="password",
+            risk_score=10,
+            metadata={"reason": result.get("reason") or result.get("status") or result.get("error")},
+        )
         raise HTTPException(
             status_code=503,
             detail="Failed to send verification email. Please try again later.",
         )
 
     record_ip_verification(client_ip)
+    await record_account_risk_event(
+        db,
+        event_type="email_verification_sent",
+        request=http_request,
+        email=email,
+        provider="password",
+        metadata={"provider_message_id": result.get("id")},
+    )
     return {"message": "Verification code sent", "email": email}
 
 
@@ -158,10 +208,26 @@ async def register(
 
     # Block disposable email providers
     if is_disposable_email(email):
+        await record_account_risk_event(
+            db,
+            event_type="password_register_blocked_disposable",
+            request=http_request,
+            email=email,
+            provider="password",
+            risk_score=80,
+        )
         raise HTTPException(status_code=422, detail="Disposable email addresses are not allowed")
 
     # Verify the email code
     if not verify_email_code(email, request.verification_code):
+        await record_account_risk_event(
+            db,
+            event_type="password_register_blocked_bad_code",
+            request=http_request,
+            email=email,
+            provider="password",
+            risk_score=30,
+        )
         raise HTTPException(status_code=400, detail="Invalid or expired verification code")
 
     # Check username uniqueness
@@ -169,24 +235,55 @@ async def register(
     if result.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="Username already exists")
 
-    # Check email uniqueness
     result = await db.execute(select(User).where(User.email == email))
-    if result.scalar_one_or_none() is not None:
+    existing_email_user = result.scalar_one_or_none()
+    if existing_email_user and existing_email_user.password:
+        await record_account_risk_event(
+            db,
+            event_type="password_register_blocked_duplicate_email",
+            request=http_request,
+            user=existing_email_user,
+            email=email,
+            provider="password",
+            risk_score=20,
+        )
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    _enforce_new_account_risk_limits(http_request)
-    user = User(
-        openid=_local_openid_for_username(username),
-        username=username,
-        password=_hash_password(request.password),
-        email=email,
-        email_verified_at=datetime.now(timezone.utc),
-        auth_provider="password",
-        auth_subject=username,
-        nickname=username,
-        last_login_at=datetime.now(timezone.utc),
-    )
-    db.add(user)
+    is_new_user = existing_email_user is None
+    if is_new_user:
+        await _enforce_new_account_risk_limits_persistent(
+            db,
+            http_request,
+            email=email,
+            provider="password",
+        )
+        user = User(
+            openid=_local_openid_for_username(username),
+            username=username,
+            password=_hash_password(request.password),
+            email=email,
+            email_verified_at=datetime.now(timezone.utc),
+            auth_provider="password",
+            auth_subject=username,
+            nickname=username,
+            last_login_at=datetime.now(timezone.utc),
+        )
+        db.add(user)
+    else:
+        user = existing_email_user
+        _ensure_user_active(user)
+        if user.username:
+            raise HTTPException(status_code=409, detail="Account already has a username")
+        user.username = username
+        user.password = _hash_password(request.password)
+        user.email = email
+        user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
+        user.nickname = user.nickname or username
+        user.last_login_at = datetime.now(timezone.utc)
+        if not user.auth_provider:
+            user.auth_provider = "password"
+            user.auth_subject = username
+
     try:
         await db.flush()
     except IntegrityError as exc:
@@ -197,8 +294,16 @@ async def register(
         raise HTTPException(status_code=409, detail=detail) from exc
     await db.refresh(user)
 
-    # Grant welcome bonus
-    await grant_welcome_bonus(db, user.id)
+    bonus_granted = await grant_welcome_bonus(db, user.id, metadata=_welcome_bonus_metadata(http_request, provider="password"))
+    await record_account_risk_event(
+        db,
+        event_type="password_register_created" if is_new_user else "password_register_linked",
+        request=http_request,
+        user=user,
+        email=email,
+        provider="password",
+        metadata={"welcome_bonus_granted": bonus_granted},
+    )
 
     # Merge guest account if provided
     if request.previous_guest_id:
@@ -291,6 +396,7 @@ async def start_supabase_google_login(next: str | None = None) -> RedirectRespon
 @router.post("/supabase/session", response_model=LoginResponse)
 async def exchange_supabase_session(
     request: SupabaseSessionRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
     """Exchange a Supabase OAuth access token for this app's JWT session."""
@@ -302,12 +408,21 @@ async def exchange_supabase_session(
             detail="Invalid Supabase session",
         ) from exc
 
-    is_new_user, user = await _get_or_create_supabase_user(db, claims)
+    is_new_user, user = await _get_or_create_supabase_user(db, claims, http_request)
     await db.refresh(user)
 
-    # Grant welcome bonus for first-time Google users
+    bonus_granted = False
     if is_new_user:
-        await grant_welcome_bonus(db, user.id)
+        bonus_granted = await grant_welcome_bonus(db, user.id, metadata=_welcome_bonus_metadata(http_request, provider="google"))
+    await record_account_risk_event(
+        db,
+        event_type="google_register_created" if is_new_user else "google_login_linked",
+        request=http_request,
+        user=user,
+        email=user.email,
+        provider="google",
+        metadata={"welcome_bonus_granted": bonus_granted},
+    )
 
     # Merge guest account if provided
     if request.previous_guest_id:
@@ -335,7 +450,10 @@ async def exchange_supabase_session(
 # ---------------------------------------------------------------------------
 
 async def _login_with_password(request: LoginRequest, db: AsyncSession, http_request: Request | None = None) -> LoginResponse:
-    username = _normalize_username(request.username or "")
+    login_id = (request.username or "").strip().lower()
+    if not login_id:
+        raise HTTPException(status_code=422, detail="Username or email is required")
+    username = _normalize_username(login_id) if "@" not in login_id else login_id
     password = request.password or ""
 
     # Rate limit login attempts (only failed attempts count)
@@ -347,7 +465,10 @@ async def _login_with_password(request: LoginRequest, db: AsyncSession, http_req
                 detail="Too many login attempts. Please wait a few minutes.",
             )
 
-    result = await db.execute(select(User).where(User.username == username))
+    if "@" in login_id:
+        result = await db.execute(select(User).where(User.email == login_id))
+    else:
+        result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     stored_hash = user.password if user else None
 
@@ -357,6 +478,7 @@ async def _login_with_password(request: LoginRequest, db: AsyncSession, http_req
             LOGIN_USER_LIMITER.record(username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
+    _ensure_user_active(user)
     user.last_login_at = datetime.now(timezone.utc)
     await db.flush()
     return _build_login_response(user)
@@ -374,8 +496,8 @@ def _normalize_username(value: str) -> str:
 
 def _validate_password(value: str) -> None:
     password = value or ""
-    if len(password) < 6 or len(password) > 128:
-        raise HTTPException(status_code=422, detail="Password must be 6-128 characters")
+    if len(password) < 8 or len(password) > 128:
+        raise HTTPException(status_code=422, detail="Password must be 8-128 characters")
 
 
 def _hash_password(value: str) -> str:
@@ -418,6 +540,30 @@ def _build_login_response(user: User) -> LoginResponse:
     )
 
 
+def _ensure_user_active(user: User) -> None:
+    status_value = (user.status or "active").strip().lower()
+    if status_value not in {"active", ""}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "account_not_active",
+                "message": "This account is not active. Please contact support.",
+                "status": status_value,
+            },
+        )
+
+
+def _welcome_bonus_metadata(request: Request | None, *, provider: str) -> dict:
+    if request is None:
+        return {"provider": provider}
+    return {
+        "provider": provider,
+        "ip_hash": hashlib.sha256(_client_ip(request).encode("utf-8")).hexdigest()[:16],
+        "device_hash": hashlib.sha256(_device_key(request).encode("utf-8")).hexdigest()[:16],
+        "policy": "starter_single_generation_only",
+    }
+
+
 def _enforce_new_account_risk_limits(request: Request) -> None:
     client_ip = _client_ip(request)
     device_key = _device_key(request)
@@ -427,6 +573,52 @@ def _enforce_new_account_risk_limits(request: Request) -> None:
             detail={
                 "error": "new_account_rate_limited",
                 "message": "Too many new accounts from this device or network. Please try again later.",
+            },
+        )
+
+
+async def _enforce_new_account_risk_limits_persistent(
+    db: AsyncSession,
+    request: Request,
+    *,
+    email: str | None,
+    provider: str,
+) -> None:
+    try:
+        _enforce_new_account_risk_limits(request)
+    except HTTPException:
+        await record_account_risk_event(
+            db,
+            event_type="new_account_blocked_memory_rate",
+            request=request,
+            email=email,
+            provider=provider,
+            risk_score=75,
+        )
+        raise
+
+    limit_hit = await check_new_account_risk_limits(
+        db,
+        request=request,
+        ip_limit=settings.new_account_ip_limit_per_hour,
+        device_limit=settings.new_account_device_limit_per_hour,
+    )
+    if limit_hit:
+        await record_account_risk_event(
+            db,
+            event_type=f"new_account_blocked_{limit_hit['scope']}_rate",
+            request=request,
+            email=email,
+            provider=provider,
+            risk_score=75,
+            metadata=limit_hit,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "new_account_rate_limited",
+                "message": "Too many new accounts from this device or network. Please try again later.",
+                **limit_hit,
             },
         )
 
@@ -462,9 +654,14 @@ def _oauth_return_url(next_path: str | None) -> str:
     return f"{base}{path}"
 
 
-async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserClaims) -> tuple[bool, User]:
+async def _get_or_create_supabase_user(
+    db: AsyncSession,
+    claims: SupabaseUserClaims,
+    request: Request,
+) -> tuple[bool, User]:
     """Returns (is_new_user, user)."""
     is_new = False
+    normalized_email = (claims.email or "").strip().lower() or None
     result = await db.execute(
         select(User).where(
             User.auth_provider == "supabase",
@@ -478,7 +675,19 @@ async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserCla
         result = await db.execute(select(User).where(User.openid == openid))
         user = result.scalar_one_or_none()
 
+    if user is None and normalized_email:
+        result = await db.execute(select(User).where(User.email == normalized_email))
+        user = result.scalar_one_or_none()
+
     if user is None:
+        if normalized_email and is_disposable_email(normalized_email):
+            raise HTTPException(status_code=422, detail="Disposable email addresses are not allowed")
+        await _enforce_new_account_risk_limits_persistent(
+            db,
+            request,
+            email=normalized_email,
+            provider="google",
+        )
         _enforce_new_account_risk_limits_from_claims(claims)
         user = User(
             openid=build_supabase_openid(claims.subject),
@@ -488,9 +697,10 @@ async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserCla
         db.add(user)
         is_new = True
 
+    _ensure_user_active(user)
     user.auth_provider = "supabase"
     user.auth_subject = claims.subject
-    user.email = claims.email
+    user.email = normalized_email
     user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
     if claims.nickname:
         user.nickname = claims.nickname[:64]

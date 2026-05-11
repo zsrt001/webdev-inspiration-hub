@@ -525,7 +525,7 @@ async function submitCreate() {
   if (!isPasswordLoggedIn() && !isSupabaseLoggedIn()) {
     uni.showModal({
       title: i18nStore.locale === 'zh' ? '需要注册' : 'Registration Required',
-      content: i18nStore.locale === 'zh' ? '注册账号后即可获得免费积分并开始生成。' : 'Sign up to get free credits and start generating.',
+      content: i18nStore.locale === 'zh' ? '注册并验证邮箱后可获得 2 个体验积分，用于一次基础单人生成。' : 'Sign up and verify your email to get 2 starter credits for one base single portrait.',
       confirmText: i18nStore.locale === 'zh' ? '去注册' : 'Sign Up',
       cancelText: i18nStore.locale === 'zh' ? '取消' : 'Cancel',
       success: (res) => {

@@ -18,6 +18,9 @@
         <view class="nav-link" :class="{ active: currentPath === '/pages/account/index' }" @tap="navigate('/pages/account/index')">
           {{ accountLabel }}
         </view>
+        <view v-if="isAdmin" class="nav-link" :class="{ active: currentPath === '/admin' || currentPath.startsWith('/admin/') }" @tap="navigate('/admin')">
+          Admin
+        </view>
       </view>
 
       <view class="nav-actions">
@@ -48,6 +51,7 @@
         <view class="menu-item" @tap="navigate('/pages/index/index')">{{ t('nav.home') }}</view>
         <view class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
         <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
+        <view v-if="isAdmin" class="menu-item" @tap="navigate('/admin')">Admin</view>
         <view class="menu-item" @tap="handleAuthTap">{{ authLabel }}</view>
         <view class="menu-item" @tap="navigate('/pages/legal/refund')">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</view>
       </view>
@@ -65,6 +69,7 @@ const creditBalance = ref(0);
 const showMenu = ref(false);
 const accountAuthed = ref(false);
 const username = ref('');
+const isAdmin = ref(false);
 const i18nStore = useI18nStore();
 const t = i18nStore.t;
 const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
@@ -93,6 +98,9 @@ const pushPages = new Set([
   '/pages/legal/refund',
   '/pages/join/landing',
   '/pages/admin/index',
+  '/admin',
+  '/admin/users',
+  '/admin/orders',
   '/pages/account/index',
   '/pages/auth/login',
   '/pages/auth/register',
@@ -132,6 +140,19 @@ const fetchBalance = async () => {
   }
 };
 
+const fetchProfileRole = async () => {
+  if (!accountAuthed.value) {
+    isAdmin.value = false;
+    return;
+  }
+  try {
+    await get('/admin/me', { showLoading: false, showError: false });
+    isAdmin.value = true;
+  } catch {
+    isAdmin.value = false;
+  }
+};
+
 const refreshAuthState = () => {
   accountAuthed.value = isPasswordLoggedIn() || isSupabaseLoggedIn();
   username.value = getUsername() || '';
@@ -154,7 +175,7 @@ const refreshBalance = () => fetchBalance();
 
 onMounted(async () => {
   refreshAuthState();
-  await fetchBalance();
+  await Promise.all([fetchBalance(), fetchProfileRole()]);
   refreshAuthState();
 });
 

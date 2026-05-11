@@ -14,11 +14,14 @@ from app.models.credit_transaction import CreditTransactionType  # noqa: E402
 from app.models.user_credit import UserCredit  # noqa: E402
 from app.services.credit_service import (  # noqa: E402
     DEFAULT_CREDITS,
+    COST_COUPLE_REMOTE_GENERATION,
+    COST_SINGLE_GENERATION,
     add_credits_async,
     deduct_credits_async,
     grant_welcome_bonus,
     get_balance_async,
 )
+from app.services.trial_access_service import trial_generation_allowed  # noqa: E402
 
 
 class _ScalarResult:
@@ -117,6 +120,23 @@ class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.transactions[-1].amount, 50)
         self.assertEqual(db.transactions[-1].source, "credit_purchase")
         self.assertEqual(db.transactions[-1].source_id, "purchase-1")
+
+    async def test_starter_credits_only_allow_base_single_generation(self) -> None:
+        self.assertTrue(
+            trial_generation_allowed(
+                template_category=None,
+                image_count=1,
+                credits_cost=COST_SINGLE_GENERATION,
+            )
+        )
+        self.assertFalse(
+            trial_generation_allowed(
+                template_category=None,
+                image_count=2,
+                is_remote_join=True,
+                credits_cost=COST_COUPLE_REMOTE_GENERATION,
+            )
+        )
 
 
 if __name__ == "__main__":

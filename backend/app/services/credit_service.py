@@ -75,7 +75,12 @@ async def _get_or_create_credit_row(db: AsyncSession, user_id: uuid.UUID | str) 
     return row
 
 
-async def grant_welcome_bonus(db: AsyncSession, user_id: uuid.UUID | str) -> bool:
+async def grant_welcome_bonus(
+    db: AsyncSession,
+    user_id: uuid.UUID | str,
+    *,
+    metadata: dict | None = None,
+) -> bool:
     """Grant welcome bonus credits. Returns True if granted, False if already claimed."""
     user_uuid = _to_user_uuid(user_id)
 
@@ -99,7 +104,8 @@ async def grant_welcome_bonus(db: AsyncSession, user_id: uuid.UUID | str) -> boo
         amount=DEFAULT_CREDITS,
         balance_after=row.balance,
         source="system",
-        description="Welcome bonus for verified account",
+        description="Starter credits for verified account",
+        metadata=metadata,
     )
     return True
 

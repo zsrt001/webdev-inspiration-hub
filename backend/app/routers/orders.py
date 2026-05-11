@@ -25,9 +25,11 @@ from app.models.credit_transaction import CreditTransactionType
 from app.services.retention_service import apply_order_retention, delete_storage_urls, order_asset_urls, user_has_paid_credit_history
 from app.services.subscription_service import subscription_service
 from app.services.trial_access_service import (
+    TRIAL_ALLOWED_MAX_CREDITS,
     _trial_daily_generation_limit,
     access_tier_for_order,
     can_download_order,
+    trial_generation_allowed,
 )
 from app.services import gatekeeper_service
 from app.services.content_policy_service import evaluate_prompt_text, build_rejection_message
@@ -273,6 +275,22 @@ async def create_order(
     has_paid_credits = bool(retention_plan_code) or await user_has_paid_credit_history(db, current_user.id)
     access_tier = access_tier_for_order(has_paid_credits=has_paid_credits)
     if not has_paid_credits:
+        if not trial_generation_allowed(
+            template_category=template.category if template else None,
+            is_remote_join=bool(request.remote_join),
+            image_count=len(request.user_images or []),
+            director_mode=bool(request.director_mode),
+            credits_cost=credits_cost,
+        ):
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "trial_mode_requires_top_up",
+                    "message": "Starter credits cover one base single portrait only. Please top up for couple, remote, vintage, or director mode.",
+                    "required": credits_cost,
+                    "trial_allowed_max": TRIAL_ALLOWED_MAX_CREDITS,
+                },
+            )
         await _enforce_trial_generation_limit(db, current_user.id)
 
     if not await deduct_credits_async(

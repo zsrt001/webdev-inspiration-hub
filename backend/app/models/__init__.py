@@ -13,6 +13,8 @@ from app.models.payment_event import PaymentEvent
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.lead import Lead
 from app.models.click_stat import ClickStat
+from app.models.email_delivery_log import EmailDeliveryLog
+from app.models.account_risk_event import AccountRiskEvent
 
 __all__ = [
     "User",
@@ -33,4 +35,6 @@ __all__ = [
     "AdminAuditLog",
     "Lead",
     "ClickStat",
+    "EmailDeliveryLog",
+    "AccountRiskEvent",
 ]

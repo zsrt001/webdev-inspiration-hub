@@ -13,6 +13,7 @@ from app.services.storage import storage_service
 
 TRIAL_ACCESS_TIER = "trial_preview"
 PAID_ACCESS_TIER = "paid_download"
+TRIAL_ALLOWED_MAX_CREDITS = 2
 
 
 def _trial_welcome_credits() -> int:
@@ -34,6 +35,28 @@ def _trial_watermark_text() -> str:
 
 def access_tier_for_order(*, has_paid_credits: bool) -> str:
     return PAID_ACCESS_TIER if has_paid_credits else TRIAL_ACCESS_TIER
+
+
+def trial_generation_allowed(
+    *,
+    template_category: str | None,
+    is_remote_join: bool = False,
+    image_count: int = 1,
+    director_mode: bool = False,
+    credits_cost: int = 0,
+) -> bool:
+    """Free starter credits are limited to one base single-subject generation."""
+    if int(credits_cost or 0) > TRIAL_ALLOWED_MAX_CREDITS:
+        return False
+    if str(template_category or "").strip().lower() == "vintage":
+        return False
+    if bool(is_remote_join):
+        return False
+    if int(image_count or 0) >= 2:
+        return False
+    if bool(director_mode):
+        return False
+    return True
 
 
 def can_download_order(generation_params: dict | None, *, has_paid_credits: bool) -> bool:

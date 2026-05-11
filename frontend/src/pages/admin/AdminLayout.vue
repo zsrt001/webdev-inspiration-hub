@@ -25,6 +25,7 @@
       <view class="admin-session">
         <text class="session-label">Current session</text>
         <text class="session-user">{{ sessionLabel }}</text>
+        <text class="session-note">Requires owner, admin, operator, ADMIN_EMAILS, or ADMIN_USER_IDS.</text>
       </view>
     </aside>
 
@@ -35,7 +36,7 @@
           <text class="page-title">{{ title }}</text>
           <text v-if="subtitle" class="page-subtitle">{{ subtitle }}</text>
         </view>
-        <button class="secondary-action" @tap="goHome">返回网站</button>
+        <button class="secondary-action" @tap="goHome">Back to site</button>
       </view>
 
       <slot />
@@ -56,16 +57,16 @@ const props = defineProps<{
 const active = computed(() => props.active);
 
 const navItems = [
-  { key: 'overview', label: '概览', path: '/admin' },
-  { key: 'users', label: '用户管理', path: '/admin/users' },
-  { key: 'orders', label: '订单管理', path: '/admin/orders' },
+  { key: 'overview', label: 'Overview', path: '/admin' },
+  { key: 'users', label: 'Users & credits', path: '/admin/users' },
+  { key: 'orders', label: 'Orders', path: '/admin/orders' },
 ] as const;
 
 const sessionLabel = computed(() => {
   const username = getUsername();
   const provider = getAuthProvider();
   if (username) return username;
-  return provider ? `Provider: ${provider}` : '未识别身份';
+  return provider ? `Provider: ${provider}` : 'Unknown session';
 });
 
 function go(path: string) {
@@ -124,6 +125,7 @@ function goHome() {
 .brand-subtitle,
 .session-label,
 .session-user,
+.session-note,
 .page-kicker,
 .page-title,
 .page-subtitle {
@@ -195,6 +197,13 @@ function goHome() {
   word-break: break-all;
 }
 
+.session-note {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.52);
+}
+
 .admin-main {
   min-width: 0;
   padding: 28px;
@@ -258,12 +267,13 @@ function goHome() {
     overflow-x: auto;
   }
 
-  .nav-item {
-    flex: 0 0 auto;
+  .admin-main {
+    padding: 20px 14px 40px;
   }
 
-  .admin-main {
-    padding: 20px;
+  .admin-topbar {
+    flex-direction: column;
+    min-height: auto;
   }
 }
 </style>

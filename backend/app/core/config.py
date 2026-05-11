@@ -128,8 +128,8 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     verification_code_ttl_seconds: int = 600
     verification_code_rate_limit: int = 3  # max sends per email per hour
-    trial_welcome_credits: int = 6
-    trial_daily_generation_limit: int = 3
+    trial_welcome_credits: int = 2
+    trial_daily_generation_limit: int = 1
     trial_preview_max_width: int = 900
     trial_preview_max_height: int = 1125
     trial_watermark_text: str = "AI WEDDING STUDIO PREVIEW"

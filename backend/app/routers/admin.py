@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import uuid
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from app.services.admin_service import (
     grant_credits_to_user,
     get_all_users,
 )
+from app.services.account_risk_service import get_account_risk_summary
 from app.services.admin_audit_service import list_admin_audit_logs, log_admin_action
 from app.services.analytics_reporting_service import (
     get_city_ranking,
@@ -31,7 +32,12 @@ from app.services.lead_crm_service import build_crm_payload, list_crm_push_histo
 from app.services.ops_alert_service import get_ops_alerts
 from app.services.ops_config_service import get_ops_config, save_ops_config
 from app.services.ops_monitoring_service import get_ops_monitoring_summary
-from app.services.retention_service import cleanup_expired_orders, cleanup_expired_source_images
+from app.services.retention_service import apply_order_retention, cleanup_expired_orders, cleanup_expired_source_images
+from app.services.email_service import get_email_diagnostics, list_email_logs, send_test_email
+from app.services.template_service import get_template_by_id
+from app.services.generation_service import generation_service
+from app.core.task_queue import enqueue_generate_order
+from app.worker_tasks import run_order_generation
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -125,6 +131,37 @@ class UsersListResponse(BaseModel):
     """List of users response."""
     users: List[UserInfo]
     total: int
+
+
+class AdminMeResponse(BaseModel):
+    actor: str
+    admin_roles: list[str]
+    entry_url: str
+    remote_join_enabled: bool
+    remote_join_session_store: str
+    generation_execution_mode: str
+
+
+class GenerationProbeRequest(BaseModel):
+    image_url: str
+    second_image_url: str | None = None
+    template_id: str | None = None
+    remote_join: bool = False
+    execute_inline: bool | None = None
+
+
+class GenerationProbeResponse(BaseModel):
+    ok: bool
+    started: bool
+    completed: bool
+    execution_mode: str
+    order_id: str | None = None
+    status: str | None = None
+    task_id: str | None = None
+    template_id: str | None = None
+    error_message: str | None = None
+    preview_image_urls: dict[str, Any] | None = None
+    final_image_urls: dict[str, Any] | None = None
 
 
 class AdminUserItem(BaseModel):
@@ -260,6 +297,24 @@ class AdminAuditLogItem(BaseModel):
     created_at: datetime
 
 
+class TestEmailRequest(BaseModel):
+    to: EmailStr
+
+
+class EmailLogItem(BaseModel):
+    id: str
+    purpose: str
+    provider: str
+    to_email: str
+    subject: str
+    status: str
+    provider_message_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    metadata: dict[str, Any] | None = None
+    created_at: datetime | None = None
+
+
 USER_STATUS_VALUES = {"active", "disabled", "suspended", "blocked"}
 ORDER_STATUS_VALUES = {status.value for status in OrderStatus}
 
@@ -364,6 +419,68 @@ async def _get_admin_order(db: AsyncSession, order_id: str) -> Order:
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+
+def _validate_public_image_url(value: str, *, field_name: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=422, detail=f"{field_name} is required")
+    try:
+        parsed = httpx.URL(raw)
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"{field_name} must be an http(s) URL")
+    if parsed.scheme not in {"http", "https"} or not parsed.host:
+        raise HTTPException(status_code=422, detail=f"{field_name} must be an http(s) URL")
+    return raw
+
+
+async def _get_or_create_generation_probe_user(db: AsyncSession) -> User:
+    result = await db.execute(select(User).where(User.openid == "admin_generation_probe"))
+    user = result.scalar_one_or_none()
+    if user is not None:
+        return user
+
+    user = User(
+        openid="admin_generation_probe",
+        nickname="Admin Generation Probe",
+        role="user",
+        status="active",
+    )
+    db.add(user)
+    await db.flush()
+    return user
+
+
+def _probe_response(order: Order, *, execution_mode: str, started: bool) -> GenerationProbeResponse:
+    status_value = _order_status_value(order)
+    completed = status_value == OrderStatus.COMPLETED.value
+    error_message = order.error_message
+    return GenerationProbeResponse(
+        ok=bool(started and (completed or not error_message)),
+        started=started,
+        completed=completed,
+        execution_mode=execution_mode,
+        order_id=str(order.id),
+        status=status_value,
+        task_id=order.task_id,
+        template_id=order.template_id,
+        error_message=error_message,
+        preview_image_urls=order.preview_image_urls,
+        final_image_urls=order.final_image_urls,
+    )
+
+
+@router.get("/me", response_model=AdminMeResponse)
+async def get_admin_me(request: Request):
+    """Return the currently accepted admin session and operator-facing entry details."""
+    return AdminMeResponse(
+        actor=str(getattr(request.state, "admin_actor", "unknown-admin")),
+        admin_roles=["owner", "admin", "operator"],
+        entry_url="/admin",
+        remote_join_enabled=bool(settings.remote_join_enabled),
+        remote_join_session_store="redis_with_database_persistence",
+        generation_execution_mode=settings.generation_execution_mode,
+    )
 
 
 @router.get("/dashboard", response_model=DashboardStats)
@@ -561,6 +678,129 @@ async def probe_creem_checkout():
         checkout_url_prefix=checkout_url[:32] if checkout_url else None,
         error=None if response.status_code == 200 else response.text[:240],
     )
+
+
+@router.post("/generation_probe", response_model=GenerationProbeResponse)
+async def probe_generation(
+    payload: GenerationProbeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a real admin-only image generation probe without charging a customer."""
+    image_url = _validate_public_image_url(payload.image_url, field_name="image_url")
+    images = [image_url]
+    if payload.second_image_url and payload.second_image_url.strip():
+        images.append(_validate_public_image_url(payload.second_image_url, field_name="second_image_url"))
+
+    is_couple = len(images) >= 2
+    if payload.remote_join and not is_couple:
+        raise HTTPException(status_code=422, detail="remote_join probes require second_image_url")
+    if payload.remote_join and not settings.remote_join_enabled:
+        raise HTTPException(status_code=409, detail="Remote join is disabled in runtime configuration")
+
+    template_id = (payload.template_id or "").strip() or ("royal_castle" if is_couple else "solo_royal_castle")
+    template = get_template_by_id(template_id)
+    if template is None:
+        raise HTTPException(status_code=422, detail="Unknown template_id")
+
+    try:
+        generation_service.validate_runtime_requirements(force=True)
+    except Exception as exc:
+        await log_admin_action(
+            db,
+            action="generation_probe",
+            request=request,
+            details={
+                "template_id": template_id,
+                "started": False,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+        return GenerationProbeResponse(
+            ok=False,
+            started=False,
+            completed=False,
+            execution_mode=settings.generation_execution_mode,
+            template_id=template_id,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+
+    probe_user = await _get_or_create_generation_probe_user(db)
+    couple_flow = "remote" if payload.remote_join and is_couple else ("local" if is_couple else None)
+    execution_mode = "inline" if (
+        settings.using_inline_generation_execution if payload.execute_inline is None else bool(payload.execute_inline)
+    ) else "arq"
+
+    order = Order(
+        user_id=probe_user.id,
+        status=OrderStatus.CHECKING,
+        template_id=template_id,
+        style_template=template_id,
+        source_image_urls={"images": images},
+        generation_params={
+            "admin_probe": True,
+            "admin_actor": str(getattr(request.state, "admin_actor", "unknown-admin")),
+            "credits_cost": 0,
+            "access_tier": "admin_probe",
+            "download_locked": False,
+            "gatekeeper": {"passed": True, "skipped": True, "reason": "admin_generation_probe"},
+            "content_policy": {"passed": True, "skipped": True, "reason": "admin_generation_probe"},
+            "remote_join": bool(payload.remote_join),
+            "couple_flow": couple_flow,
+            "subject_count": len(images),
+            "director_mode": False,
+            "global_style_text": "admin production probe",
+            "probe_created_at": datetime.now(timezone.utc).isoformat(),
+        },
+        price_cents=0,
+    )
+    apply_order_retention(order, plan_code=None, has_paid_credits=True)
+    db.add(order)
+    await db.flush()
+    await db.commit()
+    await db.refresh(order)
+
+    started = False
+    if execution_mode == "inline":
+        params = order.generation_params if isinstance(order.generation_params, dict) else {}
+        task_id = f"admin-probe-inline-{order.id}"
+        order.generation_params = {**params, "execution_mode": "inline", "queue_job_id": task_id}
+        order.task_id = task_id
+        order.status = OrderStatus.GENERATING
+        await db.commit()
+        started = True
+        await run_order_generation(str(order.id))
+    else:
+        try:
+            queue_job_id = await enqueue_generate_order(str(order.id))
+            started = True
+            params = order.generation_params if isinstance(order.generation_params, dict) else {}
+            order.generation_params = {**params, "execution_mode": "arq", "queue_job_id": queue_job_id}
+            order.task_id = queue_job_id
+            order.status = OrderStatus.GENERATING
+            await db.commit()
+        except Exception as exc:
+            order.status = OrderStatus.CREATED
+            order.error_message = f"queue_unavailable: {exc}"
+            await db.commit()
+
+    refreshed = (await db.execute(select(Order).where(Order.id == order.id))).scalar_one()
+    response = _probe_response(refreshed, execution_mode=execution_mode, started=started)
+    await log_admin_action(
+        db,
+        action="generation_probe",
+        request=request,
+        details={
+            "order_id": str(refreshed.id),
+            "template_id": template_id,
+            "execution_mode": execution_mode,
+            "started": response.started,
+            "completed": response.completed,
+            "ok": response.ok,
+        },
+    )
+    return response
 
 
 @router.post("/grant_credits", response_model=GrantCreditsResponse)
@@ -838,6 +1078,64 @@ async def get_admin_ops_alerts(
 ):
     """Return derived operational alerts for the current monitoring window."""
     return [OpsAlertResponse(**item) for item in await get_ops_alerts(db, days=days)]
+
+
+@router.get("/email_diagnostics")
+async def get_admin_email_diagnostics():
+    """Return non-secret production email and DNS diagnostics."""
+    return get_email_diagnostics()
+
+
+@router.post("/email_test")
+async def post_admin_email_test(
+    payload: TestEmailRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a real test email and record the delivery attempt."""
+    result = await send_test_email(
+        to=str(payload.to),
+        db=db,
+        metadata={"source": "admin_email_test"},
+    )
+    await log_admin_action(
+        db,
+        action="send_test_email",
+        request=request,
+        details={"to_domain": str(payload.to).rsplit("@", 1)[-1], "sent": bool(result.get("sent"))},
+    )
+    return result
+
+
+@router.get("/email_logs", response_model=list[EmailLogItem])
+async def get_admin_email_logs(limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """Return recent outbound email attempts."""
+    return [
+        EmailLogItem(
+            id=str(row.id),
+            purpose=row.purpose,
+            provider=row.provider,
+            to_email=row.to_email,
+            subject=row.subject,
+            status=row.status,
+            provider_message_id=row.provider_message_id,
+            error_code=row.error_code,
+            error_message=row.error_message,
+            metadata=row.metadata_json,
+            created_at=row.created_at,
+        )
+        for row in await list_email_logs(db, limit=limit)
+    ]
+
+
+@router.get("/risk_overview")
+async def get_admin_risk_overview(
+    days: int = 7,
+    limit: int = 12,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return signup, verification, and starter-credit abuse monitoring summary."""
+    return await get_account_risk_summary(db, days=days, limit=limit)
 
 
 @router.get("/crm_preview")

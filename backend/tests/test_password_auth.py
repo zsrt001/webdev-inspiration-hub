@@ -14,6 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.models.user import User  # noqa: E402
+from app.models.account_risk_event import AccountRiskEvent  # noqa: E402
 from app.routers import auth as auth_router  # noqa: E402
 from app.schemas.auth import LoginRequest, RegisterRequest  # noqa: E402
 
@@ -31,6 +32,7 @@ class _FakeDb:
         self.users_by_username: dict[str, User] = {}
         self.users_by_email: dict[str, User] = {}
         self.pending: User | None = None
+        self.risk_events: list[AccountRiskEvent] = []
         self.rolled_back = False
 
     async def execute(self, statement):
@@ -41,8 +43,11 @@ class _FakeDb:
             return _ScalarResult(self.users_by_email.get(email))
         return _ScalarResult(self.users_by_username.get(username))
 
-    def add(self, user: User):
-        self.pending = user
+    def add(self, value):
+        if isinstance(value, User):
+            self.pending = value
+        elif isinstance(value, AccountRiskEvent):
+            self.risk_events.append(value)
 
     async def flush(self):
         if self.pending is not None:
@@ -78,16 +83,22 @@ class PasswordAuthTest(unittest.IsolatedAsyncioTestCase):
         auth_router.NEW_ACCOUNT_DEVICE_LIMITER._events.clear()
         self._original_verify_email_code = auth_router.verify_email_code
         self._original_grant_welcome_bonus = auth_router.grant_welcome_bonus
+        self._original_check_new_account_risk_limits = auth_router.check_new_account_risk_limits
         auth_router.verify_email_code = lambda _email, _code: True
 
-        async def _grant_welcome_bonus_noop(_db, _user_id):
+        async def _grant_welcome_bonus_noop(_db, _user_id, **_kwargs):
             return True
 
+        async def _check_new_account_risk_limits_noop(*_args, **_kwargs):
+            return None
+
         auth_router.grant_welcome_bonus = _grant_welcome_bonus_noop
+        auth_router.check_new_account_risk_limits = _check_new_account_risk_limits_noop
 
     def tearDown(self) -> None:
         auth_router.verify_email_code = self._original_verify_email_code
         auth_router.grant_welcome_bonus = self._original_grant_welcome_bonus
+        auth_router.check_new_account_risk_limits = self._original_check_new_account_risk_limits
 
     def _register_request(self, username: str, password: str) -> RegisterRequest:
         return RegisterRequest(
@@ -132,6 +143,49 @@ class PasswordAuthTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(logged_in.username, "creator01")
         self.assertEqual(str(logged_in.user_id), str(registered.user_id))
         self.assertEqual(logged_in.openid, registered.openid)
+
+    async def test_password_login_accepts_verified_email(self) -> None:
+        db = _FakeDb()
+        registered = await auth_router.register(
+            self._register_request("emailuser", "secret123"),
+            _request("10.0.0.21"),
+            db,
+        )
+
+        logged_in = await auth_router.login(
+            LoginRequest(username="emailuser@example.com", password="secret123"),
+            _request("10.0.0.22"),
+            db,
+        )
+
+        self.assertEqual(str(logged_in.user_id), str(registered.user_id))
+        self.assertEqual(logged_in.username, "emailuser")
+
+    async def test_register_adds_password_to_existing_google_email(self) -> None:
+        db = _FakeDb()
+        existing = User(
+            id=uuid.uuid4(),
+            openid="supabase_existing",
+            auth_provider="supabase",
+            auth_subject="google-subject",
+            email="linked@example.com",
+        )
+        db.users_by_email["linked@example.com"] = existing
+
+        response = await auth_router.register(
+            RegisterRequest(
+                username="linkeduser",
+                password="secret123",
+                email="linked@example.com",
+                verification_code="123456",
+            ),
+            _request("10.0.0.23"),
+            db,
+        )
+
+        self.assertEqual(str(response.user_id), str(existing.id))
+        self.assertEqual(existing.username, "linkeduser")
+        self.assertTrue(auth_router._verify_password("secret123", str(existing.password)))
 
     async def test_duplicate_username_is_rejected(self) -> None:
         db = _FakeDb()
