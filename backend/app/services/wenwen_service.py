@@ -37,6 +37,22 @@ class WenwenService:
 
     CIRCUIT_FAILURE_THRESHOLD = 5
     CIRCUIT_COOLDOWN_SECONDS = 60
+    QA_MAX_ATTEMPTS = 2
+    QA_RETRY_REASONS = {
+        "bad_hands",
+        "extra_limbs",
+        "face_distortion",
+        "cropped_face",
+        "fused_faces",
+        "body_fusion",
+        "severe_artifacts",
+        "dress_exposure_error",
+        "identity_mismatch",
+        "identity_swap",
+        "subject_missing",
+        "headless",
+        "other",
+    }
 
     def __init__(self) -> None:
         self._runtime_validation_ok = False
@@ -303,6 +319,15 @@ class WenwenService:
                     return str(value)[:500]
         return None
 
+    @classmethod
+    def _should_retry_qa(cls, reasons: list[str], attempt: int) -> bool:
+        if int(attempt or 0) >= cls.QA_MAX_ATTEMPTS:
+            return False
+        normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
+        if not normalized:
+            return True
+        return bool(normalized & cls.QA_RETRY_REASONS)
+
     async def _complete_provider_urls(
         self,
         order_uuid: uuid.UUID,
@@ -371,7 +396,62 @@ class WenwenService:
             params["debug"] = debug
             params["native_raw_output_urls"] = list(delivered_urls)
             params["native_raw_output_status"] = "stored"
+            params["qa_retry_pending"] = False
+            params["qa_retry_in_progress"] = False
             params["qa_attempt_count"] = int(qa_attempt_count)
+            order.generation_params = params
+            await db.commit()
+
+    async def _mark_qa_retry_pending(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        attempt: int,
+        reasons: list[str],
+        candidate_url: str,
+    ) -> None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+            retry_history = debug.get("qa_retry_history") if isinstance(debug.get("qa_retry_history"), list) else []
+            retry_history.append(
+                {
+                    "attempt": int(attempt),
+                    "reasons": list(reasons),
+                    "candidate_url": candidate_url,
+                    "queued_at": self._utc_now_iso(),
+                }
+            )
+            debug["qa_retry_history"] = retry_history[-8:]
+            params["debug"] = debug
+            params["qa_retry_pending"] = True
+            params["qa_retry_in_progress"] = False
+            params["qa_retry_next_attempt"] = int(attempt) + 1
+            params["qa_retry_max_attempts"] = self.QA_MAX_ATTEMPTS
+            params["qa_last_reasons"] = list(reasons)
+            params["qa_attempt_count"] = int(attempt)
+            params["native_raw_output_status"] = "qa_rejected_retry_pending"
+            order.status = OrderStatus.GENERATING
+            order.error_message = None
+            order.generation_params = params
+            await db.commit()
+
+    async def _mark_qa_retry_started(self, order_uuid: uuid.UUID) -> None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            params["qa_retry_pending"] = False
+            params["qa_retry_in_progress"] = True
+            params["qa_retry_started_at"] = self._utc_now_iso()
+            order.status = OrderStatus.GENERATING
+            order.error_message = None
             order.generation_params = params
             await db.commit()
 
@@ -641,6 +721,8 @@ class WenwenService:
             }
             params["qa_last_reasons"] = []
             params["qa_attempt_count"] = qa_attempt_count
+            params["qa_retry_pending"] = False
+            params["qa_retry_in_progress"] = False
             params["couple_guardrails"] = {
                 "is_couple": bool(is_couple),
                 "subject_count": subject_count,
@@ -757,6 +839,31 @@ class WenwenService:
             order.generation_params = params
             await db.commit()
 
+    async def _load_order_generation_context(self, order_uuid: uuid.UUID) -> dict[str, Any] | None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return None
+            template_id = str(order.template_id or "").strip()
+            user_images = self._order_source_images(order)
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            if not template_id or not user_images:
+                return None
+            return {
+                "order_id": str(order.id),
+                "template_id": template_id,
+                "user_images": user_images,
+                "subject_count": params.get("subject_count"),
+                "couple_flow": params.get("couple_flow"),
+                "prompt_override": params.get("prompt_override"),
+                "global_style_text": params.get("global_style_text"),
+                "scene_text": params.get("scene_text"),
+                "outfit_text": params.get("outfit_text"),
+                "scene_image_url": params.get("effective_scene_image_url") or params.get("scene_image_url"),
+                "clothing_image_url": params.get("effective_clothing_image_url") or params.get("clothing_image_url"),
+            }
+
     @staticmethod
     def _recently_polled(debug: dict[str, Any], *, min_interval_seconds: int = 10) -> bool:
         raw = debug.get("last_task_poll_at")
@@ -820,6 +927,7 @@ class WenwenService:
         except (TypeError, ValueError):
             return False
 
+        retry_context: dict[str, Any] | None = None
         async with async_session_maker() as db:
             result = await db.execute(select(Order).where(Order.id == order_uuid))
             order = result.scalar_one_or_none()
@@ -829,8 +937,21 @@ class WenwenService:
             if status_value != OrderStatus.GENERATING.value:
                 return False
             params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            if bool(params.get("qa_retry_pending")):
+                retry_started_at = params.get("qa_retry_started_at")
+                if bool(params.get("qa_retry_in_progress")) and (self._seconds_since(retry_started_at) or 0) < 20 * 60:
+                    return False
+                retry_context = await self._load_order_generation_context(order_uuid)
+                if not retry_context:
+                    await self._fail_order(order_uuid, "qa_retry_missing_generation_context", "qa_reject")
+                    return True
+                await self._mark_qa_retry_started(order_uuid)
+            if retry_context:
+                pass
+            elif str(params.get("native_raw_output_status") or "").strip() == "qa_rejected_retry_pending":
+                return False
             native_raw_output_urls = params.get("native_raw_output_urls")
-            if isinstance(native_raw_output_urls, list) and native_raw_output_urls:
+            if retry_context is None and isinstance(native_raw_output_urls, list) and native_raw_output_urls:
                 user_images = self._order_source_images(order)
                 try:
                     subject_count = int(params.get("subject_count") or len(user_images) or 0) or None
@@ -852,6 +973,8 @@ class WenwenService:
                     await self._fail_order(order_uuid, str(exc), self._classify_error(exc))
                 return True
             task_id = str(params.get("provider_task_id") or params.get("wenwen_task_id") or "").strip()
+            if retry_context is not None:
+                task_id = "__qa_retry__"
             if not task_id:
                 if str(params.get("execution_mode") or "").strip() == "inline":
                     age_seconds = self._seconds_since(order.updated_at)
@@ -864,7 +987,7 @@ class WenwenService:
                         return True
                 return False
             debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
-            if self._recently_polled(debug):
+            if retry_context is None and self._recently_polled(debug):
                 return False
             user_images = self._order_source_images(order)
             try:
@@ -873,6 +996,10 @@ class WenwenService:
                 subject_count = len(user_images) or None
             couple_flow = str(params.get("couple_flow") or "") or None
             qa_attempt_count = int(params.get("qa_attempt_count") or 1)
+
+        if retry_context is not None:
+            await self.generate_photo(**retry_context)
+            return True
 
         try:
             async with httpx.AsyncClient(
@@ -1075,6 +1202,20 @@ class WenwenService:
                             reasons=qa_reasons,
                             candidate_url=primary_image_url,
                         )
+                        if settings.is_vercel_runtime and self._should_retry_qa(qa_reasons, attempt + 1):
+                            await self._mark_qa_retry_pending(
+                                order_uuid,
+                                attempt=attempt + 1,
+                                reasons=qa_reasons,
+                                candidate_url=primary_image_url,
+                            )
+                            logger.warning(
+                                "Wenwen QA failed; queued automatic retry (attempt %d/%d): %s",
+                                attempt + 1,
+                                self.QA_MAX_ATTEMPTS,
+                                qa_reasons,
+                            )
+                            return
                         if attempt < max_retries:
                             logger.warning("Wenwen QA failed; regenerating (attempt %d/%d): %s", attempt + 1, 1 + max_retries, qa_reasons)
                             continue
