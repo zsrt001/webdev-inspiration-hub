@@ -69,11 +69,11 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Database not available (dev mode): {e}")
 
     if strict_mode:
-        readiness = await run_readiness_checks(probe_storage=False, strict_mode=True)
-        if not readiness.get("commercial_ready", False):
-            blockers = ", ".join(readiness.get("blockers", []))
-            raise RuntimeError(f"runtime_readiness_failed: {blockers}")
-        logger.info("Runtime readiness checks passed")
+        core_readiness = await run_core_readiness_checks(strict_mode=True)
+        if not core_readiness.get("ready", False):
+            blockers = ", ".join(core_readiness.get("blockers", []))
+            raise RuntimeError(f"core_runtime_readiness_failed: {blockers}")
+        logger.info("Core runtime readiness checks passed")
     else:
         logger.info("Skipping blocking runtime readiness checks in dev mode")
     

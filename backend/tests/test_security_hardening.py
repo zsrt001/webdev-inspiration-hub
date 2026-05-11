@@ -71,7 +71,7 @@ class SecurityHardeningTest(unittest.TestCase):
 
         self.assertIn("RATE_LIMIT_ENABLED must be true", errors)
 
-    def test_commercial_config_rejects_vercel_s3_loopback_storage_without_blob(self) -> None:
+    def test_storage_config_rejects_vercel_s3_loopback_storage_without_blob(self) -> None:
         runtime_checks = importlib.import_module("app.core.runtime_checks")
         config_module = importlib.import_module("app.core.config")
         original_settings = runtime_checks.settings
@@ -82,11 +82,12 @@ class SecurityHardeningTest(unittest.TestCase):
             blob_read_write_token="",
         )
         try:
-            errors = runtime_checks.validate_commercial_config_values()
+            with self.assertRaises(RuntimeError) as ctx:
+                runtime_checks._check_storage_config()
         finally:
             runtime_checks.settings = original_settings
 
-        self.assertTrue(any("AWS_S3_ENDPOINT points to local storage" in error for error in errors))
+        self.assertIn("AWS_S3_ENDPOINT points to local storage", str(ctx.exception))
 
     def test_commercial_config_allows_admin_identity_without_frontend_token(self) -> None:
         runtime_checks = importlib.import_module("app.core.runtime_checks")

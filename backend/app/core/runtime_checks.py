@@ -62,7 +62,6 @@ def _task_queue_required() -> bool:
 
 def validate_commercial_config_values() -> list[str]:
     errors: list[str] = []
-    configured_storage_provider = (settings.storage_provider or "").strip().lower()
     provider = settings.effective_storage_provider
     llm_provider = (settings.llm_provider or "").strip().lower()
     raw_payment_provider = (settings.payment_provider or "").strip().lower()
@@ -84,16 +83,6 @@ def validate_commercial_config_values() -> list[str]:
         errors.append("ADMIN_USER_IDS, ADMIN_EMAILS, or backend-only ADMIN_TOKEN is required")
     if provider in {"", "local"}:
         errors.append("STORAGE_PROVIDER must be s3 or vercel (local is not commercial-safe)")
-    if (
-        configured_storage_provider == "s3"
-        and settings.is_vercel_runtime
-        and settings.aws_s3_endpoint_is_loopback
-        and not settings.blob_token_effective
-    ):
-        errors.append(
-            "AWS_S3_ENDPOINT points to local storage in Vercel; configure STORAGE_PROVIDER=vercel "
-            "with BLOB_READ_WRITE_TOKEN, or configure real S3/R2 and clear AWS_S3_ENDPOINT"
-        )
     if settings.allow_memory_fallback:
         errors.append("ALLOW_MEMORY_FALLBACK must be false")
     if settings.gatekeeper_allow_without_pillow:
