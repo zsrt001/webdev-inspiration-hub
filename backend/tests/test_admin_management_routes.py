@@ -35,6 +35,16 @@ class AdminManagementRoutesTest(unittest.TestCase):
 
         self.assertEqual({item.value for item in OrderStatus}, admin.ORDER_STATUS_VALUES)
 
+    def test_generation_probe_accepts_text_direction_fields(self) -> None:
+        from app.routers.admin import GenerationProbeRequest
+
+        properties = GenerationProbeRequest.model_json_schema()["properties"]
+
+        self.assertIn("global_style_text", properties)
+        self.assertIn("scene_text", properties)
+        self.assertIn("outfit_text", properties)
+        self.assertIn("prompt_override", properties)
+
     def test_payment_config_summary_does_not_expose_secrets(self) -> None:
         import asyncio
 

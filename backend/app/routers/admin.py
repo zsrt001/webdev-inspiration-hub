@@ -147,6 +147,10 @@ class GenerationProbeRequest(BaseModel):
     image_url: str
     second_image_url: str | None = None
     template_id: str | None = None
+    global_style_text: str | None = None
+    scene_text: str | None = None
+    outfit_text: str | None = None
+    prompt_override: str | None = None
     remote_join: bool = False
     execute_inline: bool | None = None
 
@@ -752,7 +756,10 @@ async def probe_generation(
             "couple_flow": couple_flow,
             "subject_count": len(images),
             "director_mode": False,
-            "global_style_text": "admin production probe",
+            "global_style_text": (payload.global_style_text or "admin production probe").strip(),
+            "scene_text": (payload.scene_text or "").strip() or None,
+            "outfit_text": (payload.outfit_text or "").strip() or None,
+            "prompt_override": (payload.prompt_override or "").strip() or None,
             "probe_created_at": datetime.now(timezone.utc).isoformat(),
         },
         price_cents=0,
