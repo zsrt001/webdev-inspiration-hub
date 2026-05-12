@@ -182,15 +182,19 @@ async def deduct_credits_async(
     description: str | None = None,
     metadata: dict | None = None,
 ) -> bool:
+    amount_int = int(amount)
+    if amount_int <= 0:
+        raise ValueError("Credit deduction amount must be positive")
+
     row = await _get_or_create_credit_row(db, user_id)
-    if int(row.balance or 0) < int(amount):
+    if int(row.balance or 0) < amount_int:
         return False
-    row.balance = int(row.balance or 0) - int(amount)
+    row.balance = int(row.balance or 0) - amount_int
     await _record_credit_transaction(
         db,
         user_id,
         transaction_type=transaction_type,
-        amount=-int(amount),
+        amount=-amount_int,
         balance_after=int(row.balance or 0),
         source=source,
         source_id=source_id,

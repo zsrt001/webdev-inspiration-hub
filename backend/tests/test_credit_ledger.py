@@ -101,6 +101,17 @@ class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(db.transactions), 1)
         self.assertEqual(db.credit_row.balance, DEFAULT_CREDITS)
 
+    async def test_non_positive_deduct_is_rejected(self) -> None:
+        db = _FakeDb()
+        user_id = uuid.uuid4()
+        await grant_welcome_bonus(db, user_id)
+
+        with self.assertRaises(ValueError):
+            await deduct_credits_async(db, user_id, -10)
+
+        self.assertEqual(len(db.transactions), 1)
+        self.assertEqual(db.credit_row.balance, DEFAULT_CREDITS)
+
     async def test_add_records_purchase_credit(self) -> None:
         db = _FakeDb()
         user_id = uuid.uuid4()

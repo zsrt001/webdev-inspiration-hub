@@ -157,6 +157,15 @@ async def deduct_user_credits(
     Deduct credits (called internally during generation).
     Returns 402 if insufficient balance.
     """
+    if amount <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_credit_amount",
+                "message": "Credit deduction amount must be positive.",
+            },
+        )
+
     success = await deduct_credits_async(
         db,
         current_user.id,
