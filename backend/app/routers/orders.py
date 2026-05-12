@@ -32,6 +32,7 @@ async def _serialize_order_for_user(db: AsyncSession, order: Order, user_id: uui
     return payload
 
 
+@router.get("", response_model=list[OrderRead])
 @router.get("/", response_model=list[OrderRead])
 async def list_orders(
     current_user: User = Depends(get_request_user),

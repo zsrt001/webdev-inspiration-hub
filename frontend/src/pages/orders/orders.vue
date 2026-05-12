@@ -176,7 +176,7 @@ async function fetchOrders() {
     if (!templateStore.templates.length) {
       await templateStore.fetchTemplates();
     }
-    const response = await get<OrdersResponse>('/orders/', { showLoading: false, showError: false });
+    const response = await get<OrdersResponse>('/orders', { showLoading: false, showError: false });
     const rows = normalizeOrderRows(response);
     orders.value = rows.map((order) => ({
       id: order.id,

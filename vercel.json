@@ -35,6 +35,14 @@
             "destination": "/api/index.py"
         },
         {
+            "source": "/api/v1/orders/",
+            "destination": "/api/index.py"
+        },
+        {
+            "source": "/api/v1/orders/:path*",
+            "destination": "/api/index.py"
+        },
+        {
             "source": "/static/styles/:path*",
             "destination": "/api/index.py"
         },

@@ -371,7 +371,7 @@ async function loadAccount(): Promise<void> {
       get<UserProfile>('/users/me', { showLoading: false, showError: false }),
       get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false }),
       get<TransactionsResponse>('/credits/transactions?limit=8', { showLoading: false, showError: false }),
-      get<OrdersResponse>('/orders/', { showLoading: false, showError: false }),
+      get<OrdersResponse>('/orders', { showLoading: false, showError: false }),
       get<LegalPolicies>('/legal/policies', { showLoading: false, showError: false }),
       get('/admin/me', { showLoading: false, showError: false }),
       subscriptionStore.fetchPlans(true),
