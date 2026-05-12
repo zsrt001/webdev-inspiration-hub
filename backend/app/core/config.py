@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     wenwen_native_image_generate_path_template: str = "/v1beta/models/{model}:generateContent"
     wenwen_task_path_template: str = "/tasks/{task_id}"
     wenwen_image_size_single: str = "3:4"
-    wenwen_image_size_couple: str = "3:2"
+    wenwen_image_size_couple: str = "3:4"
     wenwen_poll_interval: float = 3.0
     wenwen_poll_timeout: int = 240
     wenwen_max_retries: int = 2

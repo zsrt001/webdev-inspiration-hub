@@ -23,7 +23,7 @@ from app.services.trial_access_service import prepare_delivered_image_urls, is_t
 from app.models.credit_transaction import CreditTransactionType
 from app.services import llm_service
 from app.services.credit_service import COST_PER_GENERATION, add_credits_async
-from app.services.prompt_brain import build_prompt, get_negative_prompt
+from app.services.prompt_brain import build_prompt, get_negative_prompt, get_studio_guardrails
 from app.services.qa_service import output_passes
 from app.services.storage import storage_service
 from app.services.template_service import get_template_by_id
@@ -473,7 +473,9 @@ class WenwenService:
         normalized = str(configured or "").strip().lower().replace("x", ":").replace("/", ":")
         if not is_couple and normalized == "4:5":
             return "3:4"
-        return str(configured or "").strip() or ("3:2" if is_couple else "3:4")
+        if is_couple and normalized == "3:2":
+            return "3:4"
+        return str(configured or "").strip() or "3:4"
 
     async def _build_subject_hints(self, user_images: list[str]) -> list[str]:
         hints: list[str] = []
@@ -518,6 +520,7 @@ class WenwenService:
             subject_hints = await self._build_subject_hints(user_images)
             if subject_hints:
                 prompt_text = f"{prompt_text} Identity guidance: {' '.join(subject_hints)}."
+        prompt_text = f"{prompt_text} {get_studio_guardrails(is_couple=is_couple)}."
 
         refs: list[str] = []
         for candidate in [*(user_images or []), scene_image_url or "", clothing_image_url or ""]:
