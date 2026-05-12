@@ -396,6 +396,7 @@ async def verify_generated_image_quality(
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
+        "- For bridal studio quality, reject with reason other if the main face is clearly underexposed from harsh backlight, the sky or windows are blown out, or the full-length gown/train is cropped so tightly that it no longer looks like a paid studio wedding portrait.\n"
         f"{couple_rules}"
         f"{identity_rules}"
         "- notes: brief (<= 200 chars)."

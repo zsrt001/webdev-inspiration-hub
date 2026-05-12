@@ -1451,7 +1451,7 @@ onUnmounted(() => {
 .exhibition-content { padding: 32px 24px; max-width: 1320px; margin: 0 auto; }
 .masterpiece-folio { background: white; border-radius: $uni-border-radius-lg; overflow: hidden; box-shadow: $uni-shadow-xl; margin-bottom: 32px; }
 .folio-frame {
-  aspect-ratio: 4/5;
+  aspect-ratio: 3/4;
   position: relative;
   background: $uni-color-background;
   overflow: hidden;
@@ -1712,7 +1712,7 @@ onUnmounted(() => {
 
 .exhibit-canvas {
   background: white; border-radius: 16px; overflow: hidden; margin-bottom: 40px; border: 1px solid $uni-color-border;
-  .canvas-image-wrap { aspect-ratio: 4/5; width: 100%; overflow: hidden; .canvas-image { width: 100%; height: 100%; } }
+  .canvas-image-wrap { aspect-ratio: 3/4; width: 100%; overflow: hidden; .canvas-image { width: 100%; height: 100%; } }
 }
 
 .canvas-info-wrap {

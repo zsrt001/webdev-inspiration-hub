@@ -27,6 +27,8 @@ def _portrait_pair(
     couple_tags: list[str],
     couple_clothing_prompt: str,
     couple_background_prompt: str,
+    single_prompt_blocks: dict | None = None,
+    couple_prompt_blocks: dict | None = None,
 ) -> list[Template]:
     return [
         Template(
@@ -38,6 +40,7 @@ def _portrait_pair(
             tags=single_tags,
             clothing_prompt=single_clothing_prompt,
             default_background_prompt=single_background_prompt,
+            prompt_blocks=single_prompt_blocks,
         ),
         Template(
             id=couple_id,
@@ -48,6 +51,7 @@ def _portrait_pair(
             tags=couple_tags,
             clothing_prompt=couple_clothing_prompt,
             default_background_prompt=couple_background_prompt,
+            prompt_blocks=couple_prompt_blocks,
         ),
     ]
 
@@ -104,6 +108,18 @@ def _build_templates() -> list[Template]:
             couple_tags=["castle", "royal", "couple"],
             couple_clothing_prompt="couple in royal-style embroidered wedding attire with heirloom styling",
             couple_background_prompt="medieval stone balcony overlooking mountains",
+            single_prompt_blocks={
+                "composition": "full-length bridal portrait with complete couture gown and train visible, upright 3:4 framing, refined headroom, no overfilled crop",
+                "lighting": "bridal studio lighting blended into castle ambience: large soft key light on the face, gentle fill light, subtle rim light, controlled sky highlights, no silhouette",
+                "texture": "luxury embroidered fabric detail, natural skin texture, clean retouch without plastic smoothing",
+                "style": "high-end bridal magazine portrait rather than outdoor snapshot",
+            },
+            couple_prompt_blocks={
+                "composition": "full-length couple portrait with both outfits complete and readable, upright 3:4 framing, balanced spacing, no overfilled crop",
+                "lighting": "bridal studio lighting blended into castle ambience: large soft key light on both faces, gentle fill light, subtle rim light, controlled sky highlights, no silhouette",
+                "texture": "luxury embroidered fabric detail, natural skin texture, clean retouch without plastic smoothing",
+                "style": "high-end bridal magazine portrait rather than outdoor snapshot",
+            },
         )
     )
     templates.extend(

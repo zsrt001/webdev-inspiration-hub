@@ -469,7 +469,11 @@ class WenwenService:
 
     @staticmethod
     def _build_size(is_couple: bool) -> str:
-        return settings.wenwen_image_size_couple if is_couple else settings.wenwen_image_size_single
+        configured = settings.wenwen_image_size_couple if is_couple else settings.wenwen_image_size_single
+        normalized = str(configured or "").strip().lower().replace("x", ":").replace("/", ":")
+        if not is_couple and normalized == "4:5":
+            return "3:4"
+        return str(configured or "").strip() or ("3:2" if is_couple else "3:4")
 
     async def _build_subject_hints(self, user_images: list[str]) -> list[str]:
         hints: list[str] = []

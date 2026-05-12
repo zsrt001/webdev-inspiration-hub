@@ -5,20 +5,30 @@ from app.schemas.template import Template
 
 
 PHOTO_PROTOCOL = (
-    "high-end studio wedding portrait, realistic skin texture, natural pores, "
-    "subtle film grain, balanced contrast, cinematic lighting, crisp details"
+    "premium bridal studio finish, print-ready high-end wedding portrait, realistic skin texture, natural pores, "
+    "controlled softbox key light, gentle fill light, subtle rim light, visible catchlights, "
+    "face correctly exposed and slightly brighter than the background, preserved highlight detail, "
+    "natural shadow rolloff, balanced contrast, crisp couture fabric and embroidery details"
+)
+
+FULL_LENGTH_COMPOSITION = (
+    "full-length 3:4 vertical editorial composition, complete gown and dress train visible, "
+    "no cropped hem, elegant headroom, subject not overfilled, enough breathing room around the body, "
+    "luxury bridal studio posing with refined posture"
 )
 
 COUPLE_COMPOSITION = (
-    "two-person couple portrait, both faces visible, stable framing, natural anatomy, "
+    "two-person full-length couple portrait, both faces visible, stable 3:4 vertical framing, natural anatomy, "
     "clear separation between two subjects, balanced spacing, bride and groom both fully readable, "
-    "independent shoulders and arms, no fused bodies, no merged limbs, no shared torso"
+    "complete outfits visible, independent shoulders and arms, no fused bodies, no merged limbs, no shared torso"
 )
 
 NEGATIVE_PROMPT = (
     "smooth skin, airbrushed, wax, plastic, 3d render, cgi, makeup filter, "
     "bright flat lighting, headless, cropped head, phantom limbs, fused bodies, merged limbs, "
-    "duplicate person, duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies"
+    "duplicate person, duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, "
+    "harsh backlight, face in shadow, blown-out sky, crushed shadows, overfilled frame, "
+    "cropped dress, cut-off gown train, low-end snapshot"
 )
 
 
@@ -42,6 +52,7 @@ def build_prompt(
     parts = [
         f"A professional wedding portrait of {clothing}",
         f"Scene: {scene}",
+        FULL_LENGTH_COMPOSITION,
     ]
     if is_couple:
         parts.append(COUPLE_COMPOSITION)

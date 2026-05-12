@@ -85,6 +85,7 @@ def _enhance_master(image):
     blurred = img.filter(ImageFilter.GaussianBlur(radius=max(1.0, min(img.size) / 360)))
     mask = _foreground_mask(img.size)
     img = ImageOps.autocontrast(Image.composite(img, blurred, mask), cutoff=0.35)
+    img = _apply_studio_tone_balance(img)
 
     smooth = img.filter(ImageFilter.SMOOTH_MORE)
     img = Image.blend(img, smooth, 0.08)
@@ -93,6 +94,41 @@ def _enhance_master(image):
     img = ImageEnhance.Brightness(img).enhance(1.01)
     img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=82, threshold=3))
     return img
+
+
+def _apply_studio_tone_balance(image):
+    from PIL import Image, ImageEnhance
+
+    # Lift the central subject area gently while compressing harsh highlights.
+    lut: list[int] = []
+    for value in range(256):
+        if value < 72:
+            mapped = value * 1.08 + 4
+        elif value > 218:
+            mapped = 218 + (value - 218) * 0.78
+        else:
+            mapped = value
+        lut.append(max(0, min(255, round(mapped))))
+    balanced = image.point(lut * 3)
+
+    fill_mask = _subject_fill_mask(image.size)
+    filled = ImageEnhance.Brightness(balanced).enhance(1.045)
+    filled = ImageEnhance.Contrast(filled).enhance(0.985)
+    return Image.composite(filled, balanced, fill_mask)
+
+
+def _subject_fill_mask(size: tuple[int, int]):
+    from PIL import Image, ImageDraw, ImageFilter
+
+    width, height = size
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    left = int(width * 0.22)
+    top = int(height * 0.10)
+    right = int(width * 0.78)
+    bottom = int(height * 0.70)
+    draw.ellipse((left, top, right, bottom), fill=142)
+    return mask.filter(ImageFilter.GaussianBlur(radius=max(18, int(min(width, height) * 0.06))))
 
 
 def _foreground_mask(size: tuple[int, int]):
