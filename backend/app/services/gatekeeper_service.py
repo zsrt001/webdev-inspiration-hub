@@ -210,60 +210,58 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
         try:
             vision = await llm_service.analyze_face_quality(image_url)
         except Exception:
-            return GatekeeperResult(
-                passed=False,
-                reasons=["vision_unavailable"],
-                advice=["质量检测服务暂时不可用，请稍后重试"],
-                metrics={},
-            )
+            vision = None
+            ocr_metrics["vision_degraded"] = 1.0
 
         if not isinstance(vision, dict):
-            return GatekeeperResult(
-                passed=False,
-                reasons=["vision_invalid"],
-                advice=["质量检测服务返回异常，请稍后重试"],
-                metrics={},
-            )
+            if vision is not None:
+                ocr_metrics["vision_invalid"] = 1.0
+        else:
+            vision_flags = vision.get("risk_flags") or []
+            if isinstance(vision_flags, list):
+                risk_flags.extend([str(flag).strip() for flag in vision_flags if str(flag).strip()])
 
-        vision_flags = vision.get("risk_flags") or []
-        if isinstance(vision_flags, list):
-            risk_flags.extend([str(flag).strip() for flag in vision_flags if str(flag).strip()])
+            try:
+                ocr = await llm_service.detect_sensitive_document_ocr(image_url)
+            except Exception:
+                ocr = None
+                ocr_metrics["ocr_degraded"] = 1.0
 
-        ocr = await llm_service.detect_sensitive_document_ocr(image_url)
-        if not isinstance(ocr, dict):
-            return GatekeeperResult(
-                passed=False,
-                reasons=["ocr_invalid"],
-                advice=["OCR 风控服务返回异常，请稍后重试"],
-                metrics={},
-                risk_flags=sorted(set(risk_flags)),
-            )
+            if not isinstance(ocr, dict):
+                if ocr is not None:
+                    ocr_metrics["ocr_invalid"] = 1.0
+            else:
+                ocr_flags = ocr.get("risk_flags") or []
+                if isinstance(ocr_flags, list):
+                    risk_flags.extend([str(flag).strip() for flag in ocr_flags if str(flag).strip()])
 
-        ocr_flags = ocr.get("risk_flags") or []
-        if isinstance(ocr_flags, list):
-            risk_flags.extend([str(flag).strip() for flag in ocr_flags if str(flag).strip()])
+                ocr_text = ocr.get("detected_text") or []
+                ocr_patterns = ocr.get("matched_patterns") or []
+                ocr_metrics.update(
+                    {
+                        "ocr_text_count": float(len(ocr_text) if isinstance(ocr_text, list) else 0),
+                        "ocr_pattern_count": float(len(ocr_patterns) if isinstance(ocr_patterns, list) else 0),
+                    }
+                )
 
-        ocr_text = ocr.get("detected_text") or []
-        ocr_patterns = ocr.get("matched_patterns") or []
-        ocr_metrics = {
-            "ocr_text_count": float(len(ocr_text) if isinstance(ocr_text, list) else 0),
-            "ocr_pattern_count": float(len(ocr_patterns) if isinstance(ocr_patterns, list) else 0),
-        }
-
-        if not bool(ocr.get("passed", True)) and not risk_flags:
-            return GatekeeperResult(
-                passed=False,
-                reasons=["ocr_reject"],
-                advice=["检测到敏感文本风险，请上传生活自拍照"],
-                metrics=ocr_metrics,
-                risk_flags=sorted(set(risk_flags)),
-            )
+                if not bool(ocr.get("passed", True)) and not risk_flags:
+                    has_text_signal = bool(ocr_text if isinstance(ocr_text, list) else [])
+                    has_pattern_signal = bool(ocr_patterns if isinstance(ocr_patterns, list) else [])
+                    if has_text_signal or has_pattern_signal:
+                        return GatekeeperResult(
+                            passed=False,
+                            reasons=["ocr_reject"],
+                            advice=["检测到敏感文本风险，请上传生活自拍照"],
+                            metrics=ocr_metrics,
+                            risk_flags=sorted(set(risk_flags)),
+                        )
+                    ocr_metrics["ocr_degraded"] = 1.0
 
         blocked_flags = sorted(set(flag for flag in risk_flags if flag in _BLOCKED_FLAG_RESPONSES))
         if blocked_flags:
             return _build_blocked_flag_response(blocked_flags, ocr_metrics)
 
-        if vision.get("passed") is False:
+        if isinstance(vision, dict) and vision.get("passed") is False:
             reject_reason = str(vision.get("reject_reason") or "gatekeeper_reject")
             reason_code, advice = _normalize_vision_reject_reason(reject_reason)
             return GatekeeperResult(
