@@ -22,7 +22,7 @@ DEFAULT_OPS_CONFIG: dict[str, Any] = {
             "subtitle": "Premium wedding portraits in minutes",
             "cta_label": "Start Now",
             "secondary_cta_label": "Browse Collection",
-            "image_url": "/hero_banner.jpg",
+            "image_url": "/style-previews/royal_castle.jpg",
             "legacy_enabled": True,
             "portal_enabled": True,
         }
@@ -257,7 +257,15 @@ def get_public_ops_config() -> dict[str, Any]:
     feature_flags = config.get("feature_flags") if isinstance(config.get("feature_flags"), dict) else {}
     home_banner = placements.get("home_banner") if isinstance(placements.get("home_banner"), dict) else {}
     image_url = str(home_banner.get("image_url") or DEFAULT_OPS_CONFIG["placements"]["home_banner"]["image_url"]).strip()
-    if image_url in {"/style-previews/couple_royal_castle.jpg", "/static/style-previews/couple_royal_castle.jpg"}:
+    legacy_home_images = {
+        "/hero_banner.jpg",
+        "/static/hero_banner.jpg",
+        "/style-previews/hero_banner.jpg",
+        "/static/style-previews/hero_banner.jpg",
+        "/style-previews/couple_royal_castle.jpg",
+        "/static/style-previews/couple_royal_castle.jpg",
+    }
+    if image_url in legacy_home_images:
         image_url = DEFAULT_OPS_CONFIG["placements"]["home_banner"]["image_url"]
     return {
         "placements": {

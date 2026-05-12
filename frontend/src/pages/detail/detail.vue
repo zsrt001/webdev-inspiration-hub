@@ -195,7 +195,7 @@ const template = ref<Template | null>(null);
 const familyKey = computed(() => getTemplateFamilyKey(template.value));
 const copy = computed<DetailCopyEntry | null>(() => DETAIL_COPY[familyKey.value] || null);
 
-const heroImageUrl = computed(() => resolvePublicUrl(template.value?.image_url || '/hero_banner.jpg'));
+const heroImageUrl = computed(() => resolvePublicUrl(template.value?.image_url || '/style-previews/royal_castle.jpg'));
 const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const heroTitle = computed(() => getLocalizedTemplateTitle(template.value, i18nStore.locale));
 const heroKicker = computed(() => {

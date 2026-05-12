@@ -97,7 +97,6 @@ const pushPages = new Set([
   '/pages/legal/terms',
   '/pages/legal/refund',
   '/pages/join/landing',
-  '/pages/admin/index',
   '/admin',
   '/admin/users',
   '/admin/orders',

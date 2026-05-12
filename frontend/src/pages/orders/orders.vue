@@ -124,7 +124,7 @@ function pickPrimaryImage(order: Order): string {
   const preview = order.preview_image_urls ? Object.values(order.preview_image_urls) : [];
   if (preview.length && preview[0]) return resolvePublicUrl(preview[0]);
 
-  return resolvePublicUrl('/style-previews/couple_royal_castle.jpg');
+  return resolvePublicUrl('/style-previews/royal_castle.jpg');
 }
 
 function formatDate(isoString: string): string {

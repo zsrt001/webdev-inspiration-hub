@@ -97,7 +97,7 @@ const PORTRAIT_TEMPLATE_FAMILIES = [
     single: {
       id: 'solo_chn_xiuhe',
       title: 'Chinese Xiuhe',
-      image_url: '/style-previews/solo_chn_xiuhe.jpg',
+      image_url: '/style-previews/chn_xiuhe.jpg',
       tags: ['chinese', 'xiuhe', 'solo'],
     },
     couple: {
@@ -133,7 +133,7 @@ const PORTRAIT_TEMPLATE_FAMILIES = [
     couple: {
       id: 'royal_castle',
       title: 'Royal Castle',
-      image_url: '/style-previews/couple_royal_castle.jpg',
+      image_url: '/style-previews/royal_castle.jpg',
       tags: ['castle', 'royal', 'couple'],
     },
   },
@@ -157,7 +157,7 @@ const PORTRAIT_TEMPLATE_FAMILIES = [
     single: {
       id: 'solo_gothic_romance',
       title: 'Gothic Romance',
-      image_url: '/style-previews/solo_gothic_romance_v2.png',
+      image_url: '/style-previews/solo_gothic_romance.jpg',
       tags: ['gothic', 'dramatic', 'solo'],
     },
     couple: {
@@ -193,7 +193,7 @@ const PORTRAIT_TEMPLATE_FAMILIES = [
     couple: {
       id: 'hk_retro',
       title: 'Hong Kong Retro',
-      image_url: '/style-previews/couple_hk_retro_v2.png',
+      image_url: '/style-previews/couple_hk_retro.jpg',
       tags: ['hong_kong', 'retro', 'couple'],
     },
   },
@@ -238,7 +238,7 @@ const PORTRAIT_TEMPLATE_FAMILIES = [
     couple: {
       id: 'cyberpunk_city',
       title: 'Cyberpunk City',
-      image_url: '/style-previews/couple_cyberpunk_city_v2.png',
+      image_url: '/style-previews/couple_cyberpunk_city.jpg',
       tags: ['cyberpunk', 'city', 'couple'],
     },
   },
@@ -411,7 +411,7 @@ function normalizeTemplates(items: Template[] | undefined | null): Template[] {
       ...item,
       id,
       category: normalizeCategory(item.category),
-      image_url: String(item.image_url || '').trim() || '/style-previews/couple_royal_castle.jpg',
+      image_url: String(item.image_url || '').trim() || '/style-previews/royal_castle.jpg',
     });
   }
 

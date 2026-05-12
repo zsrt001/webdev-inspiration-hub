@@ -231,16 +231,16 @@ const templateImageAttempts = ref<Record<string, number>>({});
 const homeBanner = computed(() => opsStore.publicConfig.placements.home_banner);
 
 const styleImageFallbacks: Record<string, string[]> = {
-  chn_xiuhe: ['/style-previews/couple_chn_xiuhe.jpg', '/style-previews/solo_chn_xiuhe.jpg'],
+  chn_xiuhe: ['/style-previews/couple_chn_xiuhe.jpg', '/style-previews/chn_xiuhe.jpg'],
   korean_minimal: ['/style-previews/couple_korean_minimal.jpg', '/style-previews/solo_korean_minimal.jpg'],
-  royal_castle: ['/style-previews/couple_royal_castle.jpg', '/style-previews/solo_royal_castle.jpg'],
+  royal_castle: ['/style-previews/royal_castle.jpg', '/style-previews/solo_royal_castle.jpg'],
   old_money: ['/style-previews/couple_old_money.jpg', '/style-previews/solo_old_money.jpg'],
-  gothic_romance: ['/style-previews/couple_gothic_romance.jpg', '/style-previews/solo_gothic_romance_v2.png'],
+  gothic_romance: ['/style-previews/couple_gothic_romance.jpg', '/style-previews/solo_gothic_romance.jpg'],
   beach_sunset: ['/style-previews/couple_beach_sunset.jpg', '/style-previews/solo_beach_sunset.jpg'],
-  hk_retro: ['/style-previews/couple_hk_retro_v2.png', '/style-previews/hk_retro.jpg'],
+  hk_retro: ['/style-previews/couple_hk_retro.jpg', '/style-previews/hk_retro.jpg'],
   twilight_forest: ['/style-previews/couple_twilight_forest.jpg', '/style-previews/twilight_forest.jpg'],
   japanese_shiromuku: ['/style-previews/couple_japanese_shiromuku.jpg', '/style-previews/japanese_shiromuku.jpg'],
-  cyberpunk_city: ['/style-previews/couple_cyberpunk_city_v2.png', '/style-previews/cyberpunk_city.jpg'],
+  cyberpunk_city: ['/style-previews/couple_cyberpunk_city.jpg', '/style-previews/cyberpunk_city.jpg'],
   school_days: ['/style-previews/couple_school_days.jpg', '/style-previews/school_days.jpg'],
   classic_bw: ['/style-previews/couple_classic_bw.jpg', '/style-previews/classic_bw.jpg'],
   golden_vintage_studio_8090: ['/style-previews/golden_vintage_studio_8090.jpg'],
@@ -252,11 +252,11 @@ const styleImageFallbacks: Record<string, string[]> = {
 const heroImageUrl = computed(() => {
   const configured = resolvePublicUrl(homeBanner.value.image_url);
   if (configured) return configured;
-  return resolvePublicUrl('/hero_banner.jpg');
+  return resolvePublicUrl('/style-previews/royal_castle.jpg');
 });
 
 const heroPreviewUrl = computed(() => {
-  const candidate = templates.value.find((item) => item.category === 'couple')?.image_url || '/style-previews/couple_royal_castle.jpg';
+  const candidate = templates.value.find((item) => item.category === 'couple')?.image_url || '/style-previews/royal_castle.jpg';
   return resolvePublicUrl(candidate);
 });
 
@@ -335,7 +335,7 @@ const pricingPlans = computed(() => [
 ]);
 
 const goToAdmin = () => {
-  uni.navigateTo({ url: '/pages/admin/index' });
+  uni.navigateTo({ url: '/admin' });
 };
 
 const onLogoTap = () => {
@@ -424,14 +424,14 @@ const resolveTemplateCardImage = (template: Template): string => {
   const candidates = [
     template.image_url,
     ...(styleImageFallbacks[familyKey] || []),
-    '/style-previews/couple_royal_castle.jpg',
+    '/style-previews/royal_castle.jpg',
   ]
     .map((item) => String(item || '').trim())
     .filter(Boolean)
     .filter((item, index, list) => list.indexOf(item) === index);
 
   const attempt = templateImageAttempts.value[template.id] || 0;
-  const target = candidates[Math.min(attempt, candidates.length - 1)] || '/style-previews/couple_royal_castle.jpg';
+  const target = candidates[Math.min(attempt, candidates.length - 1)] || '/style-previews/royal_castle.jpg';
   return resolvePublicUrl(target);
 };
 

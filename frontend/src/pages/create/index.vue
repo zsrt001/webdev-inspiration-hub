@@ -458,7 +458,7 @@ async function pickOutfitReference() { outfitReferencePath.value = await pickLoc
 function resolveSeedTemplate(): Template {
   if (selectedTemplate.value) return selectedTemplate.value;
   return templateStore.templates.find((item) => item.id === 'custom' || item.is_custom) || {
-    id: 'custom', category: 'custom', title: 'Custom Mode', image_url: '/custom_mode.jpg', style_family: 'custom_mode', is_custom: true,
+    id: 'custom', category: 'custom', title: 'Custom Mode', image_url: '/style-previews/custom_mode.jpg', style_family: 'custom_mode', is_custom: true,
   };
 }
 async function uploadLocalAsset(localPath: string) {

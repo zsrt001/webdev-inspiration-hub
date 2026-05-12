@@ -44,13 +44,21 @@
           <view class="section-head compact-head">
             <view>
               <text class="section-title">Admin access</text>
-              <text class="section-copy">Entry: /admin. Visible only to owner, admin, operator, ADMIN_EMAILS, or ADMIN_USER_IDS.</text>
+              <text class="section-copy">Use /admin after signing in with an authorized owner, admin, operator, ADMIN_EMAILS, or ADMIN_USER_IDS account.</text>
             </view>
           </view>
           <view class="diagnostic-list">
             <view class="diag-row">
+              <text>Entry URL</text>
+              <text class="mono">{{ adminMe?.entry_url || '/admin' }}</text>
+            </view>
+            <view class="diag-row">
               <text>Actor</text>
               <text class="mono">{{ adminMe?.actor || '--' }}</text>
+            </view>
+            <view class="diag-row">
+              <text>Roles</text>
+              <text class="mono">{{ adminRoleLabel }}</text>
             </view>
             <view class="diag-row">
               <text>Remote join</text>
@@ -66,6 +74,10 @@
               <text>Generation mode</text>
               <text class="mono">{{ adminMe?.generation_execution_mode || '--' }}</text>
             </view>
+          </view>
+          <view class="admin-actions-row">
+            <button class="ghost-action" @tap="goUsers">Users & credits</button>
+            <button class="ghost-action" @tap="goOrders">Orders</button>
           </view>
         </view>
 
@@ -127,7 +139,7 @@
           <view class="probe-form">
             <input v-model="probeImageUrl" class="filter-input" placeholder="Primary public portrait image URL" />
             <input v-model="probeSecondImageUrl" class="filter-input" placeholder="Second portrait URL for couple or remote test" />
-            <input v-model="probeTemplateId" class="filter-input" placeholder="Template ID, e.g. solo_royal_castle or royal_castle" />
+            <input v-model="probeTemplateId" class="filter-input" :placeholder="`Template ID, default ${defaultProbeTemplateId}`" />
             <view class="probe-options">
               <label class="check-row">
                 <checkbox :checked="probeRemoteJoin" @tap="probeRemoteJoin = !probeRemoteJoin" />
@@ -143,6 +155,13 @@
             </button>
           </view>
 
+          <view v-if="currentProbeInputImages.length" class="probe-gallery">
+            <view v-for="item in currentProbeInputImages" :key="item.label" class="probe-gallery-item">
+              <text class="probe-gallery-label">{{ item.label }}</text>
+              <image class="probe-image small" :src="item.url" mode="aspectFill" />
+            </view>
+          </view>
+
           <view v-if="probeResult" class="probe-result">
             <view class="diag-row">
               <text>Result</text>
@@ -153,7 +172,17 @@
               <text class="mono">{{ probeResult.order_id || '--' }}</text>
             </view>
             <text v-if="probeResult.error_message" class="error-copy">{{ probeResult.error_message }}</text>
-            <image v-if="probePreviewUrl" class="probe-image" :src="probePreviewUrl" mode="aspectFill" />
+            <view v-if="lastProbeInputImages.length || probePreviewUrl" class="probe-gallery">
+              <view v-for="item in lastProbeInputImages" :key="item.label" class="probe-gallery-item">
+                <text class="probe-gallery-label">{{ item.label }}</text>
+                <image class="probe-image small" :src="item.url" mode="aspectFill" />
+              </view>
+              <view v-if="probePreviewUrl" class="probe-gallery-item generated">
+                <text class="probe-gallery-label">Generated wedding image</text>
+                <image class="probe-image" :src="probePreviewUrl" mode="aspectFill" />
+              </view>
+            </view>
+            <button v-if="probeResult.order_id" class="ghost-action probe-order-action" @tap="goOrders">Open orders</button>
           </view>
         </view>
 
@@ -323,14 +352,17 @@ const testEmailResult = ref('');
 const sendingTestEmail = ref(false);
 const probeImageUrl = ref('');
 const probeSecondImageUrl = ref('');
-const probeTemplateId = ref('solo_royal_castle');
+const probeTemplateId = ref('');
 const probeRemoteJoin = ref(false);
 const probeInline = ref(true);
 const runningProbe = ref(false);
 const probeResult = ref<ProbeResponse | null>(null);
+const lastProbeInputs = ref<{ primary: string; second: string }>({ primary: '', second: '' });
 
 const recentOrders = computed(() => (stats.value.recent_activity || []).slice(0, 8));
 const recentRiskEvents = computed(() => (riskOverview.value?.recent_events || []).slice(0, 6));
+const adminRoleLabel = computed(() => (adminMe.value?.admin_roles || []).join(', ') || '--');
+const defaultProbeTemplateId = computed(() => (probeRemoteJoin.value ? 'royal_castle' : 'solo_royal_castle'));
 const dnsSummary = computed(() => {
   const dns = emailDiagnostics.value?.dns || {};
   return `SPF ${dns.spf_found ? 'ok' : 'missing'} | DMARC ${dns.dmarc_found ? 'ok' : 'missing'} | MX ${dns.mx_found ? 'ok' : 'missing'}`;
@@ -352,6 +384,22 @@ const probePreviewUrl = computed(() => {
   if (previewValues.length && previewValues[0]) return resolvePublicUrl(previewValues[0]);
   return '';
 });
+
+const currentProbeInputImages = computed(() => buildProbeInputImages(probeImageUrl.value, probeSecondImageUrl.value));
+const lastProbeInputImages = computed(() => buildProbeInputImages(lastProbeInputs.value.primary, lastProbeInputs.value.second));
+
+function isHttpImageUrl(value: string): boolean {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function buildProbeInputImages(primary: string, second: string) {
+  const items: Array<{ label: string; url: string }> = [];
+  const first = String(primary || '').trim();
+  const secondValue = String(second || '').trim();
+  if (isHttpImageUrl(first)) items.push({ label: 'Uploaded source image 1', url: first });
+  if (isHttpImageUrl(secondValue)) items.push({ label: 'Uploaded source image 2', url: secondValue });
+  return items;
+}
 
 function shortId(value: string): string {
   return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
@@ -422,7 +470,8 @@ async function sendAdminTestEmail() {
 
 async function runGenerationProbe() {
   const imageUrl = probeImageUrl.value.trim();
-  if (!/^https?:\/\//i.test(imageUrl)) {
+  const secondImageUrl = probeSecondImageUrl.value.trim();
+  if (!isHttpImageUrl(imageUrl)) {
     probeResult.value = {
       ok: false,
       started: false,
@@ -432,15 +481,26 @@ async function runGenerationProbe() {
     };
     return;
   }
+  if (probeRemoteJoin.value && !isHttpImageUrl(secondImageUrl)) {
+    probeResult.value = {
+      ok: false,
+      started: false,
+      completed: false,
+      execution_mode: probeInline.value ? 'inline' : 'arq',
+      error_message: 'Remote join probes require a second public http(s) portrait image URL.',
+    };
+    return;
+  }
   runningProbe.value = true;
   probeResult.value = null;
+  lastProbeInputs.value = { primary: imageUrl, second: secondImageUrl };
   try {
     probeResult.value = await post<ProbeResponse>(
       '/admin/generation_probe',
       {
         image_url: imageUrl,
-        second_image_url: probeSecondImageUrl.value.trim() || undefined,
-        template_id: probeTemplateId.value.trim() || undefined,
+        second_image_url: secondImageUrl || undefined,
+        template_id: probeTemplateId.value.trim() || defaultProbeTemplateId.value,
         remote_join: probeRemoteJoin.value,
         execute_inline: probeInline.value,
       },
@@ -466,6 +526,10 @@ function goLogin() {
 
 function goOrders() {
   uni.navigateTo({ url: '/admin/orders' });
+}
+
+function goUsers() {
+  uni.navigateTo({ url: '/admin/users' });
 }
 
 onMounted(loadDashboard);
@@ -571,6 +635,13 @@ onMounted(loadDashboard);
   gap: 10px;
 }
 
+.admin-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 .diag-row,
 .mini-log-row {
   display: flex;
@@ -606,12 +677,44 @@ onMounted(loadDashboard);
   padding-top: 4px;
 }
 
+.probe-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.probe-gallery-item {
+  min-width: 132px;
+  max-width: 220px;
+}
+
+.probe-gallery-item.generated {
+  max-width: 280px;
+}
+
+.probe-gallery-label {
+  display: block;
+  color: #687180;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .probe-image {
   margin-top: 12px;
   width: 180px;
   height: 180px;
   border-radius: 8px;
   background: #edf1f6;
+}
+
+.probe-image.small {
+  width: 132px;
+  height: 132px;
+}
+
+.probe-order-action {
+  margin-top: 12px;
 }
 
 .error-copy {
@@ -669,6 +772,18 @@ onMounted(loadDashboard);
   .recent-row {
     padding: 12px;
     align-items: flex-start;
+  }
+
+  .probe-gallery-item,
+  .probe-gallery-item.generated {
+    max-width: none;
+    width: 100%;
+  }
+
+  .probe-image,
+  .probe-image.small {
+    width: 100%;
+    height: 220px;
   }
 }
 </style>
