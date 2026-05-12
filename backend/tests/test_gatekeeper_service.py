@@ -82,6 +82,19 @@ class GatekeeperServiceTest(unittest.TestCase):
         self.assertEqual([], result.reasons)
         self.assertEqual(1.0, result.metrics.get("vision_degraded"))
 
+    def test_vision_error_reject_reason_falls_back_to_local_quality_checks(self) -> None:
+        async def analyze(_url: str) -> dict:
+            return {"passed": False, "reject_reason": "vision_error: provider unavailable", "risk_flags": []}
+
+        async def ocr(_url: str) -> dict:
+            return {"passed": True, "risk_flags": [], "detected_text": [], "matched_patterns": []}
+
+        result = self._run_with_patches(analyze, ocr)
+
+        self.assertTrue(result.passed)
+        self.assertEqual([], result.reasons)
+        self.assertEqual(1.0, result.metrics.get("vision_degraded"))
+
     def test_ocr_empty_failure_falls_back_to_local_quality_checks(self) -> None:
         async def analyze(_url: str) -> dict:
             return {"passed": True, "risk_flags": []}

@@ -281,13 +281,16 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
         if isinstance(vision, dict) and vision.get("passed") is False:
             reject_reason = str(vision.get("reject_reason") or "gatekeeper_reject")
             reason_code, advice = _normalize_vision_reject_reason(reject_reason)
-            return GatekeeperResult(
-                passed=False,
-                reasons=[reason_code],
-                advice=[advice],
-                metrics=ocr_metrics,
-                risk_flags=sorted(set(risk_flags)),
-            )
+            if reason_code == "vision_unavailable":
+                ocr_metrics["vision_degraded"] = 1.0
+            else:
+                return GatekeeperResult(
+                    passed=False,
+                    reasons=[reason_code],
+                    advice=[advice],
+                    metrics=ocr_metrics,
+                    risk_flags=sorted(set(risk_flags)),
+                )
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(image_url)
