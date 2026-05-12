@@ -15,6 +15,7 @@ STUDIO_LIGHTING_GUARDRAILS = (
     "Hard studio-quality requirements: do not use harsh outdoor backlight as the primary light; "
     "do not leave the face in shadow; do not blow out sky, windows, or dress highlights; "
     "use large softbox-style key light plus gentle fill light on every face; "
+    "keep the lighting controlled and studio-grade even when the requested scene is outdoors; "
     "keep facial exposure natural, luminous, and slightly brighter than the background; "
     "preserve realistic skin tone and refined bridal-retouch texture"
 )

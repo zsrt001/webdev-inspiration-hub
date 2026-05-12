@@ -22,7 +22,12 @@ from app.models.live_portrait_job import LivePortraitJob, LivePortraitStatus
 from app.services.template_service import get_template_by_id
 from app.services.credit_service import add_credits_async, COST_PER_GENERATION, COST_LIVE_PORTRAIT
 from app.services import llm_service
-from app.services.prompt_brain import build_prompt, get_negative_prompt
+from app.services.generation_policy import (
+    build_generation_negative_prompt,
+    build_studio_generation_prompt,
+    qa_retry_reasons_for_mode,
+)
+from app.services.generation_state_service import record_generation_qa_failure
 from app.services.qa_service import output_passes
 from app.services.storage import storage_service
 
@@ -565,41 +570,19 @@ class ComfyUIService:
         outfit_text: str | None,
         is_couple: bool,
     ) -> str:
-        legacy_override = (prompt_override or "").strip()
-        normalized_global_style = (global_style_text or "").strip() or None
-        normalized_scene_text = (scene_text or "").strip() or None
-        normalized_outfit_text = (outfit_text or "").strip() or None
-
-        if legacy_override and not any([normalized_global_style, normalized_scene_text, normalized_outfit_text]):
-            prompt_text = legacy_override
-        else:
-            prompt_text = build_prompt(
-                template,
-                user_text=normalized_global_style or legacy_override or None,
-                scene_text=normalized_scene_text,
-                clothing_text=normalized_outfit_text,
-                is_couple=is_couple,
-            )
-
-        if is_couple:
-            prompt_text = (
-                f"{prompt_text.rstrip('.')}."
-                " Balanced couple blocking, equal prominence for both subjects,"
-                " natural hand placement, readable silhouettes, clear arm separation,"
-                " symmetric spacing between bride and groom."
-            )
+        prompt_text = build_studio_generation_prompt(
+            template=template,
+            prompt_override=prompt_override,
+            global_style_text=global_style_text,
+            scene_text=scene_text,
+            outfit_text=outfit_text,
+            is_couple=is_couple,
+        )
         return await llm_service.optimize_generation_prompt(prompt_text, is_couple=is_couple)
 
     @staticmethod
     def _build_negative_prompt(*, is_couple: bool) -> str:
-        negative = get_negative_prompt()
-        if not is_couple:
-            return negative
-        return (
-            f"{negative}, fused faces, merged heads, duplicate bride, duplicate groom,"
-            " shared torso, conjoined shoulders, extra bouquet, overlapping limbs,"
-            " swapped identity, asymmetric couple framing"
-        )
+        return build_generation_negative_prompt(is_couple=is_couple)
 
     @staticmethod
     def _tune_couple_workflow(
@@ -1117,20 +1100,7 @@ class ComfyUIService:
                     couple_control_filename = None
 
             inpaint_used = False
-            inpaint_eligible = {
-                "fused_faces",
-                "body_fusion",
-                "subject_missing",
-                "identity_swap",
-                "identity_mismatch",
-                "extra_limbs",
-                "bad_hands",
-                "dress_exposure_error",
-                "face_distortion",
-                "cropped_face",
-                "headless",
-                "severe_artifacts",
-            }
+            inpaint_eligible = qa_retry_reasons_for_mode(is_couple=True)
             if self._using_cloud():
                 inpaint_eligible = set()
 
@@ -1292,32 +1262,21 @@ class ComfyUIService:
                     source_image_urls=[str(url) for url in user_images if url],
                 )
                 if not qa_ok:
-                    async with async_session_maker() as db:
-                        result = await db.execute(select(Order).where(Order.id == order_uuid))
-                        order = result.scalar_one_or_none()
-                        if order:
-                            base_params = order.generation_params if isinstance(order.generation_params, dict) else {}
-                            debug = base_params.get("debug") if isinstance(base_params.get("debug"), dict) else {}
-                            qa_history = debug.get("qa_history") if isinstance(debug.get("qa_history"), list) else []
-                            qa_history.append(
-                                {
-                                    "attempt": attempt + 1,
-                                    "reasons": list(qa_reasons),
-                                    "candidate_url": primary_image_url,
-                                }
-                            )
-                            debug["qa_history"] = qa_history[-8:]
-                            base_params["debug"] = debug
-                            base_params["qa_last_reasons"] = list(qa_reasons)
-                            base_params["qa_attempt_count"] = attempt + 1
-                            base_params["couple_guardrails"] = {
+                    await record_generation_qa_failure(
+                        order_uuid,
+                        attempt=attempt + 1,
+                        reasons=qa_reasons,
+                        candidate_url=primary_image_url,
+                        engine=settings.generation_provider_name,
+                        extra_params={
+                            "couple_guardrails": {
                                 "is_couple": bool(is_couple),
                                 "subject_count": normalized_subject_count,
                                 "couple_flow": couple_flow,
                                 "inpaint_eligible": sorted(inpaint_eligible),
                             }
-                            order.generation_params = base_params
-                            await db.commit()
+                        },
+                    )
 
                     # Couple close-up fallback: try a single masked inpaint fix before doing a full regenerate.
                     if (

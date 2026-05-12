@@ -23,7 +23,16 @@ from app.services.trial_access_service import prepare_delivered_image_urls, is_t
 from app.models.credit_transaction import CreditTransactionType
 from app.services import llm_service
 from app.services.credit_service import COST_PER_GENERATION, add_credits_async
-from app.services.prompt_brain import build_prompt, get_negative_prompt, get_studio_guardrails
+from app.services.generation_policy import (
+    QA_MAX_ATTEMPTS as GENERATION_QA_MAX_ATTEMPTS,
+    QA_RETRY_REASONS as GENERATION_QA_RETRY_REASONS,
+    build_generation_negative_prompt,
+    build_studio_generation_prompt,
+    resolve_generation_aspect_ratio,
+    should_retry_qa,
+)
+from app.services.generation_state_service import record_generation_qa_failure
+from app.services.prompt_brain import get_studio_guardrails
 from app.services.qa_service import output_passes
 from app.services.storage import storage_service
 from app.services.template_service import get_template_by_id
@@ -37,22 +46,8 @@ class WenwenService:
 
     CIRCUIT_FAILURE_THRESHOLD = 5
     CIRCUIT_COOLDOWN_SECONDS = 60
-    QA_MAX_ATTEMPTS = 2
-    QA_RETRY_REASONS = {
-        "bad_hands",
-        "extra_limbs",
-        "face_distortion",
-        "cropped_face",
-        "fused_faces",
-        "body_fusion",
-        "severe_artifacts",
-        "dress_exposure_error",
-        "identity_mismatch",
-        "identity_swap",
-        "subject_missing",
-        "headless",
-        "other",
-    }
+    QA_MAX_ATTEMPTS = GENERATION_QA_MAX_ATTEMPTS
+    QA_RETRY_REASONS = GENERATION_QA_RETRY_REASONS
 
     def __init__(self) -> None:
         self._runtime_validation_ok = False
@@ -321,12 +316,7 @@ class WenwenService:
 
     @classmethod
     def _should_retry_qa(cls, reasons: list[str], attempt: int) -> bool:
-        if int(attempt or 0) >= cls.QA_MAX_ATTEMPTS:
-            return False
-        normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
-        if not normalized:
-            return True
-        return bool(normalized & cls.QA_RETRY_REASONS)
+        return should_retry_qa(reasons, attempt, max_attempts=cls.QA_MAX_ATTEMPTS)
 
     async def _complete_provider_urls(
         self,
@@ -470,12 +460,7 @@ class WenwenService:
     @staticmethod
     def _build_size(is_couple: bool) -> str:
         configured = settings.wenwen_image_size_couple if is_couple else settings.wenwen_image_size_single
-        normalized = str(configured or "").strip().lower().replace("x", ":").replace("/", ":")
-        if not is_couple and normalized == "4:5":
-            return "3:4"
-        if is_couple and normalized == "3:2":
-            return "3:4"
-        return str(configured or "").strip() or "3:4"
+        return resolve_generation_aspect_ratio(configured, is_couple=is_couple)
 
     async def _build_subject_hints(self, user_images: list[str]) -> list[str]:
         hints: list[str] = []
@@ -506,14 +491,15 @@ class WenwenService:
         prompt_enrichment: bool = True,
     ) -> tuple[dict[str, Any], str, str]:
         is_couple = bool(subject_count and int(subject_count) >= 2)
-        prompt_text = build_prompt(
+        prompt_text = build_studio_generation_prompt(
             template=template,
-            user_text=prompt_override or global_style_text,
+            prompt_override=prompt_override,
+            global_style_text=global_style_text,
             scene_text=scene_text,
-            clothing_text=outfit_text,
+            outfit_text=outfit_text,
             is_couple=is_couple,
         )
-        negative_prompt = get_negative_prompt()
+        negative_prompt = build_generation_negative_prompt(is_couple=is_couple)
 
         if prompt_enrichment:
             prompt_text = await llm_service.optimize_generation_prompt(prompt_text, is_couple=is_couple)
@@ -823,28 +809,13 @@ class WenwenService:
         reasons: list[str],
         candidate_url: str,
     ) -> None:
-        async with async_session_maker() as db:
-            result = await db.execute(select(Order).where(Order.id == order_uuid))
-            order = result.scalar_one_or_none()
-            if not order:
-                return
-            params = order.generation_params if isinstance(order.generation_params, dict) else {}
-            debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
-            qa_history = debug.get("qa_history") if isinstance(debug.get("qa_history"), list) else []
-            qa_history.append(
-                {
-                    "attempt": int(attempt),
-                    "reasons": list(reasons),
-                    "candidate_url": candidate_url,
-                    "engine": "wenwen",
-                }
-            )
-            debug["qa_history"] = qa_history[-8:]
-            params["debug"] = debug
-            params["qa_last_reasons"] = list(reasons)
-            params["qa_attempt_count"] = int(attempt)
-            order.generation_params = params
-            await db.commit()
+        await record_generation_qa_failure(
+            order_uuid,
+            attempt=attempt,
+            reasons=reasons,
+            candidate_url=candidate_url,
+            engine="wenwen",
+        )
 
     async def _load_order_generation_context(self, order_uuid: uuid.UUID) -> dict[str, Any] | None:
         async with async_session_maker() as db:
