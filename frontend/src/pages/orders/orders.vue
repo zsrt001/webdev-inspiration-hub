@@ -3,7 +3,7 @@
     <NavBar />
 
     <view class="orders-shell">
-      <view class="orders-hero">
+      <view class="orders-header">
         <text class="orders-kicker">{{ tr('作品档案', 'Archive') }}</text>
         <text class="orders-title heading-serif">{{ t('orders.title') }}</text>
         <text class="orders-subtitle">{{ t('orders.subtitle') }}</text>
@@ -17,21 +17,18 @@
       </view>
 
       <view v-if="loading" class="state-card">
-        <text class="state-icon">◌</text>
         <text class="state-title">{{ t('orders.loading') }}</text>
       </view>
 
       <view v-else-if="authRequired" class="state-card">
-        <text class="state-icon">◇</text>
         <text class="state-title">{{ t('orders.signin_required') }}</text>
         <text class="state-subtitle">{{ t('orders.signin_required_subtitle') }}</text>
         <button class="btn btn-primary state-action" @tap="goLogin">{{ t('orders.signin') }}</button>
       </view>
 
       <view v-else-if="orders.length === 0" class="state-card">
-        <text class="state-icon">◇</text>
         <text class="state-title">{{ t('orders.empty') }}</text>
-        <button class="btn btn-primary state-action" @tap="goToHome">{{ t('orders.start') }}</button>
+        <button class="btn btn-primary state-action" @tap="goToCreate">{{ t('orders.start') }}</button>
       </view>
 
       <view v-else class="orders-grid">
@@ -50,7 +47,7 @@
             </view>
             <view class="order-footer">
               <text class="order-id">#{{ order.id.slice(0, 8) }}</text>
-              <text class="order-link">{{ t('orders.view') }} →</text>
+              <text class="order-link">{{ t('orders.view') }} ></text>
             </view>
           </view>
         </view>
@@ -110,7 +107,17 @@ const templateTitleMap = computed(() => {
   return map;
 });
 
-const pickPrimaryImage = (order: Order): string => {
+const orderStats = computed(() => {
+  const completed = orders.value.filter((order) => order.status === 'COMPLETED').length;
+  const generating = orders.value.filter((order) => ['CREATED', 'CHECKING', 'GENERATING'].includes(order.status)).length;
+  return [
+    { key: 'total', label: tr('总作品', 'Total'), value: orders.value.length },
+    { key: 'completed', label: tr('已交付', 'Delivered'), value: completed },
+    { key: 'generating', label: tr('处理中', 'In Progress'), value: generating },
+  ];
+});
+
+function pickPrimaryImage(order: Order): string {
   const final = order.final_image_urls ? Object.values(order.final_image_urls) : [];
   if (final.length && final[0]) return resolvePublicUrl(final[0]);
 
@@ -118,10 +125,12 @@ const pickPrimaryImage = (order: Order): string => {
   if (preview.length && preview[0]) return resolvePublicUrl(preview[0]);
 
   return resolvePublicUrl('/style-previews/couple_royal_castle.jpg');
-};
+}
 
-const formatDate = (isoString: string): string => {
+function formatDate(isoString: string): string {
   const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return '--';
+
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
@@ -138,38 +147,26 @@ const formatDate = (isoString: string): string => {
     day: 'numeric',
     year: 'numeric',
   });
-};
+}
 
-const resolveStyleName = (order: Order): string => {
+function resolveStyleName(order: Order): string {
   if (order.template_id && templateTitleMap.value.has(order.template_id)) {
     return templateTitleMap.value.get(order.template_id) || t('orders.custom');
   }
   if (order.template_id) return order.template_id;
   return t('orders.custom');
-};
+}
 
-const normalizeOrderRows = (response: OrdersResponse): Order[] => {
+function normalizeOrderRows(response: OrdersResponse): Order[] {
   if (Array.isArray(response)) return response;
   if (Array.isArray(response?.value)) return response.value;
   if (Array.isArray(response?.items)) return response.items;
   if (Array.isArray(response?.results)) return response.results;
   if (Array.isArray(response?.orders)) return response.orders;
   return [];
-};
+}
 
-const orderStats = computed(() => {
-  const completed = orders.value.filter((order) => order.status === 'COMPLETED').length;
-  const generating = orders.value.filter((order) => ['CREATED', 'CHECKING', 'GENERATING'].includes(order.status)).length;
-  const drafts = orders.value.filter((order) => order.status !== 'COMPLETED').length;
-  return [
-    { key: 'total', label: tr('总作品', 'Total'), value: orders.value.length },
-    { key: 'completed', label: tr('已交付', 'Delivered'), value: completed },
-    { key: 'generating', label: tr('处理中', 'In Progress'), value: generating },
-    { key: 'drafts', label: tr('待确认', 'Drafts'), value: drafts },
-  ];
-});
-
-const fetchOrders = async () => {
+async function fetchOrders() {
   loading.value = true;
   error.value = '';
   authRequired.value = false;
@@ -188,14 +185,13 @@ const fetchOrders = async () => {
       previewUrl: pickPrimaryImage(order),
       createdAt: formatDate(order.created_at),
     }));
-  } catch (err) {
-    console.error('Failed to fetch orders:', err);
-    const statusCode = Number((err as any)?.statusCode || 0);
+  } catch (err: any) {
+    const statusCode = Number(err?.statusCode || 0);
     if (statusCode === 401 || statusCode === 403) {
       authRequired.value = true;
       error.value = '';
     } else if (hadExistingOrders) {
-      error.value = t('orders.load_failed');
+      error.value = err?.message || t('orders.load_failed');
     } else {
       error.value = '';
     }
@@ -203,11 +199,9 @@ const fetchOrders = async () => {
   } finally {
     loading.value = false;
   }
-};
+}
 
-onMounted(fetchOrders);
-
-const getStatusText = (status: string): string => {
+function getStatusText(status: string): string {
   const statusMap: Record<string, string> = {
     CREATED: t('orders.status_created'),
     CHECKING: t('orders.status_checking'),
@@ -217,30 +211,32 @@ const getStatusText = (status: string): string => {
     REFUNDED: t('orders.status_refunded'),
   };
   return statusMap[status] || status;
-};
+}
 
-const badgeClass = (status: string) => {
+function badgeClass(status: string): string {
   const normalized = String(status || '').toLowerCase();
   if (normalized === 'completed') return 'completed';
   if (normalized === 'failed' || normalized === 'refunded') return 'failed';
   return 'pending';
-};
+}
 
-const goToHome = () => {
-  uni.reLaunch({ url: '/pages/index/index' });
-};
+function goToCreate() {
+  uni.navigateTo({ url: '/pages/create/index' });
+}
 
-const goLogin = () => {
+function goLogin() {
   uni.navigateTo({ url: '/pages/auth/login' });
-};
+}
 
-const viewOrder = (orderId: string) => {
+function viewOrder(orderId: string) {
   uni.navigateTo({ url: `/pages/preview/preview?id=${orderId}` });
-};
+}
 
-const refresh = () => {
+function refresh() {
   fetchOrders();
-};
+}
+
+onMounted(fetchOrders);
 </script>
 
 <style lang="scss" scoped>
@@ -250,82 +246,93 @@ const refresh = () => {
 }
 
 .orders-shell {
-  max-width: 1400px;
+  max-width: 1240px;
   margin: 0 auto;
   padding: 36px 28px 88px;
 }
 
-.orders-hero {
+.orders-header {
   max-width: 760px;
   margin-bottom: 24px;
 }
 
-.orders-kicker {
+.orders-kicker,
+.stat-label {
   display: block;
-  margin-bottom: 10px;
+  color: #116a60;
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0;
-  color: #116a60;
 }
 
 .orders-title {
   display: block;
-  font-size: 52px;
-  line-height: 1;
+  margin-top: 8px;
   color: #17191f;
-  margin-bottom: 10px;
+  font-size: 48px;
+  line-height: 1.05;
 }
 
-.orders-subtitle {
+.orders-subtitle,
+.state-subtitle {
   display: block;
-  max-width: 640px;
-  font-size: 15px;
-  line-height: 1.8;
+  margin-top: 10px;
   color: #4c5360;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .orders-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
-  margin-bottom: 28px;
+  margin-bottom: 18px;
 }
 
 .stat-card,
-.order-card,
 .state-card,
+.order-card,
 .inline-error {
-  background: #ffffff;
   border: 1px solid #dde1e8;
   border-radius: 8px;
+  background: #ffffff;
   box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
 }
 
 .stat-card {
-  padding: 18px 18px 20px;
-}
-
-.stat-label {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0;
-  color: #6b7280;
+  padding: 18px;
 }
 
 .stat-value {
   display: block;
-  font-size: 34px;
-  line-height: 1;
+  margin-top: 8px;
   color: #17191f;
+  font-size: 32px;
+  line-height: 1;
+}
+
+.state-card {
+  padding: 36px;
+  text-align: center;
+}
+
+.state-title {
+  display: block;
+  color: #17191f;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.state-action {
+  margin-top: 18px;
+  min-height: 44px;
+  padding: 0 22px;
 }
 
 .orders-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
+  gap: 18px;
 }
 
 .order-card {
@@ -334,59 +341,45 @@ const refresh = () => {
 
 .order-media-wrap {
   position: relative;
-  background: #d9dde3;
+  aspect-ratio: 3 / 4;
+  background: #eef1f4;
 }
 
 .order-media {
   width: 100%;
-  aspect-ratio: 4 / 5;
+  height: 100%;
   display: block;
-  object-fit: cover;
-  object-position: center top;
 }
 
 .status-badge {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  min-height: 34px;
-  padding: 0 12px;
+  top: 12px;
+  left: 12px;
+  padding: 7px 10px;
   border-radius: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0;
-  background: rgba(255, 255, 255, 0.95);
-  color: #17191f;
+  background: rgba(23, 25, 31, 0.78);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+}
 
-  &.completed {
-    background: rgba(16, 185, 129, 0.14);
-    color: #047857;
-  }
+.status-badge.completed {
+  background: rgba(17, 106, 96, 0.9);
+}
 
-  &.failed {
-    background: rgba(239, 68, 68, 0.12);
-    color: #b91c1c;
-  }
-
-  &.pending {
-    background: rgba(17, 106, 96, 0.12);
-    color: #116a60;
-  }
+.status-badge.failed {
+  background: rgba(180, 35, 24, 0.9);
 }
 
 .order-content {
-  padding: 18px 18px 20px;
+  padding: 18px;
 }
 
 .order-title {
   display: block;
-  font-size: 28px;
-  line-height: 1.08;
   color: #17191f;
-  margin-bottom: 12px;
+  font-size: 22px;
+  line-height: 1.15;
 }
 
 .order-meta,
@@ -395,81 +388,40 @@ const refresh = () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.order-meta {
-  font-size: 12px;
+  margin-top: 14px;
   color: #6b7280;
-  margin-bottom: 14px;
-}
-
-.order-footer {
-  padding-top: 14px;
-  border-top: 1px solid #edf0f4;
-}
-
-.order-id,
-.order-link {
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.order-id {
-  color: #6b7280;
-}
-
-.order-link {
-  color: #116a60;
-}
-
-.state-card,
-.inline-error {
-  padding: 56px 24px;
-  text-align: center;
-}
-
-.state-icon {
-  display: block;
-  font-size: 34px;
-  color: #116a60;
-  margin-bottom: 14px;
-}
-
-.state-title {
-  display: block;
-  font-size: 16px;
-  color: #17191f;
-}
-
-.state-subtitle {
-  display: block;
-  max-width: 460px;
-  margin: 10px auto 0;
   font-size: 13px;
-  line-height: 1.7;
-  color: #6b7280;
 }
 
-.state-action,
-.retry-btn {
-  margin: 20px auto 0;
+.order-link {
+  color: #116a60;
+  font-weight: 900;
 }
 
 .inline-error {
-  margin-top: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 16px 18px;
+  color: #b42318;
+  font-size: 14px;
 }
 
-@media (max-width: 1180px) {
-  .orders-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.retry-btn {
+  min-height: 40px;
+  padding: 0 16px;
+}
 
+@media (max-width: 980px) {
+  .orders-stats,
   .orders-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 640px) {
   .orders-shell {
     padding: 28px 18px 72px;
   }
@@ -481,20 +433,6 @@ const refresh = () => {
   .orders-stats,
   .orders-grid {
     grid-template-columns: 1fr;
-  }
-
-  .orders-grid {
-    gap: 18px;
-  }
-
-  .order-title {
-    font-size: 24px;
-  }
-
-  .order-meta,
-  .order-footer {
-    flex-direction: column;
-    align-items: flex-start;
   }
 }
 </style>

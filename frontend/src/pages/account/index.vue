@@ -6,28 +6,23 @@
       <view class="account-hero">
         <view>
           <text class="account-kicker">{{ tr('账户中心', 'Account Center') }}</text>
-          <text class="account-title heading-serif">{{ tr('我的 AI 婚纱空间', 'My AI Wedding Space') }}</text>
+          <text class="account-title heading-serif">{{ tr('我的 VowPic 空间', 'My VowPic Space') }}</text>
           <text class="account-subtitle">
-            {{ tr('查看登录状态、积分余额、订阅、积分流水和生成历史。', 'Review sign-in status, credits, subscription, ledger entries, and generation history.') }}
+            {{ tr('使用 Google 登录后，积分、订单和高清交付都会绑定到同一个已验证账号。', 'Sign in with Google to keep credits, orders, and HD deliveries under one verified account.') }}
           </text>
         </view>
 
         <view class="hero-actions">
-          <button v-if="!accountAuthed" class="btn btn-primary hero-btn" @tap="goLogin">
-            {{ tr('登录 / 注册', 'Sign in / Register') }}
-          </button>
-          <button v-if="!accountAuthed && supabaseEnabled" class="btn btn-outline hero-btn" @tap="signIn">
+          <button v-if="!accountAuthed && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
-          <button v-if="adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">
-            Admin console
-          </button>
+          <button v-if="adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">Admin console</button>
           <button class="btn btn-outline hero-btn" @tap="refresh">{{ tr('刷新', 'Refresh') }}</button>
         </view>
       </view>
 
       <view v-if="loading" class="state-card">
-        <text class="state-title">{{ tr('账户数据加载中...', 'Loading account data...') }}</text>
+        <text class="state-title">{{ tr('正在加载账户数据...', 'Loading account data...') }}</text>
       </view>
 
       <view v-else-if="error" class="state-card error-card">
@@ -37,7 +32,7 @@
 
       <template v-else>
         <view class="overview-grid">
-          <view class="profile-card glass-card">
+          <view class="profile-card panel">
             <view class="profile-head">
               <image v-if="profile?.avatar_url" class="avatar" :src="profile.avatar_url" mode="aspectFill" />
               <view v-else class="avatar fallback-avatar">
@@ -46,11 +41,11 @@
               <view>
                 <text class="card-eyebrow">{{ tr('登录状态', 'Sign-in Status') }}</text>
                 <text class="profile-name">{{ displayName }}</text>
-                <text class="profile-email">{{ profile?.email || tr('访客账户', 'Guest account') }}</text>
+                <text class="profile-email">{{ profile?.email || tr('访客账号', 'Guest account') }}</text>
               </view>
             </view>
 
-            <view class="profile-meta">
+            <view class="meta-list">
               <view class="meta-row">
                 <text>{{ tr('认证方式', 'Provider') }}</text>
                 <text>{{ providerLabel }}</text>
@@ -74,23 +69,23 @@
             </button>
           </view>
 
-          <view class="credits-card glass-card">
+          <view class="credits-card panel">
             <text class="card-eyebrow">{{ tr('当前积分', 'Current Credits') }}</text>
             <text class="credit-value heading-serif">{{ balance?.balance ?? 0 }}</text>
             <view class="credit-status" :class="{ blocked: !balance?.can_generate }">
               <text>{{ balance?.can_generate ? tr('可立即生成', 'Ready to generate') : tr('积分不足', 'Insufficient credits') }}</text>
             </view>
-            <text class="credit-copy">{{ tr('基础单人生成', 'Base single generation') }} 2 {{ tr('积分起', 'credits and up') }}</text>
+            <text class="credit-copy">{{ tr('基础单人生成', 'Base single generation') }} {{ balance?.cost_per_generation || 2 }} {{ tr('积分起', 'credits and up') }}</text>
             <view class="credit-actions">
               <button class="btn btn-primary compact-btn" @tap="goCreate">{{ tr('开始创作', 'Create') }}</button>
               <button class="btn btn-outline compact-btn" @tap="goOrders">{{ tr('查看订单', 'Orders') }}</button>
             </view>
           </view>
 
-          <view class="subscription-card glass-card">
+          <view class="subscription-card panel">
             <text class="card-eyebrow">{{ tr('订阅状态', 'Subscription') }}</text>
             <text class="subscription-name heading-serif">{{ activePlanName }}</text>
-            <view class="profile-meta subscription-meta">
+            <view class="meta-list">
               <view class="meta-row">
                 <text>{{ tr('状态', 'Status') }}</text>
                 <text>{{ subscriptionStore.current?.status || 'none' }}</text>
@@ -105,7 +100,7 @@
               </view>
               <view class="meta-row">
                 <text>{{ tr('自动续订', 'Renewal') }}</text>
-                <text>{{ subscriptionStore.current?.cancel_at_period_end ? tr('已取消续订', 'Cancel scheduled') : tr('开启', 'Active') }}</text>
+                <text>{{ subscriptionStore.current?.cancel_at_period_end ? tr('已设置取消', 'Cancel scheduled') : tr('开启', 'Active') }}</text>
               </view>
             </view>
             <button
@@ -119,7 +114,7 @@
         </view>
 
         <view class="content-grid">
-          <view class="glass-card ledger-card">
+          <view class="panel ledger-card">
             <view class="section-head">
               <view>
                 <text class="section-kicker">{{ tr('积分流水', 'Credit Ledger') }}</text>
@@ -144,7 +139,7 @@
             </view>
           </view>
 
-          <view class="glass-card orders-card">
+          <view class="panel orders-card">
             <view class="section-head">
               <view>
                 <text class="section-kicker">{{ tr('生成记录', 'Generation Records') }}</text>
@@ -270,17 +265,17 @@ const activePlanName = computed(() => subscriptionStore.activePlan?.name || tr('
 const retentionNotice = computed(() => {
   const retention = legalPolicies.value?.retention || {};
   return tr(
-    `原图 ${retention.source_images_days || 7} 天后删除；免费作品 ${retention.free_generated_days || 30} 天，付费积分包 ${retention.paid_generated_days || 90} 天，订阅用户 ${retention.subscription_generated_days || 180} 天，Studio ${retention.studio_generated_days || 365} 天。`,
-    `Source images are deleted after ${retention.source_images_days || 7} days. Generated images: free ${retention.free_generated_days || 30} days, paid packs ${retention.paid_generated_days || 90} days, subscriptions ${retention.subscription_generated_days || 180} days, Studio ${retention.studio_generated_days || 365} days.`,
+    `原图 ${retention.source_images_days || 7} 天后删除；免费作品 ${retention.free_generated_days || 30} 天，付费积分包 ${retention.paid_generated_days || 90} 天，订阅用户 ${retention.subscription_generated_days || 180} 天。`,
+    `Source images are deleted after ${retention.source_images_days || 7} days. Generated images: free ${retention.free_generated_days || 30} days, paid packs ${retention.paid_generated_days || 90} days, subscriptions ${retention.subscription_generated_days || 180} days.`,
   );
 });
 
 const providerLabel = computed(() => {
-  if (supabaseAuthed.value) return 'Google / Supabase';
+  if (supabaseAuthed.value) return 'Google';
   if (passwordAuthed.value) return tr('用户名密码', 'Username/password');
   const provider = getAuthProvider() || profile.value?.auth_provider || 'local';
   if (provider === 'password') return tr('用户名密码', 'Username/password');
-  return provider === 'local' ? tr('本地访客', 'Local guest') : provider;
+  return provider === 'local' ? tr('访客会话', 'Guest session') : provider;
 });
 
 function shortId(value?: string | null): string {
@@ -394,7 +389,7 @@ async function loadAccount(): Promise<void> {
     supabaseAuthed.value = isSupabaseLoggedIn();
     passwordAuthed.value = isPasswordLoggedIn();
   } catch (err: any) {
-    error.value = err?.message || tr('账户暂时无法刷新，请稍后重试', 'Account details are temporarily unavailable. Please try again shortly.');
+    error.value = err?.message || tr('账户暂时无法刷新，请稍后重试。', 'Account details are temporarily unavailable. Please try again shortly.');
   } finally {
     loading.value = false;
   }
@@ -410,10 +405,6 @@ async function signIn(): Promise<void> {
   } catch (err: any) {
     uni.showToast({ title: err?.message || tr('登录失败', 'Sign-in failed'), icon: 'none' });
   }
-}
-
-function goLogin(): void {
-  uni.navigateTo({ url: '/pages/auth/login' });
 }
 
 async function signOut(): Promise<void> {
@@ -434,7 +425,7 @@ async function cancelSubscription(): Promise<void> {
 async function deleteOrder(orderId: string): Promise<void> {
   uni.showModal({
     title: tr('删除作品', 'Delete image'),
-    content: tr('删除后图片文件会被移除，订单记录不会再展示。', 'Image files will be removed and this order will no longer be shown.'),
+    content: tr('删除后图片文件会被移除，订单记录不再展示。', 'Image files will be removed and this order will no longer be shown.'),
     success: async (res) => {
       if (!res.confirm) return;
       try {
@@ -481,7 +472,7 @@ onMounted(async () => {
 }
 
 .account-shell {
-  max-width: 1400px;
+  max-width: 1240px;
   margin: 0 auto;
   padding: 40px 28px 96px;
 }
@@ -498,19 +489,19 @@ onMounted(async () => {
 .card-eyebrow,
 .section-kicker {
   display: block;
+  color: #116a60;
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0;
-  color: #116a60;
 }
 
 .account-title {
   display: block;
   max-width: 760px;
   margin-top: 10px;
+  color: #17191f;
   font-size: 52px;
   line-height: 1.02;
-  color: #17191f;
 }
 
 .account-subtitle,
@@ -518,9 +509,9 @@ onMounted(async () => {
   display: block;
   max-width: 760px;
   margin-top: 12px;
-  font-size: 13px;
-  line-height: 1.8;
   color: #4c5360;
+  font-size: 14px;
+  line-height: 1.8;
 }
 
 .hero-actions,
@@ -546,7 +537,7 @@ onMounted(async () => {
 }
 
 .overview-grid {
-  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.6fr) minmax(300px, 0.75fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.65fr) minmax(300px, 0.75fr);
   margin-bottom: 20px;
 }
 
@@ -554,11 +545,11 @@ onMounted(async () => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.glass-card,
+.panel,
 .state-card {
-  background: #ffffff;
   border: 1px solid #dde1e8;
   border-radius: 8px;
+  background: #ffffff;
   box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
 }
 
@@ -578,129 +569,130 @@ onMounted(async () => {
 }
 
 .avatar {
-  width: 72px;
-  height: 72px;
-  border-radius: 8px;
-  overflow: hidden;
-  background: #17191f;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #edf2f1;
+  flex: 0 0 auto;
 }
 
 .fallback-avatar {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  font-size: 28px;
-  font-weight: 800;
+  color: #116a60;
+  font-size: 24px;
+  font-weight: 900;
 }
 
 .profile-name,
-.subscription-name {
+.subscription-name,
+.credit-value {
   display: block;
-  margin-top: 5px;
-  font-size: 24px;
-  font-weight: 800;
   color: #17191f;
 }
 
-.subscription-name {
-  margin: 14px 0 10px;
+.profile-name {
+  margin-top: 6px;
+  font-size: 22px;
+  font-weight: 900;
 }
 
-.profile-email,
-.row-subtitle,
-.row-date,
-.credit-copy {
+.profile-email {
   display: block;
-  font-size: 13px;
+  margin-top: 4px;
   color: #6b7280;
+  font-size: 13px;
 }
 
-.profile-meta {
+.meta-list {
   display: grid;
-  gap: 10px;
-  margin-bottom: 18px;
+  gap: 12px;
 }
 
 .meta-row {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
-  border-bottom: 1px solid #edf0f4;
-  font-size: 14px;
+  gap: 12px;
   color: #4c5360;
-}
-
-.meta-row text:last-child {
-  color: #17191f;
-  font-weight: 700;
-  text-align: right;
+  font-size: 13px;
 }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.logout-btn {
+  width: 100%;
+  margin-top: 22px;
+}
+
 .credit-value {
-  display: block;
-  margin-top: 12px;
-  font-size: 76px;
-  line-height: 0.95;
-  color: #116a60;
+  margin-top: 8px;
+  font-size: 60px;
+  line-height: 1;
 }
 
 .credit-status {
   display: inline-flex;
-  margin: 18px 0 10px;
-  padding: 8px 12px;
+  margin-top: 12px;
+  padding: 8px 10px;
   border-radius: 8px;
-  background: rgba(22, 163, 74, 0.1);
-  color: #166534;
+  background: #eef8f5;
+  color: #116a60;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 900;
 }
 
 .credit-status.blocked {
-  background: rgba(220, 38, 38, 0.1);
-  color: #991b1b;
+  background: #fff4f2;
+  color: #b42318;
+}
+
+.credit-copy {
+  display: block;
+  margin-top: 14px;
+  color: #4c5360;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .credit-actions {
-  margin-top: 22px;
+  margin-top: 18px;
+}
+
+.subscription-name {
+  margin: 10px 0 16px;
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.state-card,
+.empty-panel {
+  padding: 28px;
+  text-align: center;
+}
+
+.state-title {
+  display: block;
+  color: #17191f;
+  font-size: 20px;
+  font-weight: 900;
 }
 
 .section-head {
   display: flex;
-  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .section-title {
   display: block;
-  margin-top: 4px;
-  font-size: 24px;
-  font-weight: 800;
+  margin-top: 6px;
   color: #17191f;
-}
-
-.mini-link {
-  min-width: 60px;
-  height: 34px;
-  padding: 0 12px;
-  border: 1px solid #dde1e8;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #116a60;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.danger-link {
-  color: #be123c;
-  border-color: rgba(190, 18, 60, 0.2);
+  font-size: 22px;
+  font-weight: 900;
 }
 
 .ledger-list,
@@ -715,20 +707,32 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px;
-  border-radius: 8px;
-  background: #f7f8fa;
+  padding: 14px 0;
+  border-bottom: 1px solid #edf0f4;
 }
 
-.order-row {
-  cursor: pointer;
+.ledger-row:last-child,
+.order-row:last-child {
+  border-bottom: none;
+}
+
+.row-title,
+.row-subtitle,
+.row-date {
+  display: block;
 }
 
 .row-title {
-  display: block;
-  font-size: 15px;
-  font-weight: 800;
   color: #17191f;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.row-subtitle,
+.row-date {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 12px;
 }
 
 .row-side {
@@ -736,117 +740,94 @@ onMounted(async () => {
 }
 
 .amount {
-  display: block;
+  color: #4c5360;
   font-size: 18px;
   font-weight: 900;
-  color: #17191f;
 }
 
 .amount.positive {
-  color: #15803d;
+  color: #116a60;
 }
 
 .amount.negative {
-  color: #be123c;
+  color: #b42318;
 }
 
 .order-thumb {
-  width: 58px;
-  height: 58px;
+  width: 68px;
+  height: 88px;
   border-radius: 8px;
-  background: #d9dde3;
+  background: #eef1f4;
   flex: 0 0 auto;
 }
 
 .order-main {
+  flex: 1 1 auto;
   min-width: 0;
-  flex: 1;
 }
 
 .order-status {
   padding: 7px 10px;
   border-radius: 8px;
-  font-size: 11px;
+  background: #f1f3f6;
+  color: #4c5360;
+  font-size: 12px;
   font-weight: 900;
-  text-transform: uppercase;
 }
 
 .order-status.completed {
-  background: rgba(22, 163, 74, 0.1);
-  color: #166534;
+  background: #eef8f5;
+  color: #116a60;
 }
 
 .order-status.failed {
-  background: rgba(220, 38, 38, 0.1);
-  color: #991b1b;
+  background: #fff4f2;
+  color: #b42318;
 }
 
-.order-status.pending {
-  background: rgba(202, 138, 4, 0.12);
-  color: #92400e;
+.mini-link {
+  min-height: 36px;
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: #116a60;
+  font-size: 13px;
+  font-weight: 900;
 }
 
-.empty-panel,
-.state-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  min-height: 180px;
-  padding: 24px;
-  color: #6b7280;
-  text-align: center;
+.danger-link {
+  color: #b42318;
 }
 
-.state-title {
-  font-size: 16px;
-  font-weight: 800;
-  color: #17191f;
-}
-
-.error-card {
-  border-color: rgba(220, 38, 38, 0.18);
-}
-
-@media (max-width: 1100px) {
-  .overview-grid,
-  .content-grid {
-    grid-template-columns: 1fr;
-  }
-
+@media (max-width: 980px) {
   .account-hero {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .account-title {
-    font-size: 40px;
+  .overview-grid,
+  .content-grid {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 640px) {
   .account-shell {
-    padding: 28px 16px 72px;
+    padding: 28px 18px 72px;
   }
 
-  .profile-head,
+  .account-title {
+    font-size: 38px;
+  }
+
   .ledger-row,
   .order-row {
     align-items: flex-start;
-  }
-
-  .ledger-row,
-  .order-row {
     flex-direction: column;
   }
 
   .row-side {
     text-align: left;
-  }
-
-  .credit-value {
-    font-size: 58px;
   }
 }
 </style>

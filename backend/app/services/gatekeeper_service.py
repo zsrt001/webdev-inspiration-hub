@@ -1,4 +1,4 @@
-"""Gatekeeper service for Smart Input quality validation."""
+"""Gatekeeper service for upload safety and basic portrait quality checks."""
 
 from __future__ import annotations
 
@@ -21,23 +21,51 @@ except Exception:  # pragma: no cover
 settings = get_settings()
 
 _BLOCKED_FLAG_RESPONSES: dict[str, tuple[str, str]] = {
-    "id_document": ("sensitive_document_upload", "检测到身份证或证件照风险，请上传生活自拍照"),
-    "passport": ("sensitive_document_upload", "检测到护照风险，请上传生活自拍照"),
-    "driver_license": ("sensitive_document_upload", "检测到驾驶证风险，请上传生活自拍照"),
-    "bank_card": ("sensitive_document_upload", "检测到银行卡风险，请上传生活自拍照"),
-    "payment_qr": ("payment_code_upload", "检测到收款码或支付码风险，请上传生活自拍照"),
-    "explicit_nudity": ("unsafe_image_content", "检测到不符合平台规范的裸露或色情内容，请更换照片"),
-    "minor": ("minor_related_image", "检测到未成年人相关风险，请更换照片"),
+    "id_document": ("sensitive_document_upload", "Please upload a regular portrait photo, not an ID or document image."),
+    "passport": ("sensitive_document_upload", "Please upload a regular portrait photo, not a passport image."),
+    "driver_license": ("sensitive_document_upload", "Please upload a regular portrait photo, not a driver license image."),
+    "bank_card": ("sensitive_document_upload", "Please upload a regular portrait photo, not a bank card image."),
+    "payment_qr": ("payment_code_upload", "Please upload a portrait photo, not a payment or QR-code image."),
+    "explicit_nudity": ("unsafe_image_content", "Please upload a safe portrait photo that follows the platform policy."),
+    "minor": ("minor_related_image", "Please upload an adult portrait photo."),
 }
 
 _VISION_REASON_RULES: tuple[tuple[tuple[str, ...], str, str], ...] = (
-    (("no face", "face not detected", "未检测到人脸", "没有人脸", "无人脸"), "no_face_detected", "未检测到清晰正脸，请上传单人生活自拍"),
-    (("multiple face", "multiple faces", "多人脸", "多个人脸"), "multiple_faces_detected", "请仅保留 1 位主体，避免多人同时入镜"),
-    (("side face", "profile", "侧脸", "偏头"), "side_face_detected", "请正对镜头拍摄，避免大角度侧脸"),
-    (("too dark", "dark", "underexposed", "光线过暗", "太暗"), "face_too_dark", "照片过暗，请在明亮环境重新拍摄"),
-    (("overexposed", "too bright", "过曝", "曝光过度"), "image_overexposed", "照片过曝，请在柔和光线下重拍"),
-    (("blur", "blurry", "out of focus", "模糊", "不清晰"), "image_too_blurry", "照片模糊，请对焦后重拍"),
-    (("occluded", "遮挡", "口罩", "墨镜"), "face_occluded", "请避免口罩、墨镜或其他遮挡物遮住面部"),
+    (
+        ("no face", "face not detected", "no human face"),
+        "no_face_detected",
+        "No clear face was detected. Please upload a front-facing portrait.",
+    ),
+    (
+        ("multiple face", "multiple faces"),
+        "multiple_faces_detected",
+        "Please upload one clear main subject per portrait slot.",
+    ),
+    (
+        ("side face", "profile"),
+        "side_face_detected",
+        "Please use a front-facing photo instead of a strong side profile.",
+    ),
+    (
+        ("too dark", "dark", "underexposed"),
+        "face_too_dark",
+        "The photo is too dark. Please upload a brighter portrait.",
+    ),
+    (
+        ("overexposed", "too bright"),
+        "image_overexposed",
+        "The photo is overexposed. Please use softer lighting.",
+    ),
+    (
+        ("blur", "blurry", "out of focus"),
+        "image_too_blurry",
+        "The photo is too blurry. Please upload a sharper portrait.",
+    ),
+    (
+        ("occluded", "mask", "sunglasses", "covered"),
+        "face_occluded",
+        "Please avoid masks, sunglasses, or anything covering the face.",
+    ),
 )
 
 
@@ -63,7 +91,7 @@ def _build_blocked_flag_response(risk_flags: list[str], metrics: dict[str, float
             advice.append(message)
     if not reasons:
         reasons = ["sensitive_upload"]
-        advice = ["检测到高风险图片，请更换为生活自拍照"]
+        advice = ["This image looks risky. Please upload a clear everyday portrait photo."]
     return GatekeeperResult(
         passed=False,
         reasons=reasons,
@@ -77,11 +105,11 @@ def _normalize_vision_reject_reason(raw_reason: str | None) -> tuple[str, str]:
     normalized = (raw_reason or "").strip()
     lowered = normalized.lower()
     if lowered.startswith("vision_error:"):
-        return "vision_unavailable", "质量检测服务暂时不可用，请稍后重试"
+        return "vision_unavailable", "Image quality service is temporarily unavailable. Please try again shortly."
     for keywords, reason_code, advice in _VISION_REASON_RULES:
-        if any(keyword in lowered or keyword in normalized for keyword in keywords):
+        if any(keyword in lowered for keyword in keywords):
             return reason_code, advice
-    return "vision_reject", normalized or "图片未通过质量检测，请更换更清晰的生活自拍照"
+    return "vision_reject", normalized or "The photo did not pass the quality check. Please upload a clearer portrait."
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -89,9 +117,7 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _compute_colorfulness(image) -> float:
-    """
-    Hasler-Suesstrunk colorfulness metric (sampling-based, no numpy).
-    """
+    """Hasler-Suesstrunk colorfulness metric using a small RGB sample."""
     sample = image.resize((96, 96)).convert("RGB")
     pixels = list(sample.getdata())
     if not pixels:
@@ -119,10 +145,7 @@ def _compute_colorfulness(image) -> float:
 
 
 def _compute_skin_ratio(image) -> float:
-    """
-    Estimate skin-like pixels ratio in YCbCr color space.
-    Used only as a weak signal for document interception.
-    """
+    """Estimate skin-like pixels in YCbCr space as a weak document-risk signal."""
     sample = image.resize((128, 128)).convert("YCbCr")
     pixels = list(sample.getdata())
     if not pixels:
@@ -143,10 +166,8 @@ def _estimate_document_risk(
     brightness: float,
     edge_mean: float,
 ) -> tuple[bool, list[str], dict[str, float]]:
-    """
-    Lightweight local heuristic for detecting document-like uploads (ID/passport).
-    This is conservative: we only block when several signals agree.
-    """
+    """Conservative local heuristic for ID/passport/card-like images."""
+    _ = edge_mean
     if Image is None or ImageStat is None or ImageFilter is None:
         return False, [], {}
 
@@ -195,14 +216,10 @@ def _estimate_document_risk(
 
 async def check_image_quality(image_url: str) -> GatekeeperResult:
     """
-    Minimal quality gatekeeper:
-    - Resolution check
-    - Brightness check
-    - Sharpness check (edge strength)
-
-    Production-grade path:
-    - If `JIEKOU_API_KEY` is set, run Vision gate first (face/lighting/blur) and reject on FAIL.
-    - Then (optionally) run fast local Pillow checks for extra safety and metrics.
+    Upload gate:
+    - blocks explicit safety/document risks
+    - degrades provider instability to local checks
+    - applies local resolution, exposure, and sharpness checks
     """
     risk_flags: list[str] = []
     ocr_metrics: dict[str, float] = {}
@@ -251,7 +268,7 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
                         return GatekeeperResult(
                             passed=False,
                             reasons=["ocr_reject"],
-                            advice=["检测到敏感文本风险，请上传生活自拍照"],
+                            advice=["Sensitive text was detected. Please upload a regular portrait photo."],
                             metrics=ocr_metrics,
                             risk_flags=sorted(set(risk_flags)),
                         )
@@ -281,7 +298,7 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
         return GatekeeperResult(
             passed=False,
             reasons=["file_too_large"],
-            advice=["图片过大，请压缩后再上传"],
+            advice=["The image is too large. Please upload a file under 10MB."],
             metrics={},
             risk_flags=sorted(set(risk_flags)),
         )
@@ -291,14 +308,14 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
             return GatekeeperResult(
                 passed=True,
                 reasons=[],
-                advice=["当前环境未安装 Pillow，已跳过本地图像质量检测"],
+                advice=["Local image checks were skipped because Pillow is unavailable."],
                 metrics={},
                 risk_flags=sorted(set(risk_flags)),
             )
         return GatekeeperResult(
             passed=False,
             reasons=["local_checker_unavailable"],
-            advice=["服务缺少本地质检依赖 Pillow，请稍后重试"],
+            advice=["Image quality checks are temporarily unavailable. Please try again later."],
             metrics={},
             risk_flags=sorted(set(risk_flags)),
         )
@@ -311,22 +328,22 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
 
     if min(width, height) < 512:
         reasons.append("low_resolution")
-        advice.append("分辨率过低，请上传更清晰的照片")
+        advice.append("The photo resolution is too low. Please upload a clearer portrait.")
 
     gray = image.convert("L")
     brightness = ImageStat.Stat(gray).mean[0]
     if brightness < 60:
         reasons.append("too_dark")
-        advice.append("光线过暗，请在明亮环境下拍摄")
+        advice.append("The photo is too dark. Please use a brighter portrait.")
     if brightness > 230:
         reasons.append("overexposed")
-        advice.append("光线过强，请避免过曝")
+        advice.append("The photo is overexposed. Please use softer lighting.")
 
     edges = gray.filter(ImageFilter.FIND_EDGES)
     edge_mean = ImageStat.Stat(edges).mean[0]
     if edge_mean < 7:
         reasons.append("too_blurry")
-        advice.append("照片过于模糊，请对焦清晰后重拍")
+        advice.append("The photo is too blurry. Please upload a sharper portrait.")
 
     doc_blocked, doc_flags, doc_metrics = _estimate_document_risk(
         image,
@@ -339,8 +356,9 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
         risk_flags.extend(doc_flags)
         if "sensitive_document_upload" not in reasons:
             reasons.append("sensitive_document_upload")
-        if "检测到疑似证件或卡证素材，请上传生活自拍照" not in advice:
-            advice.append("检测到疑似证件或卡证素材，请上传生活自拍照")
+        document_advice = "This looks like a document or card image. Please upload a regular portrait photo."
+        if document_advice not in advice:
+            advice.append(document_advice)
 
     return GatekeeperResult(
         passed=len(reasons) == 0,

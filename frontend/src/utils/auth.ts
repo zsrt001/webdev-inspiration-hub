@@ -1,6 +1,7 @@
 /**
- * Authentication utilities for Web guest sessions and WeChat login.
- * All platforms exchange against the backend `/auth/login` endpoint.
+ * Authentication utilities for web guest sessions and Google sign-in.
+ * Password auth helpers stay available for disabled legacy routes, but Google
+ * is the only public account entry point in the current production scope.
  */
 
 import { normalizeBaseUrl, resolveDefaultApiBaseUrl } from './apiConfig';
@@ -173,7 +174,6 @@ async function submitPasswordAuth(
     if (extra) {
         Object.assign(data, extra);
     }
-    // Always include previous_guest_id for account merge
     const guestId = String(uni.getStorageSync(GUEST_ID_KEY) || '').trim();
     if (guestId) {
         data.previous_guest_id = guestId;
@@ -193,7 +193,7 @@ async function submitPasswordAuth(
         const detail = payload?.detail;
         const message = typeof detail === 'string'
             ? detail
-            : detail?.message || detail?.error || '账号或密码不正确';
+            : detail?.message || detail?.error || 'Invalid username or password';
         throw new Error(message);
     }
 
@@ -233,7 +233,9 @@ export async function sendVerificationCode(email: string, apiBaseUrl?: string): 
     if (response.statusCode < 200 || response.statusCode >= 300) {
         const payload: any = response.data || {};
         const detail = payload?.detail;
-        const message = typeof detail === 'string' ? detail : '发送验证码失败';
+        const message = typeof detail === 'string'
+            ? detail
+            : detail?.message || detail?.error || 'Failed to send verification code';
         throw new Error(message);
     }
 }

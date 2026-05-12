@@ -4,14 +4,14 @@ import { API_BASE_URL, isH5Runtime, resolveBackendOrigin } from './apiConfig';
 function getRuntimeLocale(): 'zh' | 'en' {
     try {
         const stored = uni.getStorageSync('aws_locale');
-        return stored === 'en' ? 'en' : 'zh';
+        return stored === 'zh' ? 'zh' : 'en';
     } catch {
-        return 'zh';
+        return 'en';
     }
 }
 
 function localeText(zh: string, en: string): string {
-    return getRuntimeLocale() === 'en' ? en : zh;
+    return getRuntimeLocale() === 'zh' ? zh : en;
 }
 
 export function resolveApiUrl(path: string): string {
@@ -63,6 +63,7 @@ export interface ApiError extends Error {
     statusCode?: number;
     detail?: any;
     code?: string;
+    requestId?: string;
 }
 
 function canRecoverUnauthorized(path: string): boolean {
@@ -149,6 +150,7 @@ function createApiError(statusCode: number, payload: any): ApiError {
     const error = new Error(extractErrorMessage(detail, statusCode)) as ApiError;
     error.statusCode = statusCode;
     error.detail = detail;
+    error.requestId = String(payload?.request_id || detail?.request_id || '').trim() || undefined;
     if (detail && typeof detail === 'object' && typeof detail.error === 'string') {
         error.code = detail.error;
     }

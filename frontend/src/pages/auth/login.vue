@@ -2,17 +2,17 @@
   <view class="auth-page">
     <view class="auth-shell">
       <view class="brand" @tap="goHome">
-        <text class="brand-title heading-serif">AI Wedding</text>
+        <text class="brand-title heading-serif">VowPic</text>
         <text class="brand-subtitle">
-          {{ tr('Sign in with Google to keep credits, orders, and generation records tied to one verified account.', 'Sign in with Google to keep credits, orders, and generation records tied to one verified account.') }}
+          {{ tr('使用 Google 登录后，积分、订单和生成记录都会绑定到同一个已验证账号。', 'Sign in with Google to keep credits, orders, and generation records tied to one verified account.') }}
         </text>
       </view>
 
       <view class="auth-card">
-        <text class="auth-kicker">{{ tr('Secure sign in', 'Secure sign in') }}</text>
-        <text class="auth-title heading-serif">{{ tr('Continue with Google', 'Continue with Google') }}</text>
+        <text class="auth-kicker">{{ tr('安全登录', 'Secure sign in') }}</text>
+        <text class="auth-title heading-serif">{{ tr('使用 Google 继续', 'Continue with Google') }}</text>
         <text class="auth-copy">
-          {{ tr('Google is the only public sign-in method right now, so email verification will not block image creation.', 'Google is the only public sign-in method right now, so email verification will not block image creation.') }}
+          {{ tr('当前公开登录方式只保留 Google，邮箱验证码不会阻塞图片生成。', 'Google is the only public sign-in method right now, so email verification will not block image creation.') }}
         </text>
 
         <view class="form-stack">
@@ -25,24 +25,24 @@
             @tap="googleSignIn"
           >
             <text class="google-mark">G</text>
-            <text>{{ submitting ? tr('Connecting...', 'Connecting...') : tr('Sign in with Google', 'Sign in with Google') }}</text>
+            <text>{{ submitting ? tr('连接中...', 'Connecting...') : tr('使用 Google 登录', 'Sign in with Google') }}</text>
           </button>
 
           <button v-else class="btn btn-primary auth-button" disabled>
-            {{ tr('Google sign-in unavailable', 'Google sign-in unavailable') }}
+            {{ tr('Google 登录暂不可用', 'Google sign-in unavailable') }}
           </button>
 
           <view class="auth-note">
-            <text class="auth-note-title">{{ tr('Account protection', 'Account protection') }}</text>
-            <text class="auth-note-line">{{ tr('One welcome credit grant per verified Google account.', 'One welcome credit grant per verified Google account.') }}</text>
-            <text class="auth-note-line">{{ tr('Device and network limits still protect free trials from abuse.', 'Device and network limits still protect free trials from abuse.') }}</text>
+            <text class="auth-note-title">{{ tr('账户保护', 'Account protection') }}</text>
+            <text class="auth-note-line">{{ tr('每个已验证 Google 账号只发放一次欢迎积分。', 'One welcome credit grant per verified Google account.') }}</text>
+            <text class="auth-note-line">{{ tr('设备和网络限流会继续保护免费试用，防止刷积分。', 'Device and network limits still protect free trials from abuse.') }}</text>
           </view>
         </view>
 
         <view class="auth-footer">
-          <text>{{ tr('New here? Google creates your account automatically.', 'New here? Google creates your account automatically.') }}</text>
+          <text>{{ tr('第一次使用？Google 会自动创建你的账号。', 'New here? Google creates your account automatically.') }}</text>
         </view>
-        <text class="guest-link" @tap="goHome">{{ tr('Continue as guest', 'Continue as guest') }}</text>
+        <text class="guest-link" @tap="goHome">{{ tr('先浏览首页', 'Continue as guest') }}</text>
       </view>
     </view>
   </view>

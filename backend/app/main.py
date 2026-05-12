@@ -3,11 +3,19 @@
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.core.error_response import (
+    http_exception_handler,
+    request_id_middleware,
+    unhandled_exception_handler,
+    validation_exception_handler,
+)
 from app.core.rate_limit import RateLimitMiddleware
 from app.core.runtime_checks import (
     run_core_readiness_checks,
@@ -123,6 +131,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RateLimitMiddleware)
+app.middleware("http")(request_id_middleware)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)
 
 # Mount static files directory for backend-owned assets
 import os
