@@ -682,7 +682,7 @@ async def _dispatch_generation(
     *,
     background_tasks: BackgroundTasks | None = None,
 ) -> None:
-    base_params = order.generation_params if isinstance(order.generation_params, dict) else {}
+    base_params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
     if settings.using_inline_generation_execution:
         inline_task_id = f"inline-{order.id}"
         if settings.is_vercel_runtime and background_tasks is not None:
