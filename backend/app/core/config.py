@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     gatekeeper_allow_without_pillow: bool = False
     qa_allow_without_pillow: bool = False
     qa_require_vision: bool = False
+    qa_require_identity_vision: bool = True
     webhook_base_url: str = ""  # Public URL for webhooks
     frontend_base_url: str = ""  # Public URL for web/join links
     # Hosted checkout / staged commercial validation

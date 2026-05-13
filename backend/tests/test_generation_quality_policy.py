@@ -22,6 +22,7 @@ from app.services.generation_policy import (  # noqa: E402
 )
 from app.services.generation_state_service import merge_qa_failure_state  # noqa: E402
 from app.services.prompt_brain import build_prompt, get_negative_prompt, get_studio_guardrails  # noqa: E402
+from app.services import qa_service  # noqa: E402
 from app.services.qa_service import blocking_vision_reasons  # noqa: E402
 from app.services.template_service import get_template_by_id  # noqa: E402
 from app.services.wenwen_service import WenwenService  # noqa: E402
@@ -58,6 +59,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("Identity lock is mandatory", prompt)
         self.assertIn("preserve the same face shape", prompt)
         self.assertIn("castle-inspired indoor bridal studio set", prompt)
+        self.assertIn("no mountain vista", prompt)
+        self.assertNotIn("painted mountain backdrop", prompt)
 
     def test_couple_guardrails_require_studio_lighting_for_both_subjects(self) -> None:
         guardrails = get_studio_guardrails(is_couple=True)
@@ -77,6 +80,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("face in shadow", negative)
         self.assertIn("blown-out sky", negative)
         self.assertIn("cropped dress", negative)
+        self.assertIn("unrequested mountain vista", negative)
 
     def test_legacy_prompt_override_cannot_bypass_studio_guardrails(self) -> None:
         template = get_template_by_id("solo_royal_castle")
@@ -243,6 +247,36 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(names[1], "identity_closeup_1.jpg")
         self.assertTrue(names[2].startswith("identity_full_2."))
         self.assertEqual(names[3], "identity_closeup_2.jpg")
+
+    async def test_single_image_edit_does_not_treat_style_ref_as_second_identity(self) -> None:
+        files = await WenwenService()._build_image_edit_reference_files(
+            [self._data_url()],
+            style_refs=[self._data_url()],
+        )
+
+        names = [item[1][0] for item in files]
+        self.assertEqual(len(files), 3)
+        self.assertTrue(names[0].startswith("identity_full_1."))
+        self.assertEqual(names[1], "identity_closeup_1.jpg")
+        self.assertTrue(names[2].startswith("style_reference_1."))
+        self.assertFalse(any(name.startswith("identity_full_2.") for name in names))
+
+    async def test_identity_qa_fails_closed_when_vision_is_unavailable(self) -> None:
+        original = qa_service.llm_service.is_vision_provider_configured
+        original_required = qa_service.settings.qa_require_identity_vision
+        qa_service.llm_service.is_vision_provider_configured = lambda: False
+        qa_service.settings.qa_require_identity_vision = True
+        try:
+            passed, reasons = await qa_service.verify_with_vision(
+                "https://cdn.example.com/generated.jpg",
+                source_image_urls=["https://cdn.example.com/source.jpg"],
+            )
+        finally:
+            qa_service.llm_service.is_vision_provider_configured = original
+            qa_service.settings.qa_require_identity_vision = original_required
+
+        self.assertFalse(passed)
+        self.assertEqual(reasons, ["vision_not_configured"])
 
 
 if __name__ == "__main__":

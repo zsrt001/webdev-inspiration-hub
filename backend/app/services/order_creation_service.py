@@ -642,6 +642,25 @@ def _build_generation_params(
         "access_tier": credit_context.access_tier,
         "download_locked": not credit_context.has_paid_credits,
         "gatekeeper": {"passed": True, "images": gatekeeper_results},
+        "quality_control": {
+            "preflight": {
+                "gatekeeper_required": True,
+                "gatekeeper_passed": True,
+                "identity_reference_count": subject_count,
+                "distinct_identity_reference_count": distinct_subject_images,
+            },
+            "generation": {
+                "identity_edit_required": bool(settings.wenwen_require_image_edit_identity),
+                "identity_references_first": True,
+                "style_references_are_not_identities": True,
+                "studio_prompt_guardrails": True,
+            },
+            "postcheck": {
+                "local_qa_required": True,
+                "vision_qa_required_for_identity": bool(settings.qa_require_identity_vision),
+                "qa_retry_max_attempts": settings.generation_max_retries + 1,
+            },
+        },
         "remote_join": bool(request.remote_join),
         "couple_flow": couple_flow,
         "subject_count": subject_count,

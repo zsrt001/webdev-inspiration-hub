@@ -165,16 +165,16 @@ class WenwenService:
                     return None
 
                 if height >= width:
-                    left = int(width * 0.08)
-                    right = int(width * 0.92)
-                    top = 0
-                    bottom = int(height * 0.64)
+                    left = int(width * 0.18)
+                    right = int(width * 0.82)
+                    top = int(height * 0.03)
+                    bottom = int(height * 0.52)
                 else:
-                    crop_width = int(width * 0.58)
+                    crop_width = int(width * 0.46)
                     left = max(0, (width - crop_width) // 2)
                     right = min(width, left + crop_width)
-                    top = 0
-                    bottom = int(height * 0.78)
+                    top = int(height * 0.04)
+                    bottom = int(height * 0.72)
 
                 cropped = rgb.crop((left, top, max(left + 1, right), max(top + 1, bottom)))
                 largest_edge = max(cropped.size)
@@ -193,14 +193,15 @@ class WenwenService:
 
     async def _build_image_edit_reference_files(
         self,
-        refs: list[str],
+        identity_refs: list[str],
+        style_refs: list[str] | None = None,
     ) -> list[tuple[str, tuple[str, bytes, str]]]:
         """Put identity full refs and identity close-ups before any style refs."""
         files: list[tuple[str, tuple[str, bytes, str]]] = []
-        identity_refs = list(refs[:2])
-        extra_refs = list(refs[2:])
+        identity_source_refs = list(identity_refs[:2])
+        extra_refs = list(style_refs or [])
 
-        for index, ref in enumerate(identity_refs, start=1):
+        for index, ref in enumerate(identity_source_refs, start=1):
             content, content_type = await self._fetch_remote_image_bytes(ref)
             ext = self._ext_from_content_type(content_type)
             files.append(("image", (f"identity_full_{index}.{ext}", content, content_type)))
@@ -913,17 +914,25 @@ class WenwenService:
             generation_mode="image_edit",
         )
 
-        files = await self._build_image_edit_reference_files(refs)
+        identity_ref_count = min(len([url for url in (user_images or []) if str(url or "").strip()]), 2)
+        identity_refs = refs[:identity_ref_count]
+        style_refs = refs[identity_ref_count:]
+        files = await self._build_image_edit_reference_files(identity_refs, style_refs=style_refs)
         if not files:
             raise RuntimeError("wenwen_image_edit_identity_refs_missing")
 
         edit_prompt = (
+            "This is an identity-preserving wedding photo edit, not text-to-image character creation. "
+            "The identity reference file(s) define the real person or people. "
+            "The generated face(s) must remain recognizably the same individual(s) from the source portrait(s). "
+            "If a requested style conflicts with identity, prioritize identity.\n\n"
             f"{prompt_text}\n\n"
             "Use the uploaded full identity reference(s) and identity close-up crop(s) as hard identity anchors. "
             "Preserve the exact facial structure, face shape, eyes, nose, mouth, jawline, chin, age impression, "
             "skin undertone, and natural expression. For couple images, keep reference 1 as subject A and reference 2 "
             "as subject B; keep the two people visually distinct and preserve both identities. "
-            "Do not generate a generic attractive bride or groom if that changes the source identity.\n"
+            "Do not generate a generic attractive bride or groom if that changes the source identity. "
+            "Do not treat style, scene, or clothing references as additional identities.\n"
             f"Negative prompt: {negative_prompt}"
         )
         data = {

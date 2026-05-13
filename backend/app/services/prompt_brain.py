@@ -32,6 +32,7 @@ STUDIO_LIGHTING_GUARDRAILS = (
     "do not leave the face in shadow; do not blow out sky, windows, or dress highlights; "
     "use large softbox-style key light plus gentle fill light on every face; "
     "keep the lighting controlled and studio-grade even when the requested scene is outdoors; "
+    "for indoor or studio templates, keep the scene indoors and do not add mountain vistas, open sky, or outdoor balconies; "
     "keep facial exposure natural, luminous, and slightly brighter than the background; "
     "preserve realistic skin tone and refined bridal-retouch texture; avoid tourist-photo lighting, AI-glossy skin, "
     "fantasy-game styling, and cheap composited background"
@@ -63,7 +64,7 @@ NEGATIVE_PROMPT = (
     "duplicate person, duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, "
     "harsh backlight, face in shadow, blown-out sky, crushed shadows, overfilled frame, "
     "cropped dress, cut-off gown train, low-end snapshot, tourist snapshot, fantasy game costume, "
-    "cheap composite, over-smoothed bridal ad"
+    "cheap composite, over-smoothed bridal ad, unrequested mountain vista, unrequested open sky, outdoor travel snapshot"
 )
 
 

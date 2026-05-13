@@ -60,7 +60,7 @@ async def verify_with_vision(
     source_image_urls: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
     if not llm_service.is_vision_provider_configured():
-        if settings.qa_require_vision:
+        if settings.qa_require_vision or (source_image_urls and settings.qa_require_identity_vision):
             return False, ["vision_not_configured"]
         return True, []
     verdict = await llm_service.verify_generated_image_quality(
@@ -99,6 +99,8 @@ async def output_passes(
     )
     if not vision_ok:
         blocking_reasons = blocking_vision_reasons(vision_reasons)
+        if source_image_urls and settings.qa_require_identity_vision and "vision_error" in blocking_reasons:
+            return False, ["vision_error"]
         if not blocking_reasons:
             return True, []
         if blocking_reasons == ["vision_error"]:
