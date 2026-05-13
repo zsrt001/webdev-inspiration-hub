@@ -6,6 +6,8 @@ generation dispatch all succeed or fail as one unit.
 """
 
 import uuid
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
@@ -101,6 +103,8 @@ async def create_order_for_user(
     )
     if is_couple_request:
         _validate_distinct_couple_subjects(subject_images)
+    request_fingerprint = _request_fingerprint(request)
+    await _enforce_active_order_limit(db, current_user.id, request_fingerprint)
 
     credits_cost = get_generation_cost(
         template.category if template else None,
@@ -166,6 +170,76 @@ def normalize_identity_image_url(image_url: str) -> str:
         normalized_path = parts.path.rstrip("/") or parts.path
         return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), normalized_path, "", ""))
     return raw
+
+
+def _request_fingerprint(request: OrderCreate) -> str:
+    payload = {
+        "template_id": request.template_id,
+        "user_images": [normalize_identity_image_url(image) for image in (request.user_images or [])],
+        "director_mode": bool(request.director_mode),
+        "remote_join": bool(request.remote_join),
+        "global_style_text": request.global_style_text or None,
+        "scene_text": request.scene_text or None,
+        "outfit_text": request.outfit_text or None,
+        "scene_preset_id": request.scene_preset_id or None,
+        "clothing_preset_id": request.clothing_preset_id or None,
+        "prompt_override": request.prompt_override or None,
+        "scene_image_url": normalize_identity_image_url(request.scene_image_url or ""),
+        "clothing_image_url": normalize_identity_image_url(request.clothing_image_url or ""),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _enforce_active_order_limit(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    request_fingerprint: str,
+) -> None:
+    limit = max(0, int(settings.order_active_user_limit or 0))
+    if limit <= 0:
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(settings.order_active_window_minutes or 45)))
+    result = await db.execute(
+        select(Order)
+        .where(
+            Order.user_id == user_id,
+            Order.deleted_at.is_(None),
+            Order.status.in_([OrderStatus.CHECKING, OrderStatus.GENERATING]),
+            Order.updated_at >= cutoff,
+        )
+        .order_by(Order.updated_at.desc(), Order.created_at.desc())
+        .limit(limit)
+    )
+    active_orders = result.scalars().all()
+    if not active_orders:
+        return
+
+    existing = active_orders[0]
+    params = dict(existing.generation_params) if isinstance(existing.generation_params, dict) else {}
+    if params.get("request_fingerprint") == request_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "generation_already_in_progress",
+                "message": "This generation is already in progress. Opening the existing order.",
+                "existing_order_id": str(existing.id),
+                "status": existing.status.value if isinstance(existing.status, OrderStatus) else str(existing.status),
+                "reused": True,
+            },
+        )
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "generation_already_in_progress",
+            "message": "One generation is already in progress. Please wait for it to finish before starting another.",
+            "existing_order_id": str(existing.id),
+            "status": existing.status.value if isinstance(existing.status, OrderStatus) else str(existing.status),
+            "reused": False,
+        },
+    )
 
 
 def build_director_decision_hints(
@@ -564,6 +638,7 @@ def _build_generation_params(
     )
     return {
         "credits_cost": credit_context.credits_cost,
+        "request_fingerprint": _request_fingerprint(request),
         "access_tier": credit_context.access_tier,
         "download_locked": not credit_context.has_paid_credits,
         "gatekeeper": {"passed": True, "images": gatekeeper_results},

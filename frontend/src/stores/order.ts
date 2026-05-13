@@ -85,6 +85,7 @@ export const useOrderStore = defineStore('order', () => {
     const loading = ref(false);
     const pollingTimer = ref<number | null>(null);
     const pollingInFlight = ref(false);
+    const pollingStartedAt = ref(0);
 
     const isGenerating = computed(() => {
         const status = currentOrder.value?.status;
@@ -130,10 +131,18 @@ export const useOrderStore = defineStore('order', () => {
     /**
      * Start polling order status
      */
+    function nextPollingInterval(defaultIntervalMs: number): number {
+        const elapsedMs = Date.now() - pollingStartedAt.value;
+        if (elapsedMs < 90 * 1000) return Math.max(1500, defaultIntervalMs);
+        if (elapsedMs < 8 * 60 * 1000) return 5000;
+        return 10000;
+    }
+
     function startPolling(orderId: string, intervalMs: number = 2000) {
         stopPolling();
+        pollingStartedAt.value = Date.now();
 
-        pollingTimer.value = setInterval(async () => {
+        const tick = async () => {
             if (pollingInFlight.value) return;
             pollingInFlight.value = true;
             try {
@@ -142,13 +151,17 @@ export const useOrderStore = defineStore('order', () => {
                 const hasTerminalError = !!currentOrder.value?.error_message;
                 if (currentOrder.value?.status === 'COMPLETED' || hasTerminalError) {
                     stopPolling();
+                    return;
                 }
             } catch (error) {
                 console.error('Polling error:', error);
             } finally {
                 pollingInFlight.value = false;
             }
-        }, intervalMs) as unknown as number;
+            pollingTimer.value = setTimeout(tick, nextPollingInterval(intervalMs)) as unknown as number;
+        };
+
+        pollingTimer.value = setTimeout(tick, Math.max(250, intervalMs)) as unknown as number;
     }
 
     /**
@@ -156,10 +169,11 @@ export const useOrderStore = defineStore('order', () => {
      */
     function stopPolling() {
         if (pollingTimer.value) {
-            clearInterval(pollingTimer.value);
+            clearTimeout(pollingTimer.value);
             pollingTimer.value = null;
         }
         pollingInFlight.value = false;
+        pollingStartedAt.value = 0;
     }
 
     return {

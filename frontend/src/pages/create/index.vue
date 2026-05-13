@@ -576,6 +576,12 @@ async function submitCreate() {
     const apiError = error as ApiError;
     if (apiError.statusCode === 402) {
       showPaymentModal.value = true;
+    } else if (apiError.statusCode === 409 && apiError.detail?.existing_order_id) {
+      uni.showToast({
+        title: apiError.message || tr('已有任务正在生成', 'A generation is already running'),
+        icon: 'none',
+      });
+      uni.navigateTo({ url: `/pages/preview/preview?id=${apiError.detail.existing_order_id}` });
     } else {
       uni.showToast({ title: error.message || tr('创建任务失败，请稍后重试', 'Failed to create the task'), icon: 'none' });
     }

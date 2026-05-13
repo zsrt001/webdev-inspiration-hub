@@ -1046,10 +1046,13 @@ class WenwenService:
             order = result.scalar_one_or_none()
             refund_amount = COST_PER_GENERATION
             clean_error_message = str(error_message or "").strip() or failure_code or "unknown_generation_error"
+            params = {}
             if order and isinstance(order.generation_params, dict):
                 params = order.generation_params
                 try:
-                    if "credits_cost" in params:
+                    if int(params.get("refunded_credits") or 0) > 0:
+                        refund_amount = 0
+                    elif "credits_cost" in params:
                         refund_amount = max(0, int(params.get("credits_cost") or 0))
                 except Exception:
                     refund_amount = COST_PER_GENERATION
@@ -1066,7 +1069,7 @@ class WenwenService:
             if order:
                 order.status = OrderStatus.CREATED
                 order.error_message = clean_error_message
-                params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+                params = dict(params)
                 params["failure_code"] = failure_code
                 params["failure_provider"] = "wenwen"
                 if refund_amount:
@@ -1227,8 +1230,8 @@ class WenwenService:
             if retry_context is not None:
                 task_id = "__qa_retry__"
             if not task_id:
-                if str(params.get("execution_mode") or "").strip() == "inline":
-                    age_seconds = self._seconds_since(order.updated_at)
+                if str(params.get("execution_mode") or "").strip() in {"inline", "inline_background"}:
+                    age_seconds = self._seconds_since(params.get("inline_background_started_at")) or self._seconds_since(order.updated_at)
                     if age_seconds is not None and age_seconds > 20 * 60:
                         await self._fail_order(
                             order_uuid,

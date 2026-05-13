@@ -8,7 +8,8 @@ import os
 import uuid
 from typing import Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
@@ -103,6 +104,29 @@ async def _get_or_create_credit_row(db: AsyncSession, user_id: uuid.UUID | str) 
     return row
 
 
+async def _get_or_create_credit_row_for_update(db: AsyncSession, user_id: uuid.UUID | str) -> UserCredit:
+    user_uuid = _to_user_uuid(user_id)
+    if not isinstance(db, AsyncSession):
+        return await _get_or_create_credit_row(db, user_uuid)
+
+    await db.execute(
+        pg_insert(UserCredit)
+        .values(id=uuid.uuid4(), user_id=user_uuid, balance=0)
+        .on_conflict_do_nothing(index_elements=[UserCredit.user_id])
+    )
+    result = await db.execute(
+        select(UserCredit)
+        .where(UserCredit.user_id == user_uuid)
+        .with_for_update()
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        row = UserCredit(user_id=user_uuid, balance=0)
+        db.add(row)
+        await db.flush()
+    return row
+
+
 async def grant_welcome_bonus(
     db: AsyncSession,
     user_id: uuid.UUID | str,
@@ -123,7 +147,15 @@ async def grant_welcome_bonus(
     if existing.scalar_one_or_none() is not None:
         return False
 
-    row = await _get_or_create_credit_row(db, user_uuid)
+    row = await _get_or_create_credit_row_for_update(db, user_uuid)
+    existing = await db.execute(
+        select(CreditTransaction).where(
+            CreditTransaction.user_id == user_uuid,
+            CreditTransaction.transaction_type == CreditTransactionType.WELCOME_BONUS,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return False
     row.balance += DEFAULT_CREDITS
     await db.flush()
     await _record_credit_transaction(
@@ -186,10 +218,11 @@ async def deduct_credits_async(
     if amount_int <= 0:
         raise ValueError("Credit deduction amount must be positive")
 
-    row = await _get_or_create_credit_row(db, user_id)
+    row = await _get_or_create_credit_row_for_update(db, user_id)
     if int(row.balance or 0) < amount_int:
         return False
     row.balance = int(row.balance or 0) - amount_int
+    row.updated_at = func.now()
     await _record_credit_transaction(
         db,
         user_id,
@@ -240,8 +273,9 @@ async def add_credits_with_transaction_async(
     description: str | None = None,
     metadata: dict | None = None,
 ) -> tuple[int, CreditTransaction]:
-    row = await _get_or_create_credit_row(db, user_id)
+    row = await _get_or_create_credit_row_for_update(db, user_id)
     row.balance = int(row.balance or 0) + int(amount)
+    row.updated_at = func.now()
     transaction = await _record_credit_transaction(
         db,
         user_id,
