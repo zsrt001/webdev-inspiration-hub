@@ -129,6 +129,13 @@ class GenerationQualityPolicyTest(unittest.TestCase):
             self.assertLessEqual(max(prepared_image.size), WenwenService.INLINE_REFERENCE_MAX_EDGE)
             self.assertAlmostEqual(prepared_image.size[0] / prepared_image.size[1], 2200 / 1600, places=2)
 
+    def test_wenwen_native_generation_has_fallback_model(self) -> None:
+        candidates = WenwenService._native_model_candidates()
+
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertEqual(candidates[0], "gemini-3-pro-image-preview")
+        self.assertIn("gemini-3.1-flash-image-preview", candidates)
+
 
 class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_remote_couple_payload_uses_shared_generation_policy(self) -> None:

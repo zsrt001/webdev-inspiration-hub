@@ -86,10 +86,14 @@ class WenwenService:
 
     @classmethod
     def _native_generation_url(cls) -> str:
+        return cls._native_generation_url_for_model(cls._effective_image_model())
+
+    @classmethod
+    def _native_generation_url_for_model(cls, model: str) -> str:
         template = str(settings.wenwen_native_image_generate_path_template or "").strip()
         if not template:
             template = "/v1beta/models/{model}:generateContent"
-        path = template.replace("{model}", cls._effective_image_model())
+        path = template.replace("{model}", str(model or "").strip())
         if path.startswith("http://") or path.startswith("https://"):
             return path
         return f"{cls._origin_url()}{cls._normalize_path(path)}"
@@ -115,6 +119,23 @@ class WenwenService:
     @staticmethod
     def _effective_image_model() -> str:
         return str(settings.wenwen_image_model or "").strip()
+
+    @classmethod
+    def _native_model_candidates(cls) -> list[str]:
+        candidates: list[str] = []
+        for value in [cls._effective_image_model(), *(settings.wenwen_image_fallback_models or "").split(",")]:
+            model = str(value or "").strip()
+            if model and model not in candidates:
+                candidates.append(model)
+        return candidates
+
+    @staticmethod
+    def _native_read_timeout(*, model_index: int, model_count: int) -> float:
+        if not settings.is_vercel_runtime:
+            return max(120.0, float(settings.wenwen_poll_timeout or 240))
+        if model_count > 1:
+            return 150.0 if model_index == 0 else 120.0
+        return min(270.0, max(120.0, float(settings.wenwen_poll_timeout or 240)))
 
     @staticmethod
     def _headers() -> dict[str, str]:
@@ -1179,17 +1200,65 @@ class WenwenService:
             max_retries = max(0, settings.wenwen_max_retries)
             is_couple = bool(subject_count and int(subject_count) >= 2)
             delivered_urls: list[str] = []
+            native_models = self._native_model_candidates()
             for attempt in range(1 + max_retries):
                 try:
-                    read_timeout = 285.0 if settings.is_vercel_runtime else max(120.0, float(settings.wenwen_poll_timeout or 240))
-                    async with httpx.AsyncClient(
-                        timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=120.0, pool=10.0),
-                        follow_redirects=True,
-                        trust_env=False,
-                    ) as client:
-                        response = await client.post(
-                            self._native_generation_url(), json=native_payload, headers=self._headers(),
+                    response: httpx.Response | None = None
+                    selected_model = native_models[0] if native_models else self._effective_image_model()
+                    last_transient_error: Exception | None = None
+                    for model_index, native_model in enumerate(native_models or [self._effective_image_model()]):
+                        read_timeout = self._native_read_timeout(
+                            model_index=model_index,
+                            model_count=len(native_models) or 1,
                         )
+                        try:
+                            async with httpx.AsyncClient(
+                                timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=120.0, pool=10.0),
+                                follow_redirects=True,
+                                trust_env=False,
+                            ) as client:
+                                candidate_response = await client.post(
+                                    self._native_generation_url_for_model(native_model),
+                                    json=native_payload,
+                                    headers=self._headers(),
+                                )
+                        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                            last_transient_error = exc
+                            if model_index < len(native_models) - 1:
+                                logger.warning(
+                                    "Wenwen native model transient error; falling back from %s to %s: %s",
+                                    native_model,
+                                    native_models[model_index + 1],
+                                    exc,
+                                )
+                                continue
+                            raise
+
+                        if candidate_response.status_code in {400, 422, 500, 503}:
+                            lowered = candidate_response.text.lower()
+                            model_unavailable = (
+                                "model_not_found" in lowered
+                                or "no available channel" in lowered
+                                or "not supported model for image generation" in lowered
+                            )
+                            if model_unavailable and model_index < len(native_models) - 1:
+                                logger.warning(
+                                    "Wenwen native model unavailable; falling back from %s to %s: %s",
+                                    native_model,
+                                    native_models[model_index + 1],
+                                    candidate_response.status_code,
+                                )
+                                continue
+
+                        response = candidate_response
+                        selected_model = native_model
+                        break
+
+                    if response is None:
+                        if last_transient_error:
+                            raise last_transient_error
+                        raise RuntimeError("wenwen_response_missing")
+
                     if response.status_code in {401, 403}:
                         raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
                     if response.status_code in {402, 429}:
@@ -1198,7 +1267,7 @@ class WenwenService:
                         lowered = response.text.lower()
                         if "model_not_found" in lowered or "no available channel" in lowered or "not supported model for image generation" in lowered:
                             raise RuntimeError(
-                                f"wenwen_model_unavailable:{self._effective_image_model()}:{response.status_code}:{response.text[:240]}"
+                                f"wenwen_model_unavailable:{selected_model}:{response.status_code}:{response.text[:240]}"
                             )
                         if response.status_code >= 500 and attempt < max_retries:
                             logger.warning("Wenwen 5xx (attempt %d/%d): %s", attempt + 1, 1 + max_retries, response.status_code)
@@ -1212,7 +1281,7 @@ class WenwenService:
                     await self._update_order_generating(
                         order_uuid,
                         task_id=task_id,
-                        payload=native_payload,
+                        payload={**native_payload, "_provider_model": selected_model},
                         prompt_text=prompt_text,
                         negative_prompt=negative_prompt,
                     )

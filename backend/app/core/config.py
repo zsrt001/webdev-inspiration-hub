@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     wenwen_text_model: str = "deepseek-v3.2"
     wenwen_vision_model: str = "gemini-3.1-pro-preview"
     wenwen_image_model: str = "gemini-3-pro-image-preview"
+    wenwen_image_fallback_models: str = "gemini-3.1-flash-image-preview"
     wenwen_image_generate_path: str = "/images/generations"
     wenwen_native_image_generate_path_template: str = "/v1beta/models/{model}:generateContent"
     wenwen_task_path_template: str = "/tasks/{task_id}"

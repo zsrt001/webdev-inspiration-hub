@@ -61,3 +61,5 @@ backend/wheels/*.whl
 backend/app/_vendor/
 backend/app/_vendor_pkgs/
 backend/app/_vendor_path.txt
+
+.vercel
