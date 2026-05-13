@@ -15,6 +15,24 @@ from app.services.qa_rules import normalize_qa_reason, run_local_qa_rules
 settings = get_settings()
 
 
+def blocking_vision_reasons(reasons: list[str]) -> list[str]:
+    """Return actionable vision QA failures.
+
+    A generic "other" verdict is not enough to block delivery when local image
+    checks already passed; it is too vague for users and operators to act on.
+    """
+    blocking: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        normalized = normalize_qa_reason(reason)
+        if normalized == "other":
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            blocking.append(normalized)
+    return blocking
+
+
 async def basic_image_check(image_url: str) -> tuple[bool, list[str], dict[str, float]]:
     if Image is None or ImageStat is None:
         if settings.qa_allow_without_pillow:
@@ -80,9 +98,12 @@ async def output_passes(
         source_image_urls=source_image_urls,
     )
     if not vision_ok:
+        blocking_reasons = blocking_vision_reasons(vision_reasons)
+        if not blocking_reasons and not settings.qa_require_vision:
+            return True, []
         combined: list[str] = []
         seen: set[str] = set()
-        for reason in [*reasons, *vision_reasons]:
+        for reason in [*reasons, *(blocking_reasons or vision_reasons)]:
             normalized = normalize_qa_reason(reason)
             if normalized not in seen:
                 seen.add(normalized)

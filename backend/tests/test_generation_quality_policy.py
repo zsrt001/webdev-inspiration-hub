@@ -21,6 +21,7 @@ from app.services.generation_policy import (  # noqa: E402
 )
 from app.services.generation_state_service import merge_qa_failure_state  # noqa: E402
 from app.services.prompt_brain import build_prompt, get_negative_prompt, get_studio_guardrails  # noqa: E402
+from app.services.qa_service import blocking_vision_reasons  # noqa: E402
 from app.services.template_service import get_template_by_id  # noqa: E402
 from app.services.wenwen_service import WenwenService  # noqa: E402
 
@@ -141,6 +142,10 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         outputs = WenwenService._extract_image_edit_binary_outputs({"data": [{"b64_json": encoded}]})
 
         self.assertEqual(outputs, [(b"\x89PNG\r\n\x1a\n", "image/png")])
+
+    def test_generic_vision_other_does_not_block_delivery(self) -> None:
+        self.assertEqual(blocking_vision_reasons(["other"]), [])
+        self.assertEqual(blocking_vision_reasons(["bad_hands", "other"]), ["bad_hands"])
 
 
 class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
