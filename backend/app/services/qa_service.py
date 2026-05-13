@@ -99,7 +99,9 @@ async def output_passes(
     )
     if not vision_ok:
         blocking_reasons = blocking_vision_reasons(vision_reasons)
-        if not blocking_reasons and not settings.qa_require_vision:
+        if not blocking_reasons:
+            return True, []
+        if not settings.qa_require_vision and blocking_reasons == ["vision_error"]:
             return True, []
         combined: list[str] = []
         seen: set[str] = set()

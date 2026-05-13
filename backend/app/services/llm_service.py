@@ -424,7 +424,7 @@ async def verify_generated_image_quality(
         result = await _llm_chat(payload, title="AI Wedding QA", timeout=15.0)
         content = result["choices"][0]["message"]["content"]
         if not isinstance(content, str):
-            return {"passed": False, "reasons": ["other"], "notes": "invalid_llm_content"}
+            return {"passed": False, "reasons": ["vision_error"], "notes": "invalid_llm_content"}
         data = json.loads(_clean_json_block(content))
         passed = bool(data.get("passed"))
         reasons = data.get("reasons") or []
@@ -438,7 +438,7 @@ async def verify_generated_image_quality(
         return {"passed": passed, "reasons": reasons, "notes": notes}
     except Exception as exc:
         logger.warning("Vision QA failed: %s", exc)
-        return {"passed": False, "reasons": ["other"], "notes": f"vision_error:{type(exc).__name__}"}
+        return {"passed": False, "reasons": ["vision_error"], "notes": f"vision_error:{type(exc).__name__}"}
 
 
 async def analyze_image_prompt(image_url: str, context_type: str) -> str:

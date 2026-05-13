@@ -146,6 +146,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_generic_vision_other_does_not_block_delivery(self) -> None:
         self.assertEqual(blocking_vision_reasons(["other"]), [])
         self.assertEqual(blocking_vision_reasons(["bad_hands", "other"]), ["bad_hands"])
+        self.assertEqual(blocking_vision_reasons(["vision_error"]), ["vision_error"])
 
 
 class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):

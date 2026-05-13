@@ -35,6 +35,7 @@ ALLOWED_QA_REASONS = {
     "overexposed",
     "too_blurry",
     "low_contrast_or_blank",
+    "vision_error",
 }
 
 QA_REASON_SYNONYMS: dict[str, str] = {
@@ -69,6 +70,7 @@ QA_REASON_SYNONYMS: dict[str, str] = {
     "watermark": "watermark_or_text",
     "text_overlay": "watermark_or_text",
     "artifact": "severe_artifacts",
+    "invalid_llm_content": "vision_error",
 }
 
 
