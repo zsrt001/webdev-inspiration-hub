@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     qa_allow_without_pillow: bool = False
     qa_require_vision: bool = False
     qa_require_identity_vision: bool = True
+    qa_fail_on_vision_error: bool = False
     webhook_base_url: str = ""  # Public URL for webhooks
     frontend_base_url: str = ""  # Public URL for web/join links
     # Hosted checkout / staged commercial validation

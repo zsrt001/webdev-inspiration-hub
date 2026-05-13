@@ -658,6 +658,7 @@ def _build_generation_params(
             "postcheck": {
                 "local_qa_required": True,
                 "vision_qa_required_for_identity": bool(settings.qa_require_identity_vision),
+                "vision_provider_error_blocks_delivery": bool(settings.qa_fail_on_vision_error),
                 "qa_retry_max_attempts": settings.generation_max_retries + 1,
             },
         },

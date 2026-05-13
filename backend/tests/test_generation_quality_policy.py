@@ -261,11 +261,15 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(names[2].startswith("style_reference_1."))
         self.assertFalse(any(name.startswith("identity_full_2.") for name in names))
 
-    async def test_identity_qa_fails_closed_when_vision_is_unavailable(self) -> None:
+    async def test_identity_qa_degrades_when_vision_provider_is_unavailable(self) -> None:
         original = qa_service.llm_service.is_vision_provider_configured
+        original_require_vision = qa_service.settings.qa_require_vision
         original_required = qa_service.settings.qa_require_identity_vision
+        original_fail_on_error = qa_service.settings.qa_fail_on_vision_error
         qa_service.llm_service.is_vision_provider_configured = lambda: False
+        qa_service.settings.qa_require_vision = False
         qa_service.settings.qa_require_identity_vision = True
+        qa_service.settings.qa_fail_on_vision_error = False
         try:
             passed, reasons = await qa_service.verify_with_vision(
                 "https://cdn.example.com/generated.jpg",
@@ -273,10 +277,12 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             qa_service.llm_service.is_vision_provider_configured = original
+            qa_service.settings.qa_require_vision = original_require_vision
             qa_service.settings.qa_require_identity_vision = original_required
+            qa_service.settings.qa_fail_on_vision_error = original_fail_on_error
 
-        self.assertFalse(passed)
-        self.assertEqual(reasons, ["vision_not_configured"])
+        self.assertTrue(passed)
+        self.assertEqual(reasons, [])
 
 
 if __name__ == "__main__":
