@@ -1,8 +1,11 @@
 """Generation quality policy tests."""
 
+from io import BytesIO
 from pathlib import Path
 import sys
 import unittest
+
+from PIL import Image
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -112,6 +115,19 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(params["couple_guardrails"], {"is_couple": True})
         self.assertEqual(params["debug"]["qa_history"][-1]["engine"], "wenwen")
         self.assertEqual(params["debug"]["qa_history"][-1]["candidate_url"], "https://example.com/candidate.png")
+
+    def test_wenwen_inline_reference_preserves_aspect_with_high_quality_transport(self) -> None:
+        image = Image.effect_noise((2200, 1600), 64).convert("RGB")
+        source = BytesIO()
+        image.save(source, format="PNG")
+
+        prepared, content_type = WenwenService._prepare_inline_image_reference(source.getvalue(), "image/png")
+
+        self.assertEqual(content_type, "image/jpeg")
+        self.assertLess(len(prepared), len(source.getvalue()))
+        with Image.open(BytesIO(prepared)) as prepared_image:
+            self.assertLessEqual(max(prepared_image.size), WenwenService.INLINE_REFERENCE_MAX_EDGE)
+            self.assertAlmostEqual(prepared_image.size[0] / prepared_image.size[1], 2200 / 1600, places=2)
 
 
 class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):

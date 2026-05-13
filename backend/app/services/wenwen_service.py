@@ -16,6 +16,11 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from sqlalchemy import select
 
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover - runtime dependency guard
+    Image = None  # type: ignore[assignment]
+
 from app.core.config import get_settings
 from app.core.database import async_session_maker
 from app.models.order import Order, OrderStatus
@@ -46,6 +51,9 @@ class WenwenService:
 
     CIRCUIT_FAILURE_THRESHOLD = 5
     CIRCUIT_COOLDOWN_SECONDS = 60
+    INLINE_REFERENCE_MAX_EDGE = 1600
+    INLINE_REFERENCE_REENCODE_MIN_BYTES = 900_000
+    INLINE_REFERENCE_JPEG_QUALITY = 94
     QA_MAX_ATTEMPTS = GENERATION_QA_MAX_ATTEMPTS
     QA_RETRY_REASONS = GENERATION_QA_RETRY_REASONS
 
@@ -153,6 +161,59 @@ class WenwenService:
             return False
         return (parsed.hostname or "").lower() in {"127.0.0.1", "localhost"}
 
+    @staticmethod
+    def _normalize_content_type(content_type: str) -> str:
+        normalized = (content_type or "image/jpeg").split(";", 1)[0].strip().lower()
+        return normalized or "image/jpeg"
+
+    @classmethod
+    def _prepare_inline_image_reference(cls, content: bytes, content_type: str) -> tuple[bytes, str]:
+        normalized_type = cls._normalize_content_type(content_type)
+        if not content or Image is None:
+            return content, normalized_type
+
+        try:
+            with Image.open(BytesIO(content)) as image:
+                width, height = image.size
+                largest_edge = max(width, height)
+                needs_resize = largest_edge > cls.INLINE_REFERENCE_MAX_EDGE
+                needs_reencode = (
+                    normalized_type not in {"image/jpeg", "image/jpg"}
+                    or len(content) >= cls.INLINE_REFERENCE_REENCODE_MIN_BYTES
+                )
+                if not needs_resize and not needs_reencode:
+                    return content, normalized_type
+
+                if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+                    rgba = image.convert("RGBA")
+                    background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                    background.alpha_composite(rgba)
+                    prepared = background.convert("RGB")
+                else:
+                    prepared = image.convert("RGB")
+
+                if needs_resize:
+                    scale = cls.INLINE_REFERENCE_MAX_EDGE / float(largest_edge)
+                    next_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+                    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                    prepared = prepared.resize(next_size, resampling)
+
+                buffer = BytesIO()
+                prepared.save(
+                    buffer,
+                    format="JPEG",
+                    quality=cls.INLINE_REFERENCE_JPEG_QUALITY,
+                    optimize=True,
+                    progressive=True,
+                )
+                encoded = buffer.getvalue()
+                if not needs_resize and normalized_type in {"image/jpeg", "image/jpg"} and len(encoded) >= len(content):
+                    return content, normalized_type
+                return encoded, "image/jpeg"
+        except Exception as exc:
+            logger.warning("Failed to prepare inline reference image, using original bytes: %s", exc)
+            return content, normalized_type
+
     async def _coerce_remote_image_ref(self, image_url: str) -> str:
         raw = str(image_url or "").strip()
         if not raw:
@@ -165,7 +226,8 @@ class WenwenService:
             response = await client.get(raw)
             response.raise_for_status()
             content_type = response.headers.get("content-type") or "image/jpeg"
-            encoded = base64.b64encode(response.content).decode("utf-8")
+            content, content_type = self._prepare_inline_image_reference(response.content, content_type)
+            encoded = base64.b64encode(content).decode("utf-8")
             return f"data:{content_type};base64,{encoded}"
 
     @staticmethod
@@ -1121,7 +1183,7 @@ class WenwenService:
                 try:
                     read_timeout = 285.0 if settings.is_vercel_runtime else max(120.0, float(settings.wenwen_poll_timeout or 240))
                     async with httpx.AsyncClient(
-                        timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=30.0, pool=10.0),
+                        timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=120.0, pool=10.0),
                         follow_redirects=True,
                         trust_env=False,
                     ) as client:
