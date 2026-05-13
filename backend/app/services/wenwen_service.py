@@ -681,8 +681,19 @@ class WenwenService:
         subject_count: int | None,
     ) -> dict[str, Any]:
         refs = list(payload.get("images") or [])
-        parts: list[dict[str, Any]] = [{"text": f"{prompt_text}\nNegative prompt: {negative_prompt}"}]
-        for ref in refs[:3]:
+        is_couple = bool(subject_count and int(subject_count) >= 2)
+        reference_intro = (
+            "Reference identity order: image 1 is the bride/subject A, image 2 is the groom/subject B. "
+            "Preserve both identities separately and do not swap, average, or replace faces."
+            if is_couple
+            else "Reference identity: image 1 is the subject. Preserve this exact identity and do not replace the face."
+        )
+        parts: list[dict[str, Any]] = [
+            {"text": f"{prompt_text}\n{reference_intro}\nNegative prompt: {negative_prompt}"}
+        ]
+        for index, ref in enumerate(refs[:3]):
+            if index < 2:
+                parts.append({"text": f"Identity reference image {index + 1}:"})
             coerced = await self._coerce_remote_image_ref(ref)
             parts.append(self._data_url_to_inline_part(coerced))
         native_payload = {
@@ -691,7 +702,7 @@ class WenwenService:
                 "responseModalities": ["IMAGE"],
                 "temperature": 0.8,
                 "imageConfig": {
-                    "aspectRatio": self._build_size(bool(subject_count and int(subject_count) >= 2)),
+                    "aspectRatio": self._build_size(is_couple),
                 },
             },
         }

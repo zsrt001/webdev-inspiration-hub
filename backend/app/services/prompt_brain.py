@@ -8,7 +8,23 @@ PHOTO_PROTOCOL = (
     "premium bridal studio finish, print-ready high-end wedding portrait, realistic skin texture, natural pores, "
     "controlled softbox key light, gentle fill light, subtle rim light, visible catchlights, "
     "face correctly exposed and slightly brighter than the background, preserved highlight detail, "
-    "natural shadow rolloff, balanced contrast, crisp couture fabric and embroidery details"
+    "natural shadow rolloff, balanced contrast, crisp couture fabric and embroidery details, "
+    "commercial bridal retouching with clean but non-plastic skin, sharp eyes, realistic hair strands, "
+    "luxury studio-grade color grading, polished background separation"
+)
+
+IDENTITY_LOCK_PROTOCOL = (
+    "Identity lock is mandatory: use the uploaded portrait reference as the identity anchor, preserve the same "
+    "face shape, eye shape and spacing, nose bridge and tip, mouth shape, jawline, chin, skin undertone, and natural "
+    "facial expression. Change only clothing, pose, lighting, background, hairstyle styling, and bridal makeup. "
+    "Do not beautify the subject into a different person, do not replace the face with a generic model face, "
+    "do not reshape facial structure"
+)
+
+COUPLE_IDENTITY_LOCK_PROTOCOL = (
+    "For couples, reference image 1 must remain subject A and reference image 2 must remain subject B; preserve each "
+    "person's separate facial identity, age impression, face geometry, and expression. Do not swap identities, merge "
+    "faces, average faces, or make the two subjects look like unrelated generic models"
 )
 
 STUDIO_LIGHTING_GUARDRAILS = (
@@ -17,7 +33,8 @@ STUDIO_LIGHTING_GUARDRAILS = (
     "use large softbox-style key light plus gentle fill light on every face; "
     "keep the lighting controlled and studio-grade even when the requested scene is outdoors; "
     "keep facial exposure natural, luminous, and slightly brighter than the background; "
-    "preserve realistic skin tone and refined bridal-retouch texture"
+    "preserve realistic skin tone and refined bridal-retouch texture; avoid tourist-photo lighting, AI-glossy skin, "
+    "fantasy-game styling, and cheap composited background"
 )
 
 FULL_LENGTH_COMPOSITION = (
@@ -34,15 +51,19 @@ COUPLE_COMPOSITION = (
 
 COUPLE_STUDIO_GUARDRAILS = (
     "Both subjects must receive flattering studio fill light, both faces must be correctly exposed, "
-    "both full outfits must remain visible in the 3:4 frame, and the result must read as a paid bridal-studio portrait"
+    "both full outfits must remain visible in the 3:4 frame, both identities must remain recognizable, "
+    "and the result must read as a paid bridal-studio portrait"
 )
 
 NEGATIVE_PROMPT = (
     "smooth skin, airbrushed, wax, plastic, 3d render, cgi, makeup filter, "
+    "generic model face, different person, changed face shape, altered eyes, altered nose, altered mouth, "
+    "identity drift, face replacement, face swap, over-beautified face, uncanny face, "
     "bright flat lighting, headless, cropped head, phantom limbs, fused bodies, merged limbs, "
     "duplicate person, duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, "
     "harsh backlight, face in shadow, blown-out sky, crushed shadows, overfilled frame, "
-    "cropped dress, cut-off gown train, low-end snapshot"
+    "cropped dress, cut-off gown train, low-end snapshot, tourist snapshot, fantasy game costume, "
+    "cheap composite, over-smoothed bridal ad"
 )
 
 
@@ -71,12 +92,14 @@ def build_prompt(
                 blocks.append(val)
 
     parts = [
+        IDENTITY_LOCK_PROTOCOL,
         f"A professional wedding portrait of {clothing}",
         f"Scene: {scene}",
         FULL_LENGTH_COMPOSITION,
         STUDIO_LIGHTING_GUARDRAILS,
     ]
     if is_couple:
+        parts.append(COUPLE_IDENTITY_LOCK_PROTOCOL)
         parts.append(COUPLE_COMPOSITION)
         parts.append(COUPLE_STUDIO_GUARDRAILS)
     if user_text:

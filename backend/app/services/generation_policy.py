@@ -20,6 +20,7 @@ QA_RETRY_REASONS = {
     "body_fusion",
     "severe_artifacts",
     "dress_exposure_error",
+    "poor_studio_quality",
     "identity_mismatch",
     "identity_swap",
     "subject_missing",
@@ -30,12 +31,14 @@ QA_RETRY_REASONS = {
 COUPLE_PROMPT_GUARDRAILS = (
     "Balanced couple blocking, equal prominence for both subjects, natural hand placement, "
     "readable silhouettes, clear arm separation, symmetric spacing between bride and groom, "
-    "no merged shoulders, no shared torso, both outfits fully visible"
+    "no merged shoulders, no shared torso, both outfits fully visible, bride identity anchored to reference image 1, "
+    "groom identity anchored to reference image 2, no identity averaging or face replacement"
 )
 
 COUPLE_NEGATIVE_PROMPT = (
     "fused faces, merged heads, duplicate bride, duplicate groom, shared torso, conjoined shoulders, "
-    "extra bouquet, overlapping limbs, swapped identity, asymmetric couple framing"
+    "extra bouquet, overlapping limbs, swapped identity, asymmetric couple framing, identity averaging, "
+    "generic bride face, generic groom face"
 )
 
 

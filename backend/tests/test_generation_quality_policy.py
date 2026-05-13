@@ -53,7 +53,9 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("complete gown and dress train visible", prompt)
         self.assertIn("controlled softbox key light", prompt)
         self.assertIn("face correctly exposed", prompt)
-        self.assertIn("controlled sky highlights", prompt)
+        self.assertIn("Identity lock is mandatory", prompt)
+        self.assertIn("preserve the same face shape", prompt)
+        self.assertIn("castle-inspired indoor bridal studio set", prompt)
 
     def test_couple_guardrails_require_studio_lighting_for_both_subjects(self) -> None:
         guardrails = get_studio_guardrails(is_couple=True)
@@ -61,12 +63,15 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("two-person full-length couple portrait", guardrails)
         self.assertIn("Both subjects must receive flattering studio fill light", guardrails)
         self.assertIn("both faces must be correctly exposed", guardrails)
+        self.assertIn("both identities must remain recognizable", guardrails)
         self.assertIn("do not use harsh outdoor backlight", guardrails)
 
     def test_negative_prompt_blocks_common_non_studio_failures(self) -> None:
         negative = get_negative_prompt()
 
         self.assertIn("harsh backlight", negative)
+        self.assertIn("generic model face", negative)
+        self.assertIn("changed face shape", negative)
         self.assertIn("face in shadow", negative)
         self.assertIn("blown-out sky", negative)
         self.assertIn("cropped dress", negative)
@@ -88,6 +93,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("do not use harsh outdoor backlight", prompt)
         self.assertIn("controlled softbox key light", prompt)
         self.assertIn("full-length 3:4 vertical", prompt)
+        self.assertIn("Identity lock is mandatory", prompt)
 
     def test_couple_generation_policy_adds_dedicated_negative_terms(self) -> None:
         negative = build_generation_negative_prompt(is_couple=True)
@@ -95,9 +101,12 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("fused faces", negative)
         self.assertIn("shared torso", negative)
         self.assertIn("swapped identity", negative)
+        self.assertIn("generic bride face", negative)
 
     def test_qa_retry_policy_allows_one_retry_for_fixable_artifacts(self) -> None:
         self.assertTrue(should_retry_qa(["bad_hands"], 1, max_attempts=2))
+        self.assertTrue(should_retry_qa(["identity_mismatch"], 1, max_attempts=2))
+        self.assertTrue(should_retry_qa(["poor_studio_quality"], 1, max_attempts=2))
         self.assertFalse(should_retry_qa(["bad_hands"], 2, max_attempts=2))
         self.assertFalse(should_retry_qa(["low_resolution"], 1, max_attempts=2))
 
@@ -147,6 +156,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(blocking_vision_reasons(["other"]), [])
         self.assertEqual(blocking_vision_reasons(["bad_hands", "other"]), ["bad_hands"])
         self.assertEqual(blocking_vision_reasons(["vision_error"]), ["vision_error"])
+        self.assertEqual(blocking_vision_reasons(["poor_studio_quality", "other"]), ["poor_studio_quality"])
 
 
 
@@ -173,8 +183,40 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["couple_flow"], "remote")
         self.assertIn("do not use harsh outdoor backlight", prompt)
         self.assertIn("Balanced couple blocking", prompt)
+        self.assertIn("bride identity anchored to reference image 1", prompt)
         self.assertIn("fused faces", negative)
         self.assertIn("swapped identity", negative)
+
+    async def test_native_payload_labels_identity_references(self) -> None:
+        template = get_template_by_id("royal_castle")
+        self.assertIsNotNone(template)
+
+        payload, _prompt, _negative = await WenwenService()._build_native_payload(
+            template=template,
+            user_images=[
+                "data:image/png;base64,iVBORw0KGgo=",
+                "data:image/png;base64,iVBORw0KGgo=",
+            ],
+            subject_count=2,
+            prompt_override=None,
+            global_style_text=None,
+            scene_text=None,
+            outfit_text=None,
+            scene_image_url=None,
+            clothing_image_url=None,
+            couple_flow="remote",
+            prompt_enrichment=False,
+        )
+
+        text_parts = [
+            part.get("text", "")
+            for part in payload["contents"][0]["parts"]
+            if isinstance(part, dict) and "text" in part
+        ]
+        joined = "\n".join(text_parts)
+        self.assertIn("Reference identity order", joined)
+        self.assertIn("Identity reference image 1", joined)
+        self.assertIn("Identity reference image 2", joined)
 
 
 if __name__ == "__main__":

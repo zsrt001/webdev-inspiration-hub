@@ -321,7 +321,8 @@ async def optimize_generation_prompt(prompt: str, *, is_couple: bool = False) ->
 
     system_prompt = (
         "You rewrite wedding-image prompts for a generation model. "
-        "Keep the original intent, people count, outfit, scene, and realism constraints. "
+        "Keep the original intent, people count, outfit, scene, identity-preservation requirements, and realism constraints. "
+        "Never weaken or remove identity lock, reference-face preservation, studio lighting, or negative-quality constraints. "
         "Do not add camera jargon, safety disclaimers, or markdown. "
         "Return one concise production-ready prompt string only."
     )
@@ -376,14 +377,16 @@ async def verify_generated_image_quality(
     identity_rules = (
         "\nIdentity rules:\n"
         "- Compare the generated face(s) against the provided source portrait(s).\n"
-        "- If the generated face clearly does not resemble the source identity, passed=false with reason identity_mismatch.\n"
-        "- Do not fail for normal beautification, makeup, lighting, hairstyle, or bridal styling changes.\n"
+        "- The generated subject must still read as the same person, not a generic bride/groom or a beautified replacement.\n"
+        "- Preserve face shape, eye shape and spacing, nose shape, mouth shape, jawline, chin, skin undertone, and age impression.\n"
+        "- If the generated face noticeably changes identity, becomes distorted, or clearly does not resemble the source identity, passed=false with reason identity_mismatch.\n"
+        "- Allow makeup, lighting, hairstyle, and bridal styling changes only when the face identity is still recognizable.\n"
     ) if source_images else ""
 
     prompt = (
         "You are a strict QA inspector for AI-generated wedding photos.\n"
         "Check for critical errors that make the result NOT acceptable for a paid product.\n"
-        "Focus especially on: distorted faces, too many fingers, broken hands, abnormal limbs, identity mismatch, unsafe or wrong wedding dress exposure, missing subjects, and severe artifacts.\n"
+        "Focus especially on: identity mismatch, distorted faces, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, and whether the result looks like a paid bridal-studio deliverable.\n"
         "Return strictly valid JSON only with this schema:\n"
         "{\n"
         '  "passed": boolean,\n'
@@ -392,11 +395,12 @@ async def verify_generated_image_quality(
         "}\n"
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
-        "- For bridal studio quality, reject with reason other if the main face is clearly underexposed from harsh backlight, the sky or windows are blown out, or the full-length gown/train is cropped so tightly that it no longer looks like a paid studio wedding portrait.\n"
+        "- Use poor_studio_quality when the image looks like a generic AI render, cheap composite, tourist snapshot, fantasy costume render, waxy/over-smoothed beauty-filter output, flat lighting, harsh backlight, blown-out sky/windows/dress, weak facial detail, or otherwise does not look like a paid bridal-studio wedding portrait.\n"
+        "- If identity is wrong and the image is beautiful, still fail with identity_mismatch.\n"
         f"{couple_rules}"
         f"{identity_rules}"
         "- notes: brief (<= 200 chars)."
