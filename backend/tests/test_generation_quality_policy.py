@@ -149,6 +149,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(blocking_vision_reasons(["vision_error"]), ["vision_error"])
 
 
+
 class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_remote_couple_payload_uses_shared_generation_policy(self) -> None:
         template = get_template_by_id("solo_royal_castle")
