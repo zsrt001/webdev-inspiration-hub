@@ -136,6 +136,12 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(candidates[0], "gemini-3-pro-image-preview")
         self.assertIn("gemini-3.1-flash-image-preview", candidates)
 
+    def test_wenwen_image_edit_binary_outputs_support_b64_json(self) -> None:
+        encoded = "iVBORw0KGgo="
+        outputs = WenwenService._extract_image_edit_binary_outputs({"data": [{"b64_json": encoded}]})
+
+        self.assertEqual(outputs, [(b"\x89PNG\r\n\x1a\n", "image/png")])
+
 
 class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_remote_couple_payload_uses_shared_generation_policy(self) -> None:

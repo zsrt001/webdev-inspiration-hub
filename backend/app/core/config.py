@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     wenwen_image_model: str = "gemini-3-pro-image-preview"
     wenwen_image_fallback_models: str = "gemini-3.1-flash-image-preview"
     wenwen_image_generate_path: str = "/images/generations"
+    wenwen_image_edit_path: str = "/images/edits"
+    wenwen_image_edit_model: str = "gpt-image-2"
+    wenwen_prefer_image_edit: bool = True
+    wenwen_image_edit_quality: str = "high"
+    wenwen_image_edit_size_single: str = "1152x1536"
+    wenwen_image_edit_size_couple: str = "1152x1536"
     wenwen_native_image_generate_path_template: str = "/v1beta/models/{model}:generateContent"
     wenwen_task_path_template: str = "/tasks/{task_id}"
     wenwen_image_size_single: str = "3:4"

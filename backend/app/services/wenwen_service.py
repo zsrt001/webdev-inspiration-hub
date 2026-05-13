@@ -85,6 +85,10 @@ class WenwenService:
         return f"{cls._base_url()}{cls._normalize_path(settings.wenwen_image_generate_path)}"
 
     @classmethod
+    def _image_edit_url(cls) -> str:
+        return f"{cls._base_url()}{cls._normalize_path(settings.wenwen_image_edit_path)}"
+
+    @classmethod
     def _native_generation_url(cls) -> str:
         return cls._native_generation_url_for_model(cls._effective_image_model())
 
@@ -136,6 +140,12 @@ class WenwenService:
         if model_count > 1:
             return 150.0 if model_index == 0 else 120.0
         return min(270.0, max(120.0, float(settings.wenwen_poll_timeout or 240)))
+
+    @staticmethod
+    def _image_edit_size(is_couple: bool) -> str:
+        configured = settings.wenwen_image_edit_size_couple if is_couple else settings.wenwen_image_edit_size_single
+        value = str(configured or "").strip()
+        return value or "1152x1536"
 
     @staticmethod
     def _headers() -> dict[str, str]:
@@ -243,13 +253,25 @@ class WenwenService:
             return raw
         if not raw.startswith(("http://", "https://")):
             return raw
+        content, content_type = await self._fetch_remote_image_bytes(raw)
+        encoded = base64.b64encode(content).decode("utf-8")
+        return f"data:{content_type};base64,{encoded}"
+
+    async def _fetch_remote_image_bytes(self, image_url: str) -> tuple[bytes, str]:
+        raw = str(image_url or "").strip()
+        if raw.startswith("data:") and ";base64," in raw:
+            header, encoded = raw.split(",", 1)
+            content_type = header[5:].split(";", 1)[0] or "image/jpeg"
+            content = base64.b64decode(encoded)
+            return self._prepare_inline_image_reference(content, content_type)
+        if not raw.startswith(("http://", "https://")):
+            raise ValueError("image_reference_must_be_remote_or_data_url")
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, trust_env=False) as client:
             response = await client.get(raw)
             response.raise_for_status()
             content_type = response.headers.get("content-type") or "image/jpeg"
             content, content_type = self._prepare_inline_image_reference(response.content, content_type)
-            encoded = base64.b64encode(content).decode("utf-8")
-            return f"data:{content_type};base64,{encoded}"
+            return content, content_type
 
     @staticmethod
     def _data_url_to_inline_part(data_url: str) -> dict[str, Any]:
@@ -642,6 +664,22 @@ class WenwenService:
             couple_flow=couple_flow,
             prompt_enrichment=prompt_enrichment,
         )
+        native_payload = await self._native_payload_from_provider_payload(
+            payload,
+            prompt_text=prompt_text,
+            negative_prompt=negative_prompt,
+            subject_count=subject_count,
+        )
+        return native_payload, prompt_text, negative_prompt
+
+    async def _native_payload_from_provider_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        prompt_text: str,
+        negative_prompt: str,
+        subject_count: int | None,
+    ) -> dict[str, Any]:
         refs = list(payload.get("images") or [])
         parts: list[dict[str, Any]] = [{"text": f"{prompt_text}\nNegative prompt: {negative_prompt}"}]
         for ref in refs[:3]:
@@ -657,7 +695,7 @@ class WenwenService:
                 },
             },
         }
-        return native_payload, prompt_text, negative_prompt
+        return native_payload
 
     @staticmethod
     def _ext_from_content_type(content_type: str) -> str:
@@ -691,6 +729,26 @@ class WenwenService:
                 public_urls.append(public_url)
         return public_urls
 
+    async def _persist_binary_outputs_to_storage(
+        self,
+        outputs: list[tuple[bytes, str]],
+        order_uuid: uuid.UUID,
+    ) -> list[str]:
+        public_urls: list[str] = []
+        for index, (file_bytes, content_type) in enumerate(outputs):
+            mime_type = self._normalize_content_type(content_type or "image/png")
+            ext = mimetypes.guess_extension(mime_type) or ".png"
+            filename = f"order_{order_uuid}_media_{index + 1}{ext}"
+            public_url = await asyncio.to_thread(
+                storage_service.upload_file,
+                BytesIO(file_bytes),
+                filename,
+                mime_type,
+                "generated",
+            )
+            public_urls.append(public_url)
+        return public_urls
+
     async def _persist_inline_outputs_to_storage(self, parts: list[dict[str, Any]], order_uuid: uuid.UUID) -> list[str]:
         public_urls: list[str] = []
         for index, part in enumerate(parts):
@@ -715,6 +773,138 @@ class WenwenService:
             )
             public_urls.append(public_url)
         return public_urls
+
+    @classmethod
+    def _extract_image_edit_binary_outputs(cls, payload: Any) -> list[tuple[bytes, str]]:
+        outputs: list[tuple[bytes, str]] = []
+        if not isinstance(payload, dict):
+            return outputs
+        for item in payload.get("data") or payload.get("images") or []:
+            if not isinstance(item, dict):
+                continue
+            encoded = item.get("b64_json") or item.get("base64") or item.get("image_base64")
+            if not isinstance(encoded, str) or not encoded.strip():
+                continue
+            content_type = "image/png"
+            value = encoded.strip()
+            if value.startswith("data:") and ";base64," in value:
+                header, value = value.split(",", 1)
+                content_type = header[5:].split(";", 1)[0] or content_type
+            try:
+                outputs.append((base64.b64decode(value), content_type))
+            except Exception:
+                logger.warning("Skipping invalid image edit base64 output")
+        return outputs
+
+    async def _run_image_edit_generation(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        refs: list[str],
+        prompt_text: str,
+        negative_prompt: str,
+        user_images: list[str],
+        subject_count: int | None,
+        couple_flow: str | None,
+    ) -> bool:
+        if not settings.wenwen_prefer_image_edit or not refs:
+            return False
+        model = str(settings.wenwen_image_edit_model or "").strip()
+        if not model:
+            return False
+
+        is_couple = bool(subject_count and int(subject_count) >= 2)
+        task_id = f"image-edit-{order_uuid}"
+        await self._update_order_generating(
+            order_uuid,
+            task_id=task_id,
+            payload={
+                "model": model,
+                "endpoint": settings.wenwen_image_edit_path,
+                "size": self._image_edit_size(is_couple),
+                "quality": settings.wenwen_image_edit_quality,
+                "reference_count": min(len(refs), 4),
+            },
+            prompt_text=prompt_text,
+            negative_prompt=negative_prompt,
+            generation_mode="image_edit",
+        )
+
+        files: list[tuple[str, tuple[str, bytes, str]]] = []
+        for index, ref in enumerate(refs[:4], start=1):
+            content, content_type = await self._fetch_remote_image_bytes(ref)
+            ext = self._ext_from_content_type(content_type)
+            files.append(("image", (f"reference_{index}.{ext}", content, content_type)))
+
+        edit_prompt = (
+            f"{prompt_text}\n\n"
+            "Use the uploaded reference photo(s) as identity anchors. Preserve the subject identity, "
+            "facial structure, age range, skin tone, and body proportions. For couple images, keep the "
+            "two people visually distinct and preserve both identities.\n"
+            f"Negative prompt: {negative_prompt}"
+        )
+        data = {
+            "model": model,
+            "prompt": edit_prompt,
+            "n": "1",
+            "size": self._image_edit_size(is_couple),
+            "quality": str(settings.wenwen_image_edit_quality or "high"),
+        }
+        timeout = httpx.Timeout(connect=10.0, read=260.0, write=120.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+            response = await client.post(
+                self._image_edit_url(),
+                headers={"Authorization": f"Bearer {settings.wenwen_api_key}"},
+                data=data,
+                files=files,
+            )
+        if response.status_code in {401, 403}:
+            raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
+        if response.status_code in {402, 429}:
+            raise RuntimeError(f"wenwen_quota_rejected:{response.status_code}:{response.text[:200]}")
+        if response.status_code in {404, 405, 422}:
+            raise RuntimeError(f"wenwen_image_edit_unavailable:{response.status_code}:{response.text[:240]}")
+        if response.status_code >= 500:
+            raise RuntimeError(f"wenwen_image_edit_failed:{response.status_code}:{response.text[:240]}")
+        response.raise_for_status()
+
+        submission = response.json() if response.content else {}
+        provider_urls = self._extract_output_urls(submission)
+        delivered_urls: list[str] = []
+        if provider_urls:
+            delivered_urls = await self._persist_outputs_to_storage(provider_urls, order_uuid)
+        if not delivered_urls:
+            binary_outputs = self._extract_image_edit_binary_outputs(submission)
+            if binary_outputs:
+                delivered_urls = await self._persist_binary_outputs_to_storage(binary_outputs, order_uuid)
+        if not delivered_urls:
+            raise RuntimeError("wenwen_image_edit_outputs_missing")
+
+        primary_image_url = delivered_urls[0]
+        qa_ok, qa_reasons = await output_passes(
+            primary_image_url,
+            is_couple=is_couple,
+            source_image_urls=[str(url) for url in user_images if url],
+        )
+        if not qa_ok:
+            await self._record_qa_failure(
+                order_uuid,
+                attempt=1,
+                reasons=qa_reasons,
+                candidate_url=primary_image_url,
+            )
+            raise ValueError(f"QA failed: {','.join(qa_reasons)}")
+
+        await self._complete_order(
+            order_uuid,
+            delivered_urls=delivered_urls,
+            provider_urls=provider_urls,
+            qa_attempt_count=1,
+            is_couple=is_couple,
+            subject_count=subject_count,
+            couple_flow=couple_flow,
+        )
+        return True
 
     async def _update_order_generating(
         self,
@@ -1183,7 +1373,7 @@ class WenwenService:
                 self._circuit_open_until = 0
                 return
 
-            native_payload, prompt_text, negative_prompt = await self._build_native_payload(
+            provider_payload, prompt_text, negative_prompt = await self._build_payload(
                 template=template,
                 user_images=list(user_images or []),
                 subject_count=subject_count,
@@ -1195,6 +1385,35 @@ class WenwenService:
                 clothing_image_url=clothing_image_url,
                 couple_flow=couple_flow,
                 prompt_enrichment=not settings.is_vercel_runtime,
+            )
+            refs = list(provider_payload.get("images") or [])
+            try:
+                image_edit_completed = await self._run_image_edit_generation(
+                    order_uuid,
+                    refs=refs,
+                    prompt_text=prompt_text,
+                    negative_prompt=negative_prompt,
+                    user_images=list(user_images or []),
+                    subject_count=subject_count,
+                    couple_flow=couple_flow,
+                )
+            except RuntimeError as exc:
+                error_text = str(exc)
+                if error_text.startswith(("wenwen_auth_failed", "wenwen_quota_rejected")):
+                    raise
+                logger.warning("Wenwen image edit path failed; falling back to native generation: %s", exc)
+                image_edit_completed = False
+            if image_edit_completed:
+                await self._queue_completion_email(order_uuid)
+                self._consecutive_failures = 0
+                self._circuit_open_until = 0
+                return
+
+            native_payload = await self._native_payload_from_provider_payload(
+                provider_payload,
+                prompt_text=prompt_text,
+                negative_prompt=negative_prompt,
+                subject_count=subject_count,
             )
 
             max_retries = max(0, settings.wenwen_max_retries)
