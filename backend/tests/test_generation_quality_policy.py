@@ -1,5 +1,6 @@
 """Generation quality policy tests."""
 
+import base64
 from io import BytesIO
 from pathlib import Path
 import sys
@@ -32,6 +33,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
 
         self.assertEqual(settings.wenwen_image_size_single, "3:4")
         self.assertEqual(settings.wenwen_image_size_couple, "3:4")
+        self.assertTrue(settings.wenwen_require_image_edit_identity)
 
     def test_wenwen_upgrades_legacy_single_four_by_five_to_three_by_four(self) -> None:
         self.assertEqual(WenwenService._build_size(False), "3:4")
@@ -161,6 +163,14 @@ class GenerationQualityPolicyTest(unittest.TestCase):
 
 
 class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _data_url(width: int = 720, height: int = 960) -> str:
+        image = Image.new("RGB", (width, height), (220, 210, 200))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{encoded}"
+
     async def test_remote_couple_payload_uses_shared_generation_policy(self) -> None:
         template = get_template_by_id("solo_royal_castle")
         self.assertIsNotNone(template)
@@ -217,6 +227,22 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Reference identity order", joined)
         self.assertIn("Identity reference image 1", joined)
         self.assertIn("Identity reference image 2", joined)
+
+    async def test_image_edit_files_add_identity_closeup_refs_before_style_refs(self) -> None:
+        files = await WenwenService()._build_image_edit_reference_files(
+            [
+                self._data_url(),
+                self._data_url(),
+                self._data_url(),
+            ]
+        )
+
+        names = [item[1][0] for item in files]
+        self.assertEqual(len(files), 4)
+        self.assertTrue(names[0].startswith("identity_full_1."))
+        self.assertEqual(names[1], "identity_closeup_1.jpg")
+        self.assertTrue(names[2].startswith("identity_full_2."))
+        self.assertEqual(names[3], "identity_closeup_2.jpg")
 
 
 if __name__ == "__main__":

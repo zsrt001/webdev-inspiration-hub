@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     wenwen_image_edit_path: str = "/images/edits"
     wenwen_image_edit_model: str = "gpt-image-2"
     wenwen_prefer_image_edit: bool = True
+    wenwen_require_image_edit_identity: bool = True
     wenwen_image_edit_quality: str = "high"
     wenwen_image_edit_size_single: str = "1152x1536"
     wenwen_image_edit_size_couple: str = "1152x1536"

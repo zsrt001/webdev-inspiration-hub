@@ -148,6 +148,78 @@ class WenwenService:
         return value or "1152x1536"
 
     @staticmethod
+    def _identity_edit_required(user_images: list[str] | None) -> bool:
+        has_identity_refs = any(str(url or "").strip() for url in (user_images or []))
+        return bool(settings.wenwen_require_image_edit_identity and has_identity_refs)
+
+    @staticmethod
+    def _make_identity_closeup(content: bytes, content_type: str) -> tuple[bytes, str] | None:
+        """Create a high-detail face/upper-body reference to improve identity anchoring."""
+        if Image is None or not content:
+            return None
+        try:
+            with Image.open(BytesIO(content)) as image:
+                rgb = image.convert("RGB")
+                width, height = rgb.size
+                if width < 80 or height < 80:
+                    return None
+
+                if height >= width:
+                    left = int(width * 0.08)
+                    right = int(width * 0.92)
+                    top = 0
+                    bottom = int(height * 0.64)
+                else:
+                    crop_width = int(width * 0.58)
+                    left = max(0, (width - crop_width) // 2)
+                    right = min(width, left + crop_width)
+                    top = 0
+                    bottom = int(height * 0.78)
+
+                cropped = rgb.crop((left, top, max(left + 1, right), max(top + 1, bottom)))
+                largest_edge = max(cropped.size)
+                if largest_edge > 1400:
+                    scale = 1400 / float(largest_edge)
+                    next_size = (max(1, round(cropped.size[0] * scale)), max(1, round(cropped.size[1] * scale)))
+                    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                    cropped = cropped.resize(next_size, resampling)
+
+                buffer = BytesIO()
+                cropped.save(buffer, format="JPEG", quality=95, optimize=True, progressive=True)
+                return buffer.getvalue(), "image/jpeg"
+        except Exception as exc:
+            logger.warning("Failed to create identity close-up reference: %s", exc)
+            return None
+
+    async def _build_image_edit_reference_files(
+        self,
+        refs: list[str],
+    ) -> list[tuple[str, tuple[str, bytes, str]]]:
+        """Put identity full refs and identity close-ups before any style refs."""
+        files: list[tuple[str, tuple[str, bytes, str]]] = []
+        identity_refs = list(refs[:2])
+        extra_refs = list(refs[2:])
+
+        for index, ref in enumerate(identity_refs, start=1):
+            content, content_type = await self._fetch_remote_image_bytes(ref)
+            ext = self._ext_from_content_type(content_type)
+            files.append(("image", (f"identity_full_{index}.{ext}", content, content_type)))
+
+            closeup = self._make_identity_closeup(content, content_type)
+            if closeup:
+                closeup_content, closeup_type = closeup
+                files.append(("image", (f"identity_closeup_{index}.jpg", closeup_content, closeup_type)))
+
+        for index, ref in enumerate(extra_refs, start=1):
+            if len(files) >= 4:
+                break
+            content, content_type = await self._fetch_remote_image_bytes(ref)
+            ext = self._ext_from_content_type(content_type)
+            files.append(("image", (f"style_reference_{index}.{ext}", content, content_type)))
+
+        return files[:4]
+
+    @staticmethod
     def _headers() -> dict[str, str]:
         return {
             "Authorization": f"Bearer {settings.wenwen_api_key}",
@@ -841,17 +913,17 @@ class WenwenService:
             generation_mode="image_edit",
         )
 
-        files: list[tuple[str, tuple[str, bytes, str]]] = []
-        for index, ref in enumerate(refs[:4], start=1):
-            content, content_type = await self._fetch_remote_image_bytes(ref)
-            ext = self._ext_from_content_type(content_type)
-            files.append(("image", (f"reference_{index}.{ext}", content, content_type)))
+        files = await self._build_image_edit_reference_files(refs)
+        if not files:
+            raise RuntimeError("wenwen_image_edit_identity_refs_missing")
 
         edit_prompt = (
             f"{prompt_text}\n\n"
-            "Use the uploaded reference photo(s) as identity anchors. Preserve the subject identity, "
-            "facial structure, age range, skin tone, and body proportions. For couple images, keep the "
-            "two people visually distinct and preserve both identities.\n"
+            "Use the uploaded full identity reference(s) and identity close-up crop(s) as hard identity anchors. "
+            "Preserve the exact facial structure, face shape, eyes, nose, mouth, jawline, chin, age impression, "
+            "skin undertone, and natural expression. For couple images, keep reference 1 as subject A and reference 2 "
+            "as subject B; keep the two people visually distinct and preserve both identities. "
+            "Do not generate a generic attractive bride or groom if that changes the source identity.\n"
             f"Negative prompt: {negative_prompt}"
         )
         data = {
@@ -1346,7 +1418,8 @@ class WenwenService:
             if not template:
                 raise ValueError("template_not_found")
 
-            if settings.is_vercel_runtime and self._supports_provider_task_submission():
+            identity_edit_required = self._identity_edit_required(user_images)
+            if settings.is_vercel_runtime and self._supports_provider_task_submission() and not identity_edit_required:
                 task_id, output_urls, provider_payload, prompt_text, negative_prompt = await self._submit_provider_task(
                     template=template,
                     user_images=list(user_images or []),
@@ -1401,6 +1474,8 @@ class WenwenService:
                 prompt_enrichment=not settings.is_vercel_runtime,
             )
             refs = list(provider_payload.get("images") or [])
+            if identity_edit_required and not refs:
+                raise RuntimeError("identity_edit_reference_missing")
             try:
                 image_edit_completed = await self._run_image_edit_generation(
                     order_uuid,
@@ -1415,6 +1490,8 @@ class WenwenService:
                 error_text = str(exc)
                 if error_text.startswith(("wenwen_auth_failed", "wenwen_quota_rejected")):
                     raise
+                if identity_edit_required:
+                    raise RuntimeError(f"identity_edit_required_failed:{error_text}") from exc
                 logger.warning("Wenwen image edit path failed; falling back to native generation: %s", exc)
                 image_edit_completed = False
             if image_edit_completed:
@@ -1422,6 +1499,8 @@ class WenwenService:
                 self._consecutive_failures = 0
                 self._circuit_open_until = 0
                 return
+            if identity_edit_required:
+                raise RuntimeError("identity_edit_required_not_completed")
 
             native_payload = await self._native_payload_from_provider_payload(
                 provider_payload,
