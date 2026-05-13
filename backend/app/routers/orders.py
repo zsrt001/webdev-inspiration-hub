@@ -17,8 +17,44 @@ from app.services.retention_service import delete_storage_urls, order_asset_urls
 from app.services.trial_access_service import (
     can_download_order,
 )
+from app.worker_tasks import run_order_generation
 
 router = APIRouter()
+
+
+def _seconds_since_iso(value: object) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc).timestamp() - parsed.timestamp()
+    except Exception:
+        return None
+
+
+async def _restart_stale_inline_background(
+    db: AsyncSession,
+    order: Order,
+    background_tasks: BackgroundTasks,
+) -> bool:
+    params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+    if str(params.get("execution_mode") or "") != "inline_background":
+        return False
+    age_seconds = _seconds_since_iso(params.get("inline_background_started_at"))
+    if age_seconds is None or age_seconds < 360:
+        return False
+    retry_count = int(params.get("inline_background_retry_count") or 0)
+    if retry_count >= 2:
+        return False
+    params["inline_background_retry_count"] = retry_count + 1
+    params["inline_background_started_at"] = datetime.now(timezone.utc).isoformat()
+    order.generation_params = params
+    await db.commit()
+    await db.refresh(order)
+    background_tasks.add_task(run_order_generation, str(order.id))
+    return True
 
 
 async def _serialize_order_for_user(db: AsyncSession, order: Order, user_id: uuid.UUID) -> OrderRead:
@@ -55,6 +91,7 @@ async def list_orders(
 @router.get("/{order_id}", response_model=OrderRead)
 async def get_order(
     order_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_request_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -70,8 +107,10 @@ async def get_order(
     if order.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.status == OrderStatus.GENERATING:
-        await generation_service.refresh_order(str(order.id))
-        await db.refresh(order)
+        restarted = await _restart_stale_inline_background(db, order, background_tasks)
+        if not restarted:
+            await generation_service.refresh_order(str(order.id))
+            await db.refresh(order)
     return await _serialize_order_for_user(db, order, current_user.id)
 
 
