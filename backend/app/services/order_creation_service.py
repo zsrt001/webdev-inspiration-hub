@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,7 +79,13 @@ class DirectorDecision:
     director_decision_hints: list[str]
 
 
-async def create_order_for_user(request: OrderCreate, current_user: User, db: AsyncSession) -> Order:
+async def create_order_for_user(
+    request: OrderCreate,
+    current_user: User,
+    db: AsyncSession,
+    *,
+    background_tasks: BackgroundTasks | None = None,
+) -> Order:
     """Validate, charge, persist, and dispatch a generation order."""
     _validate_runtime_requirements()
     _validate_request_basics(request)
@@ -132,7 +138,7 @@ async def create_order_for_user(request: OrderCreate, current_user: User, db: As
             director_decision=director_decision,
         )
         await _persist_order_with_retention(db, order, credit_context)
-        await _dispatch_generation(db, order, generation_state)
+        await _dispatch_generation(db, order, generation_state, background_tasks=background_tasks)
     except Exception:
         if charged and not generation_state["started"]:
             await add_credits_async(
@@ -669,10 +675,28 @@ async def _persist_order_with_retention(
     await db.refresh(order)
 
 
-async def _dispatch_generation(db: AsyncSession, order: Order, generation_state: dict[str, bool]) -> None:
+async def _dispatch_generation(
+    db: AsyncSession,
+    order: Order,
+    generation_state: dict[str, bool],
+    *,
+    background_tasks: BackgroundTasks | None = None,
+) -> None:
     base_params = order.generation_params if isinstance(order.generation_params, dict) else {}
     if settings.using_inline_generation_execution:
         inline_task_id = f"inline-{order.id}"
+        if settings.is_vercel_runtime and background_tasks is not None:
+            base_params["queue_job_id"] = inline_task_id
+            base_params["execution_mode"] = "inline_background"
+            base_params["inline_background_started_at"] = datetime.now(timezone.utc).isoformat()
+            order.generation_params = base_params
+            order.task_id = inline_task_id
+            order.status = OrderStatus.GENERATING
+            await db.commit()
+            await db.refresh(order)
+            generation_state["started"] = True
+            background_tasks.add_task(run_order_generation, str(order.id))
+            return
         base_params["queue_job_id"] = inline_task_id
         base_params["execution_mode"] = "inline"
         order.generation_params = base_params

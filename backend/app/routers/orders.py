@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,13 +79,14 @@ async def get_order(
 @router.post("", response_model=OrderRead)
 async def create_order(
     request: OrderCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_request_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Create order and enqueue generation.
     """
-    order = await create_order_for_user(request, current_user, db)
+    order = await create_order_for_user(request, current_user, db, background_tasks=background_tasks)
     return await _serialize_order_for_user(db, order, current_user.id)
 
 
