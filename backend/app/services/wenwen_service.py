@@ -1436,6 +1436,35 @@ class WenwenService:
             return 0.0
 
     @classmethod
+    def _best_passing_image_edit_round(cls, params: dict[str, Any]) -> dict[str, Any] | None:
+        debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
+        rounds = debug.get("image_edit_rounds") if isinstance(debug.get("image_edit_rounds"), list) else []
+        passing_rounds = [
+            round_item
+            for round_item in rounds
+            if isinstance(round_item, dict)
+            and bool(round_item.get("qa_passed"))
+            and str(round_item.get("selected_candidate_url") or round_item.get("candidate_url") or "").strip()
+        ]
+        if not passing_rounds:
+            return None
+
+        def score(round_item: dict[str, Any]) -> tuple[float, int]:
+            candidate_scores = round_item.get("candidate_scores")
+            selected_index = int(round_item.get("selected_candidate_index") or 0)
+            if isinstance(candidate_scores, list):
+                for candidate in candidate_scores:
+                    if not isinstance(candidate, dict) or int(candidate.get("index") or 0) != selected_index:
+                        continue
+                    try:
+                        return float(candidate.get("score") or 0.0), int(round_item.get("round") or 0)
+                    except Exception:
+                        break
+            return 0.0, int(round_item.get("round") or 0)
+
+        return max(passing_rounds, key=score)
+
+    @classmethod
     def _build_image_edit_round_prompt(
         cls,
         *,
@@ -2353,6 +2382,11 @@ class WenwenService:
             return False
 
         retry_context: dict[str, Any] | None = None
+        recovery_round: dict[str, Any] | None = None
+        user_images: list[str] = []
+        subject_count: int | None = None
+        couple_flow: str | None = None
+        qa_attempt_count = 1
         async with async_session_maker() as db:
             result = await db.execute(select(Order).where(Order.id == order_uuid))
             order = result.scalar_one_or_none()
@@ -2397,8 +2431,19 @@ class WenwenService:
                 except Exception as exc:
                     await self._fail_order(order_uuid, str(exc), self._classify_error(exc))
                 return True
+            user_images = self._order_source_images(order)
+            try:
+                subject_count = int(params.get("subject_count") or len(user_images) or 0) or None
+            except Exception:
+                subject_count = len(user_images) or None
+            couple_flow = str(params.get("couple_flow") or "") or None
+            qa_attempt_count = int(params.get("qa_attempt_count") or 1)
+            if retry_context is None:
+                recovery_round = self._best_passing_image_edit_round(params)
             task_id = str(params.get("provider_task_id") or params.get("wenwen_task_id") or "").strip()
-            if retry_context is not None:
+            if recovery_round is not None:
+                task_id = "__image_edit_recovery__"
+            elif retry_context is not None:
                 task_id = "__qa_retry__"
             if not task_id:
                 if str(params.get("execution_mode") or "").strip() in {"inline", "inline_background"}:
@@ -2412,15 +2457,53 @@ class WenwenService:
                         return True
                 return False
             debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
-            if retry_context is None and self._recently_polled(debug):
+            if retry_context is None and recovery_round is None and self._recently_polled(debug):
                 return False
-            user_images = self._order_source_images(order)
-            try:
-                subject_count = int(params.get("subject_count") or len(user_images) or 0) or None
-            except Exception:
-                subject_count = len(user_images) or None
-            couple_flow = str(params.get("couple_flow") or "") or None
-            qa_attempt_count = int(params.get("qa_attempt_count") or 1)
+
+        if recovery_round is not None:
+            selected_url = str(recovery_round.get("selected_candidate_url") or recovery_round.get("candidate_url") or "").strip()
+            provider_urls = [
+                str(url)
+                for url in (recovery_round.get("candidate_urls") if isinstance(recovery_round.get("candidate_urls"), list) else [])
+                if str(url or "").strip()
+            ]
+            provider_urls = provider_urls or [selected_url]
+            selected_round = int(recovery_round.get("round") or qa_attempt_count or 1)
+            selected_stage = str(recovery_round.get("stage") or "recovered_image_edit_round")
+            candidate_scores = (
+                recovery_round.get("candidate_scores")
+                if isinstance(recovery_round.get("candidate_scores"), list)
+                else []
+            )
+            await self._complete_order(
+                order_uuid,
+                delivered_urls=[selected_url],
+                provider_urls=provider_urls,
+                qa_attempt_count=qa_attempt_count,
+                is_couple=bool(subject_count and int(subject_count) >= 2),
+                subject_count=subject_count,
+                couple_flow=couple_flow,
+                selected_round=selected_round,
+                selected_stage=selected_stage,
+                selection_summary={
+                    "policy": self.CANDIDATE_SELECTION_POLICY,
+                    "selected_round": selected_round,
+                    "selected_stage": selected_stage,
+                    "selected_candidate_index": int(recovery_round.get("selected_candidate_index") or 0),
+                    "score": max(
+                        [
+                            float(candidate.get("score") or 0.0)
+                            for candidate in candidate_scores
+                            if isinstance(candidate, dict)
+                        ]
+                        or [0.0]
+                    ),
+                    "candidate_scores": candidate_scores,
+                    "recovered_from_completed_round": True,
+                },
+            )
+            await self._queue_completion_email(order_uuid)
+            return True
 
         if retry_context is not None:
             await self.generate_photo(**retry_context)
