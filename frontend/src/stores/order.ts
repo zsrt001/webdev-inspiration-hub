@@ -9,7 +9,8 @@ export type OrderStatus =
     | 'CREATED'
     | 'CHECKING'
     | 'GENERATING'
-    | 'COMPLETED';
+    | 'COMPLETED'
+    | 'FAILED';
 
 export interface Order {
     id: string;

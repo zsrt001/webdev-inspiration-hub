@@ -77,6 +77,8 @@ interface Order {
   final_image_urls: Record<string, string> | null;
   created_at: string;
   status: string;
+  error_message?: string | null;
+  failure_code?: string | null;
 }
 
 interface DisplayOrder {
@@ -181,7 +183,7 @@ async function fetchOrders() {
     orders.value = rows.map((order) => ({
       id: order.id,
       styleName: resolveStyleName(order),
-      status: String(order.status || '').toUpperCase(),
+      status: order.error_message || order.failure_code ? 'FAILED' : String(order.status || '').toUpperCase(),
       previewUrl: pickPrimaryImage(order),
       createdAt: formatDate(order.created_at),
     }));

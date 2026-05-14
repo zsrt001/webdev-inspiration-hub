@@ -35,6 +35,33 @@ def _clean_json_block(text: str) -> str:
     return cleaned
 
 
+def _coerce_message_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+        if parts:
+            return "\n".join(parts)
+    raise ValueError("invalid_llm_content")
+
+
+def _coerce_json_object_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                return item
+    raise ValueError("invalid_json_object_payload")
+
+
 _QA_REASON_MAP: dict[str, str] = {
     "cropped_head": "cropped_face",
     "cropped_face": "cropped_face",
@@ -499,16 +526,8 @@ async def verify_generated_image_quality(
 
     try:
         result = await _llm_chat(payload, title="AI Wedding QA", timeout=45.0)
-        content = result["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
-            reasons = ["vision_error"]
-            return {
-                "passed": False,
-                "reasons": reasons,
-                "issues": build_structured_qa_issues(reasons, source="vision", notes="invalid_llm_content"),
-                "notes": "invalid_llm_content",
-            }
-        data = json.loads(_clean_json_block(content))
+        content = _coerce_message_content_text(result["choices"][0]["message"]["content"])
+        data = _coerce_json_object_payload(json.loads(_clean_json_block(content)))
         passed = bool(data.get("passed"))
         reasons = data.get("reasons") or []
         if not isinstance(reasons, list):
@@ -679,12 +698,8 @@ async def analyze_face_quality(image_url: str) -> dict:
 
     try:
         result = await _llm_chat(payload, title="AI Wedding Gatekeeper", timeout=15.0)
-        content = result["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
-            raise ValueError("invalid_llm_content")
-        data = json.loads(_clean_json_block(content))
-        if not isinstance(data, dict):
-            raise ValueError("invalid_gatekeeper_payload")
+        content = _coerce_message_content_text(result["choices"][0]["message"]["content"])
+        data = _coerce_json_object_payload(json.loads(_clean_json_block(content)))
 
         risk_flags = data.get("risk_flags") or []
         if not isinstance(risk_flags, list):

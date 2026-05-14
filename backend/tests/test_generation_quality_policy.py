@@ -1,5 +1,6 @@
 """Generation quality policy tests."""
 
+import asyncio
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -30,6 +31,7 @@ from app.services.generation_credit_policy import (  # noqa: E402
 )
 from app.services.prompt_brain import build_prompt, get_negative_prompt, get_studio_guardrails  # noqa: E402
 from app.services import qa_service  # noqa: E402
+from app.services import llm_service  # noqa: E402
 from app.services import wenwen_service as wenwen_module  # noqa: E402
 from app.services.qa_service import blocking_vision_reasons  # noqa: E402
 from app.services.qa_rules import build_structured_qa_issues, normalize_qa_reason  # noqa: E402
@@ -596,6 +598,38 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(passed)
         self.assertEqual(reasons, [])
+
+    def test_vision_qa_accepts_json_array_wrapped_verdict(self) -> None:
+        async def fake_chat(payload, *, title, timeout):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '[{"passed": false, "reasons": ["bad_hands"], '
+                                '"issues": [{"code": "bad_hands", "evidence": "broken fingers"}], '
+                                '"notes": "hand issue"}]'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        original_configured = llm_service.is_vision_provider_configured
+        original_chat = llm_service._llm_chat
+        llm_service.is_vision_provider_configured = lambda: True
+        llm_service._llm_chat = fake_chat
+        try:
+            verdict = asyncio.run(
+                llm_service.verify_generated_image_quality("https://cdn.example.com/generated.jpg")
+            )
+        finally:
+            llm_service.is_vision_provider_configured = original_configured
+            llm_service._llm_chat = original_chat
+
+        self.assertFalse(verdict["passed"])
+        self.assertEqual(verdict["reasons"], ["bad_hands"])
+        self.assertEqual(verdict["issues"][0]["code"], "bad_hands")
 
 
 if __name__ == "__main__":

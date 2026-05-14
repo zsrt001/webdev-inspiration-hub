@@ -26,6 +26,7 @@ class OrderStatus(str, Enum):
     PAID = "PAID"  # Compatibility-only legacy status
     UPSCALING = "UPSCALING"  # Compatibility-only legacy status
     COMPLETED = "COMPLETED"  # Order completed, final images ready
+    FAILED = "FAILED"  # Terminal failure after refund/retry protection
 
 
 class Order(Base):
@@ -160,11 +161,12 @@ class Order(Base):
         """Check if status transition is valid according to state machine."""
         valid_transitions = {
             OrderStatus.CREATED: [OrderStatus.CHECKING],
-            OrderStatus.CHECKING: [OrderStatus.GENERATING, OrderStatus.CREATED],  # Can go back if check fails
-            OrderStatus.GENERATING: [OrderStatus.COMPLETED, OrderStatus.CREATED],  # Can retry
+            OrderStatus.CHECKING: [OrderStatus.GENERATING, OrderStatus.CREATED, OrderStatus.FAILED],
+            OrderStatus.GENERATING: [OrderStatus.COMPLETED, OrderStatus.CREATED, OrderStatus.FAILED],
             OrderStatus.PREVIEW_READY: [OrderStatus.COMPLETED],  # Compatibility-only legacy path
             OrderStatus.PAID: [OrderStatus.UPSCALING, OrderStatus.COMPLETED],  # Compatibility-only legacy path
             OrderStatus.UPSCALING: [OrderStatus.COMPLETED, OrderStatus.PAID],  # Compatibility-only legacy path
             OrderStatus.COMPLETED: [],
+            OrderStatus.FAILED: [OrderStatus.CREATED, OrderStatus.GENERATING],
         }
         return new_status in valid_transitions.get(self.status, [])

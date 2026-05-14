@@ -2351,7 +2351,7 @@ class WenwenService:
                     ),
                 )
             if order:
-                order.status = OrderStatus.CREATED
+                order.status = OrderStatus.FAILED
                 order.error_message = clean_error_message
                 order.generation_params = merge_generation_refund_state(
                     params,
