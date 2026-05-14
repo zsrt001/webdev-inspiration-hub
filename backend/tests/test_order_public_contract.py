@@ -1,0 +1,94 @@
+"""Customer-facing order response contract tests."""
+
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+import unittest
+import uuid
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.models.order import Order, OrderStatus  # noqa: E402
+from app.schemas.order import OrderRead  # noqa: E402
+
+
+class OrderPublicContractTest(unittest.TestCase):
+    def test_customer_order_read_hides_internal_generation_artifacts(self) -> None:
+        now = datetime.now(timezone.utc)
+        order = Order(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            status=OrderStatus.COMPLETED,
+            template_id="solo_royal_castle",
+            source_image_urls={
+                "images": ["https://cdn.example.com/source.jpg"],
+                "identity_reference_pack": {
+                    "subjects": [
+                        {
+                            "face_crop_url": "https://cdn.example.com/internal-face.jpg",
+                            "upper_body_crop_url": "https://cdn.example.com/internal-upper.jpg",
+                        }
+                    ]
+                },
+            },
+            preview_image_urls={"image_1": "https://cdn.example.com/preview.jpg"},
+            final_image_urls={"image_1": "https://cdn.example.com/final.jpg"},
+            generation_params={
+                "credits_cost": 4,
+                "refunded_credits": 0,
+                "commercial_standard_version": "commercial_wedding_v1",
+                "director_mode": True,
+                "subject_count": 1,
+                "identity_reference_pack": {"secret": True},
+                "qa_last_reasons": ["subject_too_small"],
+                "qa_last_issues": [{"code": "subject_too_small", "candidate_url": "https://cdn.example.com/bad.jpg"}],
+                "prompt": "internal prompt",
+                "negative_prompt": "internal negative prompt",
+                "provider_task_id": "secret-provider-task",
+                "debug": {
+                    "image_edit_rounds": [
+                        {
+                            "candidate_url": "https://cdn.example.com/round-1.jpg",
+                            "qa_issues": [{"code": "face_too_small"}],
+                        }
+                    ]
+                },
+            },
+            price_cents=0,
+            created_at=now,
+            updated_at=now,
+        )
+
+        payload = OrderRead.model_validate(order)
+        dumped = payload.model_dump()
+
+        self.assertEqual(payload.source_image_urls, {"images": ["https://cdn.example.com/source.jpg"]})
+        self.assertEqual(payload.credits_cost, 4)
+        self.assertEqual(payload.refunded_credits, 0)
+        self.assertEqual(payload.qa_last_reasons, ["subject_too_small"])
+        self.assertNotIn("identity_reference_pack", dumped)
+        self.assertNotIn("qa_last_issues", dumped)
+        self.assertNotIn("debug", payload.generation_params or {})
+        self.assertNotIn("identity_reference_pack", payload.generation_params or {})
+        self.assertNotIn("qa_last_issues", payload.generation_params or {})
+        self.assertNotIn("prompt", payload.generation_params or {})
+        self.assertNotIn("negative_prompt", payload.generation_params or {})
+        self.assertNotIn("provider_task_id", payload.generation_params or {})
+        self.assertEqual(
+            payload.generation_params,
+            {
+                "credits_cost": 4,
+                "refunded_credits": 0,
+                "commercial_standard_version": "commercial_wedding_v1",
+                "director_mode": True,
+                "subject_count": 1,
+                "qa_last_reasons": ["subject_too_small"],
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -20,6 +20,7 @@ from app.services.credit_service import (  # noqa: E402
     deduct_credits_async,
     grant_welcome_bonus,
     get_balance_async,
+    refund_generation_credits_once_async,
 )
 from app.services.trial_access_service import trial_generation_allowed  # noqa: E402
 
@@ -46,8 +47,21 @@ class _FakeDb:
     async def execute(self, _statement):
         statement_text = str(_statement)
         if "credit_transactions" in statement_text:
+            try:
+                params = _statement.compile().params
+            except Exception:
+                params = {}
+            wanted_type = params.get("transaction_type_1")
+            wanted_source = params.get("source_1")
+            wanted_source_id = params.get("source_id_1")
             for transaction in self.transactions:
-                if transaction.transaction_type == CreditTransactionType.WELCOME_BONUS:
+                if wanted_type and transaction.transaction_type != wanted_type:
+                    continue
+                if wanted_source and transaction.source != wanted_source:
+                    continue
+                if wanted_source_id and transaction.source_id != wanted_source_id:
+                    continue
+                if wanted_type or transaction.transaction_type == CreditTransactionType.WELCOME_BONUS:
                     return _ScalarResult(transaction)
             return _ScalarResult(None)
         return _ScalarResult(self.credit_row)
@@ -131,6 +145,44 @@ class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.transactions[-1].amount, 50)
         self.assertEqual(db.transactions[-1].source, "credit_purchase")
         self.assertEqual(db.transactions[-1].source_id, "purchase-1")
+
+    async def test_generation_refund_is_idempotent_by_order(self) -> None:
+        db = _FakeDb()
+        user_id = uuid.uuid4()
+        order_id = uuid.uuid4()
+        await grant_welcome_bonus(db, user_id)
+        await deduct_credits_async(db, user_id, 2)
+
+        balance, applied = await refund_generation_credits_once_async(
+            db,
+            user_id,
+            2,
+            order_id=order_id,
+            failure_code="qa_reject",
+            provider="wenwen",
+        )
+        second_balance, second_applied = await refund_generation_credits_once_async(
+            db,
+            user_id,
+            2,
+            order_id=order_id,
+            failure_code="qa_reject",
+            provider="wenwen",
+        )
+
+        self.assertTrue(applied)
+        self.assertFalse(second_applied)
+        self.assertEqual(balance, DEFAULT_CREDITS)
+        self.assertEqual(second_balance, DEFAULT_CREDITS)
+        refund_transactions = [
+            transaction
+            for transaction in db.transactions
+            if transaction.transaction_type == CreditTransactionType.GENERATION_REFUND
+        ]
+        self.assertEqual(len(refund_transactions), 1)
+        self.assertEqual(refund_transactions[0].amount, 2)
+        self.assertEqual(refund_transactions[0].source, "order")
+        self.assertEqual(refund_transactions[0].source_id, str(order_id))
 
     async def test_starter_credits_only_allow_base_single_generation(self) -> None:
         self.assertTrue(

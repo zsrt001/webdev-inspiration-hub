@@ -82,6 +82,78 @@ class OrderCreationServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_generation_params_forbid_text_to_image_identity_fallback(self) -> None:
+        request = OrderCreate(
+            template_id="classic",
+            user_images=["https://cdn.example.com/person-a.jpg"],
+            legal_accepted=True,
+        )
+        identity_reference_pack = {
+            "version": 1,
+            "role_order": ["subject"],
+            "subjects": [
+                {
+                    "role": "subject",
+                    "original_url": "https://cdn.example.com/person-a.jpg",
+                    "face_crop_url": "https://cdn.example.com/person-a-face.jpg",
+                    "upper_body_crop_url": "https://cdn.example.com/person-a-upper.jpg",
+                }
+            ],
+        }
+
+        params = service._build_generation_params(
+            request=request,
+            gatekeeper_results=[{"passed": True}],
+            identity_reference_pack=identity_reference_pack,
+            subject_count=1,
+            is_couple_request=False,
+            couple_flow=None,
+            credit_context=service.CreditAccessContext(
+                credits_cost=1,
+                access_tier="paid",
+                has_paid_credits=True,
+                retention_plan_code=None,
+            ),
+            director_decision=service.DirectorDecision(
+                global_style_text=None,
+                scene_text=None,
+                outfit_text=None,
+                legacy_prompt_override=None,
+                effective_scene_source=None,
+                effective_outfit_source=None,
+                effective_scene_image_url=None,
+                effective_clothing_image_url=None,
+                effective_scene_ip_weight=None,
+                effective_clothing_ip_weight=None,
+                effective_scene_preset_id=None,
+                effective_outfit_preset_id=None,
+                effective_scene_preset_title=None,
+                effective_outfit_preset_title=None,
+                ignored_inputs=[],
+                director_decision_hints=[],
+            ),
+        )
+
+        generation_policy = params["quality_control"]["generation"]
+        self.assertTrue(generation_policy["identity_edit_required"])
+        self.assertTrue(generation_policy["identity_edit_required_by_code"])
+        self.assertFalse(generation_policy["text_to_image_fallback_allowed"])
+        self.assertFalse(generation_policy["native_generation_fallback_allowed_for_identity"])
+        self.assertTrue(generation_policy["multi_round_image_edit"])
+        self.assertEqual(
+            generation_policy["image_edit_rounds"],
+            ["primary_generation", "targeted_repair", "final_polish"],
+        )
+        self.assertTrue(generation_policy["best_passing_round_delivery"])
+        self.assertEqual(generation_policy["automatic_repair_extra_charge"], 0)
+        self.assertTrue(generation_policy["no_extra_debit_for_image_edit_rounds"])
+        self.assertTrue(params["credit_policy"]["charge_once_per_order"])
+        self.assertTrue(params["credit_policy"]["automatic_repair_rounds_included"])
+        self.assertEqual(params["credit_policy"]["automatic_repair_extra_charge"], 0)
+        self.assertTrue(params["credit_policy"]["refund_on_blocking_qa_failure"])
+        self.assertIn("qa_reject", params["credit_policy"]["refund_failure_codes"])
+        self.assertEqual(params["identity_reference_pack"], identity_reference_pack)
+
 
 if __name__ == "__main__":
     unittest.main()

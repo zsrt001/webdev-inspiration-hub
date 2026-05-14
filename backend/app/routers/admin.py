@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import uuid
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -193,6 +193,11 @@ class UpdateStatusRequest(BaseModel):
     status: str
 
 
+class RegenerateOrderRequest(BaseModel):
+    execute_inline: bool | None = None
+    reason: str | None = None
+
+
 class AdminOrderUser(BaseModel):
     id: str
     name: str
@@ -206,8 +211,12 @@ class AdminOrderItem(BaseModel):
     user: AdminOrderUser | None = None
     amount_cents: int | None = None
     amount_usd: float | None = None
+    credits_cost: int | None = None
+    refunded_credits: int | None = None
     status: str
     template_id: str | None = None
+    failure_code: str | None = None
+    qa_last_reasons: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
     paid_at: datetime | None = None
 
@@ -219,6 +228,37 @@ class AdminOrdersResponse(BaseModel):
     page_size: int
 
 
+class AdminGenerationRound(BaseModel):
+    round: int | None = None
+    generation_attempt: int | None = None
+    stage: str | None = None
+    candidate_url: str | None = None
+    candidate_urls: list[str] = Field(default_factory=list)
+    selected_candidate_url: str | None = None
+    selected_candidate_index: int | None = None
+    candidate_count: int = 0
+    provider_url_count: int = 0
+    candidate_scores: list[dict[str, Any]] = Field(default_factory=list)
+    selection_policy: str | None = None
+    qa_passed: bool | None = None
+    qa_reasons: list[str] = Field(default_factory=list)
+    qa_issues: list[dict[str, Any]] = Field(default_factory=list)
+    used_previous_result: bool = False
+    billable: bool = False
+    extra_credits_charged: int = 0
+    completed_at: str | None = None
+
+
+class AdminOrderQaSummary(BaseModel):
+    qa_last_reasons: list[str] = Field(default_factory=list)
+    qa_last_issues: list[dict[str, Any]] = Field(default_factory=list)
+    qa_attempt_count: int | None = None
+    failure_code: str | None = None
+    failure_provider: str | None = None
+    error_message: str | None = None
+    credit_refund: dict[str, Any] | None = None
+
+
 class AdminOrderDetail(AdminOrderItem):
     user_id: str
     style_template: str | None = None
@@ -226,6 +266,9 @@ class AdminOrderDetail(AdminOrderItem):
     source_image_urls: dict[str, Any] | None = None
     preview_image_urls: dict[str, Any] | None = None
     final_image_urls: dict[str, Any] | None = None
+    generation_rounds: list[AdminGenerationRound] = Field(default_factory=list)
+    qa_summary: AdminOrderQaSummary | None = None
+    can_regenerate: bool = False
     payment_id: str | None = None
     task_id: str | None = None
     error_message: str | None = None
@@ -234,6 +277,14 @@ class AdminOrderDetail(AdminOrderItem):
     expires_at: datetime | None = None
     deleted_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class RegenerateOrderResponse(BaseModel):
+    ok: bool
+    started: bool
+    execution_mode: str
+    task_id: str | None = None
+    order: AdminOrderDetail
 
 
 class OpsConfigResponse(BaseModel):
@@ -361,8 +412,90 @@ def _order_status_value(order: Order) -> str:
     return order.status.value if hasattr(order.status, "value") else str(order.status)
 
 
+def _order_params(order: Order) -> dict[str, Any]:
+    return dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+
+
+def _safe_int(value: Any, default: int | None = None) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+def _admin_generation_rounds(params: dict[str, Any]) -> list[AdminGenerationRound]:
+    debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
+    rounds = debug.get("image_edit_rounds") if isinstance(debug.get("image_edit_rounds"), list) else []
+    parsed_rounds: list[AdminGenerationRound] = []
+    for item in rounds:
+        if not isinstance(item, dict):
+            continue
+        issues = item.get("qa_issues") if isinstance(item.get("qa_issues"), list) else []
+        parsed_rounds.append(
+            AdminGenerationRound(
+                round=_safe_int(item.get("round")),
+                generation_attempt=_safe_int(item.get("generation_attempt")),
+                stage=str(item.get("stage") or "") or None,
+                candidate_url=str(item.get("candidate_url") or "") or None,
+                candidate_urls=_string_list(item.get("candidate_urls")),
+                selected_candidate_url=str(item.get("selected_candidate_url") or "") or None,
+                selected_candidate_index=_safe_int(item.get("selected_candidate_index")),
+                candidate_count=_safe_int(item.get("candidate_count"), 0) or 0,
+                provider_url_count=_safe_int(item.get("provider_url_count"), 0) or 0,
+                candidate_scores=[
+                    score for score in (item.get("candidate_scores") if isinstance(item.get("candidate_scores"), list) else [])
+                    if isinstance(score, dict)
+                ],
+                selection_policy=str(item.get("selection_policy") or "") or None,
+                qa_passed=item.get("qa_passed") if isinstance(item.get("qa_passed"), bool) else None,
+                qa_reasons=_string_list(item.get("qa_reasons")),
+                qa_issues=[issue for issue in issues if isinstance(issue, dict)],
+                used_previous_result=bool(item.get("used_previous_result")),
+                billable=bool(item.get("billable")),
+                extra_credits_charged=_safe_int(item.get("extra_credits_charged"), 0) or 0,
+                completed_at=str(item.get("completed_at") or "") or None,
+            )
+        )
+    return parsed_rounds
+
+
+def _admin_qa_summary(order: Order, params: dict[str, Any]) -> AdminOrderQaSummary:
+    issues = params.get("qa_last_issues") if isinstance(params.get("qa_last_issues"), list) else []
+    return AdminOrderQaSummary(
+        qa_last_reasons=_string_list(params.get("qa_last_reasons")),
+        qa_last_issues=[issue for issue in issues if isinstance(issue, dict)],
+        qa_attempt_count=_safe_int(params.get("qa_attempt_count")),
+        failure_code=str(params.get("failure_code") or "") or None,
+        failure_provider=str(params.get("failure_provider") or "") or None,
+        error_message=order.error_message,
+        credit_refund=params.get("credit_refund") if isinstance(params.get("credit_refund"), dict) else None,
+    )
+
+
+def _source_images(order: Order) -> list[str]:
+    source = order.source_image_urls if isinstance(order.source_image_urls, dict) else {}
+    images = source.get("images") if isinstance(source, dict) else None
+    if not isinstance(images, list):
+        return []
+    return [str(image) for image in images if str(image or "").strip()]
+
+
+def _can_admin_regenerate(order: Order) -> bool:
+    status_value = _order_status_value(order)
+    if status_value in {OrderStatus.CHECKING.value, OrderStatus.GENERATING.value}:
+        return False
+    return bool(order.template_id and _source_images(order))
+
+
 def _order_item(order: Order, user: User | None) -> AdminOrderItem:
     amount_cents = int(order.price_cents or 0)
+    params = _order_params(order)
     return AdminOrderItem(
         id=str(order.id),
         order_no=str(order.id),
@@ -374,8 +507,12 @@ def _order_item(order: Order, user: User | None) -> AdminOrderItem:
         ) if user else None,
         amount_cents=amount_cents,
         amount_usd=round(amount_cents / 100, 2),
+        credits_cost=_safe_int(params.get("credits_cost")),
+        refunded_credits=_safe_int(params.get("refunded_credits"), 0),
         status=_order_status_value(order),
         template_id=order.template_id,
+        failure_code=str(params.get("failure_code") or "") or None,
+        qa_last_reasons=_string_list(params.get("qa_last_reasons")),
         created_at=order.created_at,
         paid_at=order.paid_at,
     )
@@ -383,6 +520,7 @@ def _order_item(order: Order, user: User | None) -> AdminOrderItem:
 
 def _order_detail(order: Order, user: User | None) -> AdminOrderDetail:
     base = _order_item(order, user).model_dump()
+    params = _order_params(order)
     return AdminOrderDetail(
         **base,
         user_id=str(order.user_id),
@@ -391,6 +529,9 @@ def _order_detail(order: Order, user: User | None) -> AdminOrderDetail:
         source_image_urls=order.source_image_urls,
         preview_image_urls=order.preview_image_urls,
         final_image_urls=order.final_image_urls,
+        generation_rounds=_admin_generation_rounds(params),
+        qa_summary=_admin_qa_summary(order, params),
+        can_regenerate=_can_admin_regenerate(order),
         payment_id=order.payment_id,
         task_id=order.task_id,
         error_message=order.error_message,
@@ -1023,6 +1164,119 @@ async def update_order_status(
 
     user = await db.get(User, order.user_id)
     return _order_detail(order, user)
+
+
+@router.post("/orders/{order_id}/regenerate", response_model=RegenerateOrderResponse)
+async def regenerate_admin_order(
+    order_id: str,
+    payload: RegenerateOrderRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Restart generation for an existing order without charging the user again."""
+    await ensure_user_account_columns(db)
+    generation_service.validate_runtime_requirements(force=True)
+
+    order = await _get_admin_order(db, order_id)
+    previous_status = _order_status_value(order)
+    if previous_status in {OrderStatus.CHECKING.value, OrderStatus.GENERATING.value}:
+        raise HTTPException(status_code=409, detail="Order is already in progress")
+    if not order.template_id:
+        raise HTTPException(status_code=422, detail="Order is missing template_id")
+    if not _source_images(order):
+        raise HTTPException(status_code=422, detail="Order is missing source images")
+
+    params = _order_params(order)
+    debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+    history = debug.get("admin_regeneration_history") if isinstance(debug.get("admin_regeneration_history"), list) else []
+    now = datetime.now(timezone.utc).isoformat()
+    next_attempt = max(1, (_safe_int(params.get("generation_attempt"), 1) or 1) + 1)
+    actor = str(getattr(request.state, "admin_actor", "unknown-admin"))
+    reason = (payload.reason or "").strip()[:240] or "admin_regenerate"
+    history.append(
+        {
+            "attempt": next_attempt,
+            "requested_at": now,
+            "requested_by": actor,
+            "previous_status": previous_status,
+            "reason": reason,
+            "previous_failure_code": params.get("failure_code"),
+        }
+    )
+    debug["admin_regeneration_history"] = history[-8:]
+    params.update(
+        {
+            "debug": debug,
+            "generation_attempt": next_attempt,
+            "admin_regenerate_requested_at": now,
+            "admin_regenerate_requested_by": actor,
+            "admin_regenerate_reason": reason,
+            "admin_regenerate_in_progress": True,
+            "automatic_repair_extra_charge": 0,
+            "qa_retry_pending": False,
+            "qa_retry_in_progress": False,
+        }
+    )
+    if params.get("failure_code"):
+        params["previous_failure_code"] = params.get("failure_code")
+    if params.get("failure_provider"):
+        params["previous_failure_provider"] = params.get("failure_provider")
+    params.pop("failure_code", None)
+    params.pop("failure_provider", None)
+
+    execution_mode = "inline" if (
+        settings.using_inline_generation_execution if payload.execute_inline is None else bool(payload.execute_inline)
+    ) else "arq"
+    task_id = f"admin-regenerate-inline-{order.id}-{next_attempt}"
+    params["execution_mode"] = execution_mode
+    params["queue_job_id"] = task_id
+    order.status = OrderStatus.GENERATING
+    order.error_message = None
+    order.task_id = task_id
+    order.generation_params = params
+    if execution_mode == "arq":
+        await db.commit()
+        try:
+            task_id = await enqueue_generate_order(str(order.id))
+        except Exception as exc:
+            order.status = OrderStatus.CREATED
+            order.error_message = f"queue_unavailable: {exc}"
+            params["admin_regenerate_in_progress"] = False
+            params["admin_regenerate_error"] = str(exc)[:500]
+            order.generation_params = params
+            await db.commit()
+            raise HTTPException(status_code=503, detail="Generation queue unavailable. Please try again later.") from exc
+        params["queue_job_id"] = task_id
+        order.task_id = task_id
+        order.generation_params = params
+
+    await log_admin_action(
+        db,
+        action="regenerate_order",
+        request=request,
+        details={
+            "order_id": str(order.id),
+            "from_status": previous_status,
+            "generation_attempt": next_attempt,
+            "execution_mode": execution_mode,
+            "reason": reason,
+            "charged_again": False,
+        },
+    )
+    await db.commit()
+
+    if execution_mode == "inline":
+        await run_order_generation(str(order.id))
+        await db.refresh(order)
+
+    user = await db.get(User, order.user_id)
+    return RegenerateOrderResponse(
+        ok=True,
+        started=True,
+        execution_mode=execution_mode,
+        task_id=task_id,
+        order=_order_detail(order, user),
+    )
 
 
 @router.post("/cleanup_expired_assets", response_model=CleanupAssetsResponse)

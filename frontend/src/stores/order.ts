@@ -24,6 +24,8 @@ export interface Order {
     access_tier?: string | null;
     download_locked?: boolean;
     price_cents: number;
+    credits_cost?: number | null;
+    refunded_credits?: number | null;
     error_message: string | null;
     director_mode?: boolean | null;
     remote_join?: boolean | null;

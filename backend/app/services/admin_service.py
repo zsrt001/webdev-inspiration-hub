@@ -16,6 +16,7 @@ from app.models.subscription_plan import SubscriptionPlan
 from app.models.user_subscription import SubscriptionStatus, UserSubscription
 from app.models.user import User
 from app.models.user_credit import UserCredit
+from app.services.generation_credit_policy import billable_generation_credits
 from app.services.credit_service import add_credits_async
 from app.services.template_service import get_template_by_id
 
@@ -95,10 +96,7 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
     order_revenue_credits = 0
     for params in completed_orders:
         if isinstance(params, dict):
-            try:
-                order_revenue_credits += int(params.get("credits_cost") or 0)
-            except Exception:
-                pass
+            order_revenue_credits += billable_generation_credits(params)
 
     live_revenue_credits = int(
         await db.scalar(

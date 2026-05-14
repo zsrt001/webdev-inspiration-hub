@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+from app.services.qa_rules import build_structured_qa_issues
 
 settings = get_settings()
 
@@ -78,6 +79,41 @@ _QA_REASON_MAP: dict[str, str] = {
     "ai_look": "poor_studio_quality",
     "waxy_skin": "poor_studio_quality",
     "cheap_composite": "poor_studio_quality",
+    "subject_too_small": "subject_too_small",
+    "tiny_subject": "subject_too_small",
+    "person_too_small": "subject_too_small",
+    "subject_lost": "subject_too_small",
+    "face_too_small": "face_too_small",
+    "tiny_face": "face_too_small",
+    "small_face": "face_too_small",
+    "face_unreadable": "face_too_small",
+    "background_dominates": "background_dominates",
+    "background_overpowering_subject": "background_dominates",
+    "background_overpowers_subject": "background_dominates",
+    "excessive_headroom": "excessive_headroom",
+    "too_much_headroom": "excessive_headroom",
+    "excessive_sky": "excessive_headroom",
+    "awkward_crop": "awkward_crop",
+    "bad_crop": "awkward_crop",
+    "bad_cropping": "awkward_crop",
+    "cropped_limb": "awkward_crop",
+    "joint_crop": "awkward_crop",
+    "dress_cropped": "dress_cropped",
+    "dress_cutoff": "dress_cropped",
+    "cropped_dress": "dress_cropped",
+    "gown_cutoff": "dress_cropped",
+    "train_cutoff": "dress_cropped",
+    "poor_subject_separation": "poor_subject_separation",
+    "weak_subject_separation": "poor_subject_separation",
+    "flat_centered_pose": "flat_centered_pose",
+    "stiff_centered_pose": "flat_centered_pose",
+    "tourist_pose": "flat_centered_pose",
+    "weak_couple_interaction": "weak_couple_interaction",
+    "weak_interaction": "weak_couple_interaction",
+    "no_couple_interaction": "weak_couple_interaction",
+    "harsh_backlight": "harsh_backlight",
+    "harsh_backlit": "harsh_backlight",
+    "strong_backlight": "harsh_backlight",
     "black_or_blank": "black_or_blank",
     "blank": "black_or_blank",
     "black_image": "black_or_blank",
@@ -102,6 +138,16 @@ _ALLOWED_QA_REASONS = {
     "bad_hands",
     "dress_exposure_error",
     "poor_studio_quality",
+    "subject_too_small",
+    "face_too_small",
+    "background_dominates",
+    "excessive_headroom",
+    "awkward_crop",
+    "dress_cropped",
+    "poor_subject_separation",
+    "flat_centered_pose",
+    "weak_couple_interaction",
+    "harsh_backlight",
     "black_or_blank",
     "watermark_or_text",
     "nsfw",
@@ -330,7 +376,11 @@ async def optimize_generation_prompt(prompt: str, *, is_couple: bool = False) ->
     system_prompt = (
         "You rewrite wedding-image prompts for a generation model. "
         "Keep the original intent, people count, outfit, scene, identity-preservation requirements, and realism constraints. "
-        "Never weaken or remove identity lock, reference-face preservation, studio lighting, or negative-quality constraints. "
+        "Preserve the sectioned prompt contract and keep section labels such as IDENTITY LOCK, STUDIO QUALITY, "
+        "OUTDOOR PROFESSIONAL LIGHTING, COMPOSITION, CANVAS PROPORTION, DELIVERY GATE, "
+        "CANDIDATE SELECTION, and FORBIDDEN CONSTRAINTS. "
+        "Never weaken or remove identity lock, reference-face preservation, studio lighting, outdoor lighting protocol, "
+        "canvas proportion rules, delivery gate rules, candidate selection rules, or negative-quality constraints. "
         "Do not add camera jargon, safety disclaimers, or markdown. "
         "Return one concise production-ready prompt string only."
     )
@@ -367,7 +417,7 @@ async def verify_generated_image_quality(
     Strict QA check for generated images.
 
     Returns:
-        {"passed": bool, "reasons": list[str], "notes": str}
+        {"passed": bool, "reasons": list[str], "issues": list[dict], "notes": str}
 
     Fail-close when LLM provider is configured but the call fails.
     """
@@ -394,16 +444,31 @@ async def verify_generated_image_quality(
     prompt = (
         "You are a strict QA inspector for AI-generated wedding photos.\n"
         "Check for critical errors that make the result NOT acceptable for a paid product.\n"
-        "Focus especially on: identity mismatch, distorted faces, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, and whether the result looks like a paid bridal-studio deliverable.\n"
+        "Focus especially on: identity mismatch, distorted faces, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, commercial subject scale, face readability, crop boundaries, gown/train completeness, professional lighting, and whether the result looks like a paid bridal-studio deliverable.\n"
         "Return strictly valid JSON only with this schema:\n"
         "{\n"
         '  "passed": boolean,\n'
         '  "reasons": string[],\n'
+        '  "issues": [\n'
+        '    {\n'
+        '      "code": string,\n'
+        '      "category": "identity" | "face" | "anatomy" | "wardrobe" | "photography_quality" | "composition" | "output_integrity" | "safety" | "technical_quality" | "unknown",\n'
+        '      "target": string,\n'
+        '      "severity": "critical" | "major" | "minor" | "review",\n'
+        '      "evidence": string,\n'
+        '      "repair_hint": string\n'
+        '    }\n'
+        '  ],\n'
         '  "notes": string\n'
         "}\n"
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        "- issues must describe each failure with code, category, target, severity, short evidence, and a concrete repair_hint.\n"
+        "- Commercial framing standard: single subject should occupy about 72-86% of canvas height, with face height about 8-15%, headroom about 3-7%, and bottom room for shoes/gown/train about 4-9%. Outdoor environmental portraits may be wider, but subject height must not fall below about 55% and the face must stay recognizable.\n"
+        "- Commercial couple framing standard: the couple group should occupy about 68-84% of canvas height and 52-78% of canvas width; each face should be about 6-12% of canvas height, both faces readable, both bodies separated, outfits complete, and the pose should show subtle professional interaction rather than flat tourist-photo blocking.\n"
+        "- Use subject_too_small when the person or couple is too small for a paid wedding portrait. Use face_too_small when identity cannot be read because the face is too small. Use background_dominates when the scene overwhelms the subjects. Use excessive_headroom for wasted sky/ceiling/head space. Use awkward_crop or dress_cropped for bad body, limb, gown, veil, hem, or train cropping.\n"
+        "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
@@ -436,7 +501,13 @@ async def verify_generated_image_quality(
         result = await _llm_chat(payload, title="AI Wedding QA", timeout=15.0)
         content = result["choices"][0]["message"]["content"]
         if not isinstance(content, str):
-            return {"passed": False, "reasons": ["vision_error"], "notes": "invalid_llm_content"}
+            reasons = ["vision_error"]
+            return {
+                "passed": False,
+                "reasons": reasons,
+                "issues": build_structured_qa_issues(reasons, source="vision", notes="invalid_llm_content"),
+                "notes": "invalid_llm_content",
+            }
         data = json.loads(_clean_json_block(content))
         passed = bool(data.get("passed"))
         reasons = data.get("reasons") or []
@@ -445,12 +516,55 @@ async def verify_generated_image_quality(
         reasons = [_normalize_qa_reason(str(reason)) for reason in reasons if str(reason).strip()]
         reasons = [reason for reason in reasons if reason]
         notes = str(data.get("notes") or "")[:200]
-        if reasons:
+        issues_raw = data.get("issues") or []
+        issues: list[dict[str, Any]] = []
+        if isinstance(issues_raw, list):
+            for item in issues_raw:
+                if not isinstance(item, dict):
+                    continue
+                code = _normalize_qa_reason(str(item.get("code") or item.get("reason") or ""))
+                if not code or code == "other" and str(item.get("code") or item.get("reason") or "").strip() not in {
+                    "other",
+                    "",
+                }:
+                    code = "other"
+                issue = build_structured_qa_issues(
+                    [code],
+                    source="vision",
+                    notes=str(item.get("evidence") or item.get("notes") or notes or "")[:200],
+                )[0]
+                if item.get("category"):
+                    issue["category"] = str(item.get("category"))[:80]
+                if item.get("target"):
+                    issue["target"] = str(item.get("target"))[:80]
+                if item.get("severity"):
+                    issue["severity"] = str(item.get("severity"))[:40]
+                if item.get("repair_hint"):
+                    issue["repair_hint"] = str(item.get("repair_hint"))[:240]
+                if item.get("evidence"):
+                    issue["evidence"] = str(item.get("evidence"))[:240]
+                issues.append(issue)
+        if not reasons and issues:
+            reasons = [
+                str(issue.get("code"))
+                for issue in issues
+                if isinstance(issue, dict) and str(issue.get("code") or "").strip()
+            ]
+        if not issues and reasons:
+            issues = build_structured_qa_issues(reasons, source="vision", notes=notes)
+        if reasons or any(bool(issue.get("blocking")) for issue in issues if isinstance(issue, dict)):
             passed = False
-        return {"passed": passed, "reasons": reasons, "notes": notes}
+        return {"passed": passed, "reasons": reasons, "issues": issues, "notes": notes}
     except Exception as exc:
         logger.warning("Vision QA failed: %s", exc)
-        return {"passed": False, "reasons": ["vision_error"], "notes": f"vision_error:{type(exc).__name__}"}
+        reasons = ["vision_error"]
+        notes = f"vision_error:{type(exc).__name__}"
+        return {
+            "passed": False,
+            "reasons": reasons,
+            "issues": build_structured_qa_issues(reasons, source="vision", notes=notes),
+            "notes": notes,
+        }
 
 
 async def analyze_image_prompt(image_url: str, context_type: str) -> str:

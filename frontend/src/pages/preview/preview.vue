@@ -491,6 +491,16 @@ const qaReasonLabel = (reason?: string | null) => {
     case 'cropped_face': return tr('裁头', 'Cropped face');
     case 'headless': return tr('无头', 'Headless');
     case 'face_distortion': return tr('脸部变形', 'Face distortion');
+    case 'subject_too_small': return tr('人物占比过小', 'Subject too small');
+    case 'face_too_small': return tr('脸部不够清晰', 'Face too small');
+    case 'background_dominates': return tr('背景抢主体', 'Background dominates');
+    case 'excessive_headroom': return tr('头顶留白过多', 'Too much headroom');
+    case 'awkward_crop': return tr('裁切不自然', 'Awkward crop');
+    case 'dress_cropped': return tr('婚纱裁切不完整', 'Dress cropped');
+    case 'poor_subject_separation': return tr('主体层次不足', 'Poor subject separation');
+    case 'flat_centered_pose': return tr('姿态过于僵硬', 'Flat centered pose');
+    case 'weak_couple_interaction': return tr('双人互动不足', 'Weak couple interaction');
+    case 'harsh_backlight': return tr('逆光过强', 'Harsh backlight');
     case 'severe_artifacts': return tr('严重伪影', 'Severe artifacts');
     default: return '';
   }

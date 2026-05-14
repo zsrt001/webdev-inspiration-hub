@@ -30,7 +30,10 @@ from app.services.credit_service import (
     get_balance_async,
     get_generation_cost,
 )
+from app.services.generation_credit_policy import build_generation_credit_policy
+from app.services.generation_policy import COMMERCIAL_STANDARD_VERSION, commercial_wedding_standard
 from app.services.generation_service import generation_service
+from app.services.identity_reference_service import build_identity_reference_pack
 from app.services.preset_service import (
     get_outfit_preset,
     get_scene_preset,
@@ -103,6 +106,11 @@ async def create_order_for_user(
     )
     if is_couple_request:
         _validate_distinct_couple_subjects(subject_images)
+    identity_reference_pack = await _build_identity_reference_pack(
+        request.user_images,
+        is_couple_request=is_couple_request,
+        couple_flow=couple_flow,
+    )
     request_fingerprint = _request_fingerprint(request)
     await _enforce_active_order_limit(db, current_user.id, request_fingerprint)
 
@@ -135,6 +143,7 @@ async def create_order_for_user(
             request=request,
             current_user=current_user,
             gatekeeper_results=gatekeeper_results,
+            identity_reference_pack=identity_reference_pack,
             subject_count=subject_count,
             is_couple_request=is_couple_request,
             couple_flow=couple_flow,
@@ -375,6 +384,28 @@ def _validate_distinct_couple_subjects(subject_images: list[str]) -> None:
         )
 
 
+async def _build_identity_reference_pack(
+    user_images: list[str],
+    *,
+    is_couple_request: bool,
+    couple_flow: str | None,
+) -> dict:
+    try:
+        return await build_identity_reference_pack(
+            user_images,
+            is_couple_request=is_couple_request,
+            couple_flow=couple_flow,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "identity_reference_pack_failed",
+                "message": f"Could not prepare identity reference crops: {e}",
+            },
+        ) from e
+
+
 async def _resolve_credit_access(
     db: AsyncSession,
     user_id: uuid.UUID,
@@ -454,6 +485,8 @@ async def _charge_generation_credits(
             "director_mode": bool(request.director_mode),
             "credits_cost": credit_context.credits_cost,
             "access_tier": credit_context.access_tier,
+            "charge_once_per_order": True,
+            "automatic_repair_extra_charge": 0,
         },
     ):
         return
@@ -596,6 +629,7 @@ def _build_order(
     request: OrderCreate,
     current_user: User,
     gatekeeper_results: list[dict],
+    identity_reference_pack: dict,
     subject_count: int,
     is_couple_request: bool,
     couple_flow: str | None,
@@ -605,6 +639,7 @@ def _build_order(
     generation_params = _build_generation_params(
         request=request,
         gatekeeper_results=gatekeeper_results,
+        identity_reference_pack=identity_reference_pack,
         subject_count=subject_count,
         is_couple_request=is_couple_request,
         couple_flow=couple_flow,
@@ -615,7 +650,7 @@ def _build_order(
         user_id=current_user.id,
         status=OrderStatus.CHECKING,
         template_id=request.template_id,
-        source_image_urls={"images": request.user_images},
+        source_image_urls={"images": request.user_images, "identity_reference_pack": identity_reference_pack},
         generation_params=generation_params,
         price_cents=0,
     )
@@ -625,6 +660,7 @@ def _build_generation_params(
     *,
     request: OrderCreate,
     gatekeeper_results: list[dict],
+    identity_reference_pack: dict,
     subject_count: int,
     is_couple_request: bool,
     couple_flow: str | None,
@@ -638,22 +674,67 @@ def _build_generation_params(
     )
     return {
         "credits_cost": credit_context.credits_cost,
+        "commercial_standard_version": COMMERCIAL_STANDARD_VERSION,
         "request_fingerprint": _request_fingerprint(request),
         "access_tier": credit_context.access_tier,
         "download_locked": not credit_context.has_paid_credits,
         "gatekeeper": {"passed": True, "images": gatekeeper_results},
+        "identity_reference_pack": identity_reference_pack,
         "quality_control": {
+            "commercial_standard": commercial_wedding_standard(),
             "preflight": {
                 "gatekeeper_required": True,
                 "gatekeeper_passed": True,
                 "identity_reference_count": subject_count,
                 "distinct_identity_reference_count": distinct_subject_images,
+                "identity_reference_pack_required": True,
+                "identity_reference_pack_version": identity_reference_pack.get("version"),
+                "identity_face_crop_count": len(
+                    [
+                        subject
+                        for subject in identity_reference_pack.get("subjects", [])
+                        if isinstance(subject, dict) and subject.get("face_crop_url")
+                    ]
+                ),
+                "identity_upper_body_crop_count": len(
+                    [
+                        subject
+                        for subject in identity_reference_pack.get("subjects", [])
+                        if isinstance(subject, dict) and subject.get("upper_body_crop_url")
+                    ]
+                ),
+                "identity_role_order": identity_reference_pack.get("role_order", []),
             },
             "generation": {
-                "identity_edit_required": bool(settings.wenwen_require_image_edit_identity),
+                "identity_edit_required": subject_count > 0,
+                "identity_edit_required_by_code": True,
+                "identity_vision_qa_hard_gate": True,
                 "identity_references_first": True,
                 "style_references_are_not_identities": True,
+                "text_to_image_fallback_allowed": False,
+                "native_generation_fallback_allowed_for_identity": False,
                 "studio_prompt_guardrails": True,
+                "multi_round_image_edit": True,
+                "candidate_selection": {
+                    "enabled": True,
+                    "customer_visible_candidates": False,
+                    "selection_priority": [
+                        "identity",
+                        "face_readability",
+                        "commercial_canvas_proportion",
+                        "crop_and_gown_integrity",
+                        "studio_lighting",
+                        "couple_relationship",
+                    ],
+                },
+                "image_edit_rounds": [
+                    "primary_generation",
+                    "targeted_repair",
+                    "final_polish",
+                ],
+                "best_passing_round_delivery": True,
+                "automatic_repair_extra_charge": 0,
+                "no_extra_debit_for_image_edit_rounds": True,
             },
             "postcheck": {
                 "local_qa_required": True,
@@ -662,6 +743,8 @@ def _build_generation_params(
                 "qa_retry_max_attempts": settings.generation_max_retries + 1,
             },
         },
+        "credit_policy": build_generation_credit_policy(credits_cost=credit_context.credits_cost),
+        "automatic_repair_extra_charge": 0,
         "remote_join": bool(request.remote_join),
         "couple_flow": couple_flow,
         "subject_count": subject_count,

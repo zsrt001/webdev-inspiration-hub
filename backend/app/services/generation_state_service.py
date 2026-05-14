@@ -17,13 +17,17 @@ def build_qa_history_entry(
     reasons: list[str],
     candidate_url: str,
     engine: str,
+    issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return {
+    entry = {
         "attempt": int(attempt),
         "reasons": [str(reason) for reason in reasons],
         "candidate_url": str(candidate_url or ""),
         "engine": str(engine or "unknown"),
     }
+    if issues:
+        entry["issues"] = issues
+    return entry
 
 
 def merge_qa_failure_state(
@@ -34,6 +38,7 @@ def merge_qa_failure_state(
     candidate_url: str,
     engine: str,
     extra_params: dict[str, Any] | None = None,
+    issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     next_params = dict(params or {})
     debug = dict(next_params.get("debug")) if isinstance(next_params.get("debug"), dict) else {}
@@ -44,11 +49,14 @@ def merge_qa_failure_state(
             reasons=reasons,
             candidate_url=candidate_url,
             engine=engine,
+            issues=issues,
         )
     )
     debug["qa_history"] = qa_history[-8:]
     next_params["debug"] = debug
     next_params["qa_last_reasons"] = [str(reason) for reason in reasons]
+    if issues:
+        next_params["qa_last_issues"] = issues
     next_params["qa_attempt_count"] = int(attempt)
     if extra_params:
         next_params.update(extra_params)
@@ -63,6 +71,7 @@ async def record_generation_qa_failure(
     candidate_url: str,
     engine: str,
     extra_params: dict[str, Any] | None = None,
+    issues: list[dict[str, Any]] | None = None,
 ) -> None:
     async with async_session_maker() as db:
         result = await db.execute(select(Order).where(Order.id == order_uuid))
@@ -77,5 +86,6 @@ async def record_generation_qa_failure(
             candidate_url=candidate_url,
             engine=engine,
             extra_params=extra_params,
+            issues=issues,
         )
         await db.commit()

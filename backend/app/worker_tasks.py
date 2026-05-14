@@ -47,6 +47,9 @@ async def run_order_generation(order_id: str) -> None:
 
         params = order.generation_params if isinstance(order.generation_params, dict) else {}
         remote_join = bool(params.get("remote_join"))
+        identity_reference_pack = params.get("identity_reference_pack") or source.get("identity_reference_pack")
+        if not isinstance(identity_reference_pack, dict):
+            identity_reference_pack = None
 
         # Prefer "effective" params produced by Director Mode cascade.
         scene_image_url = params.get("effective_scene_image_url") or params.get("scene_image_url")
@@ -77,6 +80,7 @@ async def run_order_generation(order_id: str) -> None:
         global_style_text=params.get("global_style_text"),
         scene_text=params.get("scene_text"),
         outfit_text=params.get("outfit_text"),
+        identity_reference_pack=identity_reference_pack,
         scene_image_url=scene_image_url,
         clothing_image_url=clothing_image_url,
         pose_image_url=pose_image_url,

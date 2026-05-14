@@ -9,6 +9,57 @@ from app.services.prompt_brain import build_prompt, get_negative_prompt
 
 DEFAULT_ASPECT_RATIO = "3:4"
 LEGACY_RATIO_UPGRADES = {"4:5", "3:2"}
+COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v1"
+
+COMMERCIAL_WEDDING_STANDARD = {
+    "version": COMMERCIAL_STANDARD_VERSION,
+    "single": {
+        "subject_height_range": [0.72, 0.86],
+        "minimum_outdoor_subject_height": 0.55,
+        "face_height_range": [0.08, 0.15],
+        "headroom_range": [0.03, 0.07],
+        "bottom_room_range": [0.04, 0.09],
+    },
+    "couple": {
+        "group_height_range": [0.68, 0.84],
+        "group_width_range": [0.52, 0.78],
+        "face_height_range": [0.06, 0.12],
+        "requires_equal_scale": True,
+        "requires_body_separation": True,
+        "requires_subtle_interaction": True,
+    },
+    "blocking_reasons": [
+        "identity_mismatch",
+        "face_too_small",
+        "subject_too_small",
+        "background_dominates",
+        "excessive_headroom",
+        "awkward_crop",
+        "dress_cropped",
+        "poor_subject_separation",
+        "flat_centered_pose",
+        "weak_couple_interaction",
+        "harsh_backlight",
+    ],
+    "delivery_gate": {
+        "identity_required": True,
+        "vision_identity_qa_required": True,
+        "text_to_image_fallback_allowed_for_identity": False,
+        "process_images_customer_visible": False,
+    },
+    "candidate_selection": {
+        "enabled": True,
+        "priority_order": [
+            "identity",
+            "face_readability",
+            "commercial_canvas_proportion",
+            "crop_and_gown_integrity",
+            "studio_lighting",
+            "couple_relationship",
+            "background_supports_subject",
+        ],
+    },
+}
 
 QA_MAX_ATTEMPTS = 2
 QA_RETRY_REASONS = {
@@ -21,6 +72,16 @@ QA_RETRY_REASONS = {
     "severe_artifacts",
     "dress_exposure_error",
     "poor_studio_quality",
+    "subject_too_small",
+    "face_too_small",
+    "background_dominates",
+    "excessive_headroom",
+    "awkward_crop",
+    "dress_cropped",
+    "poor_subject_separation",
+    "flat_centered_pose",
+    "weak_couple_interaction",
+    "harsh_backlight",
     "identity_mismatch",
     "identity_swap",
     "subject_missing",
@@ -91,7 +152,7 @@ def build_studio_generation_prompt(
         is_couple=is_couple,
     )
     if is_couple:
-        prompt_text = f"{prompt_text.rstrip('.')}. {COUPLE_PROMPT_GUARDRAILS}."
+        prompt_text = f"{prompt_text.rstrip()}\nCOUPLE ROLE GUARDRAILS: {COUPLE_PROMPT_GUARDRAILS}."
     return prompt_text
 
 
@@ -100,6 +161,11 @@ def build_generation_negative_prompt(*, is_couple: bool) -> str:
     if not is_couple:
         return negative
     return f"{negative}, {COUPLE_NEGATIVE_PROMPT}"
+
+
+def commercial_wedding_standard() -> dict[str, Any]:
+    """Return the current commercial delivery standard for audits and ops."""
+    return dict(COMMERCIAL_WEDDING_STANDARD)
 
 
 def qa_retry_reasons_for_mode(*, is_couple: bool) -> set[str]:

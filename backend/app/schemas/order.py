@@ -1,10 +1,70 @@
 """Order Pydantic schemas."""
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.models.order import OrderStatus
+
+
+PUBLIC_GENERATION_PARAM_KEYS = {
+    "credits_cost",
+    "refunded_credits",
+    "access_tier",
+    "download_locked",
+    "remote_join",
+    "couple_flow",
+    "subject_count",
+    "director_mode",
+    "effective_scene_source",
+    "effective_outfit_source",
+    "ignored_inputs",
+    "effective_scene_preset_id",
+    "effective_outfit_preset_id",
+    "effective_scene_preset_title",
+    "effective_outfit_preset_title",
+    "effective_scene_ip_weight",
+    "effective_outfit_ip_weight",
+    "director_decision_hints",
+    "qa_last_reasons",
+    "qa_attempt_count",
+    "failure_code",
+    "failure_provider",
+    "commercial_standard_version",
+}
+
+
+def public_source_image_urls(value: Any) -> dict[str, Any] | None:
+    """Return only user-owned upload URLs; hide identity crops and debug packs."""
+    if not isinstance(value, dict):
+        return None
+    images = value.get("images")
+    if not isinstance(images, list):
+        return None
+    public_images = [str(image) for image in images if str(image or "").strip()]
+    return {"images": public_images}
+
+
+def _public_credit_refund(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    public: dict[str, Any] = {}
+    for key in ("amount", "applied", "failure_code"):
+        if key in value:
+            public[key] = value[key]
+    return public or None
+
+
+def public_generation_params(value: Any) -> dict[str, Any] | None:
+    """Whitelist order metadata that is safe for the customer-facing API."""
+    if not isinstance(value, dict):
+        return None
+    public = {key: value[key] for key in PUBLIC_GENERATION_PARAM_KEYS if key in value}
+    credit_refund = _public_credit_refund(value.get("credit_refund"))
+    if credit_refund:
+        public["credit_refund"] = credit_refund
+    return public
 
 
 class OrderBase(BaseModel):
@@ -155,6 +215,8 @@ class OrderRead(OrderBase):
     couple_guardrails: dict | None = None
     qa_last_reasons: list[str] | None = None
     qa_attempt_count: int | None = None
+    credits_cost: int | None = None
+    refunded_credits: int | None = None
     failure_code: str | None = None
     failure_provider: str | None = None
     created_at: datetime
@@ -209,10 +271,24 @@ class OrderRead(OrderBase):
                     self.qa_attempt_count = int(qa_attempt_count)
                 except Exception:
                     self.qa_attempt_count = None
+            credits_cost = params.get("credits_cost")
+            if credits_cost is not None:
+                try:
+                    self.credits_cost = int(credits_cost)
+                except Exception:
+                    self.credits_cost = None
+            refunded_credits = params.get("refunded_credits")
+            if refunded_credits is not None:
+                try:
+                    self.refunded_credits = int(refunded_credits)
+                except Exception:
+                    self.refunded_credits = None
             failure_code = params.get("failure_code")
             self.failure_code = str(failure_code) if failure_code else None
             failure_provider = params.get("failure_provider")
             self.failure_provider = str(failure_provider) if failure_provider else None
             access_tier = params.get("access_tier")
             self.access_tier = str(access_tier) if access_tier else None
+        self.source_image_urls = public_source_image_urls(self.source_image_urls)
+        self.generation_params = public_generation_params(params)
         return self

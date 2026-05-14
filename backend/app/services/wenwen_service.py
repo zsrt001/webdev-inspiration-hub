@@ -25,9 +25,13 @@ from app.core.config import get_settings
 from app.core.database import async_session_maker
 from app.models.order import Order, OrderStatus
 from app.services.trial_access_service import prepare_delivered_image_urls, is_trial_order
-from app.models.credit_transaction import CreditTransactionType
 from app.services import llm_service
-from app.services.credit_service import COST_PER_GENERATION, add_credits_async
+from app.services.credit_service import COST_PER_GENERATION, refund_generation_credits_once_async
+from app.services.generation_credit_policy import (
+    generation_refund_metadata,
+    merge_generation_refund_state,
+    resolve_generation_refund_amount,
+)
 from app.services.generation_policy import (
     QA_MAX_ATTEMPTS as GENERATION_QA_MAX_ATTEMPTS,
     QA_RETRY_REASONS as GENERATION_QA_RETRY_REASONS,
@@ -38,7 +42,7 @@ from app.services.generation_policy import (
 )
 from app.services.generation_state_service import record_generation_qa_failure
 from app.services.prompt_brain import get_studio_guardrails
-from app.services.qa_service import output_passes
+from app.services.qa_service import output_verdict
 from app.services.storage import storage_service
 from app.services.template_service import get_template_by_id
 
@@ -54,6 +58,77 @@ class WenwenService:
     INLINE_REFERENCE_MAX_EDGE = 1600
     INLINE_REFERENCE_REENCODE_MIN_BYTES = 900_000
     INLINE_REFERENCE_JPEG_QUALITY = 94
+    IMAGE_EDIT_REFERENCE_FILE_LIMIT = 8
+    IMAGE_EDIT_MAX_ROUNDS = 3
+    CANDIDATE_SELECTION_POLICY = "qa_score_v1"
+    IDENTITY_HARD_GATE_REASONS = {
+        "identity_mismatch",
+        "identity_swap",
+        "face_distortion",
+        "fused_faces",
+        "subject_missing",
+        "headless",
+    }
+    COMMERCIAL_HARD_GATE_REASONS = {
+        "face_too_small",
+        "subject_too_small",
+        "background_dominates",
+        "excessive_headroom",
+        "awkward_crop",
+        "dress_cropped",
+        "poor_subject_separation",
+        "flat_centered_pose",
+        "weak_couple_interaction",
+        "harsh_backlight",
+        "poor_studio_quality",
+    }
+    CANDIDATE_REASON_PENALTIES = {
+        "identity_mismatch": 100,
+        "identity_swap": 100,
+        "face_distortion": 90,
+        "fused_faces": 90,
+        "subject_missing": 90,
+        "headless": 90,
+        "body_fusion": 85,
+        "extra_limbs": 80,
+        "bad_hands": 45,
+        "face_too_small": 70,
+        "subject_too_small": 60,
+        "background_dominates": 50,
+        "excessive_headroom": 35,
+        "awkward_crop": 55,
+        "dress_cropped": 55,
+        "poor_subject_separation": 35,
+        "flat_centered_pose": 30,
+        "weak_couple_interaction": 30,
+        "harsh_backlight": 45,
+        "poor_studio_quality": 45,
+        "dress_exposure_error": 80,
+        "black_or_blank": 100,
+        "watermark_or_text": 70,
+        "nsfw": 100,
+        "severe_artifacts": 90,
+        "vision_error": 100,
+        "other": 12,
+    }
+    IMAGE_EDIT_REPAIR_SKIP_PREVIOUS_REASONS = {
+        "identity_mismatch",
+        "identity_swap",
+        "subject_missing",
+        "face_distortion",
+        "fused_faces",
+        "body_fusion",
+        "headless",
+        "subject_too_small",
+        "face_too_small",
+        "background_dominates",
+        "excessive_headroom",
+        "awkward_crop",
+        "dress_cropped",
+        "flat_centered_pose",
+        "weak_couple_interaction",
+        "vision_error",
+    }
     QA_MAX_ATTEMPTS = GENERATION_QA_MAX_ATTEMPTS
     QA_RETRY_REASONS = GENERATION_QA_RETRY_REASONS
 
@@ -125,6 +200,10 @@ class WenwenService:
         return str(settings.wenwen_image_model or "").strip()
 
     @classmethod
+    def _effective_image_edit_model(cls) -> str:
+        return str(settings.wenwen_image_edit_model or "").strip() or cls._effective_image_model()
+
+    @classmethod
     def _native_model_candidates(cls) -> list[str]:
         candidates: list[str] = []
         for value in [cls._effective_image_model(), *(settings.wenwen_image_fallback_models or "").split(",")]:
@@ -148,9 +227,17 @@ class WenwenService:
         return value or "1152x1536"
 
     @staticmethod
+    def _image_edit_candidate_count() -> int:
+        try:
+            configured = int(getattr(settings, "wenwen_image_edit_candidate_count", 2) or 1)
+        except Exception:
+            configured = 1
+        return max(1, min(4, configured))
+
+    @staticmethod
     def _identity_edit_required(user_images: list[str] | None) -> bool:
         has_identity_refs = any(str(url or "").strip() for url in (user_images or []))
-        return bool(settings.wenwen_require_image_edit_identity and has_identity_refs)
+        return bool(has_identity_refs)
 
     @staticmethod
     def _make_identity_closeup(content: bytes, content_type: str) -> tuple[bytes, str] | None:
@@ -195,30 +282,139 @@ class WenwenService:
         self,
         identity_refs: list[str],
         style_refs: list[str] | None = None,
+        identity_reference_pack: dict | None = None,
+        current_result_refs: list[str] | None = None,
     ) -> list[tuple[str, tuple[str, bytes, str]]]:
-        """Put identity full refs and identity close-ups before any style refs."""
+        """Put identity refs first, current canvas next, then style refs."""
         files: list[tuple[str, tuple[str, bytes, str]]] = []
         identity_source_refs = list(identity_refs[:2])
         extra_refs = list(style_refs or [])
+        max_files = max(1, int(self.IMAGE_EDIT_REFERENCE_FILE_LIMIT))
+        pack_files = await self._build_identity_pack_reference_files(identity_reference_pack, max_files=max_files)
+        if pack_files:
+            files.extend(pack_files)
+            seen_pack_urls = self._identity_pack_reference_urls(identity_reference_pack)
+            identity_source_refs = [
+                ref
+                for ref in identity_source_refs
+                if str(ref or "").strip() and str(ref or "").strip() not in seen_pack_urls
+            ]
 
         for index, ref in enumerate(identity_source_refs, start=1):
+            if len(files) >= max_files:
+                break
             content, content_type = await self._fetch_remote_image_bytes(ref)
             ext = self._ext_from_content_type(content_type)
             files.append(("image", (f"identity_full_{index}.{ext}", content, content_type)))
 
             closeup = self._make_identity_closeup(content, content_type)
-            if closeup:
+            if closeup and len(files) < max_files:
                 closeup_content, closeup_type = closeup
                 files.append(("image", (f"identity_closeup_{index}.jpg", closeup_content, closeup_type)))
 
+        for index, ref in enumerate(current_result_refs or [], start=1):
+            if len(files) >= max_files:
+                break
+            value = str(ref or "").strip()
+            if not value:
+                continue
+            content, content_type = await self._fetch_remote_image_bytes(value)
+            ext = self._ext_from_content_type(content_type)
+            files.append(("image", (f"current_candidate_{index}.{ext}", content, content_type)))
+
         for index, ref in enumerate(extra_refs, start=1):
-            if len(files) >= 4:
+            if len(files) >= max_files:
                 break
             content, content_type = await self._fetch_remote_image_bytes(ref)
             ext = self._ext_from_content_type(content_type)
             files.append(("image", (f"style_reference_{index}.{ext}", content, content_type)))
 
-        return files[:4]
+        return files[:max_files]
+
+    @staticmethod
+    def _identity_pack_subjects(identity_reference_pack: dict | None) -> list[dict[str, Any]]:
+        if not isinstance(identity_reference_pack, dict):
+            return []
+        subjects = identity_reference_pack.get("subjects")
+        if not isinstance(subjects, list):
+            return []
+        return [subject for subject in subjects if isinstance(subject, dict)]
+
+    @classmethod
+    def _identity_pack_reference_urls(cls, identity_reference_pack: dict | None) -> set[str]:
+        urls: set[str] = set()
+        for subject in cls._identity_pack_subjects(identity_reference_pack):
+            for key in ("original_url", "face_crop_url", "upper_body_crop_url"):
+                value = str(subject.get(key) or "").strip()
+                if value:
+                    urls.add(value)
+        return urls
+
+    async def _build_identity_pack_reference_files(
+        self,
+        identity_reference_pack: dict | None,
+        *,
+        max_files: int,
+    ) -> list[tuple[str, tuple[str, bytes, str]]]:
+        subjects = self._identity_pack_subjects(identity_reference_pack)
+        if not subjects:
+            return []
+
+        prioritized_refs: list[tuple[str, str]] = []
+        is_couple_pack = len(subjects) >= 2
+        for subject_index, subject in enumerate(subjects[:2], start=1):
+            role = str(subject.get("role") or f"subject_{subject_index}").strip() or f"subject_{subject_index}"
+            for kind in ("original", "face_crop"):
+                key = "original_url" if kind == "original" else "face_crop_url"
+                value = str(subject.get(key) or "").strip()
+                if value:
+                    prioritized_refs.append((f"{role}_{kind}_{subject_index}", value))
+            if not is_couple_pack:
+                value = str(subject.get("upper_body_crop_url") or "").strip()
+                if value:
+                    prioritized_refs.append((f"{role}_upper_body_{subject_index}", value))
+
+        files: list[tuple[str, tuple[str, bytes, str]]] = []
+        seen: set[str] = set()
+        for label, ref in prioritized_refs:
+            if len(files) >= max_files:
+                break
+            if ref in seen:
+                continue
+            seen.add(ref)
+            content, content_type = await self._fetch_remote_image_bytes(ref)
+            ext = self._ext_from_content_type(content_type)
+            files.append(("image", (f"{label}.{ext}", content, content_type)))
+        return files
+
+    @classmethod
+    def _identity_pack_prompt_note(cls, identity_reference_pack: dict | None) -> str:
+        subjects = cls._identity_pack_subjects(identity_reference_pack)
+        if not subjects:
+            return ""
+
+        descriptors: list[str] = []
+        for subject in subjects[:2]:
+            label = str(subject.get("identity_label") or "").strip()
+            role = str(subject.get("role") or "").strip()
+            if label and role:
+                descriptors.append(f"{label}={role}")
+            elif label:
+                descriptors.append(label)
+            elif role:
+                descriptors.append(role)
+
+        if not descriptors:
+            return ""
+        if len(descriptors) >= 2:
+            return (
+                "Identity reference pack role order: "
+                f"{', '.join(descriptors)}. Preserve each role separately; never swap, merge, or average faces. "
+            )
+        return (
+            "Identity reference pack contains the original portrait, face crop, and upper-body crop for the subject. "
+            "Use these as strict identity anchors. "
+        )
 
     @staticmethod
     def _headers() -> dict[str, str]:
@@ -235,6 +431,10 @@ class WenwenService:
             errors.append("WENWEN_API_KEY is required")
         if not settings.wenwen_api_base_url:
             errors.append("WENWEN_API_BASE_URL is required")
+        if not settings.wenwen_image_edit_path:
+            errors.append("WENWEN_IMAGE_EDIT_PATH is required")
+        if not self._effective_image_edit_model():
+            errors.append("WENWEN_IMAGE_EDIT_MODEL or WENWEN_IMAGE_MODEL is required")
         if errors:
             raise ValueError("; ".join(errors))
         self._runtime_validation_ok = True
@@ -429,6 +629,7 @@ class WenwenService:
         global_style_text: str | None,
         scene_text: str | None,
         outfit_text: str | None,
+        identity_reference_pack: dict | None = None,
         scene_image_url: str | None,
         clothing_image_url: str | None,
     ) -> tuple[str | None, list[str], dict[str, Any], str, str]:
@@ -440,6 +641,7 @@ class WenwenService:
             global_style_text=global_style_text,
             scene_text=scene_text,
             outfit_text=outfit_text,
+            identity_reference_pack=identity_reference_pack,
             scene_image_url=scene_image_url,
             clothing_image_url=clothing_image_url,
             couple_flow=couple_flow,
@@ -510,17 +712,21 @@ class WenwenService:
             raise RuntimeError("wenwen_outputs_missing")
         is_couple = bool(subject_count and int(subject_count) >= 2)
         primary_image_url = provider_urls[0]
-        qa_ok, qa_reasons = await output_passes(
+        qa_verdict = await output_verdict(
             primary_image_url,
             is_couple=is_couple,
             source_image_urls=[str(url) for url in user_images if url],
         )
+        qa_ok = bool(qa_verdict.get("passed"))
+        qa_reasons = list(qa_verdict.get("reasons") or [])
+        qa_issues = [issue for issue in (qa_verdict.get("issues") or []) if isinstance(issue, dict)]
         if not qa_ok:
             await self._record_qa_failure(
                 order_uuid,
                 attempt=qa_attempt_count,
                 reasons=qa_reasons,
                 candidate_url=primary_image_url,
+                issues=qa_issues,
             )
             raise ValueError(f"QA failed: {','.join(qa_reasons)}")
 
@@ -600,6 +806,7 @@ class WenwenService:
             params["qa_retry_in_progress"] = False
             params["qa_retry_next_attempt"] = int(attempt) + 1
             params["qa_retry_max_attempts"] = self.QA_MAX_ATTEMPTS
+            params["automatic_repair_extra_charge"] = 0
             params["qa_last_reasons"] = list(reasons)
             params["qa_attempt_count"] = int(attempt)
             params["native_raw_output_status"] = "qa_rejected_retry_pending"
@@ -663,6 +870,7 @@ class WenwenService:
         global_style_text: str | None,
         scene_text: str | None,
         outfit_text: str | None,
+        identity_reference_pack: dict | None = None,
         scene_image_url: str | None,
         clothing_image_url: str | None,
         couple_flow: str | None,
@@ -684,6 +892,9 @@ class WenwenService:
             subject_hints = await self._build_subject_hints(user_images)
             if subject_hints:
                 prompt_text = f"{prompt_text} Identity guidance: {' '.join(subject_hints)}."
+        pack_note = self._identity_pack_prompt_note(identity_reference_pack)
+        if pack_note:
+            prompt_text = f"{prompt_text} {pack_note}"
         prompt_text = f"{prompt_text} {get_studio_guardrails(is_couple=is_couple)}."
 
         refs: list[str] = []
@@ -719,6 +930,7 @@ class WenwenService:
         global_style_text: str | None,
         scene_text: str | None,
         outfit_text: str | None,
+        identity_reference_pack: dict | None = None,
         scene_image_url: str | None,
         clothing_image_url: str | None,
         couple_flow: str | None,
@@ -732,6 +944,7 @@ class WenwenService:
             global_style_text=global_style_text,
             scene_text=scene_text,
             outfit_text=outfit_text,
+            identity_reference_pack=identity_reference_pack,
             scene_image_url=scene_image_url,
             clothing_image_url=clothing_image_url,
             couple_flow=couple_flow,
@@ -880,65 +1093,365 @@ class WenwenService:
                 logger.warning("Skipping invalid image edit base64 output")
         return outputs
 
-    async def _run_image_edit_generation(
+    @staticmethod
+    def _image_edit_round_stage(round_number: int) -> str:
+        if int(round_number) <= 1:
+            return "primary_generation"
+        if int(round_number) == 2:
+            return "targeted_repair"
+        return "final_polish"
+
+    @classmethod
+    def _should_include_previous_edit_result(cls, reasons: list[str]) -> bool:
+        normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
+        return not bool(normalized & cls.IMAGE_EDIT_REPAIR_SKIP_PREVIOUS_REASONS)
+
+    @staticmethod
+    def _repair_focus_from_reasons(reasons: list[str], *, is_couple: bool) -> str:
+        normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
+        focus: list[str] = []
+        if normalized & {"identity_mismatch", "identity_swap"}:
+            focus.append(
+                "restore facial identity from the original identity references; do not keep the wrong generated face"
+            )
+        if "subject_missing" in normalized:
+            focus.append("restore the missing person and preserve the requested subject count")
+        if normalized & {"face_distortion", "cropped_face", "headless", "fused_faces"}:
+            focus.append("repair face geometry and keep every face complete, natural, and readable")
+        if normalized & {"body_fusion", "extra_limbs"}:
+            focus.append("repair body separation and natural anatomy without changing the locked faces")
+        if "bad_hands" in normalized:
+            focus.append("repair only severe hand and finger defects while preserving pose and face")
+        if "dress_exposure_error" in normalized:
+            focus.append("repair wedding dress coverage and fabric structure")
+        if "poor_studio_quality" in normalized:
+            focus.append("upgrade studio-grade lighting, skin texture, dress fabric, and professional color grading")
+        if normalized & {"subject_too_small", "face_too_small", "background_dominates", "excessive_headroom"}:
+            focus.append(
+                "reframe to commercial wedding proportions: subject prominent, face readable, intentional headroom, and background secondary"
+            )
+        if normalized & {"awkward_crop", "dress_cropped"}:
+            focus.append(
+                "restore full wedding crop boundaries with complete gown, train, shoes, limbs, and no joint cutoffs"
+            )
+        if "poor_subject_separation" in normalized:
+            focus.append("improve subject-background separation with controlled depth, rim light, and clean visual hierarchy")
+        if "flat_centered_pose" in normalized:
+            focus.append("replace stiff centered tourist-photo blocking with directed editorial wedding posing")
+        if "weak_couple_interaction" in normalized:
+            focus.append("add subtle couple interaction and staggered blocking while keeping both faces unobstructed")
+        if "harsh_backlight" in normalized:
+            focus.append("replace harsh backlight with balanced outdoor fill, correct facial exposure, and preserved highlights")
+        if normalized & {"black_or_blank", "severe_artifacts", "watermark_or_text"}:
+            focus.append("regenerate a clean usable wedding portrait without artifacts, text, or blank regions")
+        if is_couple:
+            focus.append("keep bride/person A and groom/person B separate; never swap, merge, or average identities")
+        if not focus:
+            focus.append("perform identity-safe micro-corrections only; keep face, pose, and composition stable")
+        return "; ".join(focus)
+
+    @staticmethod
+    def _structured_issue_repair_summary(issues: list[dict[str, Any]] | None) -> str:
+        if not issues:
+            return "none"
+        parts: list[str] = []
+        for issue in issues[:5]:
+            if not isinstance(issue, dict):
+                continue
+            code = str(issue.get("code") or "other")
+            category = str(issue.get("category") or "unknown")
+            target = str(issue.get("target") or "unknown")
+            severity = str(issue.get("severity") or "review")
+            repair_action = str(issue.get("repair_action") or "manual_review")
+            repair_hint = str(issue.get("repair_hint") or "").strip()
+            text = f"{code} [{category}/{target}/{severity}] -> {repair_action}"
+            if repair_hint:
+                text = f"{text}: {repair_hint}"
+            parts.append(text)
+        return "; ".join(parts) if parts else "none"
+
+    @classmethod
+    def _candidate_hard_gate_reasons(cls, reasons: list[str], issues: list[dict[str, Any]] | None) -> list[str]:
+        hard_gate = {
+            str(reason or "").strip()
+            for reason in reasons
+            if str(reason or "").strip() in (cls.IDENTITY_HARD_GATE_REASONS | cls.COMMERCIAL_HARD_GATE_REASONS)
+        }
+        for issue in issues or []:
+            if not isinstance(issue, dict):
+                continue
+            code = str(issue.get("code") or "").strip()
+            if code in (cls.IDENTITY_HARD_GATE_REASONS | cls.COMMERCIAL_HARD_GATE_REASONS):
+                hard_gate.add(code)
+        return sorted(hard_gate)
+
+    @classmethod
+    def _score_candidate_verdict(
+        cls,
+        verdict: dict[str, Any],
+        *,
+        round_number: int,
+        candidate_index: int,
+    ) -> dict[str, Any]:
+        reasons = [str(reason) for reason in (verdict.get("reasons") or []) if str(reason or "").strip()]
+        issues = [issue for issue in (verdict.get("issues") or []) if isinstance(issue, dict)]
+        hard_gate_reasons = cls._candidate_hard_gate_reasons(reasons, issues)
+        score = 100.0
+        if not bool(verdict.get("passed")):
+            score -= 20.0
+        for reason in reasons:
+            score -= float(cls.CANDIDATE_REASON_PENALTIES.get(reason, cls.CANDIDATE_REASON_PENALTIES["other"]))
+        for issue in issues:
+            severity = str(issue.get("severity") or "").lower()
+            if severity == "critical":
+                score -= 15.0
+            elif severity == "major":
+                score -= 8.0
+            elif severity == "minor":
+                score -= 3.0
+        if hard_gate_reasons:
+            score -= 25.0
+        score += max(0, int(round_number) - 1) * 1.5
+        score -= max(0, int(candidate_index)) * 0.01
+        return {
+            "policy": cls.CANDIDATE_SELECTION_POLICY,
+            "score": round(max(0.0, min(100.0, score)), 2),
+            "passed": bool(verdict.get("passed")) and not hard_gate_reasons,
+            "hard_gate_reasons": hard_gate_reasons,
+            "reasons": reasons,
+            "issue_count": len(issues),
+        }
+
+    @classmethod
+    def _select_best_candidate(cls, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        if not candidates:
+            raise RuntimeError("wenwen_image_edit_candidates_missing")
+
+        def sort_key(candidate: dict[str, Any]) -> tuple[int, float, int]:
+            selection = candidate.get("selection") if isinstance(candidate.get("selection"), dict) else {}
+            return (
+                1 if bool(candidate.get("qa_ok")) else 0,
+                float(selection.get("score") or 0.0),
+                -int(candidate.get("index") or 0),
+            )
+
+        return max(candidates, key=sort_key)
+
+    @staticmethod
+    def _result_selection_score(result: dict[str, Any] | None) -> float:
+        if not isinstance(result, dict):
+            return -1.0
+        selection = result.get("selection") if isinstance(result.get("selection"), dict) else {}
+        try:
+            return float(selection.get("score") or 0.0)
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _build_image_edit_round_prompt(
+        cls,
+        *,
+        base_prompt: str,
+        negative_prompt: str,
+        round_number: int,
+        qa_reasons: list[str],
+        identity_pack_note: str,
+        include_previous_result: bool,
+        is_couple: bool,
+        qa_issues: list[dict[str, Any]] | None = None,
+    ) -> str:
+        stage = cls._image_edit_round_stage(round_number)
+        if stage == "primary_generation":
+            stage_instruction = (
+                "ROUND 1 PRIMARY GENERATION: create the complete professional wedding portrait from the original "
+                "identity references and requested scene. The identity reference files are hard face anchors. "
+                "If multiple candidates are generated, vary only professional pose nuance, camera distance inside "
+                "the commercial framing range, lighting polish, and background depth; never vary identity."
+            )
+        elif stage == "targeted_repair":
+            focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
+            previous_instruction = (
+                "A previous candidate image may be included as the current canvas. Use it only as composition and "
+                "style context; the original identity references remain the authority for the face."
+                if include_previous_result
+                else "Do not rely on the previous failed candidate for facial identity; regenerate the repair from the original identity references."
+            )
+            stage_instruction = (
+                "ROUND 2 TARGETED REPAIR: fix only the QA-targeted issues. "
+                f"Repair focus: {focus}. {previous_instruction}"
+            )
+        else:
+            if qa_reasons:
+                focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
+                stage_instruction = (
+                    "ROUND 3 FINAL RECOVERY AND POLISH: first fix the remaining QA-targeted issues, then perform "
+                    f"final professional retouching. Repair focus: {focus}. Do not change facial identity, role order, "
+                    "pose, body shape, camera framing, or scene concept unless needed to fix the listed critical issue."
+                )
+            else:
+                stage_instruction = (
+                    "ROUND 3 FINAL POLISH: perform final professional retouching only. Improve catchlights, facial "
+                    "exposure, natural skin texture, dress fabric, color grading, and background separation. Do not "
+                    "change facial identity, role order, pose, body shape, camera framing, or scene concept."
+                )
+
+        reasons_text = ", ".join(str(reason) for reason in qa_reasons if str(reason).strip()) or "none"
+        issues_text = cls._structured_issue_repair_summary(qa_issues)
+        couple_note = (
+            "Couple rule: person A/bride and person B/groom must remain separate, with no role swap or face averaging. "
+            if is_couple
+            else ""
+        )
+        return (
+            "This is an identity-preserving wedding photo edit, not text-to-image character creation. "
+            "The identity reference file(s) define the real person or people. "
+            "The generated face(s) must remain recognizably the same individual(s) from the source portrait(s). "
+            "If a requested style conflicts with identity, prioritize identity.\n\n"
+            "DELIVERY HARD GATE: only a candidate that preserves identity, face readability, commercial canvas "
+            "proportion, natural crop boundaries, complete wedding wardrobe, and professional lighting may be "
+            "delivered. Failed candidates are internal only and must be repaired or rejected.\n"
+            f"{stage_instruction}\n"
+            f"QA reasons from previous round: {reasons_text}.\n"
+            f"Structured QA issues from previous round: {issues_text}.\n"
+            f"{couple_note}"
+            f"{base_prompt}\n\n"
+            "Use the uploaded full identity reference(s), identity face crop(s), and identity upper-body crop(s) as "
+            "hard identity anchors. Preserve exact facial structure, face shape, eyes, nose, mouth, jawline, chin, "
+            "age impression, skin undertone, and natural expression. Do not generate a generic attractive bride or "
+            "groom if that changes the source identity. Do not treat style, scene, clothing, or previous-result "
+            "references as additional identities.\n"
+            f"{identity_pack_note}"
+            f"Negative prompt: {negative_prompt}"
+        )
+
+    async def _record_image_edit_round(
         self,
         order_uuid: uuid.UUID,
         *,
+        round_number: int,
+        stage: str,
+        delivered_urls: list[str],
+        provider_urls: list[str],
+        qa_passed: bool,
+        qa_reasons: list[str],
+        used_previous_result: bool,
+        qa_issues: list[dict[str, Any]] | None = None,
+        selected_candidate_url: str | None = None,
+        selected_candidate_index: int | None = None,
+        candidate_scores: list[dict[str, Any]] | None = None,
+    ) -> None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+            rounds = debug.get("image_edit_rounds") if isinstance(debug.get("image_edit_rounds"), list) else []
+            generation_attempt = params.get("generation_attempt")
+            rounds.append(
+                {
+                    "round": int(round_number),
+                    "generation_attempt": generation_attempt,
+                    "stage": stage,
+                    "candidate_url": delivered_urls[0] if delivered_urls else "",
+                    "candidate_urls": [str(url) for url in delivered_urls],
+                    "selected_candidate_url": selected_candidate_url or (delivered_urls[0] if delivered_urls else ""),
+                    "selected_candidate_index": selected_candidate_index,
+                    "candidate_count": len(delivered_urls),
+                    "provider_url_count": len(provider_urls),
+                    "candidate_scores": candidate_scores or [],
+                    "selection_policy": self.CANDIDATE_SELECTION_POLICY,
+                    "qa_passed": bool(qa_passed),
+                    "qa_reasons": [str(reason) for reason in qa_reasons],
+                    "qa_issues": qa_issues or [],
+                    "used_previous_result": bool(used_previous_result),
+                    "billable": False,
+                    "extra_credits_charged": 0,
+                    "completed_at": self._utc_now_iso(),
+                }
+            )
+            debug["image_edit_rounds"] = rounds[-8:]
+            params["debug"] = debug
+            params["image_edit_round_current"] = int(round_number)
+            params["image_edit_stage_current"] = stage
+            params["automatic_repair_extra_charge"] = 0
+            order.generation_params = params
+            await db.commit()
+
+    async def _submit_image_edit_round(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        model: str,
         refs: list[str],
+        identity_refs: list[str],
+        style_refs: list[str],
+        current_result_refs: list[str],
         prompt_text: str,
         negative_prompt: str,
         user_images: list[str],
-        subject_count: int | None,
-        couple_flow: str | None,
-    ) -> bool:
-        if not settings.wenwen_prefer_image_edit or not refs:
-            return False
-        model = str(settings.wenwen_image_edit_model or "").strip()
-        if not model:
-            return False
+        identity_reference_pack: dict | None,
+        is_couple: bool,
+        round_number: int,
+        qa_reasons: list[str],
+        qa_issues: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        stage = self._image_edit_round_stage(round_number)
+        include_previous = bool(current_result_refs) and self._should_include_previous_edit_result(qa_reasons)
+        identity_pack_note = self._identity_pack_prompt_note(identity_reference_pack)
+        edit_prompt = self._build_image_edit_round_prompt(
+            base_prompt=prompt_text,
+            negative_prompt=negative_prompt,
+            round_number=round_number,
+            qa_reasons=qa_reasons,
+            qa_issues=qa_issues,
+            identity_pack_note=identity_pack_note,
+            include_previous_result=include_previous,
+            is_couple=is_couple,
+        )
+        files = await self._build_image_edit_reference_files(
+            identity_refs,
+            style_refs=style_refs,
+            identity_reference_pack=identity_reference_pack,
+            current_result_refs=current_result_refs if include_previous else [],
+        )
+        if not files:
+            raise RuntimeError("wenwen_image_edit_identity_refs_missing")
 
-        is_couple = bool(subject_count and int(subject_count) >= 2)
-        task_id = f"image-edit-{order_uuid}"
         await self._update_order_generating(
             order_uuid,
-            task_id=task_id,
+            task_id=f"image-edit-{order_uuid}-round-{round_number}",
             payload={
                 "model": model,
                 "endpoint": settings.wenwen_image_edit_path,
                 "size": self._image_edit_size(is_couple),
                 "quality": settings.wenwen_image_edit_quality,
-                "reference_count": min(len(refs), 4),
+                "reference_count": min(len(refs), self.IMAGE_EDIT_REFERENCE_FILE_LIMIT),
+                "uploaded_reference_file_count": len(files),
+                "requested_candidate_count": self._image_edit_candidate_count(),
+                "round": int(round_number),
+                "stage": stage,
+                "multi_round_edit": True,
+                "image_edit_max_rounds": self.IMAGE_EDIT_MAX_ROUNDS,
+                "billable": False,
+                "extra_credits_charged": 0,
+                "used_previous_result": include_previous,
+                "identity_edit_hard_required": self._identity_edit_required(user_images),
+                "native_text_to_image_fallback_allowed": False if self._identity_edit_required(user_images) else True,
+                "identity_reference_pack_version": identity_reference_pack.get("version")
+                if isinstance(identity_reference_pack, dict)
+                else None,
             },
-            prompt_text=prompt_text,
+            prompt_text=edit_prompt,
             negative_prompt=negative_prompt,
-            generation_mode="image_edit",
+            generation_mode="image_edit_multi_round",
         )
 
-        identity_ref_count = min(len([url for url in (user_images or []) if str(url or "").strip()]), 2)
-        identity_refs = refs[:identity_ref_count]
-        style_refs = refs[identity_ref_count:]
-        files = await self._build_image_edit_reference_files(identity_refs, style_refs=style_refs)
-        if not files:
-            raise RuntimeError("wenwen_image_edit_identity_refs_missing")
-
-        edit_prompt = (
-            "This is an identity-preserving wedding photo edit, not text-to-image character creation. "
-            "The identity reference file(s) define the real person or people. "
-            "The generated face(s) must remain recognizably the same individual(s) from the source portrait(s). "
-            "If a requested style conflicts with identity, prioritize identity.\n\n"
-            f"{prompt_text}\n\n"
-            "Use the uploaded full identity reference(s) and identity close-up crop(s) as hard identity anchors. "
-            "Preserve the exact facial structure, face shape, eyes, nose, mouth, jawline, chin, age impression, "
-            "skin undertone, and natural expression. For couple images, keep reference 1 as subject A and reference 2 "
-            "as subject B; keep the two people visually distinct and preserve both identities. "
-            "Do not generate a generic attractive bride or groom if that changes the source identity. "
-            "Do not treat style, scene, or clothing references as additional identities.\n"
-            f"Negative prompt: {negative_prompt}"
-        )
         data = {
             "model": model,
             "prompt": edit_prompt,
-            "n": "1",
+            "n": str(self._image_edit_candidate_count()),
             "size": self._image_edit_size(is_couple),
             "quality": str(settings.wenwen_image_edit_quality or "high"),
         }
@@ -950,6 +1463,17 @@ class WenwenService:
                 data=data,
                 files=files,
             )
+            if response.status_code in {400, 422} and data.get("n") != "1":
+                lowered = response.text.lower()
+                if any(token in lowered for token in ("n", "number", "candidate", "multiple")):
+                    retry_data = dict(data)
+                    retry_data["n"] = "1"
+                    response = await client.post(
+                        self._image_edit_url(),
+                        headers={"Authorization": f"Bearer {settings.wenwen_api_key}"},
+                        data=retry_data,
+                        files=files,
+                    )
         if response.status_code in {401, 403}:
             raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
         if response.status_code in {402, 429}:
@@ -972,29 +1496,182 @@ class WenwenService:
         if not delivered_urls:
             raise RuntimeError("wenwen_image_edit_outputs_missing")
 
-        primary_image_url = delivered_urls[0]
-        qa_ok, qa_reasons = await output_passes(
-            primary_image_url,
-            is_couple=is_couple,
-            source_image_urls=[str(url) for url in user_images if url],
+        candidate_results: list[dict[str, Any]] = []
+        source_images = [str(url) for url in user_images if str(url or "").strip()]
+        for index, candidate_url in enumerate(delivered_urls):
+            qa_verdict = await output_verdict(
+                candidate_url,
+                is_couple=is_couple,
+                source_image_urls=source_images,
+            )
+            selection = self._score_candidate_verdict(
+                qa_verdict,
+                round_number=round_number,
+                candidate_index=index,
+            )
+            next_qa_reasons = list(qa_verdict.get("reasons") or [])
+            next_qa_issues = [issue for issue in (qa_verdict.get("issues") or []) if isinstance(issue, dict)]
+            candidate_results.append(
+                {
+                    "index": index,
+                    "url": candidate_url,
+                    "qa_ok": bool(selection.get("passed")),
+                    "qa_reasons": next_qa_reasons,
+                    "qa_issues": next_qa_issues,
+                    "selection": selection,
+                }
+            )
+
+        selected_candidate = self._select_best_candidate(candidate_results)
+        primary_image_url = str(selected_candidate.get("url") or "")
+        qa_ok = bool(selected_candidate.get("qa_ok"))
+        next_qa_reasons = list(selected_candidate.get("qa_reasons") or [])
+        next_qa_issues = [
+            issue for issue in (selected_candidate.get("qa_issues") or []) if isinstance(issue, dict)
+        ]
+        selected_index = int(selected_candidate.get("index") or 0)
+        candidate_scores = [
+            {
+                "index": int(candidate.get("index") or 0),
+                "url": str(candidate.get("url") or ""),
+                "qa_passed": bool(candidate.get("qa_ok")),
+                **(candidate.get("selection") if isinstance(candidate.get("selection"), dict) else {}),
+            }
+            for candidate in candidate_results
+        ]
+        await self._record_image_edit_round(
+            order_uuid,
+            round_number=round_number,
+            stage=stage,
+            delivered_urls=delivered_urls,
+            provider_urls=provider_urls,
+            qa_passed=qa_ok,
+            qa_reasons=next_qa_reasons,
+            qa_issues=next_qa_issues,
+            used_previous_result=include_previous,
+            selected_candidate_url=primary_image_url,
+            selected_candidate_index=selected_index,
+            candidate_scores=candidate_scores,
         )
         if not qa_ok:
             await self._record_qa_failure(
                 order_uuid,
-                attempt=1,
-                reasons=qa_reasons,
+                attempt=round_number,
+                reasons=next_qa_reasons,
                 candidate_url=primary_image_url,
+                issues=next_qa_issues,
             )
-            raise ValueError(f"QA failed: {','.join(qa_reasons)}")
+        return {
+            "round": int(round_number),
+            "stage": stage,
+            "delivered_urls": [primary_image_url],
+            "all_delivered_urls": delivered_urls,
+            "provider_urls": provider_urls,
+            "qa_ok": qa_ok,
+            "qa_reasons": next_qa_reasons,
+            "qa_issues": next_qa_issues,
+            "used_previous_result": include_previous,
+            "selection": selected_candidate.get("selection") if isinstance(selected_candidate, dict) else {},
+            "selected_candidate_index": selected_index,
+            "candidate_scores": candidate_scores,
+        }
+
+    async def _run_image_edit_generation(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        refs: list[str],
+        prompt_text: str,
+        negative_prompt: str,
+        user_images: list[str],
+        identity_reference_pack: dict | None,
+        subject_count: int | None,
+        couple_flow: str | None,
+    ) -> bool:
+        identity_edit_required = self._identity_edit_required(user_images)
+        if not refs:
+            return False
+        if not identity_edit_required and not settings.wenwen_prefer_image_edit:
+            return False
+        model = self._effective_image_edit_model()
+        if not model:
+            if identity_edit_required:
+                raise RuntimeError("wenwen_image_edit_model_missing")
+            return False
+
+        is_couple = bool(subject_count and int(subject_count) >= 2)
+        identity_ref_count = min(len([url for url in (user_images or []) if str(url or "").strip()]), 2)
+        identity_refs = refs[:identity_ref_count]
+        style_refs = refs[identity_ref_count:]
+
+        best_passed: dict[str, Any] | None = None
+        previous_result_refs: list[str] = []
+        qa_reasons: list[str] = []
+        qa_issues: list[dict[str, Any]] = []
+        last_result: dict[str, Any] | None = None
+        for round_number in range(1, self.IMAGE_EDIT_MAX_ROUNDS + 1):
+            result = await self._submit_image_edit_round(
+                order_uuid,
+                model=model,
+                refs=refs,
+                identity_refs=identity_refs,
+                style_refs=style_refs,
+                current_result_refs=previous_result_refs,
+                prompt_text=prompt_text,
+                negative_prompt=negative_prompt,
+                user_images=user_images,
+                identity_reference_pack=identity_reference_pack,
+                is_couple=is_couple,
+                round_number=round_number,
+                qa_reasons=qa_reasons,
+                qa_issues=qa_issues,
+            )
+            last_result = result
+            if result["qa_ok"]:
+                if best_passed is None or self._result_selection_score(result) > self._result_selection_score(best_passed):
+                    best_passed = result
+                previous_result_refs = list(result["delivered_urls"][:1])
+                qa_reasons = []
+                qa_issues = []
+            else:
+                qa_reasons = list(result["qa_reasons"] or [])
+                qa_issues = [issue for issue in (result.get("qa_issues") or []) if isinstance(issue, dict)]
+                if best_passed and round_number >= self.IMAGE_EDIT_MAX_ROUNDS:
+                    logger.warning(
+                        "Wenwen final image-edit round failed; delivering previous passing round %s: %s",
+                        best_passed.get("round"),
+                        qa_reasons,
+                    )
+                    break
+                previous_result_refs = (
+                    list(result["delivered_urls"][:1])
+                    if self._should_include_previous_edit_result(qa_reasons)
+                    else []
+                )
+
+        selected = best_passed
+        if selected is None:
+            reasons = list((last_result or {}).get("qa_reasons") or qa_reasons or ["unknown"])
+            raise ValueError(f"QA failed: {','.join(reasons)}")
 
         await self._complete_order(
             order_uuid,
-            delivered_urls=delivered_urls,
-            provider_urls=provider_urls,
-            qa_attempt_count=1,
+            delivered_urls=list(selected["delivered_urls"]),
+            provider_urls=list(selected["provider_urls"]),
+            qa_attempt_count=int((last_result or selected).get("round") or self.IMAGE_EDIT_MAX_ROUNDS),
             is_couple=is_couple,
             subject_count=subject_count,
             couple_flow=couple_flow,
+            selected_round=int(selected["round"]),
+            selected_stage=str(selected["stage"]),
+            selection_summary={
+                "policy": self.CANDIDATE_SELECTION_POLICY,
+                "selected_round": int(selected["round"]),
+                "selected_stage": str(selected["stage"]),
+                "selected_candidate_index": int(selected.get("selected_candidate_index") or 0),
+                "score": self._result_selection_score(selected),
+                "candidate_scores": selected.get("candidate_scores") if isinstance(selected.get("candidate_scores"), list) else [],
+            },
         )
         return True
 
@@ -1056,6 +1733,9 @@ class WenwenService:
         is_couple: bool,
         subject_count: int | None,
         couple_flow: str | None,
+        selected_round: int | None = None,
+        selected_stage: str | None = None,
+        selection_summary: dict[str, Any] | None = None,
     ) -> None:
         async with async_session_maker() as db:
             result = await db.execute(select(Order).where(Order.id == order_uuid))
@@ -1081,6 +1761,13 @@ class WenwenService:
             params["qa_attempt_count"] = qa_attempt_count
             params["qa_retry_pending"] = False
             params["qa_retry_in_progress"] = False
+            params["automatic_repair_extra_charge"] = 0
+            if selected_round is not None:
+                params["image_edit_selected_round"] = int(selected_round)
+            if selected_stage:
+                params["image_edit_selected_stage"] = str(selected_stage)
+            if selection_summary:
+                params["candidate_selection"] = selection_summary
             params["couple_guardrails"] = {
                 "is_couple": bool(is_couple),
                 "subject_count": subject_count,
@@ -1136,37 +1823,41 @@ class WenwenService:
         async with async_session_maker() as db:
             result = await db.execute(select(Order).where(Order.id == order_uuid))
             order = result.scalar_one_or_none()
-            refund_amount = COST_PER_GENERATION
             clean_error_message = str(error_message or "").strip() or failure_code or "unknown_generation_error"
-            params = {}
-            if order and isinstance(order.generation_params, dict):
-                params = order.generation_params
-                try:
-                    if int(params.get("refunded_credits") or 0) > 0:
-                        refund_amount = 0
-                    elif "credits_cost" in params:
-                        refund_amount = max(0, int(params.get("credits_cost") or 0))
-                except Exception:
-                    refund_amount = COST_PER_GENERATION
+            params = dict(order.generation_params) if order and isinstance(order.generation_params, dict) else {}
+            refund_amount = resolve_generation_refund_amount(
+                params,
+                fallback_amount=COST_PER_GENERATION,
+                failure_code=failure_code,
+            )
+            refund_applied = False
             if order and order.user_id and refund_amount:
-                await add_credits_async(
+                _balance, refund_applied = await refund_generation_credits_once_async(
                     db,
                     order.user_id,
                     refund_amount,
-                    transaction_type=CreditTransactionType.GENERATION_REFUND,
-                    source="order",
-                    source_id=str(order.id),
+                    order_id=order.id,
+                    failure_code=failure_code,
+                    provider="wenwen",
                     description=f"Generation failed: {failure_code}",
+                    metadata=generation_refund_metadata(
+                        params,
+                        failure_code=failure_code,
+                        failure_provider="wenwen",
+                        error_message=clean_error_message,
+                    ),
                 )
             if order:
                 order.status = OrderStatus.CREATED
                 order.error_message = clean_error_message
-                params = dict(params)
-                params["failure_code"] = failure_code
-                params["failure_provider"] = "wenwen"
-                if refund_amount:
-                    params["refunded_credits"] = refund_amount
-                order.generation_params = params
+                order.generation_params = merge_generation_refund_state(
+                    params,
+                    refund_amount=refund_amount,
+                    refund_applied=refund_applied,
+                    refund_already_recorded=bool(refund_amount and not refund_applied),
+                    failure_code=failure_code,
+                    failure_provider="wenwen",
+                )
                 await db.commit()
 
     async def _record_qa_failure(
@@ -1176,6 +1867,7 @@ class WenwenService:
         attempt: int,
         reasons: list[str],
         candidate_url: str,
+        issues: list[dict[str, Any]] | None = None,
     ) -> None:
         await record_generation_qa_failure(
             order_uuid,
@@ -1183,6 +1875,7 @@ class WenwenService:
             reasons=reasons,
             candidate_url=candidate_url,
             engine="wenwen",
+            issues=issues,
         )
 
     async def _load_order_generation_context(self, order_uuid: uuid.UUID) -> dict[str, Any] | None:
@@ -1412,6 +2105,7 @@ class WenwenService:
         global_style_text: str | None = None,
         scene_text: str | None = None,
         outfit_text: str | None = None,
+        identity_reference_pack: dict | None = None,
         scene_image_url: str | None = None,
         clothing_image_url: str | None = None,
         **_: Any,
@@ -1437,6 +2131,7 @@ class WenwenService:
                     global_style_text=global_style_text,
                     scene_text=scene_text,
                     outfit_text=outfit_text,
+                    identity_reference_pack=identity_reference_pack,
                     scene_image_url=scene_image_url,
                     clothing_image_url=clothing_image_url,
                     couple_flow=couple_flow,
@@ -1477,6 +2172,7 @@ class WenwenService:
                 global_style_text=global_style_text,
                 scene_text=scene_text,
                 outfit_text=outfit_text,
+                identity_reference_pack=identity_reference_pack,
                 scene_image_url=scene_image_url,
                 clothing_image_url=clothing_image_url,
                 couple_flow=couple_flow,
@@ -1492,6 +2188,7 @@ class WenwenService:
                     prompt_text=prompt_text,
                     negative_prompt=negative_prompt,
                     user_images=list(user_images or []),
+                    identity_reference_pack=identity_reference_pack,
                     subject_count=subject_count,
                     couple_flow=couple_flow,
                 )
@@ -1620,17 +2317,21 @@ class WenwenService:
                     )
 
                     primary_image_url = delivered_urls[0]
-                    qa_ok, qa_reasons = await output_passes(
+                    qa_verdict = await output_verdict(
                         primary_image_url,
                         is_couple=is_couple,
                         source_image_urls=[str(url) for url in user_images if url],
                     )
+                    qa_ok = bool(qa_verdict.get("passed"))
+                    qa_reasons = list(qa_verdict.get("reasons") or [])
+                    qa_issues = [issue for issue in (qa_verdict.get("issues") or []) if isinstance(issue, dict)]
                     if not qa_ok:
                         await self._record_qa_failure(
                             order_uuid,
                             attempt=attempt + 1,
                             reasons=qa_reasons,
                             candidate_url=primary_image_url,
+                            issues=qa_issues,
                         )
                         if settings.is_vercel_runtime and self._should_retry_qa(qa_reasons, attempt + 1):
                             await self._mark_qa_retry_pending(

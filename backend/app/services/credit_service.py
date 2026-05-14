@@ -33,6 +33,7 @@ COST_LIVE_PORTRAIT_EXTRA_BLOCK = 4
 COST_PER_GENERATION = COST_SINGLE_GENERATION
 logger = logging.getLogger(__name__)
 _credit_guardrails_ready = False
+_credit_refund_guardrails_ready = False
 
 
 async def ensure_credit_guardrails(db: AsyncSession) -> None:
@@ -58,6 +59,33 @@ async def ensure_credit_guardrails(db: AsyncSession) -> None:
     except Exception as exc:
         logger.warning("welcome_bonus_unique_index_unavailable: %s", exc)
         _credit_guardrails_ready = True
+
+
+async def ensure_generation_refund_guardrails(db: AsyncSession) -> None:
+    """Best-effort DB guardrail for one refund transaction per generation order."""
+    global _credit_refund_guardrails_ready
+    if _credit_refund_guardrails_ready:
+        return
+    if not hasattr(db, "begin_nested"):
+        _credit_refund_guardrails_ready = True
+        return
+    try:
+        async with db.begin_nested():
+            await db.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_credit_transactions_order_refund_once
+                    ON credit_transactions (user_id, source_id)
+                    WHERE transaction_type = 'GENERATION_REFUND'
+                      AND source = 'order'
+                      AND source_id IS NOT NULL
+                    """
+                )
+            )
+        _credit_refund_guardrails_ready = True
+    except Exception as exc:
+        logger.warning("generation_refund_unique_index_unavailable: %s", exc)
+        _credit_refund_guardrails_ready = True
 
 
 def _to_user_uuid(user_id: uuid.UUID | str) -> uuid.UUID:
@@ -289,6 +317,60 @@ async def add_credits_with_transaction_async(
     )
     await db.flush()
     return int(row.balance or 0), transaction
+
+
+async def refund_generation_credits_once_async(
+    db: AsyncSession,
+    user_id: uuid.UUID | str,
+    amount: int,
+    *,
+    order_id: uuid.UUID | str,
+    failure_code: str | None = None,
+    provider: str | None = None,
+    description: str | None = None,
+    metadata: dict | None = None,
+) -> tuple[int, bool]:
+    """Refund a failed generation once per order and return (balance, applied)."""
+    amount_int = max(0, int(amount or 0))
+    if amount_int <= 0:
+        return await get_balance_async(db, user_id), False
+
+    await ensure_generation_refund_guardrails(db)
+    source_id = str(order_id)
+    row = await _get_or_create_credit_row_for_update(db, user_id)
+    existing = await db.execute(
+        select(CreditTransaction)
+        .where(
+            CreditTransaction.user_id == _to_user_uuid(user_id),
+            CreditTransaction.transaction_type == CreditTransactionType.GENERATION_REFUND,
+            CreditTransaction.source == "order",
+            CreditTransaction.source_id == source_id,
+        )
+        .limit(1)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return int(row.balance or 0), False
+
+    row.balance = int(row.balance or 0) + amount_int
+    row.updated_at = func.now()
+    refund_metadata = dict(metadata or {})
+    if failure_code:
+        refund_metadata["failure_code"] = str(failure_code)
+    if provider:
+        refund_metadata["provider"] = str(provider)
+    await _record_credit_transaction(
+        db,
+        user_id,
+        transaction_type=CreditTransactionType.GENERATION_REFUND,
+        amount=amount_int,
+        balance_after=int(row.balance or 0),
+        source="order",
+        source_id=source_id,
+        description=description or f"Generation failed: {failure_code or 'unknown_error'}",
+        metadata=refund_metadata or None,
+    )
+    await db.flush()
+    return int(row.balance or 0), True
 
 
 async def reset_balance_async(db: AsyncSession, user_id: uuid.UUID | str, amount: int = DEFAULT_CREDITS) -> int:

@@ -14,6 +14,7 @@ from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus
 from app.services.generation_service import generation_service
 from app.models.live_portrait_job import LivePortraitJob, LivePortraitStatus
 from app.models.order import Order, OrderStatus
+from app.services.generation_credit_policy import billable_generation_credits
 
 settings = get_settings()
 
@@ -85,7 +86,7 @@ async def get_ops_monitoring_summary(db: AsyncSession, *, days: int = 7, failure
         bucket = cost_rows[day_value.isoformat()]
         bucket["day"] = day_value.isoformat()
         if isinstance(params, dict):
-            bucket["generation_credits"] += int(params.get("credits_cost") or 0)
+            bucket["generation_credits"] += billable_generation_credits(params)
 
     live_cost_rows = (
         await db.execute(

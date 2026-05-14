@@ -20,8 +20,18 @@ from app.models.order import Order, OrderStatus
 from app.services.trial_access_service import prepare_delivered_image_urls, is_trial_order
 from app.models.live_portrait_job import LivePortraitJob, LivePortraitStatus
 from app.services.template_service import get_template_by_id
-from app.services.credit_service import add_credits_async, COST_PER_GENERATION, COST_LIVE_PORTRAIT
+from app.services.credit_service import (
+    add_credits_async,
+    COST_PER_GENERATION,
+    COST_LIVE_PORTRAIT,
+    refund_generation_credits_once_async,
+)
 from app.services import llm_service
+from app.services.generation_credit_policy import (
+    generation_refund_metadata,
+    merge_generation_refund_state,
+    resolve_generation_refund_amount,
+)
 from app.services.generation_policy import (
     build_generation_negative_prompt,
     build_studio_generation_prompt,
@@ -1041,6 +1051,7 @@ class ComfyUIService:
         global_style_text: str | None = None,
         scene_text: str | None = None,
         outfit_text: str | None = None,
+        identity_reference_pack: dict | None = None,
         scene_image_url: str | None = None,
         clothing_image_url: str | None = None,
         pose_image_url: str | None = None,
@@ -1059,6 +1070,7 @@ class ComfyUIService:
         normal_cn_start: float | None = None,
         normal_cn_end: float | None = None,
     ) -> None:
+        _ = identity_reference_pack
         order_uuid = uuid.UUID(str(order_id))
         try:
             template = get_template_by_id(template_id)
@@ -1370,6 +1382,7 @@ class ComfyUIService:
                         }
                         base_params["qa_last_reasons"] = []
                         base_params["qa_attempt_count"] = attempt + 1
+                        base_params["automatic_repair_extra_charge"] = 0
                         base_params["couple_guardrails"] = {
                             "is_couple": bool(is_couple),
                             "subject_count": normalized_subject_count,
@@ -1386,29 +1399,42 @@ class ComfyUIService:
             async with async_session_maker() as db:
                 result = await db.execute(select(Order).where(Order.id == order_uuid))
                 order = result.scalar_one_or_none()
-                refund_amount = COST_PER_GENERATION
                 failure_code = self._classify_generation_error(e)
                 clean_error_message = str(e).strip() or failure_code or type(e).__name__
-                if order and isinstance(order.generation_params, dict):
-                    params = order.generation_params
-                    try:
-                        if "credits_cost" in params:
-                            refund_amount = max(0, int(params.get("credits_cost") or 0))
-                    except Exception:
-                        refund_amount = COST_PER_GENERATION
-                if refund_amount:
-                    target_user_id = order.user_id if order else None
-                    if target_user_id:
-                        await add_credits_async(db, target_user_id, refund_amount)
+                params = dict(order.generation_params) if order and isinstance(order.generation_params, dict) else {}
+                refund_amount = resolve_generation_refund_amount(
+                    params,
+                    fallback_amount=COST_PER_GENERATION,
+                    failure_code=failure_code,
+                )
+                refund_applied = False
+                if refund_amount and order and order.user_id:
+                    _balance, refund_applied = await refund_generation_credits_once_async(
+                        db,
+                        order.user_id,
+                        refund_amount,
+                        order_id=order.id,
+                        failure_code=failure_code,
+                        provider=settings.generation_provider_name,
+                        description=f"Generation failed: {failure_code}",
+                        metadata=generation_refund_metadata(
+                            params,
+                            failure_code=failure_code,
+                            failure_provider=settings.generation_provider_name,
+                            error_message=clean_error_message,
+                        ),
+                    )
                 if order:
                     order.status = OrderStatus.CREATED
                     order.error_message = clean_error_message
-                    base_params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
-                    base_params["failure_code"] = failure_code
-                    base_params["failure_provider"] = settings.generation_provider_name
-                    if refund_amount:
-                        base_params["refunded_credits"] = refund_amount
-                    order.generation_params = base_params
+                    order.generation_params = merge_generation_refund_state(
+                        params,
+                        refund_amount=refund_amount,
+                        refund_applied=refund_applied,
+                        refund_already_recorded=bool(refund_amount and not refund_applied),
+                        failure_code=failure_code,
+                        failure_provider=settings.generation_provider_name,
+                    )
                     await db.commit()
             return
 
