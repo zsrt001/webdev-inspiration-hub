@@ -2191,6 +2191,8 @@ class WenwenService:
             order = result.scalar_one_or_none()
             if not order:
                 return
+            if order.status == OrderStatus.COMPLETED:
+                return
             order.status = OrderStatus.GENERATING
             order.task_id = task_id
             params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
@@ -2324,6 +2326,8 @@ class WenwenService:
             order = result.scalar_one_or_none()
             clean_error_message = str(error_message or "").strip() or failure_code or "unknown_generation_error"
             params = dict(order.generation_params) if order and isinstance(order.generation_params, dict) else {}
+            if order and order.status == OrderStatus.COMPLETED:
+                return
             refund_amount = resolve_generation_refund_amount(
                 params,
                 fallback_amount=COST_PER_GENERATION,
