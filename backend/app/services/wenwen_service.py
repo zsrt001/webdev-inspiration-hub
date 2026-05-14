@@ -203,6 +203,20 @@ class WenwenService:
     def _effective_image_edit_model(cls) -> str:
         return str(settings.wenwen_image_edit_model or "").strip() or cls._effective_image_model()
 
+    @staticmethod
+    def _image_edit_uses_native_model(model: str | None) -> bool:
+        lowered = str(model or "").strip().lower()
+        return bool(lowered.startswith("gemini") or lowered.startswith("models/gemini") or "/gemini" in lowered)
+
+    @classmethod
+    def _native_image_edit_model_candidates(cls, model: str) -> list[str]:
+        candidates: list[str] = []
+        for value in [model, cls._effective_image_model(), *(settings.wenwen_image_fallback_models or "").split(",")]:
+            candidate = str(value or "").strip()
+            if candidate and candidate not in candidates and cls._image_edit_uses_native_model(candidate):
+                candidates.append(candidate)
+        return candidates
+
     @classmethod
     def _native_model_candidates(cls) -> list[str]:
         candidates: list[str] = []
@@ -342,13 +356,22 @@ class WenwenService:
 
     @classmethod
     def _identity_pack_reference_urls(cls, identity_reference_pack: dict | None) -> set[str]:
-        urls: set[str] = set()
+        return {url for _label, url in cls._identity_pack_reference_url_list(identity_reference_pack)}
+
+    @classmethod
+    def _identity_pack_reference_url_list(cls, identity_reference_pack: dict | None) -> list[tuple[str, str]]:
+        refs: list[tuple[str, str]] = []
         for subject in cls._identity_pack_subjects(identity_reference_pack):
-            for key in ("original_url", "face_crop_url", "upper_body_crop_url"):
+            role = str(subject.get("role") or subject.get("identity_label") or "subject").strip() or "subject"
+            for key, kind in (
+                ("original_url", "original portrait"),
+                ("face_crop_url", "face crop"),
+                ("upper_body_crop_url", "upper-body crop"),
+            ):
                 value = str(subject.get(key) or "").strip()
                 if value:
-                    urls.add(value)
-        return urls
+                    refs.append((f"{role} {kind}", value))
+        return refs
 
     async def _build_identity_pack_reference_files(
         self,
@@ -995,6 +1018,100 @@ class WenwenService:
         return native_payload
 
     @staticmethod
+    def _native_payload_without_candidate_count(payload: dict[str, Any]) -> dict[str, Any]:
+        generation_config = dict(payload.get("generationConfig") or {})
+        generation_config.pop("candidateCount", None)
+        return {**payload, "generationConfig": generation_config}
+
+    def _native_image_edit_reference_entries(
+        self,
+        *,
+        identity_refs: list[str],
+        style_refs: list[str],
+        current_result_refs: list[str],
+        identity_reference_pack: dict | None,
+        include_previous_result: bool,
+    ) -> list[tuple[str, str]]:
+        entries: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def add(label: str, ref: str) -> None:
+            value = str(ref or "").strip()
+            if not value or value in seen or len(entries) >= self.IMAGE_EDIT_REFERENCE_FILE_LIMIT:
+                return
+            seen.add(value)
+            entries.append((label, value))
+
+        for label, ref in self._identity_pack_reference_url_list(identity_reference_pack):
+            add(f"Identity anchor - {label}", ref)
+        for index, ref in enumerate(identity_refs[:2], start=1):
+            add(f"Identity full source image {index}", ref)
+        if include_previous_result:
+            for index, ref in enumerate(current_result_refs, start=1):
+                add(f"Current candidate canvas {index}", ref)
+        for index, ref in enumerate(style_refs, start=1):
+            add(f"Style or scene reference image {index}", ref)
+        return entries
+
+    async def _build_native_image_edit_payload(
+        self,
+        *,
+        edit_prompt: str,
+        negative_prompt: str,
+        identity_refs: list[str],
+        style_refs: list[str],
+        current_result_refs: list[str],
+        identity_reference_pack: dict | None,
+        include_previous_result: bool,
+        is_couple: bool,
+    ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+        reference_entries = self._native_image_edit_reference_entries(
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            current_result_refs=current_result_refs,
+            identity_reference_pack=identity_reference_pack,
+            include_previous_result=include_previous_result,
+        )
+        if not reference_entries:
+            raise RuntimeError("wenwen_native_image_edit_identity_refs_missing")
+
+        role_intro = (
+            "Reference role order: identity A is the bride/source person 1 and identity B is the groom/source person 2. "
+            "Preserve both identities separately; never swap, merge, average, or beautify faces into generic people."
+            if is_couple
+            else "Reference role order: identity A is the single source person. Preserve the exact real identity."
+        )
+        parts: list[dict[str, Any]] = [
+            {
+                "text": (
+                    f"{edit_prompt}\n\n"
+                    "NATIVE GEMINI IMAGE-EDIT MODE: use every attached image as a reference for editing. "
+                    "The identity anchor images override style, pose, outfit, and scene references. "
+                    "Do not invent a new face, do not perform pure text-to-image generation, and do not use the "
+                    "current candidate as identity evidence when identity QA failed.\n"
+                    f"{role_intro}\n"
+                    f"Negative prompt: {negative_prompt}"
+                )
+            }
+        ]
+        for index, (label, ref) in enumerate(reference_entries, start=1):
+            parts.append({"text": f"Reference image {index}: {label}."})
+            coerced = await self._coerce_remote_image_ref(ref)
+            parts.append(self._data_url_to_inline_part(coerced))
+
+        generation_config: dict[str, Any] = {
+            "responseModalities": ["IMAGE"],
+            "temperature": 0.72,
+            "imageConfig": {
+                "aspectRatio": self._build_size(is_couple),
+            },
+        }
+        candidate_count = self._image_edit_candidate_count()
+        if candidate_count > 1:
+            generation_config["candidateCount"] = candidate_count
+        return {"contents": [{"parts": parts}], "generationConfig": generation_config}, reference_entries
+
+    @staticmethod
     def _ext_from_content_type(content_type: str) -> str:
         lowered = (content_type or "").lower()
         if "jpeg" in lowered or "jpg" in lowered:
@@ -1046,7 +1163,13 @@ class WenwenService:
             public_urls.append(public_url)
         return public_urls
 
-    async def _persist_inline_outputs_to_storage(self, parts: list[dict[str, Any]], order_uuid: uuid.UUID) -> list[str]:
+    async def _persist_inline_outputs_to_storage(
+        self,
+        parts: list[dict[str, Any]],
+        order_uuid: uuid.UUID,
+        *,
+        filename_prefix: str | None = None,
+    ) -> list[str]:
         public_urls: list[str] = []
         for index, part in enumerate(parts):
             inline = part.get("inlineData") if isinstance(part, dict) else None
@@ -1059,7 +1182,8 @@ class WenwenService:
                 continue
             mime_type = str(inline.get("mimeType") or inline.get("mime_type") or "image/png")
             ext = mimetypes.guess_extension(mime_type.split(";")[0].strip()) or ".png"
-            filename = f"order_{order_uuid}_media_{index + 1}{ext}"
+            prefix = filename_prefix or f"order_{order_uuid}_media"
+            filename = f"{prefix}_{index + 1}{ext}"
             file_bytes = base64.b64decode(data)
             public_url = await asyncio.to_thread(
                 storage_service.upload_file,
@@ -1070,6 +1194,37 @@ class WenwenService:
             )
             public_urls.append(public_url)
         return public_urls
+
+    async def _persist_native_candidate_outputs_to_storage(
+        self,
+        submission: dict[str, Any],
+        order_uuid: uuid.UUID,
+    ) -> list[str]:
+        if not isinstance(submission, dict):
+            return []
+        raw_candidates = submission.get("candidates")
+        candidates = raw_candidates if isinstance(raw_candidates, list) else []
+        if not candidates:
+            content = submission.get("content") if isinstance(submission.get("content"), dict) else {}
+            if content:
+                candidates = [{"content": content}]
+
+        delivered_urls: list[str] = []
+        for candidate_index, candidate in enumerate(candidates):
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+            parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+            urls = await self._persist_inline_outputs_to_storage(
+                parts,
+                order_uuid,
+                filename_prefix=f"order_{order_uuid}_native_candidate_{candidate_index + 1}_media",
+            )
+            if len(candidates) <= 1:
+                delivered_urls.extend(urls)
+            elif urls:
+                delivered_urls.append(urls[0])
+        return delivered_urls
 
     @classmethod
     def _extract_image_edit_binary_outputs(cls, payload: Any) -> list[tuple[bytes, str]]:
@@ -1379,6 +1534,254 @@ class WenwenService:
             order.generation_params = params
             await db.commit()
 
+    async def _finalize_image_edit_round_candidates(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        round_number: int,
+        stage: str,
+        delivered_urls: list[str],
+        provider_urls: list[str],
+        user_images: list[str],
+        is_couple: bool,
+        include_previous: bool,
+    ) -> dict[str, Any]:
+        candidate_results: list[dict[str, Any]] = []
+        source_images = [str(url) for url in user_images if str(url or "").strip()]
+        for index, candidate_url in enumerate(delivered_urls):
+            qa_verdict = await output_verdict(
+                candidate_url,
+                is_couple=is_couple,
+                source_image_urls=source_images,
+            )
+            selection = self._score_candidate_verdict(
+                qa_verdict,
+                round_number=round_number,
+                candidate_index=index,
+            )
+            next_qa_reasons = list(qa_verdict.get("reasons") or [])
+            next_qa_issues = [issue for issue in (qa_verdict.get("issues") or []) if isinstance(issue, dict)]
+            candidate_results.append(
+                {
+                    "index": index,
+                    "url": candidate_url,
+                    "qa_ok": bool(selection.get("passed")),
+                    "qa_reasons": next_qa_reasons,
+                    "qa_issues": next_qa_issues,
+                    "selection": selection,
+                }
+            )
+
+        selected_candidate = self._select_best_candidate(candidate_results)
+        primary_image_url = str(selected_candidate.get("url") or "")
+        qa_ok = bool(selected_candidate.get("qa_ok"))
+        next_qa_reasons = list(selected_candidate.get("qa_reasons") or [])
+        next_qa_issues = [
+            issue for issue in (selected_candidate.get("qa_issues") or []) if isinstance(issue, dict)
+        ]
+        selected_index = int(selected_candidate.get("index") or 0)
+        candidate_scores = [
+            {
+                "index": int(candidate.get("index") or 0),
+                "url": str(candidate.get("url") or ""),
+                "qa_passed": bool(candidate.get("qa_ok")),
+                **(candidate.get("selection") if isinstance(candidate.get("selection"), dict) else {}),
+            }
+            for candidate in candidate_results
+        ]
+        await self._record_image_edit_round(
+            order_uuid,
+            round_number=round_number,
+            stage=stage,
+            delivered_urls=delivered_urls,
+            provider_urls=provider_urls,
+            qa_passed=qa_ok,
+            qa_reasons=next_qa_reasons,
+            qa_issues=next_qa_issues,
+            used_previous_result=include_previous,
+            selected_candidate_url=primary_image_url,
+            selected_candidate_index=selected_index,
+            candidate_scores=candidate_scores,
+        )
+        if not qa_ok:
+            await self._record_qa_failure(
+                order_uuid,
+                attempt=round_number,
+                reasons=next_qa_reasons,
+                candidate_url=primary_image_url,
+                issues=next_qa_issues,
+            )
+        return {
+            "round": int(round_number),
+            "stage": stage,
+            "delivered_urls": [primary_image_url],
+            "all_delivered_urls": delivered_urls,
+            "provider_urls": provider_urls,
+            "qa_ok": qa_ok,
+            "qa_reasons": next_qa_reasons,
+            "qa_issues": next_qa_issues,
+            "used_previous_result": include_previous,
+            "selection": selected_candidate.get("selection") if isinstance(selected_candidate, dict) else {},
+            "selected_candidate_index": selected_index,
+            "candidate_scores": candidate_scores,
+        }
+
+    async def _submit_native_image_edit_round(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        model: str,
+        refs: list[str],
+        identity_refs: list[str],
+        style_refs: list[str],
+        current_result_refs: list[str],
+        prompt_text: str,
+        negative_prompt: str,
+        user_images: list[str],
+        identity_reference_pack: dict | None,
+        is_couple: bool,
+        round_number: int,
+        qa_reasons: list[str],
+        qa_issues: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        stage = self._image_edit_round_stage(round_number)
+        include_previous = bool(current_result_refs) and self._should_include_previous_edit_result(qa_reasons)
+        identity_pack_note = self._identity_pack_prompt_note(identity_reference_pack)
+        edit_prompt = self._build_image_edit_round_prompt(
+            base_prompt=prompt_text,
+            negative_prompt=negative_prompt,
+            round_number=round_number,
+            qa_reasons=qa_reasons,
+            qa_issues=qa_issues,
+            identity_pack_note=identity_pack_note,
+            include_previous_result=include_previous,
+            is_couple=is_couple,
+        )
+        native_payload, reference_entries = await self._build_native_image_edit_payload(
+            edit_prompt=edit_prompt,
+            negative_prompt=negative_prompt,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            current_result_refs=current_result_refs if include_previous else [],
+            identity_reference_pack=identity_reference_pack,
+            include_previous_result=include_previous,
+            is_couple=is_couple,
+        )
+        if not reference_entries:
+            raise RuntimeError("wenwen_native_image_edit_identity_refs_missing")
+
+        model_candidates = self._native_image_edit_model_candidates(model)
+        if not model_candidates:
+            raise RuntimeError("wenwen_native_image_edit_model_missing")
+
+        await self._update_order_generating(
+            order_uuid,
+            task_id=f"native-image-edit-{order_uuid}-round-{round_number}",
+            payload={
+                **native_payload,
+                "_provider_model": model_candidates[0],
+                "_endpoint": self._native_generation_url_for_model(model_candidates[0]),
+                "_reference_count": len(reference_entries),
+                "_source_reference_count": min(len(refs), self.IMAGE_EDIT_REFERENCE_FILE_LIMIT),
+                "_requested_candidate_count": self._image_edit_candidate_count(),
+                "_round": int(round_number),
+                "_stage": stage,
+                "_native_image_edit": True,
+                "_billable": False,
+                "_extra_credits_charged": 0,
+            },
+            prompt_text=edit_prompt,
+            negative_prompt=negative_prompt,
+            generation_mode="native_image_edit_multi_round",
+        )
+
+        response: httpx.Response | None = None
+        selected_model = model_candidates[0]
+        last_transient_error: Exception | None = None
+        timeout = httpx.Timeout(connect=10.0, read=self._native_read_timeout(model_index=0, model_count=1), write=120.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+            for model_index, candidate_model in enumerate(model_candidates):
+                selected_model = candidate_model
+                request_payload = native_payload
+                try:
+                    candidate_response = await client.post(
+                        self._native_generation_url_for_model(candidate_model),
+                        json=request_payload,
+                        headers=self._headers(),
+                    )
+                    if (
+                        candidate_response.status_code in {400, 422}
+                        and "candidate" in candidate_response.text.lower()
+                        and "candidateCount" in native_payload.get("generationConfig", {})
+                    ):
+                        request_payload = self._native_payload_without_candidate_count(native_payload)
+                        candidate_response = await client.post(
+                            self._native_generation_url_for_model(candidate_model),
+                            json=request_payload,
+                            headers=self._headers(),
+                        )
+                except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                    last_transient_error = exc
+                    if model_index < len(model_candidates) - 1:
+                        logger.warning(
+                            "Wenwen native image-edit transient error; falling back from %s to %s: %s",
+                            candidate_model,
+                            model_candidates[model_index + 1],
+                            exc,
+                        )
+                        continue
+                    raise
+
+                if candidate_response.status_code in {400, 422, 500, 503}:
+                    lowered = candidate_response.text.lower()
+                    model_unavailable = (
+                        "model_not_found" in lowered
+                        or "no available channel" in lowered
+                        or "not supported model for image generation" in lowered
+                    )
+                    if model_unavailable and model_index < len(model_candidates) - 1:
+                        logger.warning(
+                            "Wenwen native image-edit model unavailable; falling back from %s to %s: %s",
+                            candidate_model,
+                            model_candidates[model_index + 1],
+                            candidate_response.status_code,
+                        )
+                        continue
+                response = candidate_response
+                break
+
+        if response is None:
+            if last_transient_error:
+                raise last_transient_error
+            raise RuntimeError("wenwen_native_image_edit_response_missing")
+        if response.status_code in {401, 403}:
+            raise RuntimeError(f"wenwen_auth_failed:{response.status_code}")
+        if response.status_code in {402, 429}:
+            raise RuntimeError(f"wenwen_quota_rejected:{response.status_code}:{response.text[:200]}")
+        if response.status_code in {400, 422, 500, 503}:
+            lowered = response.text.lower()
+            if "model_not_found" in lowered or "no available channel" in lowered or "not supported model for image generation" in lowered:
+                raise RuntimeError(
+                    f"wenwen_model_unavailable:{selected_model}:{response.status_code}:{response.text[:240]}"
+                )
+        response.raise_for_status()
+
+        submission = response.json() if response.content else {}
+        delivered_urls = await self._persist_native_candidate_outputs_to_storage(submission, order_uuid)
+        if not delivered_urls:
+            raise RuntimeError("wenwen_native_image_edit_outputs_missing")
+
+        return await self._finalize_image_edit_round_candidates(
+            order_uuid,
+            round_number=round_number,
+            stage=stage,
+            delivered_urls=delivered_urls,
+            provider_urls=[],
+            user_images=user_images,
+            is_couple=is_couple,
+            include_previous=include_previous,
+        )
+
     async def _submit_image_edit_round(
         self,
         order_uuid: uuid.UUID,
@@ -1496,85 +1899,16 @@ class WenwenService:
         if not delivered_urls:
             raise RuntimeError("wenwen_image_edit_outputs_missing")
 
-        candidate_results: list[dict[str, Any]] = []
-        source_images = [str(url) for url in user_images if str(url or "").strip()]
-        for index, candidate_url in enumerate(delivered_urls):
-            qa_verdict = await output_verdict(
-                candidate_url,
-                is_couple=is_couple,
-                source_image_urls=source_images,
-            )
-            selection = self._score_candidate_verdict(
-                qa_verdict,
-                round_number=round_number,
-                candidate_index=index,
-            )
-            next_qa_reasons = list(qa_verdict.get("reasons") or [])
-            next_qa_issues = [issue for issue in (qa_verdict.get("issues") or []) if isinstance(issue, dict)]
-            candidate_results.append(
-                {
-                    "index": index,
-                    "url": candidate_url,
-                    "qa_ok": bool(selection.get("passed")),
-                    "qa_reasons": next_qa_reasons,
-                    "qa_issues": next_qa_issues,
-                    "selection": selection,
-                }
-            )
-
-        selected_candidate = self._select_best_candidate(candidate_results)
-        primary_image_url = str(selected_candidate.get("url") or "")
-        qa_ok = bool(selected_candidate.get("qa_ok"))
-        next_qa_reasons = list(selected_candidate.get("qa_reasons") or [])
-        next_qa_issues = [
-            issue for issue in (selected_candidate.get("qa_issues") or []) if isinstance(issue, dict)
-        ]
-        selected_index = int(selected_candidate.get("index") or 0)
-        candidate_scores = [
-            {
-                "index": int(candidate.get("index") or 0),
-                "url": str(candidate.get("url") or ""),
-                "qa_passed": bool(candidate.get("qa_ok")),
-                **(candidate.get("selection") if isinstance(candidate.get("selection"), dict) else {}),
-            }
-            for candidate in candidate_results
-        ]
-        await self._record_image_edit_round(
+        return await self._finalize_image_edit_round_candidates(
             order_uuid,
             round_number=round_number,
             stage=stage,
             delivered_urls=delivered_urls,
             provider_urls=provider_urls,
-            qa_passed=qa_ok,
-            qa_reasons=next_qa_reasons,
-            qa_issues=next_qa_issues,
-            used_previous_result=include_previous,
-            selected_candidate_url=primary_image_url,
-            selected_candidate_index=selected_index,
-            candidate_scores=candidate_scores,
+            user_images=user_images,
+            is_couple=is_couple,
+            include_previous=include_previous,
         )
-        if not qa_ok:
-            await self._record_qa_failure(
-                order_uuid,
-                attempt=round_number,
-                reasons=next_qa_reasons,
-                candidate_url=primary_image_url,
-                issues=next_qa_issues,
-            )
-        return {
-            "round": int(round_number),
-            "stage": stage,
-            "delivered_urls": [primary_image_url],
-            "all_delivered_urls": delivered_urls,
-            "provider_urls": provider_urls,
-            "qa_ok": qa_ok,
-            "qa_reasons": next_qa_reasons,
-            "qa_issues": next_qa_issues,
-            "used_previous_result": include_previous,
-            "selection": selected_candidate.get("selection") if isinstance(selected_candidate, dict) else {},
-            "selected_candidate_index": selected_index,
-            "candidate_scores": candidate_scores,
-        }
 
     async def _run_image_edit_generation(
         self,
@@ -1603,6 +1937,7 @@ class WenwenService:
         identity_ref_count = min(len([url for url in (user_images or []) if str(url or "").strip()]), 2)
         identity_refs = refs[:identity_ref_count]
         style_refs = refs[identity_ref_count:]
+        use_native_image_edit = self._image_edit_uses_native_model(model)
 
         best_passed: dict[str, Any] | None = None
         previous_result_refs: list[str] = []
@@ -1610,7 +1945,8 @@ class WenwenService:
         qa_issues: list[dict[str, Any]] = []
         last_result: dict[str, Any] | None = None
         for round_number in range(1, self.IMAGE_EDIT_MAX_ROUNDS + 1):
-            result = await self._submit_image_edit_round(
+            submitter = self._submit_native_image_edit_round if use_native_image_edit else self._submit_image_edit_round
+            result = await submitter(
                 order_uuid,
                 model=model,
                 refs=refs,

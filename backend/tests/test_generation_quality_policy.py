@@ -378,6 +378,57 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Identity reference image 1", joined)
         self.assertIn("Identity reference image 2", joined)
 
+    def test_gemini_image_edit_model_uses_native_generate_content(self) -> None:
+        self.assertTrue(WenwenService._image_edit_uses_native_model("gemini-3-pro-image-preview"))
+        self.assertTrue(WenwenService._image_edit_uses_native_model("models/gemini-3-pro-image-preview"))
+        self.assertFalse(WenwenService._image_edit_uses_native_model("gpt-image-1"))
+
+    async def test_native_image_edit_payload_prioritizes_identity_pack(self) -> None:
+        original = self._data_url()
+        face_crop = self._data_url(width=360, height=360)
+        upper_body = self._data_url(width=540, height=720)
+        current_candidate = self._data_url(width=768, height=1024)
+        style_ref = self._data_url(width=900, height=1200)
+        identity_pack = {
+            "subjects": [
+                {
+                    "role": "bride",
+                    "identity_label": "person_a",
+                    "original_url": original,
+                    "face_crop_url": face_crop,
+                    "upper_body_crop_url": upper_body,
+                }
+            ]
+        }
+
+        payload, entries = await WenwenService()._build_native_image_edit_payload(
+            edit_prompt="Preserve identity and create a professional wedding portrait.",
+            negative_prompt="generic face, warped hands",
+            identity_refs=[original],
+            style_refs=[style_ref],
+            current_result_refs=[current_candidate],
+            identity_reference_pack=identity_pack,
+            include_previous_result=True,
+            is_couple=False,
+        )
+
+        labels = [label for label, _url in entries]
+        self.assertIn("Identity anchor - bride original portrait", labels[0])
+        self.assertIn("Identity anchor - bride face crop", labels[1])
+        self.assertIn("Identity anchor - bride upper-body crop", labels[2])
+        self.assertTrue(any(label.startswith("Current candidate canvas") for label in labels))
+        self.assertTrue(any(label.startswith("Style or scene reference image") for label in labels))
+        self.assertEqual(entries.count(("Identity full source image 1", original)), 0)
+        self.assertEqual(payload["generationConfig"]["responseModalities"], ["IMAGE"])
+        self.assertIn("imageConfig", payload["generationConfig"])
+        joined_text = "\n".join(
+            part.get("text", "")
+            for part in payload["contents"][0]["parts"]
+            if isinstance(part, dict) and "text" in part
+        )
+        self.assertIn("NATIVE GEMINI IMAGE-EDIT MODE", joined_text)
+        self.assertIn("identity anchor images override style", joined_text)
+
     async def test_image_edit_files_add_identity_closeup_refs_before_style_refs(self) -> None:
         files = await WenwenService()._build_image_edit_reference_files(
             [
