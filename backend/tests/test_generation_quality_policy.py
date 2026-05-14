@@ -383,7 +383,8 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(WenwenService._image_edit_uses_native_model("models/gemini-3-pro-image-preview"))
         self.assertFalse(WenwenService._image_edit_uses_native_model("gpt-image-1"))
         candidates = WenwenService._image_edit_model_candidates("gemini-3-pro-image-preview")
-        self.assertEqual(candidates[0], "gemini-3-pro-image-preview")
+        self.assertEqual(candidates[0], "gpt-image-2")
+        self.assertIn("gemini-3-pro-image-preview", candidates)
         self.assertIn("gpt-image-2", candidates)
         self.assertTrue(
             WenwenService._is_model_unavailable_error(

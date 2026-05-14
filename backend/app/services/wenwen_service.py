@@ -220,13 +220,17 @@ class WenwenService:
     @classmethod
     def _image_edit_model_candidates(cls, model: str) -> list[str]:
         candidates: list[str] = []
-        for value in [
+        configured_candidates = [
             model,
             settings.wenwen_image_edit_model,
             cls._effective_image_model(),
             *(settings.wenwen_image_fallback_models or "").split(","),
-            "gpt-image-2",
-        ]:
+        ]
+        if any(cls._image_edit_uses_native_model(str(value or "")) for value in configured_candidates):
+            configured_candidates = ["gpt-image-2", *configured_candidates]
+        else:
+            configured_candidates = [*configured_candidates, "gpt-image-2"]
+        for value in configured_candidates:
             candidate = str(value or "").strip()
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
