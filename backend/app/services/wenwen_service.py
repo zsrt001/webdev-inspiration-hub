@@ -1317,7 +1317,10 @@ class WenwenService:
         if "dress_exposure_error" in normalized:
             focus.append("repair wedding dress coverage and fabric structure")
         if "poor_studio_quality" in normalized:
-            focus.append("upgrade studio-grade lighting, skin texture, dress fabric, and professional color grading")
+            focus.append(
+                "upgrade studio-grade lighting, semi-matte realistic skin texture, dress fabric, and professional color grading; "
+                "remove oily shine, wet glossy skin, and plastic specular highlights"
+            )
         if normalized & {"subject_too_small", "face_too_small", "background_dominates", "excessive_headroom"}:
             focus.append(
                 "reframe to commercial wedding proportions: subject prominent, face readable, intentional headroom, and background secondary"
@@ -1583,7 +1586,8 @@ class WenwenService:
             else:
                 stage_instruction = (
                     "ROUND 3 FINAL POLISH: perform final professional retouching only. Improve catchlights, facial "
-                    "exposure, natural skin texture, dress fabric, color grading, and background separation. Do not "
+                    "exposure, semi-matte natural skin texture, controlled facial highlights, dress fabric, color "
+                    "grading, and background separation. Remove oily shine and wet glossy skin. Do not "
                     "change facial identity, role order, pose, body shape, camera framing, or scene concept."
                 )
 

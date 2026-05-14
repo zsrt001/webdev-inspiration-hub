@@ -105,6 +105,12 @@ _QA_REASON_MAP: dict[str, str] = {
     "poor_quality": "poor_studio_quality",
     "ai_look": "poor_studio_quality",
     "waxy_skin": "poor_studio_quality",
+    "oily_skin": "poor_studio_quality",
+    "greasy_skin": "poor_studio_quality",
+    "glossy_skin": "poor_studio_quality",
+    "wet_skin": "poor_studio_quality",
+    "over_shiny_skin": "poor_studio_quality",
+    "specular_skin": "poor_studio_quality",
     "cheap_composite": "poor_studio_quality",
     "subject_too_small": "subject_too_small",
     "tiny_subject": "subject_too_small",
@@ -499,7 +505,7 @@ async def verify_generated_image_quality(
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
-        "- Use poor_studio_quality when the image looks like a generic AI render, cheap composite, tourist snapshot, fantasy costume render, waxy/over-smoothed beauty-filter output, flat lighting, harsh backlight, blown-out sky/windows/dress, weak facial detail, or otherwise does not look like a paid bridal-studio wedding portrait.\n"
+        "- Use poor_studio_quality when the image looks like a generic AI render, cheap composite, tourist snapshot, fantasy costume render, waxy/over-smoothed beauty-filter output, oily or greasy skin, wet glossy skin, over-shiny forehead/nose/cheeks, flat lighting, harsh backlight, blown-out sky/windows/dress, weak facial detail, or otherwise does not look like a paid bridal-studio wedding portrait.\n"
         "- If identity is wrong and the image is beautiful, still fail with identity_mismatch.\n"
         f"{couple_rules}"
         f"{identity_rules}"

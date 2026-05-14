@@ -7,7 +7,8 @@ from app.schemas.template import Template
 PHOTO_PROTOCOL = (
     "premium bridal studio finish, print-ready high-end wedding portrait, realistic skin texture, natural pores, "
     "sharp eyes, realistic hair strands, crisp couture fabric and embroidery details, "
-    "commercial bridal retouching with clean but non-plastic skin, luxury studio-grade color grading, "
+    "commercial bridal retouching with clean but non-plastic semi-matte skin, controlled natural highlights, "
+    "no oily shine on forehead, nose, cheeks, or chin, luxury studio-grade color grading, "
     "polished background separation, paid bridal-studio deliverable quality"
 )
 
@@ -36,8 +37,9 @@ COUPLE_IDENTITY_LOCK_PROTOCOL = (
 STUDIO_QUALITY_PROTOCOL = (
     "Professional bridal-studio quality: controlled softbox key light, gentle fill light, subtle rim light, visible "
     "catchlights, face correctly exposed and slightly brighter than the background, preserved highlight detail in "
-    "skin and dress fabric, natural shadow rolloff, balanced contrast, refined skin texture, clean but realistic "
-    "retouching, couture-level fabric detail, polished composition, and premium wedding album color grading"
+    "skin and dress fabric, natural shadow rolloff, balanced contrast, refined skin texture, soft powder-finish "
+    "semi-matte skin, controlled specular highlights, clean but realistic retouching, couture-level fabric detail, "
+    "polished composition, and premium wedding album color grading"
 )
 
 OUTDOOR_PRO_LIGHTING_PROTOCOL = (
@@ -59,8 +61,9 @@ STUDIO_LIGHTING_GUARDRAILS = (
     "Hard studio-quality requirements: do not use harsh outdoor backlight as the primary light; "
     "do not leave the face in shadow; do not blow out sky, windows, or dress highlights; "
     "use large softbox-style key light plus gentle fill light on every face; "
-    "keep facial exposure natural, luminous, and slightly brighter than the background; "
-    "avoid tourist-photo lighting, AI-glossy skin, fantasy-game styling, and cheap composited background"
+    "keep facial exposure natural and slightly brighter than the background without wet or greasy shine; "
+    "avoid tourist-photo lighting, AI-glossy skin, oily skin, waxy specular highlights, fantasy-game styling, "
+    "and cheap composited background"
 )
 
 FULL_LENGTH_COMPOSITION = (
@@ -126,7 +129,8 @@ NEGATIVE_PROMPT = (
     "Identity failures: generic model face, different person, changed face shape, altered eyes, altered nose, "
     "altered mouth, altered jawline, identity drift, face replacement, face swap, over-beautified face, uncanny face, "
     "same AI face for both people, role swap; "
-    "Skin and realism failures: smooth skin, airbrushed, wax, plastic, makeup filter, 3d render, cgi, "
+    "Skin and realism failures: smooth skin, airbrushed, wax, plastic, makeup filter, oily skin, greasy shine, "
+    "wet glossy skin, over-shiny forehead, over-shiny nose, over-shiny cheeks, 3d render, cgi, "
     "over-smoothed bridal ad; "
     "Anatomy failures: headless, cropped head, phantom limbs, fused bodies, merged limbs, duplicate person, "
     "duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, bad hands, extra fingers; "

@@ -69,6 +69,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("complete gown and dress train visible", prompt)
         self.assertIn("controlled softbox key light", prompt)
         self.assertIn("face correctly exposed", prompt)
+        self.assertIn("semi-matte skin", prompt)
+        self.assertIn("no oily shine", prompt)
         self.assertIn("CANVAS PROPORTION:", prompt)
         self.assertIn("72-86% of the canvas height", prompt)
         self.assertIn("face should remain large enough", prompt)
@@ -182,6 +184,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(normalize_qa_reason("bad_face"), "face_distortion")
+        self.assertEqual(normalize_qa_reason("oily_skin"), "poor_studio_quality")
         self.assertEqual([issue["code"] for issue in issues], [
             "face_distortion",
             "identity_mismatch",
