@@ -1465,6 +1465,76 @@ class WenwenService:
         return max(passing_rounds, key=score)
 
     @classmethod
+    def _round_result_from_debug(cls, round_item: dict[str, Any]) -> dict[str, Any]:
+        selected_url = str(round_item.get("selected_candidate_url") or round_item.get("candidate_url") or "").strip()
+        delivered_urls = [selected_url] if selected_url else []
+        provider_urls = [
+            str(url)
+            for url in (round_item.get("candidate_urls") if isinstance(round_item.get("candidate_urls"), list) else [])
+            if str(url or "").strip()
+        ]
+        candidate_scores = (
+            round_item.get("candidate_scores")
+            if isinstance(round_item.get("candidate_scores"), list)
+            else []
+        )
+        selection = {}
+        selected_index = int(round_item.get("selected_candidate_index") or 0)
+        for candidate in candidate_scores:
+            if isinstance(candidate, dict) and int(candidate.get("index") or 0) == selected_index:
+                selection = candidate
+                break
+        return {
+            "round": int(round_item.get("round") or 0),
+            "stage": str(round_item.get("stage") or ""),
+            "delivered_urls": delivered_urls,
+            "all_delivered_urls": provider_urls or delivered_urls,
+            "provider_urls": provider_urls,
+            "qa_ok": bool(round_item.get("qa_passed")),
+            "qa_reasons": list(round_item.get("qa_reasons") or []),
+            "qa_issues": [
+                issue for issue in (round_item.get("qa_issues") or []) if isinstance(issue, dict)
+            ],
+            "used_previous_result": bool(round_item.get("used_previous_result")),
+            "selection": selection,
+            "selected_candidate_index": selected_index,
+            "candidate_scores": candidate_scores,
+        }
+
+    async def _load_image_edit_resume_state(self, order_uuid: uuid.UUID) -> dict[str, Any]:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order or not isinstance(order.generation_params, dict):
+                return {}
+            params = dict(order.generation_params)
+        debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
+        rounds = [
+            round_item
+            for round_item in (debug.get("image_edit_rounds") if isinstance(debug.get("image_edit_rounds"), list) else [])
+            if isinstance(round_item, dict) and int(round_item.get("round") or 0) > 0
+        ]
+        if not rounds:
+            return {}
+        rounds.sort(key=lambda item: int(item.get("round") or 0))
+        last_round = rounds[-1]
+        best_passing = self._best_passing_image_edit_round(params)
+        last_result = self._round_result_from_debug(last_round)
+        resume: dict[str, Any] = {
+            "next_round": min(self.IMAGE_EDIT_MAX_ROUNDS + 1, int(last_round.get("round") or 0) + 1),
+            "last_result": last_result,
+            "qa_reasons": list(last_round.get("qa_reasons") or []),
+            "qa_issues": [issue for issue in (last_round.get("qa_issues") or []) if isinstance(issue, dict)],
+            "previous_result_refs": [],
+        }
+        selected_url = str(last_round.get("selected_candidate_url") or last_round.get("candidate_url") or "").strip()
+        if selected_url and self._should_include_previous_edit_result(resume["qa_reasons"]):
+            resume["previous_result_refs"] = [selected_url]
+        if best_passing:
+            resume["best_passed"] = self._round_result_from_debug(best_passing)
+        return resume
+
+    @classmethod
     def _build_image_edit_round_prompt(
         cls,
         *,
@@ -2006,7 +2076,21 @@ class WenwenService:
         qa_reasons: list[str] = []
         qa_issues: list[dict[str, Any]] = []
         last_result: dict[str, Any] | None = None
-        for round_number in range(1, self.IMAGE_EDIT_MAX_ROUNDS + 1):
+        start_round = 1
+        resume_state = await self._load_image_edit_resume_state(order_uuid)
+        if resume_state:
+            start_round = int(resume_state.get("next_round") or 1)
+            previous_result_refs = [
+                str(url)
+                for url in (resume_state.get("previous_result_refs") or [])
+                if str(url or "").strip()
+            ]
+            qa_reasons = [str(reason) for reason in (resume_state.get("qa_reasons") or []) if str(reason).strip()]
+            qa_issues = [issue for issue in (resume_state.get("qa_issues") or []) if isinstance(issue, dict)]
+            last_result = resume_state.get("last_result") if isinstance(resume_state.get("last_result"), dict) else None
+            best_passed = resume_state.get("best_passed") if isinstance(resume_state.get("best_passed"), dict) else None
+
+        for round_number in range(start_round, self.IMAGE_EDIT_MAX_ROUNDS + 1):
             result: dict[str, Any] | None = None
             for model_index, candidate_model in enumerate(model_candidates):
                 try:
