@@ -69,6 +69,13 @@ FULL_LENGTH_COMPOSITION = (
     "luxury bridal studio posing with refined posture"
 )
 
+HAND_POSE_SAFETY_PROTOCOL = (
+    "Use simple professional bridal hand posing: relaxed hands, one bouquet or veil touch at waist level, "
+    "fingers mostly covered by bouquet, sleeves, veil, or dress fabric when possible. Avoid interlaced fingers, "
+    "spread fingers, complex hand gestures, hands close to the face, duplicated bouquets, and exposed tiny fingers. "
+    "If hand anatomy is uncertain, simplify or partially hide the hands while preserving a natural paid-studio pose"
+)
+
 SINGLE_CANVAS_PROPORTION_PROTOCOL = (
     "Commercial single-subject framing: the bride or groom should occupy about 72-86% of the canvas height "
     "for full-length or near full-length portraits; outdoor environmental portraits may be slightly wider but "
@@ -105,7 +112,8 @@ CANDIDATE_SELECTION_PROTOCOL = (
 COUPLE_COMPOSITION = (
     "two-person full-length couple portrait, both faces visible, stable 3:4 vertical framing, natural anatomy, "
     "clear separation between two subjects, balanced spacing, bride and groom both fully readable, "
-    "complete outfits visible, independent shoulders and arms, no fused bodies, no merged limbs, no shared torso"
+    "complete outfits visible, independent shoulders and arms, no fused bodies, no merged limbs, no shared torso, "
+    "simple readable hand placement with no interlaced fingers or hidden fused hands"
 )
 
 COUPLE_STUDIO_GUARDRAILS = (
@@ -146,6 +154,7 @@ def get_studio_guardrails(*, is_couple: bool = False) -> str:
         _section("OUTDOOR PROFESSIONAL LIGHTING", OUTDOOR_PRO_LIGHTING_PROTOCOL),
         _section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL),
         _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
+        _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
         _section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL),
         _section("DELIVERY GATE", DELIVERY_GATE_PROTOCOL),
         _section("CANDIDATE SELECTION", CANDIDATE_SELECTION_PROTOCOL),
@@ -188,6 +197,7 @@ def build_prompt(
         _section("OUTDOOR PROFESSIONAL LIGHTING", OUTDOOR_PRO_LIGHTING_PROTOCOL),
         _section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL),
         _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
+        _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
         _section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL),
         _section("DELIVERY GATE", DELIVERY_GATE_PROTOCOL),
         _section("CANDIDATE SELECTION", CANDIDATE_SELECTION_PROTOCOL),

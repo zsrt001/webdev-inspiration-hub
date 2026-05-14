@@ -225,6 +225,8 @@ class OrderRead(OrderBase):
     @model_validator(mode="after")
     def _hydrate_effective_sources(self):
         params = self.generation_params or {}
+        status_value = self.status.value if isinstance(self.status, OrderStatus) else str(self.status or "")
+        is_completed = status_value == OrderStatus.COMPLETED.value
         if isinstance(params, dict):
             self.director_mode = bool(params.get("director_mode"))
             self.remote_join = bool(params.get("remote_join"))
@@ -263,10 +265,14 @@ class OrderRead(OrderBase):
             if isinstance(couple_guardrails, dict):
                 self.couple_guardrails = couple_guardrails
             qa_last_reasons = params.get("qa_last_reasons")
-            if isinstance(qa_last_reasons, list):
+            if is_completed:
+                self.qa_last_reasons = []
+            elif isinstance(qa_last_reasons, list):
                 self.qa_last_reasons = [str(item) for item in qa_last_reasons if str(item).strip()]
             qa_attempt_count = params.get("qa_attempt_count")
-            if qa_attempt_count is not None:
+            if is_completed:
+                self.qa_attempt_count = None
+            elif qa_attempt_count is not None:
                 try:
                     self.qa_attempt_count = int(qa_attempt_count)
                 except Exception:
@@ -290,5 +296,9 @@ class OrderRead(OrderBase):
             access_tier = params.get("access_tier")
             self.access_tier = str(access_tier) if access_tier else None
         self.source_image_urls = public_source_image_urls(self.source_image_urls)
-        self.generation_params = public_generation_params(params)
+        public_params = public_generation_params(params)
+        if is_completed and isinstance(public_params, dict):
+            public_params.pop("qa_last_reasons", None)
+            public_params.pop("qa_attempt_count", None)
+        self.generation_params = public_params
         return self

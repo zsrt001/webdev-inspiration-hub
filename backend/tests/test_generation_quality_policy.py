@@ -74,6 +74,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("face should remain large enough", prompt)
         self.assertIn("DELIVERY GATE:", prompt)
         self.assertIn("CANDIDATE SELECTION:", prompt)
+        self.assertIn("HAND AND ANATOMY SAFETY:", prompt)
+        self.assertIn("fingers mostly covered", prompt)
         self.assertIn("IDENTITY LOCK:", prompt)
         self.assertIn("STUDIO QUALITY:", prompt)
         self.assertIn("OUTDOOR PROFESSIONAL LIGHTING:", prompt)
@@ -555,6 +557,12 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(WenwenService._should_include_previous_edit_result(["identity_swap"]))
         self.assertTrue(WenwenService._should_include_previous_edit_result(["poor_studio_quality"]))
         self.assertTrue(WenwenService._should_include_previous_edit_result(["bad_hands"]))
+
+    def test_bad_hands_repair_allows_simpler_hand_pose(self) -> None:
+        focus = WenwenService._repair_focus_from_reasons(["bad_hands"], is_couple=False)
+
+        self.assertIn("simple professional bridal hand placement", focus)
+        self.assertIn("do not preserve the failed hand pose", focus)
 
     async def test_identity_qa_hard_fails_when_vision_provider_is_unavailable(self) -> None:
         original = qa_service.llm_service.is_vision_provider_configured

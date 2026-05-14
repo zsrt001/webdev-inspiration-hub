@@ -68,7 +68,7 @@ class OrderPublicContractTest(unittest.TestCase):
         self.assertEqual(payload.source_image_urls, {"images": ["https://cdn.example.com/source.jpg"]})
         self.assertEqual(payload.credits_cost, 4)
         self.assertEqual(payload.refunded_credits, 0)
-        self.assertEqual(payload.qa_last_reasons, ["subject_too_small"])
+        self.assertEqual(payload.qa_last_reasons, [])
         self.assertNotIn("identity_reference_pack", dumped)
         self.assertNotIn("qa_last_issues", dumped)
         self.assertNotIn("debug", payload.generation_params or {})
@@ -85,7 +85,6 @@ class OrderPublicContractTest(unittest.TestCase):
                 "commercial_standard_version": "commercial_wedding_v1",
                 "director_mode": True,
                 "subject_count": 1,
-                "qa_last_reasons": ["subject_too_small"],
             },
         )
 

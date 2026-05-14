@@ -1309,7 +1309,11 @@ class WenwenService:
         if normalized & {"body_fusion", "extra_limbs"}:
             focus.append("repair body separation and natural anatomy without changing the locked faces")
         if "bad_hands" in normalized:
-            focus.append("repair only severe hand and finger defects while preserving pose and face")
+            focus.append(
+                "replace complex or broken hand poses with simple professional bridal hand placement; "
+                "hands may be relaxed, holding one bouquet, or partly covered by veil, sleeves, or gown fabric; "
+                "preserve facial identity but do not preserve the failed hand pose"
+            )
         if "dress_exposure_error" in normalized:
             focus.append("repair wedding dress coverage and fabric structure")
         if "poor_studio_quality" in normalized:
@@ -1573,7 +1577,8 @@ class WenwenService:
                 stage_instruction = (
                     "ROUND 3 FINAL RECOVERY AND POLISH: first fix the remaining QA-targeted issues, then perform "
                     f"final professional retouching. Repair focus: {focus}. Do not change facial identity, role order, "
-                    "pose, body shape, camera framing, or scene concept unless needed to fix the listed critical issue."
+                    "body shape, camera framing, or scene concept unless needed to fix the listed critical issue. "
+                    "When bad_hands is listed, changing the hand pose is allowed and preferred over preserving a broken pose."
                 )
             else:
                 stage_instruction = (
@@ -2259,6 +2264,7 @@ class WenwenService:
                 **preview_meta,
             }
             params["qa_last_reasons"] = []
+            params["qa_last_issues"] = []
             params["qa_attempt_count"] = qa_attempt_count
             params["qa_retry_pending"] = False
             params["qa_retry_in_progress"] = False
