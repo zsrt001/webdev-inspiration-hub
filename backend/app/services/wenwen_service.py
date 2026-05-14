@@ -218,6 +218,35 @@ class WenwenService:
         return candidates
 
     @classmethod
+    def _image_edit_model_candidates(cls, model: str) -> list[str]:
+        candidates: list[str] = []
+        for value in [
+            model,
+            settings.wenwen_image_edit_model,
+            cls._effective_image_model(),
+            *(settings.wenwen_image_fallback_models or "").split(","),
+            "gpt-image-2",
+        ]:
+            candidate = str(value or "").strip()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    @staticmethod
+    def _is_model_unavailable_error(error: Exception) -> bool:
+        text = str(error or "").strip().lower()
+        return any(
+            token in text
+            for token in (
+                "model_not_found",
+                "no available channel",
+                "not supported model for image generation",
+                "wenwen_model_unavailable",
+                "wenwen_image_edit_unavailable",
+            )
+        )
+
+    @classmethod
     def _native_model_candidates(cls) -> list[str]:
         candidates: list[str] = []
         for value in [cls._effective_image_model(), *(settings.wenwen_image_fallback_models or "").split(",")]:
@@ -1937,7 +1966,7 @@ class WenwenService:
         identity_ref_count = min(len([url for url in (user_images or []) if str(url or "").strip()]), 2)
         identity_refs = refs[:identity_ref_count]
         style_refs = refs[identity_ref_count:]
-        use_native_image_edit = self._image_edit_uses_native_model(model)
+        model_candidates = self._image_edit_model_candidates(model)
 
         best_passed: dict[str, Any] | None = None
         previous_result_refs: list[str] = []
@@ -1945,23 +1974,40 @@ class WenwenService:
         qa_issues: list[dict[str, Any]] = []
         last_result: dict[str, Any] | None = None
         for round_number in range(1, self.IMAGE_EDIT_MAX_ROUNDS + 1):
-            submitter = self._submit_native_image_edit_round if use_native_image_edit else self._submit_image_edit_round
-            result = await submitter(
-                order_uuid,
-                model=model,
-                refs=refs,
-                identity_refs=identity_refs,
-                style_refs=style_refs,
-                current_result_refs=previous_result_refs,
-                prompt_text=prompt_text,
-                negative_prompt=negative_prompt,
-                user_images=user_images,
-                identity_reference_pack=identity_reference_pack,
-                is_couple=is_couple,
-                round_number=round_number,
-                qa_reasons=qa_reasons,
-                qa_issues=qa_issues,
-            )
+            result: dict[str, Any] | None = None
+            for model_index, candidate_model in enumerate(model_candidates):
+                try:
+                    result = await self._submit_image_edit_round(
+                        order_uuid,
+                        model=candidate_model,
+                        refs=refs,
+                        identity_refs=identity_refs,
+                        style_refs=style_refs,
+                        current_result_refs=previous_result_refs,
+                        prompt_text=prompt_text,
+                        negative_prompt=negative_prompt,
+                        user_images=user_images,
+                        identity_reference_pack=identity_reference_pack,
+                        is_couple=is_couple,
+                        round_number=round_number,
+                        qa_reasons=qa_reasons,
+                        qa_issues=qa_issues,
+                    )
+                    if candidate_model != model:
+                        logger.warning("Wenwen image-edit model fallback succeeded: %s -> %s", model, candidate_model)
+                    break
+                except RuntimeError as exc:
+                    if self._is_model_unavailable_error(exc) and model_index < len(model_candidates) - 1:
+                        logger.warning(
+                            "Wenwen image-edit model unavailable; falling back from %s to %s: %s",
+                            candidate_model,
+                            model_candidates[model_index + 1],
+                            exc,
+                        )
+                        continue
+                    raise
+            if result is None:
+                raise RuntimeError("wenwen_image_edit_model_exhausted")
             last_result = result
             if result["qa_ok"]:
                 if best_passed is None or self._result_selection_score(result) > self._result_selection_score(best_passed):

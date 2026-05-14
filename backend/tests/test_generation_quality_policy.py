@@ -378,10 +378,18 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Identity reference image 1", joined)
         self.assertIn("Identity reference image 2", joined)
 
-    def test_gemini_image_edit_model_uses_native_generate_content(self) -> None:
+    def test_gemini_image_edit_model_can_fallback_to_gpt_image_edit(self) -> None:
         self.assertTrue(WenwenService._image_edit_uses_native_model("gemini-3-pro-image-preview"))
         self.assertTrue(WenwenService._image_edit_uses_native_model("models/gemini-3-pro-image-preview"))
         self.assertFalse(WenwenService._image_edit_uses_native_model("gpt-image-1"))
+        candidates = WenwenService._image_edit_model_candidates("gemini-3-pro-image-preview")
+        self.assertEqual(candidates[0], "gemini-3-pro-image-preview")
+        self.assertIn("gpt-image-2", candidates)
+        self.assertTrue(
+            WenwenService._is_model_unavailable_error(
+                RuntimeError("not supported model for image generation, only imagen models are supported")
+            )
+        )
 
     async def test_native_image_edit_payload_prioritizes_identity_pack(self) -> None:
         original = self._data_url()
