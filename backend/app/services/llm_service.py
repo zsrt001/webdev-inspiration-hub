@@ -498,7 +498,7 @@ async def verify_generated_image_quality(
     }
 
     try:
-        result = await _llm_chat(payload, title="AI Wedding QA", timeout=15.0)
+        result = await _llm_chat(payload, title="AI Wedding QA", timeout=45.0)
         content = result["choices"][0]["message"]["content"]
         if not isinstance(content, str):
             reasons = ["vision_error"]
