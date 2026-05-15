@@ -394,11 +394,11 @@ class Settings(BaseSettings):
 
     @property
     def wenwen_text_api_key_effective(self) -> str:
-        return (self.wenwen_chat_api_key or self.wenwen_api_key or "").strip()
+        return (self.wenwen_chat_api_key or "").strip()
 
     @property
     def wenwen_vision_api_key_effective(self) -> str:
-        return (self.wenwen_vision_api_key or self.wenwen_api_key or "").strip()
+        return (self.wenwen_vision_api_key or "").strip()
 
     @property
     def comfy_api_base_url(self) -> str:

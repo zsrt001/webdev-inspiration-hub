@@ -52,6 +52,22 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(settings.wenwen_image_edit_candidate_count, 2)
         self.assertEqual(settings.wenwen_native_image_size, "4K")
 
+    def test_wenwen_api_keys_have_separate_responsibilities(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            wenwen_api_key="image-key",
+            wenwen_chat_api_key="chat-key",
+            wenwen_vision_api_key="vision-key",
+        )
+
+        self.assertEqual(settings.wenwen_api_key, "image-key")
+        self.assertEqual(settings.wenwen_text_api_key_effective, "chat-key")
+        self.assertEqual(settings.wenwen_vision_api_key_effective, "vision-key")
+
+        missing_dedicated = Settings(_env_file=None, wenwen_api_key="image-key")
+        self.assertEqual(missing_dedicated.wenwen_text_api_key_effective, "")
+        self.assertEqual(missing_dedicated.wenwen_vision_api_key_effective, "")
+
     def test_wenwen_upgrades_legacy_single_four_by_five_to_three_by_four(self) -> None:
         self.assertEqual(WenwenService._build_size(False), "3:4")
         self.assertEqual(WenwenService._build_size(True), "3:4")
