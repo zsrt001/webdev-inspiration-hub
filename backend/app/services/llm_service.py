@@ -283,25 +283,42 @@ def _extract_pattern_hits(text_items: list[str]) -> list[str]:
     return ordered
 
 
-def _active_provider() -> str | None:
+def _vision_provider_candidates() -> list[str]:
     configured = (settings.llm_provider or "").strip().lower()
-    if configured == "wenwen":
-        return "wenwen" if settings.wenwen_vision_api_key_effective else None
-    if configured in {"", "jiekou"} and settings.jiekou_api_key:
-        return "jiekou"
-    if configured in {"", "wenwen"} and settings.wenwen_vision_api_key_effective:
-        return "wenwen"
-    return None
+    preferred = (
+        ["wenwen", "jiekou"]
+        if configured == "wenwen"
+        else ["jiekou", "wenwen"]
+        if configured == "jiekou"
+        else ["jiekou", "wenwen"]
+    )
+    candidates: list[str] = []
+    for provider in preferred:
+        if provider == "jiekou" and settings.jiekou_api_key:
+            candidates.append("jiekou")
+        elif provider == "wenwen" and settings.wenwen_vision_api_key_effective:
+            candidates.append("wenwen")
+    return candidates
+
+
+def _active_provider() -> str | None:
+    candidates = _vision_provider_candidates()
+    return candidates[0] if candidates else None
 
 
 def is_vision_provider_configured() -> bool:
     return _active_provider() is not None
 
 
-def _active_vision_model() -> str:
-    if _active_provider() == "wenwen":
+def _vision_model_for_provider(provider: str) -> str:
+    if provider == "wenwen":
         return (settings.wenwen_vision_model or DEFAULT_WENWEN_VISION_MODEL).strip()
     return (settings.jiekou_vision_model or DEFAULT_JIEKOU_VISION_MODEL).strip()
+
+
+def _active_vision_model() -> str:
+    provider = _active_provider()
+    return _vision_model_for_provider(provider or "jiekou")
 
 
 def is_text_provider_configured() -> bool:
@@ -341,8 +358,13 @@ async def _coerce_remote_image_input(image_url: str) -> str:
         return f"data:{content_type};base64,{encoded}"
 
 
-async def _llm_chat(payload: dict[str, Any], *, title: str, timeout: float) -> dict[str, Any]:
-    provider = _active_provider()
+async def _llm_chat_for_provider(
+    payload: dict[str, Any],
+    *,
+    title: str,
+    timeout: float,
+    provider: str | None,
+) -> dict[str, Any]:
     if provider == "jiekou":
         url = (settings.jiekou_chat_url or JIEKOU_CHAT_URL_DEFAULT).strip()
         api_key = settings.jiekou_api_key
@@ -366,6 +388,15 @@ async def _llm_chat(payload: dict[str, Any], *, title: str, timeout: float) -> d
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
+
+
+async def _llm_chat(payload: dict[str, Any], *, title: str, timeout: float) -> dict[str, Any]:
+    return await _llm_chat_for_provider(
+        payload,
+        title=title,
+        timeout=timeout,
+        provider=_active_provider(),
+    )
 
 
 async def _text_chat(payload: dict[str, Any], *, title: str, timeout: float) -> dict[str, Any]:
@@ -519,7 +550,7 @@ async def verify_generated_image_quality(
     content.append({"type": "text", "text": "Generated candidate:"})
     content.append({"type": "image_url", "image_url": {"url": await _coerce_remote_image_input(image_url)}})
 
-    payload = {
+    base_payload = {
         "model": _active_vision_model(),
         "messages": [
             {
@@ -530,66 +561,80 @@ async def verify_generated_image_quality(
         "response_format": {"type": "json_object"},
     }
 
-    try:
-        result = await _llm_chat(payload, title="AI Wedding QA", timeout=45.0)
-        content = _coerce_message_content_text(result["choices"][0]["message"]["content"])
-        data = _coerce_json_object_payload(json.loads(_clean_json_block(content)))
-        passed = bool(data.get("passed"))
-        reasons = data.get("reasons") or []
-        if not isinstance(reasons, list):
-            reasons = [str(reasons)]
-        reasons = [_normalize_qa_reason(str(reason)) for reason in reasons if str(reason).strip()]
-        reasons = [reason for reason in reasons if reason]
-        notes = str(data.get("notes") or "")[:200]
-        issues_raw = data.get("issues") or []
-        issues: list[dict[str, Any]] = []
-        if isinstance(issues_raw, list):
-            for item in issues_raw:
-                if not isinstance(item, dict):
-                    continue
-                code = _normalize_qa_reason(str(item.get("code") or item.get("reason") or ""))
-                if not code or code == "other" and str(item.get("code") or item.get("reason") or "").strip() not in {
-                    "other",
-                    "",
-                }:
-                    code = "other"
-                issue = build_structured_qa_issues(
-                    [code],
-                    source="vision",
-                    notes=str(item.get("evidence") or item.get("notes") or notes or "")[:200],
-                )[0]
-                if item.get("category"):
-                    issue["category"] = str(item.get("category"))[:80]
-                if item.get("target"):
-                    issue["target"] = str(item.get("target"))[:80]
-                if item.get("severity"):
-                    issue["severity"] = str(item.get("severity"))[:40]
-                if item.get("repair_hint"):
-                    issue["repair_hint"] = str(item.get("repair_hint"))[:240]
-                if item.get("evidence"):
-                    issue["evidence"] = str(item.get("evidence"))[:240]
-                issues.append(issue)
-        if not reasons and issues:
-            reasons = [
-                str(issue.get("code"))
-                for issue in issues
-                if isinstance(issue, dict) and str(issue.get("code") or "").strip()
-            ]
-        if not issues and reasons:
-            issues = build_structured_qa_issues(reasons, source="vision", notes=notes)
-        if reasons or any(bool(issue.get("blocking")) for issue in issues if isinstance(issue, dict)):
-            passed = False
-        return {"passed": passed, "reasons": reasons, "issues": issues, "notes": notes}
-    except Exception as exc:
-        logger.warning("Vision QA failed: %s", exc)
-        reasons = ["vision_error"]
-        notes = f"vision_error:{type(exc).__name__}"
-        return {
-            "passed": False,
-            "reasons": reasons,
-            "issues": build_structured_qa_issues(reasons, source="vision", notes=notes),
-            "notes": notes,
-        }
+    providers = _vision_provider_candidates()
+    last_error: Exception | None = None
+    for index, provider in enumerate(providers):
+        payload = dict(base_payload)
+        payload["model"] = _vision_model_for_provider(provider)
+        try:
+            result = await _llm_chat_for_provider(
+                payload,
+                title="AI Wedding QA",
+                timeout=45.0,
+                provider=provider,
+            )
+            content_text = _coerce_message_content_text(result["choices"][0]["message"]["content"])
+            data = _coerce_json_object_payload(json.loads(_clean_json_block(content_text)))
+            passed = bool(data.get("passed"))
+            reasons = data.get("reasons") or []
+            if not isinstance(reasons, list):
+                reasons = [str(reasons)]
+            reasons = [_normalize_qa_reason(str(reason)) for reason in reasons if str(reason).strip()]
+            reasons = [reason for reason in reasons if reason]
+            notes = str(data.get("notes") or "")[:200]
+            if index > 0:
+                notes = f"{notes}; qa_provider_fallback={provider}"[:200] if notes else f"qa_provider_fallback={provider}"
+            issues_raw = data.get("issues") or []
+            issues: list[dict[str, Any]] = []
+            if isinstance(issues_raw, list):
+                for item in issues_raw:
+                    if not isinstance(item, dict):
+                        continue
+                    code = _normalize_qa_reason(str(item.get("code") or item.get("reason") or ""))
+                    if not code or code == "other" and str(item.get("code") or item.get("reason") or "").strip() not in {
+                        "other",
+                        "",
+                    }:
+                        code = "other"
+                    issue = build_structured_qa_issues(
+                        [code],
+                        source="vision",
+                        notes=str(item.get("evidence") or item.get("notes") or notes or "")[:200],
+                    )[0]
+                    if item.get("category"):
+                        issue["category"] = str(item.get("category"))[:80]
+                    if item.get("target"):
+                        issue["target"] = str(item.get("target"))[:80]
+                    if item.get("severity"):
+                        issue["severity"] = str(item.get("severity"))[:40]
+                    if item.get("repair_hint"):
+                        issue["repair_hint"] = str(item.get("repair_hint"))[:240]
+                    if item.get("evidence"):
+                        issue["evidence"] = str(item.get("evidence"))[:240]
+                    issues.append(issue)
+            if not reasons and issues:
+                reasons = [
+                    str(issue.get("code"))
+                    for issue in issues
+                    if isinstance(issue, dict) and str(issue.get("code") or "").strip()
+                ]
+            if not issues and reasons:
+                issues = build_structured_qa_issues(reasons, source="vision", notes=notes)
+            if reasons or any(bool(issue.get("blocking")) for issue in issues if isinstance(issue, dict)):
+                passed = False
+            return {"passed": passed, "reasons": reasons, "issues": issues, "notes": notes}
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Vision QA failed via %s: %s", provider, exc)
+
+    reasons = ["vision_error"]
+    notes = f"vision_error:{type(last_error).__name__ if last_error else 'Unavailable'}"
+    return {
+        "passed": False,
+        "reasons": reasons,
+        "issues": build_structured_qa_issues(reasons, source="vision", notes=notes),
+        "notes": notes,
+    }
 
 
 async def analyze_image_prompt(image_url: str, context_type: str) -> str:

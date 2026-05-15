@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     qa_require_vision: bool = False
     qa_require_identity_vision: bool = True
     qa_fail_on_vision_error: bool = False
+    qa_vision_error_retry_attempts: int = 3
     webhook_base_url: str = ""  # Public URL for webhooks
     frontend_base_url: str = ""  # Public URL for web/join links
     # Hosted checkout / staged commercial validation

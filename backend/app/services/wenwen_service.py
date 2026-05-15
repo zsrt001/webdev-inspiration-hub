@@ -765,6 +765,25 @@ class WenwenService:
     def _should_retry_qa(cls, reasons: list[str], attempt: int) -> bool:
         return should_retry_qa(reasons, attempt, max_attempts=cls.QA_MAX_ATTEMPTS)
 
+    @staticmethod
+    def _vision_error_only(reasons: list[str] | tuple[str, ...] | None) -> bool:
+        normalized = {str(reason or "").strip() for reason in (reasons or []) if str(reason or "").strip()}
+        return normalized == {"vision_error"}
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _safe_vision_retry_limit() -> int:
+        try:
+            return max(1, int(settings.qa_vision_error_retry_attempts or 1))
+        except Exception:
+            return 3
+
     async def _complete_provider_urls(
         self,
         order_uuid: uuid.UUID,
@@ -850,6 +869,7 @@ class WenwenService:
         attempt: int,
         reasons: list[str],
         candidate_url: str,
+        retry_kind: str = "generation_repair",
     ) -> None:
         async with async_session_maker() as db:
             result = await db.execute(select(Order).where(Order.id == order_uuid))
@@ -864,6 +884,7 @@ class WenwenService:
                     "attempt": int(attempt),
                     "reasons": list(reasons),
                     "candidate_url": candidate_url,
+                    "retry_kind": str(retry_kind or "generation_repair"),
                     "queued_at": self._utc_now_iso(),
                 }
             )
@@ -871,8 +892,15 @@ class WenwenService:
             params["debug"] = debug
             params["qa_retry_pending"] = True
             params["qa_retry_in_progress"] = False
+            params["qa_retry_kind"] = str(retry_kind or "generation_repair")
+            params["qa_retry_candidate_url"] = candidate_url
+            params["qa_retry_uses_existing_candidate"] = str(retry_kind or "") == "vision_recheck"
             params["qa_retry_next_attempt"] = int(attempt) + 1
-            params["qa_retry_max_attempts"] = self.QA_MAX_ATTEMPTS
+            params["qa_retry_max_attempts"] = (
+                self._safe_vision_retry_limit()
+                if str(retry_kind or "") == "vision_recheck"
+                else self.QA_MAX_ATTEMPTS
+            )
             params["automatic_repair_extra_charge"] = 0
             params["qa_last_reasons"] = list(reasons)
             params["qa_attempt_count"] = int(attempt)
@@ -1520,6 +1548,185 @@ class WenwenService:
             "selected_candidate_index": selected_index,
             "candidate_scores": candidate_scores,
         }
+
+    @staticmethod
+    def _last_qa_retry_history_entry(params: dict[str, Any]) -> dict[str, Any]:
+        debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
+        history = debug.get("qa_retry_history") if isinstance(debug.get("qa_retry_history"), list) else []
+        for item in reversed(history):
+            if isinstance(item, dict):
+                return item
+        return {}
+
+    @classmethod
+    def _pending_vision_recheck_candidate(cls, params: dict[str, Any]) -> str:
+        retry_kind = str(params.get("qa_retry_kind") or "").strip()
+        if retry_kind != "vision_recheck" and not bool(params.get("qa_retry_uses_existing_candidate")):
+            return ""
+        candidate_url = str(params.get("qa_retry_candidate_url") or "").strip()
+        if candidate_url:
+            return candidate_url
+        history_entry = cls._last_qa_retry_history_entry(params)
+        return str(history_entry.get("candidate_url") or "").strip()
+
+    @classmethod
+    def _image_edit_round_for_candidate(cls, params: dict[str, Any], candidate_url: str) -> dict[str, Any]:
+        debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
+        rounds = debug.get("image_edit_rounds") if isinstance(debug.get("image_edit_rounds"), list) else []
+        for round_item in reversed(rounds):
+            if not isinstance(round_item, dict):
+                continue
+            urls = [
+                str(round_item.get("selected_candidate_url") or "").strip(),
+                str(round_item.get("candidate_url") or "").strip(),
+            ]
+            urls.extend(
+                str(url).strip()
+                for url in (round_item.get("candidate_urls") if isinstance(round_item.get("candidate_urls"), list) else [])
+                if str(url or "").strip()
+            )
+            if candidate_url in urls:
+                return round_item
+        return {}
+
+    async def _update_image_edit_round_qa_state(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        candidate_url: str,
+        qa_passed: bool,
+        qa_reasons: list[str],
+        qa_issues: list[dict[str, Any]],
+        attempt: int,
+    ) -> None:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+            rounds = debug.get("image_edit_rounds") if isinstance(debug.get("image_edit_rounds"), list) else []
+            for index in range(len(rounds) - 1, -1, -1):
+                round_item = rounds[index]
+                if not isinstance(round_item, dict):
+                    continue
+                urls = [
+                    str(round_item.get("selected_candidate_url") or "").strip(),
+                    str(round_item.get("candidate_url") or "").strip(),
+                ]
+                urls.extend(
+                    str(url).strip()
+                    for url in (round_item.get("candidate_urls") if isinstance(round_item.get("candidate_urls"), list) else [])
+                    if str(url or "").strip()
+                )
+                if candidate_url not in urls:
+                    continue
+                updated_round = dict(round_item)
+                updated_round["qa_passed"] = bool(qa_passed)
+                updated_round["qa_reasons"] = [str(reason) for reason in qa_reasons]
+                updated_round["qa_issues"] = [issue for issue in qa_issues if isinstance(issue, dict)]
+                updated_round["qa_rechecked_at"] = self._utc_now_iso()
+                updated_round["qa_recheck_attempt"] = int(attempt)
+                rounds[index] = updated_round
+                break
+            debug["image_edit_rounds"] = rounds[-8:]
+            params["debug"] = debug
+            params["qa_last_reasons"] = [] if qa_passed else [str(reason) for reason in qa_reasons]
+            params["qa_last_issues"] = [] if qa_passed else [issue for issue in qa_issues if isinstance(issue, dict)]
+            params["qa_attempt_count"] = int(attempt)
+            order.generation_params = params
+            await db.commit()
+
+    async def _retry_pending_vision_recheck(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        params: dict[str, Any],
+        user_images: list[str],
+        subject_count: int | None,
+        couple_flow: str | None,
+    ) -> bool:
+        candidate_url = self._pending_vision_recheck_candidate(params)
+        if not candidate_url:
+            return False
+        attempt = self._safe_int(params.get("qa_attempt_count"), 0) + 1
+        is_couple = bool(subject_count and int(subject_count) >= 2)
+        qa_verdict = await output_verdict(
+            candidate_url,
+            is_couple=is_couple,
+            source_image_urls=[str(url) for url in user_images if str(url or "").strip()],
+        )
+        qa_ok = bool(qa_verdict.get("passed"))
+        qa_reasons = [str(reason) for reason in (qa_verdict.get("reasons") or []) if str(reason or "").strip()]
+        qa_issues = [issue for issue in (qa_verdict.get("issues") or []) if isinstance(issue, dict)]
+        await self._update_image_edit_round_qa_state(
+            order_uuid,
+            candidate_url=candidate_url,
+            qa_passed=qa_ok,
+            qa_reasons=qa_reasons,
+            qa_issues=qa_issues,
+            attempt=attempt,
+        )
+        if qa_ok:
+            round_item = self._image_edit_round_for_candidate(params, candidate_url)
+            provider_urls = [
+                str(url)
+                for url in (round_item.get("provider_urls") if isinstance(round_item.get("provider_urls"), list) else [])
+                if str(url or "").strip()
+            ] or [candidate_url]
+            selected_round = self._safe_int(round_item.get("round"), attempt) if round_item else attempt
+            selected_stage = str(round_item.get("stage") or "vision_recheck_recovered")
+            await self._complete_order(
+                order_uuid,
+                delivered_urls=[candidate_url],
+                provider_urls=provider_urls,
+                qa_attempt_count=attempt,
+                is_couple=is_couple,
+                subject_count=subject_count,
+                couple_flow=couple_flow,
+                selected_round=selected_round,
+                selected_stage=selected_stage,
+                selection_summary={
+                    "policy": self.CANDIDATE_SELECTION_POLICY,
+                    "selected_round": selected_round,
+                    "selected_stage": selected_stage,
+                    "score": self._result_selection_score(self._round_result_from_debug(round_item)) if round_item else 0.0,
+                    "candidate_scores": round_item.get("candidate_scores") if isinstance(round_item.get("candidate_scores"), list) else [],
+                    "recovered_from_vision_qa_retry": True,
+                    "vision_qa_retry_attempt": attempt,
+                },
+            )
+            await self._queue_completion_email(order_uuid)
+            return True
+
+        await self._record_qa_failure(
+            order_uuid,
+            attempt=attempt,
+            reasons=qa_reasons,
+            candidate_url=candidate_url,
+            issues=qa_issues,
+        )
+        if self._vision_error_only(qa_reasons):
+            if attempt < self._safe_vision_retry_limit():
+                await self._mark_qa_retry_pending(
+                    order_uuid,
+                    attempt=attempt,
+                    reasons=qa_reasons,
+                    candidate_url=candidate_url,
+                    retry_kind="vision_recheck",
+                )
+            else:
+                await self._fail_order(
+                    order_uuid,
+                    f"QA failed: {','.join(qa_reasons or ['vision_error'])}",
+                    "qa_reject",
+                )
+            return True
+
+        # A retry reached the vision model and returned actionable QA reasons.
+        # Let the regular image-edit resume path use those reasons for repair.
+        return False
 
     async def _load_image_edit_resume_state(self, order_uuid: uuid.UUID) -> dict[str, Any]:
         async with async_session_maker() as db:
@@ -2208,6 +2415,23 @@ class WenwenService:
             else:
                 qa_reasons = list(result["qa_reasons"] or [])
                 qa_issues = [issue for issue in (result.get("qa_issues") or []) if isinstance(issue, dict)]
+                if self._vision_error_only(qa_reasons):
+                    candidate_url = str((result.get("delivered_urls") or [""])[0] or "").strip()
+                    if candidate_url:
+                        await self._mark_qa_retry_pending(
+                            order_uuid,
+                            attempt=round_number,
+                            reasons=qa_reasons,
+                            candidate_url=candidate_url,
+                            retry_kind="vision_recheck",
+                        )
+                        logger.warning(
+                            "Wenwen image-edit QA vision error; queued same-candidate QA recheck (round %d, max %d): %s",
+                            round_number,
+                            self._safe_vision_retry_limit(),
+                            qa_reasons,
+                        )
+                        return True
                 if best_passed and round_number >= self.IMAGE_EDIT_MAX_ROUNDS:
                     logger.warning(
                         "Wenwen final image-edit round failed; delivering previous passing round %s: %s",
@@ -2553,6 +2777,7 @@ class WenwenService:
             return False
 
         retry_context: dict[str, Any] | None = None
+        pending_vision_recheck_params: dict[str, Any] | None = None
         recovery_round: dict[str, Any] | None = None
         user_images: list[str] = []
         subject_count: int | None = None
@@ -2576,6 +2801,8 @@ class WenwenService:
                     await self._fail_order(order_uuid, "qa_retry_missing_generation_context", "qa_reject")
                     return True
                 await self._mark_qa_retry_started(order_uuid)
+                if self._pending_vision_recheck_candidate(params):
+                    pending_vision_recheck_params = params
             if retry_context:
                 pass
             elif str(params.get("native_raw_output_status") or "").strip() == "qa_rejected_retry_pending":
@@ -2675,6 +2902,17 @@ class WenwenService:
             )
             await self._queue_completion_email(order_uuid)
             return True
+
+        if pending_vision_recheck_params is not None and retry_context is not None:
+            handled = await self._retry_pending_vision_recheck(
+                order_uuid,
+                params=pending_vision_recheck_params,
+                user_images=[str(url) for url in (retry_context.get("user_images") or []) if str(url or "").strip()],
+                subject_count=retry_context.get("subject_count"),
+                couple_flow=retry_context.get("couple_flow"),
+            )
+            if handled:
+                return True
 
         if retry_context is not None:
             await self.generate_photo(**retry_context)

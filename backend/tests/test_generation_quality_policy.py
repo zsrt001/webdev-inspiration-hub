@@ -551,6 +551,76 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_image_edit_vision_error_queues_same_candidate_recheck(self) -> None:
+        service = WenwenService()
+        calls: list[tuple] = []
+
+        async def fake_resume_state(order_uuid: uuid.UUID) -> dict:
+            return {}
+
+        async def fake_native_round(order_uuid: uuid.UUID, **kwargs) -> dict:
+            calls.append(("round", kwargs["round_number"]))
+            return {
+                "round": kwargs["round_number"],
+                "stage": "primary_generation",
+                "delivered_urls": ["https://example.test/candidate.jpg"],
+                "provider_urls": ["https://provider.example.test/candidate.png"],
+                "qa_ok": False,
+                "qa_reasons": ["vision_error"],
+                "qa_issues": [{"code": "vision_error", "severity": "critical"}],
+                "selected_candidate_index": 0,
+                "candidate_scores": [{"index": 0, "score": 0.0, "hard_gate_reasons": ["vision_error"]}],
+                "selection": {"score": 0.0},
+            }
+
+        async def fake_mark_retry(
+            order_uuid: uuid.UUID,
+            *,
+            attempt: int,
+            reasons: list[str],
+            candidate_url: str,
+            retry_kind: str = "generation_repair",
+        ) -> None:
+            calls.append(("mark_retry", attempt, retry_kind, candidate_url, tuple(reasons)))
+
+        async def fail_multipart_round(order_uuid: uuid.UUID, **kwargs) -> dict:
+            raise AssertionError("Gemini image models must not call /v1/images/edits")
+
+        async def fail_complete_order(order_uuid: uuid.UUID, **kwargs) -> None:
+            raise AssertionError("vision_error must not complete or regenerate before QA recheck")
+
+        service._load_image_edit_resume_state = fake_resume_state  # type: ignore[method-assign]
+        service._submit_native_image_edit_round = fake_native_round  # type: ignore[method-assign]
+        service._submit_image_edit_round = fail_multipart_round  # type: ignore[method-assign]
+        service._mark_qa_retry_pending = fake_mark_retry  # type: ignore[method-assign]
+        service._complete_order = fail_complete_order  # type: ignore[method-assign]
+
+        completed = await service._run_image_edit_generation(
+            uuid.uuid4(),
+            refs=[self._data_url()],
+            prompt_text="Create a commercial wedding portrait.",
+            negative_prompt="generic face",
+            user_images=[self._data_url()],
+            identity_reference_pack=None,
+            subject_count=1,
+            couple_flow=None,
+        )
+
+        self.assertTrue(completed)
+        self.assertEqual(
+            calls,
+            [
+                ("round", 1),
+                (
+                    "mark_retry",
+                    1,
+                    "vision_recheck",
+                    "https://example.test/candidate.jpg",
+                    ("vision_error",),
+                ),
+            ],
+        )
+
     async def test_image_edit_files_add_identity_closeup_refs_before_style_refs(self) -> None:
         files = await WenwenService()._build_image_edit_reference_files(
             [
@@ -717,7 +787,7 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reasons, [])
 
     def test_vision_qa_accepts_json_array_wrapped_verdict(self) -> None:
-        async def fake_chat(payload, *, title, timeout):
+        async def fake_chat(payload, *, title, timeout, provider):
             return {
                 "choices": [
                     {
@@ -733,20 +803,77 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             }
 
         original_configured = llm_service.is_vision_provider_configured
-        original_chat = llm_service._llm_chat
+        original_chat = llm_service._llm_chat_for_provider
+        original_provider = llm_service.settings.llm_provider
+        original_jiekou_key = llm_service.settings.jiekou_api_key
+        original_wenwen_vision_key = llm_service.settings.wenwen_vision_api_key
         llm_service.is_vision_provider_configured = lambda: True
-        llm_service._llm_chat = fake_chat
+        llm_service._llm_chat_for_provider = fake_chat
+        llm_service.settings.llm_provider = "jiekou"
+        llm_service.settings.jiekou_api_key = "test-jiekou-key"
+        llm_service.settings.wenwen_vision_api_key = ""
         try:
             verdict = asyncio.run(
                 llm_service.verify_generated_image_quality("https://cdn.example.com/generated.jpg")
             )
         finally:
             llm_service.is_vision_provider_configured = original_configured
-            llm_service._llm_chat = original_chat
+            llm_service._llm_chat_for_provider = original_chat
+            llm_service.settings.llm_provider = original_provider
+            llm_service.settings.jiekou_api_key = original_jiekou_key
+            llm_service.settings.wenwen_vision_api_key = original_wenwen_vision_key
 
         self.assertFalse(verdict["passed"])
         self.assertEqual(verdict["reasons"], ["bad_hands"])
         self.assertEqual(verdict["issues"][0]["code"], "bad_hands")
+
+    def test_vision_qa_falls_back_to_secondary_provider_on_timeout(self) -> None:
+        calls: list[tuple[str | None, str]] = []
+
+        async def fake_chat(payload, *, title, timeout, provider):
+            calls.append((provider, str(payload.get("model") or "")))
+            if provider == "wenwen":
+                raise TimeoutError("read timed out")
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"passed": true, "reasons": [], "issues": [], "notes": "ok"}'
+                        }
+                    }
+                ]
+            }
+
+        original_chat = llm_service._llm_chat_for_provider
+        original_provider = llm_service.settings.llm_provider
+        original_jiekou_key = llm_service.settings.jiekou_api_key
+        original_jiekou_model = llm_service.settings.jiekou_vision_model
+        original_wenwen_vision_key = llm_service.settings.wenwen_vision_api_key
+        original_wenwen_model = llm_service.settings.wenwen_vision_model
+        llm_service._llm_chat_for_provider = fake_chat
+        llm_service.settings.llm_provider = "wenwen"
+        llm_service.settings.wenwen_vision_api_key = "test-wenwen-vision-key"
+        llm_service.settings.wenwen_vision_model = "wenwen-vision-model"
+        llm_service.settings.jiekou_api_key = "test-jiekou-key"
+        llm_service.settings.jiekou_vision_model = "jiekou-vision-model"
+        try:
+            verdict = asyncio.run(
+                llm_service.verify_generated_image_quality(
+                    "https://cdn.example.com/generated.jpg",
+                    source_image_urls=["https://cdn.example.com/source.jpg"],
+                )
+            )
+        finally:
+            llm_service._llm_chat_for_provider = original_chat
+            llm_service.settings.llm_provider = original_provider
+            llm_service.settings.jiekou_api_key = original_jiekou_key
+            llm_service.settings.jiekou_vision_model = original_jiekou_model
+            llm_service.settings.wenwen_vision_api_key = original_wenwen_vision_key
+            llm_service.settings.wenwen_vision_model = original_wenwen_model
+
+        self.assertTrue(verdict["passed"])
+        self.assertEqual(calls, [("wenwen", "wenwen-vision-model"), ("jiekou", "jiekou-vision-model")])
+        self.assertIn("qa_provider_fallback=jiekou", verdict["notes"])
 
 
 if __name__ == "__main__":
