@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     wenwen_image_generate_path: str = "/images/generations"
     wenwen_image_edit_path: str = "/images/edits"
     wenwen_image_edit_model: str = "gemini-3-pro-image-preview"
+    wenwen_image_edit_fallback_models: str = ""
     wenwen_prefer_image_edit: bool = True
     wenwen_require_image_edit_identity: bool = True
     wenwen_image_edit_quality: str = "high"

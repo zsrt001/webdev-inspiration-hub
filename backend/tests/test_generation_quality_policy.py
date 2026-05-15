@@ -385,14 +385,20 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Identity reference image 1", joined)
         self.assertIn("Identity reference image 2", joined)
 
-    def test_gemini_image_edit_model_can_fallback_to_gpt_image_edit(self) -> None:
+    def test_image_edit_uses_only_configured_model_without_hidden_fallback(self) -> None:
         self.assertTrue(WenwenService._image_edit_uses_native_model("gemini-3-pro-image-preview"))
         self.assertTrue(WenwenService._image_edit_uses_native_model("models/gemini-3-pro-image-preview"))
         self.assertFalse(WenwenService._image_edit_uses_native_model("gpt-image-1"))
         candidates = WenwenService._image_edit_model_candidates("gemini-3-pro-image-preview")
-        self.assertEqual(candidates[0], "gpt-image-2")
-        self.assertIn("gemini-3-pro-image-preview", candidates)
-        self.assertIn("gpt-image-2", candidates)
+        self.assertEqual(candidates, ["gemini-3-pro-image-preview"])
+        self.assertEqual(
+            WenwenService._image_edit_model_candidates("gemini-3.1-flash-image-preview"),
+            ["gemini-3.1-flash-image-preview"],
+        )
+        self.assertEqual(
+            WenwenService._native_image_edit_model_candidates("gemini-3.1-flash-image-preview"),
+            ["gemini-3.1-flash-image-preview"],
+        )
         self.assertTrue(
             WenwenService._is_model_unavailable_error(
                 RuntimeError("not supported model for image generation, only imagen models are supported")

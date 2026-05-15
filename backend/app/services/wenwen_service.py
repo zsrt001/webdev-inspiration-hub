@@ -210,31 +210,15 @@ class WenwenService:
 
     @classmethod
     def _native_image_edit_model_candidates(cls, model: str) -> list[str]:
-        candidates: list[str] = []
-        for value in [model, cls._effective_image_model(), *(settings.wenwen_image_fallback_models or "").split(",")]:
-            candidate = str(value or "").strip()
-            if candidate and candidate not in candidates and cls._image_edit_uses_native_model(candidate):
-                candidates.append(candidate)
-        return candidates
+        candidate = str(model or "").strip()
+        if candidate and cls._image_edit_uses_native_model(candidate):
+            return [candidate]
+        return []
 
     @classmethod
     def _image_edit_model_candidates(cls, model: str) -> list[str]:
-        candidates: list[str] = []
-        configured_candidates = [
-            model,
-            settings.wenwen_image_edit_model,
-            cls._effective_image_model(),
-            *(settings.wenwen_image_fallback_models or "").split(","),
-        ]
-        if any(cls._image_edit_uses_native_model(str(value or "")) for value in configured_candidates):
-            configured_candidates = ["gpt-image-2", *configured_candidates]
-        else:
-            configured_candidates = [*configured_candidates, "gpt-image-2"]
-        for value in configured_candidates:
-            candidate = str(value or "").strip()
-            if candidate and candidate not in candidates:
-                candidates.append(candidate)
-        return candidates
+        candidate = str(model or "").strip()
+        return [candidate] if candidate else []
 
     @staticmethod
     def _is_model_unavailable_error(error: Exception) -> bool:
@@ -1628,6 +1612,11 @@ class WenwenService:
         stage: str,
         delivered_urls: list[str],
         provider_urls: list[str],
+        provider_model: str,
+        configured_model: str,
+        fallback_used: bool,
+        provider_endpoint: str,
+        native_image_edit: bool,
         qa_passed: bool,
         qa_reasons: list[str],
         used_previous_result: bool,
@@ -1656,6 +1645,11 @@ class WenwenService:
                     "selected_candidate_index": selected_candidate_index,
                     "candidate_count": len(delivered_urls),
                     "provider_url_count": len(provider_urls),
+                    "provider_model": str(provider_model or ""),
+                    "configured_model": str(configured_model or ""),
+                    "fallback_used": bool(fallback_used),
+                    "provider_endpoint": str(provider_endpoint or ""),
+                    "native_image_edit": bool(native_image_edit),
                     "candidate_scores": candidate_scores or [],
                     "selection_policy": self.CANDIDATE_SELECTION_POLICY,
                     "qa_passed": bool(qa_passed),
@@ -1683,6 +1677,11 @@ class WenwenService:
         stage: str,
         delivered_urls: list[str],
         provider_urls: list[str],
+        provider_model: str,
+        configured_model: str,
+        fallback_used: bool,
+        provider_endpoint: str,
+        native_image_edit: bool,
         user_images: list[str],
         is_couple: bool,
         include_previous: bool,
@@ -1736,6 +1735,11 @@ class WenwenService:
             stage=stage,
             delivered_urls=delivered_urls,
             provider_urls=provider_urls,
+            provider_model=provider_model,
+            configured_model=configured_model,
+            fallback_used=fallback_used,
+            provider_endpoint=provider_endpoint,
+            native_image_edit=native_image_edit,
             qa_passed=qa_ok,
             qa_reasons=next_qa_reasons,
             qa_issues=next_qa_issues,
@@ -1758,6 +1762,11 @@ class WenwenService:
             "delivered_urls": [primary_image_url],
             "all_delivered_urls": delivered_urls,
             "provider_urls": provider_urls,
+            "provider_model": str(provider_model or ""),
+            "configured_model": str(configured_model or ""),
+            "fallback_used": bool(fallback_used),
+            "provider_endpoint": str(provider_endpoint or ""),
+            "native_image_edit": bool(native_image_edit),
             "qa_ok": qa_ok,
             "qa_reasons": next_qa_reasons,
             "qa_issues": next_qa_issues,
@@ -1783,6 +1792,7 @@ class WenwenService:
         is_couple: bool,
         round_number: int,
         qa_reasons: list[str],
+        configured_model: str | None = None,
         qa_issues: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         stage = self._image_edit_round_stage(round_number)
@@ -1821,6 +1831,9 @@ class WenwenService:
             payload={
                 **native_payload,
                 "_provider_model": model_candidates[0],
+                "_requested_model": configured_model or model,
+                "_model_candidates": model_candidates,
+                "_fallback_used": model_candidates[0] != (configured_model or model),
                 "_endpoint": self._native_generation_url_for_model(model_candidates[0]),
                 "_reference_count": len(reference_entries),
                 "_source_reference_count": min(len(refs), self.IMAGE_EDIT_REFERENCE_FILE_LIMIT),
@@ -1918,6 +1931,11 @@ class WenwenService:
             stage=stage,
             delivered_urls=delivered_urls,
             provider_urls=[],
+            provider_model=selected_model,
+            configured_model=configured_model or model,
+            fallback_used=selected_model != (configured_model or model),
+            provider_endpoint=self._native_generation_url_for_model(selected_model),
+            native_image_edit=True,
             user_images=user_images,
             is_couple=is_couple,
             include_previous=include_previous,
@@ -1939,6 +1957,7 @@ class WenwenService:
         is_couple: bool,
         round_number: int,
         qa_reasons: list[str],
+        configured_model: str | None = None,
         qa_issues: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         stage = self._image_edit_round_stage(round_number)
@@ -1968,6 +1987,8 @@ class WenwenService:
             task_id=f"image-edit-{order_uuid}-round-{round_number}",
             payload={
                 "model": model,
+                "requested_model": configured_model or model,
+                "fallback_used": model != (configured_model or model),
                 "endpoint": settings.wenwen_image_edit_path,
                 "size": self._image_edit_size(is_couple),
                 "quality": settings.wenwen_image_edit_quality,
@@ -2046,6 +2067,11 @@ class WenwenService:
             stage=stage,
             delivered_urls=delivered_urls,
             provider_urls=provider_urls,
+            provider_model=model,
+            configured_model=configured_model or model,
+            fallback_used=model != (configured_model or model),
+            provider_endpoint=settings.wenwen_image_edit_path,
+            native_image_edit=False,
             user_images=user_images,
             is_couple=is_couple,
             include_previous=include_previous,
@@ -2117,6 +2143,7 @@ class WenwenService:
                         is_couple=is_couple,
                         round_number=round_number,
                         qa_reasons=qa_reasons,
+                        configured_model=model,
                         qa_issues=qa_issues,
                     )
                     if candidate_model != model:
@@ -2206,11 +2233,17 @@ class WenwenService:
             order.task_id = task_id
             params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
             debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
+            payload_model = str(payload.get("_provider_model") or payload.get("model") or "").strip()
+            requested_model = str(payload.get("_requested_model") or payload.get("requested_model") or payload_model).strip()
+            fallback_used = bool(payload.get("_fallback_used") or payload.get("fallback_used") or False)
             debug.update(
                 {
                     "wenwen_submit_payload_keys": sorted(payload.keys()),
                     "wenwen_model": self._effective_image_model(),
                     "wenwen_configured_model": settings.wenwen_image_model,
+                    "wenwen_requested_image_edit_model": requested_model,
+                    "wenwen_actual_image_edit_model": payload_model,
+                    "wenwen_image_edit_fallback_used": fallback_used,
                     "wenwen_submitted_at": self._utc_now_iso(),
                 }
             )
@@ -2221,6 +2254,9 @@ class WenwenService:
                     "prompt": prompt_text,
                     "negative_prompt": negative_prompt,
                     "debug": debug,
+                    "configured_generation_model": requested_model,
+                    "actual_generation_model": payload_model,
+                    "generation_model_fallback_used": fallback_used,
                 }
             )
             if provider_task_id:
