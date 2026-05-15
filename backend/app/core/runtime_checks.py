@@ -66,7 +66,14 @@ def validate_commercial_config_values() -> list[str]:
     llm_provider = (settings.llm_provider or "").strip().lower()
     raw_payment_provider = (settings.payment_provider or "").strip().lower()
 
-    if settings.using_wenwen_generation:
+    if settings.using_evolink_generation:
+        if not settings.evolink_api_key:
+            errors.append("EVOLINK_API_KEY is required when GENERATION_ENGINE=evolink")
+        if not settings.evolink_api_base_url:
+            errors.append("EVOLINK_API_BASE_URL is required when GENERATION_ENGINE=evolink")
+        if not settings.evolink_image_model:
+            errors.append("EVOLINK_IMAGE_MODEL is required when GENERATION_ENGINE=evolink")
+    elif settings.using_wenwen_generation:
         if not settings.wenwen_api_key:
             errors.append("WENWEN_API_KEY is required when GENERATION_ENGINE=wenwen")
         if not settings.wenwen_api_base_url:
@@ -78,7 +85,7 @@ def validate_commercial_config_values() -> list[str]:
         elif not settings.comfyui_base_url:
             errors.append("COMFYUI_BASE_URL is required when COMFY_PROVIDER=local")
     else:
-        errors.append("GENERATION_ENGINE must be comfyui or wenwen")
+        errors.append("GENERATION_ENGINE must be comfyui, wenwen, or evolink")
     if not settings.admin_token and not settings.admin_identity_configured:
         errors.append("ADMIN_USER_IDS, ADMIN_EMAILS, or backend-only ADMIN_TOKEN is required")
     if provider in {"", "local"}:

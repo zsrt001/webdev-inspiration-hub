@@ -60,6 +60,20 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertTrue(settings.aws_s3_endpoint_is_loopback)
         self.assertEqual(settings.effective_storage_provider, "s3")
 
+    def test_evolink_generation_provider_config(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            generation_engine="evolink",
+            evolink_poll_timeout=321,
+            evolink_max_retries=4,
+        )
+
+        self.assertTrue(settings.using_evolink_generation)
+        self.assertFalse(settings.using_wenwen_generation)
+        self.assertEqual(settings.generation_provider_name, "evolink")
+        self.assertEqual(settings.generation_poll_timeout, 321)
+        self.assertEqual(settings.generation_max_retries, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

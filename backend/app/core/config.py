@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     wenwen_poll_interval: float = 3.0
     wenwen_poll_timeout: int = 240
     wenwen_max_retries: int = 2
+    evolink_api_key: str = ""
+    evolink_api_base_url: str = "https://api.evolink.ai"
+    evolink_image_model: str = "gemini-3-pro-image-preview"
+    evolink_image_fallback_models: str = ""
+    evolink_image_quality: str = "2K"
+    evolink_image_size: str = "3:4"
+    evolink_poll_interval: float = 5.0
+    evolink_poll_timeout: int = 720
+    evolink_max_retries: int = 2
     gatekeeper_allow_without_pillow: bool = False
     qa_allow_without_pillow: bool = False
     qa_require_vision: bool = False
@@ -115,7 +124,7 @@ class Settings(BaseSettings):
     supabase_pooler_host: str = ""
 
     # Generation engine
-    generation_engine: str = "wenwen"  # comfyui | wenwen
+    generation_engine: str = "wenwen"  # comfyui | wenwen | evolink
 
     # Security
     secret_key: str = "change-me-in-production"
@@ -292,6 +301,10 @@ class Settings(BaseSettings):
         return (self.generation_engine or "").strip().lower() == "wenwen"
 
     @property
+    def using_evolink_generation(self) -> bool:
+        return (self.generation_engine or "").strip().lower() == "evolink"
+
+    @property
     def is_vercel_runtime(self) -> bool:
         return str(self.vercel or "").strip().lower() in {"1", "true", "yes"}
 
@@ -420,6 +433,8 @@ class Settings(BaseSettings):
 
     @property
     def generation_provider_name(self) -> str:
+        if self.using_evolink_generation:
+            return "evolink"
         if self.using_wenwen_generation:
             return "wenwen"
         if self.using_comfy_cloud:
@@ -428,12 +443,16 @@ class Settings(BaseSettings):
 
     @property
     def generation_poll_timeout(self) -> int:
+        if self.using_evolink_generation:
+            return int(self.evolink_poll_timeout)
         if self.using_wenwen_generation:
             return int(self.wenwen_poll_timeout)
         return int(self.comfyui_poll_timeout)
 
     @property
     def generation_max_retries(self) -> int:
+        if self.using_evolink_generation:
+            return int(self.evolink_max_retries)
         if self.using_wenwen_generation:
             return int(self.wenwen_max_retries)
         return int(self.comfyui_max_retries)

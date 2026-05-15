@@ -6,6 +6,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.services.comfyui_service import comfyui_service
+from app.services.evolink_service import evolink_service
 from app.services.wenwen_service import wenwen_service
 
 settings = get_settings()
@@ -16,6 +17,8 @@ class GenerationService:
 
     @staticmethod
     def _provider():
+        if settings.using_evolink_generation:
+            return evolink_service
         if settings.using_wenwen_generation:
             return wenwen_service
         return comfyui_service
@@ -43,7 +46,7 @@ class GenerationService:
         return bool(await refresh(order_id))
 
     def supports_live_portrait(self) -> bool:
-        return not settings.using_wenwen_generation
+        return not (settings.using_wenwen_generation or settings.using_evolink_generation)
 
     async def generate_live_portrait(self, **kwargs: Any) -> None:
         if not self.supports_live_portrait():
