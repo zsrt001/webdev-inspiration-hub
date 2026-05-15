@@ -1,5 +1,9 @@
 .git
 .gitignore
+.env
+.env.*
+.vercel-env-*
+vercel.production.env
 .vscode
 .agent
 .antigravity
