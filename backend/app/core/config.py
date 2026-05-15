@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     wenwen_image_edit_size_single: str = "1152x1536"
     wenwen_image_edit_size_couple: str = "1152x1536"
     wenwen_native_image_generate_path_template: str = "/v1beta/models/{model}:generateContent"
+    wenwen_native_image_size: str = "4K"
     wenwen_task_path_template: str = "/tasks/{task_id}"
     wenwen_image_size_single: str = "3:4"
     wenwen_image_size_couple: str = "3:4"

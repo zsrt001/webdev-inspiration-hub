@@ -6,6 +6,8 @@ from io import BytesIO
 from pathlib import Path
 import sys
 import unittest
+import uuid
+from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
@@ -48,6 +50,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertTrue(settings.wenwen_require_image_edit_identity)
         self.assertEqual(settings.wenwen_image_edit_model, "gemini-3-pro-image-preview")
         self.assertEqual(settings.wenwen_image_edit_candidate_count, 2)
+        self.assertEqual(settings.wenwen_native_image_size, "4K")
 
     def test_wenwen_upgrades_legacy_single_four_by_five_to_three_by_four(self) -> None:
         self.assertEqual(WenwenService._build_size(False), "3:4")
@@ -405,6 +408,27 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_native_gemini_request_uses_url_key_without_bearer_auth(self) -> None:
+        original_key = wenwen_module.settings.wenwen_api_key
+        original_base_url = wenwen_module.settings.wenwen_api_base_url
+        try:
+            wenwen_module.settings.wenwen_api_key = "test-wenwen-key"
+            wenwen_module.settings.wenwen_api_base_url = "https://breakout.wenwen-ai.com/v1"
+
+            public_url = WenwenService._native_generation_url_for_model("gemini-3-pro-image-preview")
+            request_url = WenwenService._native_generation_request_url_for_model("gemini-3-pro-image-preview")
+            parsed = urlparse(request_url)
+
+            self.assertEqual(public_url, "https://breakout.wenwen-ai.com/v1beta/models/gemini-3-pro-image-preview:generateContent")
+            self.assertEqual(parsed.scheme, "https")
+            self.assertEqual(parsed.netloc, "breakout.wenwen-ai.com")
+            self.assertEqual(parsed.path, "/v1beta/models/gemini-3-pro-image-preview:generateContent")
+            self.assertEqual(parse_qs(parsed.query), {"key": ["test-wenwen-key"]})
+            self.assertEqual(WenwenService._native_headers(), {"Content-Type": "application/json"})
+        finally:
+            wenwen_module.settings.wenwen_api_key = original_key
+            wenwen_module.settings.wenwen_api_base_url = original_base_url
+
     async def test_native_image_edit_payload_prioritizes_identity_pack(self) -> None:
         original = self._data_url()
         face_crop = self._data_url(width=360, height=360)
@@ -441,8 +465,10 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(label.startswith("Current candidate canvas") for label in labels))
         self.assertTrue(any(label.startswith("Style or scene reference image") for label in labels))
         self.assertEqual(entries.count(("Identity full source image 1", original)), 0)
-        self.assertEqual(payload["generationConfig"]["responseModalities"], ["IMAGE"])
+        self.assertEqual(payload["contents"][0]["role"], "user")
+        self.assertEqual(payload["generationConfig"]["responseModalities"], ["TEXT", "IMAGE"])
         self.assertIn("imageConfig", payload["generationConfig"])
+        self.assertEqual(payload["generationConfig"]["imageConfig"]["imageSize"], "4K")
         joined_text = "\n".join(
             part.get("text", "")
             for part in payload["contents"][0]["parts"]
@@ -450,6 +476,64 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("NATIVE GEMINI IMAGE-EDIT MODE", joined_text)
         self.assertIn("identity anchor images override style", joined_text)
+
+    def test_gemini_image_edit_dispatches_to_native_generate_content(self) -> None:
+        service = WenwenService()
+        calls: list[tuple[str, str]] = []
+
+        async def fake_resume_state(order_uuid: uuid.UUID) -> dict:
+            return {}
+
+        async def fake_native_round(order_uuid: uuid.UUID, **kwargs) -> dict:
+            calls.append(("native", kwargs["model"]))
+            return {
+                "round": kwargs["round_number"],
+                "stage": "primary_generation",
+                "delivered_urls": ["https://example.test/generated.png"],
+                "provider_urls": [],
+                "qa_ok": True,
+                "qa_reasons": [],
+                "qa_issues": [],
+                "selected_candidate_index": 0,
+                "candidate_scores": [{"index": 0, "score": 98.0}],
+                "selection": {"score": 98.0},
+            }
+
+        async def fail_multipart_round(order_uuid: uuid.UUID, **kwargs) -> dict:
+            raise AssertionError("Gemini image models must not call /v1/images/edits")
+
+        async def fake_complete_order(order_uuid: uuid.UUID, **kwargs) -> None:
+            calls.append(("complete", ",".join(kwargs["delivered_urls"])))
+
+        service._load_image_edit_resume_state = fake_resume_state  # type: ignore[method-assign]
+        service._submit_native_image_edit_round = fake_native_round  # type: ignore[method-assign]
+        service._submit_image_edit_round = fail_multipart_round  # type: ignore[method-assign]
+        service._complete_order = fake_complete_order  # type: ignore[method-assign]
+
+        completed = asyncio.run(
+            service._run_image_edit_generation(
+                uuid.uuid4(),
+                refs=[self._data_url()],
+                prompt_text="Create a commercial wedding portrait.",
+                negative_prompt="generic face",
+                user_images=[self._data_url()],
+                identity_reference_pack=None,
+                subject_count=1,
+                couple_flow=None,
+            )
+        )
+
+        self.assertTrue(completed)
+        self.assertTrue(all(call[0] != "multipart" for call in calls))
+        self.assertEqual(
+            calls,
+            [
+                ("native", "gemini-3-pro-image-preview"),
+                ("native", "gemini-3-pro-image-preview"),
+                ("native", "gemini-3-pro-image-preview"),
+                ("complete", "https://example.test/generated.png"),
+            ],
+        )
 
     async def test_image_edit_files_add_identity_closeup_refs_before_style_refs(self) -> None:
         files = await WenwenService()._build_image_edit_reference_files(

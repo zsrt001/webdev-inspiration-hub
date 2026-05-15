@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 from sqlalchemy import select
@@ -178,6 +178,24 @@ class WenwenService:
         return f"{cls._origin_url()}{cls._normalize_path(path)}"
 
     @classmethod
+    def _native_generation_request_url_for_model(cls, model: str) -> str:
+        """Gemini format expects the API key in the query string, not Bearer auth."""
+        url = cls._native_generation_url_for_model(model)
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query["key"] = [settings.wenwen_api_key]
+        return urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                urlencode(query, doseq=True),
+                parsed.fragment,
+            )
+        )
+
+    @classmethod
     def _models_url(cls) -> str:
         return f"{cls._base_url()}{cls._normalize_path(settings.wenwen_models_path)}"
 
@@ -256,6 +274,11 @@ class WenwenService:
         configured = settings.wenwen_image_edit_size_couple if is_couple else settings.wenwen_image_edit_size_single
         value = str(configured or "").strip()
         return value or "1152x1536"
+
+    @staticmethod
+    def _native_image_size() -> str:
+        value = str(getattr(settings, "wenwen_native_image_size", "") or "").strip()
+        return value or "4K"
 
     @staticmethod
     def _image_edit_candidate_count() -> int:
@@ -462,6 +485,10 @@ class WenwenService:
             "Authorization": f"Bearer {settings.wenwen_api_key}",
             "Content-Type": "application/json",
         }
+
+    @staticmethod
+    def _native_headers() -> dict[str, str]:
+        return {"Content-Type": "application/json"}
 
     def validate_runtime_requirements(self, *, force: bool = False) -> None:
         if self._runtime_validation_ok and not force:
@@ -1023,12 +1050,13 @@ class WenwenService:
             coerced = await self._coerce_remote_image_ref(ref)
             parts.append(self._data_url_to_inline_part(coerced))
         native_payload = {
-            "contents": [{"parts": parts}],
+            "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
-                "responseModalities": ["IMAGE"],
+                "responseModalities": ["TEXT", "IMAGE"],
                 "temperature": 0.8,
                 "imageConfig": {
                     "aspectRatio": self._build_size(is_couple),
+                    "imageSize": self._native_image_size(),
                 },
             },
         }
@@ -1117,16 +1145,17 @@ class WenwenService:
             parts.append(self._data_url_to_inline_part(coerced))
 
         generation_config: dict[str, Any] = {
-            "responseModalities": ["IMAGE"],
+            "responseModalities": ["TEXT", "IMAGE"],
             "temperature": 0.72,
             "imageConfig": {
                 "aspectRatio": self._build_size(is_couple),
+                "imageSize": self._native_image_size(),
             },
         }
         candidate_count = self._image_edit_candidate_count()
         if candidate_count > 1:
             generation_config["candidateCount"] = candidate_count
-        return {"contents": [{"parts": parts}], "generationConfig": generation_config}, reference_entries
+        return {"contents": [{"role": "user", "parts": parts}], "generationConfig": generation_config}, reference_entries
 
     @staticmethod
     def _ext_from_content_type(content_type: str) -> str:
@@ -1859,9 +1888,9 @@ class WenwenService:
                 request_payload = native_payload
                 try:
                     candidate_response = await client.post(
-                        self._native_generation_url_for_model(candidate_model),
+                        self._native_generation_request_url_for_model(candidate_model),
                         json=request_payload,
-                        headers=self._headers(),
+                        headers=self._native_headers(),
                     )
                     if (
                         candidate_response.status_code in {400, 422}
@@ -1870,9 +1899,9 @@ class WenwenService:
                     ):
                         request_payload = self._native_payload_without_candidate_count(native_payload)
                         candidate_response = await client.post(
-                            self._native_generation_url_for_model(candidate_model),
+                            self._native_generation_request_url_for_model(candidate_model),
                             json=request_payload,
-                            headers=self._headers(),
+                            headers=self._native_headers(),
                         )
                 except (httpx.TimeoutException, httpx.ConnectError) as exc:
                     last_transient_error = exc
@@ -1960,6 +1989,9 @@ class WenwenService:
         configured_model: str | None = None,
         qa_issues: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        if self._image_edit_uses_native_model(model):
+            raise RuntimeError("wenwen_native_image_edit_requires_generate_content")
+
         stage = self._image_edit_round_stage(round_number)
         include_previous = bool(current_result_refs) and self._should_include_previous_edit_result(qa_reasons)
         identity_pack_note = self._identity_pack_prompt_note(identity_reference_pack)
@@ -2129,7 +2161,12 @@ class WenwenService:
             result: dict[str, Any] | None = None
             for model_index, candidate_model in enumerate(model_candidates):
                 try:
-                    result = await self._submit_image_edit_round(
+                    submit_round = (
+                        self._submit_native_image_edit_round
+                        if self._image_edit_uses_native_model(candidate_model)
+                        else self._submit_image_edit_round
+                    )
+                    result = await submit_round(
                         order_uuid,
                         model=candidate_model,
                         refs=refs,
@@ -2839,9 +2876,9 @@ class WenwenService:
                                 trust_env=False,
                             ) as client:
                                 candidate_response = await client.post(
-                                    self._native_generation_url_for_model(native_model),
+                                    self._native_generation_request_url_for_model(native_model),
                                     json=native_payload,
-                                    headers=self._headers(),
+                                    headers=self._native_headers(),
                                 )
                         except (httpx.TimeoutException, httpx.ConnectError) as exc:
                             last_transient_error = exc

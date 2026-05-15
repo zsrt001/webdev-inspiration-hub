@@ -12,7 +12,7 @@ import json
 import mimetypes
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -46,10 +46,28 @@ def _native_image_url() -> str:
     template = settings.wenwen_native_image_generate_path_template or "/v1beta/models/{model}:generateContent"
     path = template.replace("{model}", settings.wenwen_image_model)
     if path.startswith("http://") or path.startswith("https://"):
-        return path
-    if not path.startswith("/"):
-        path = f"/{path}"
-    return f"{origin}{path}"
+        url = path
+    else:
+        if not path.startswith("/"):
+            path = f"/{path}"
+        url = f"{origin}{path}"
+    parsed_url = urlparse(url)
+    query = parse_qs(parsed_url.query, keep_blank_values=True)
+    query["key"] = [settings.wenwen_api_key]
+    return urlunparse(
+        (
+            parsed_url.scheme,
+            parsed_url.netloc,
+            parsed_url.path,
+            parsed_url.params,
+            urlencode(query, doseq=True),
+            parsed_url.fragment,
+        )
+    )
+
+
+def _native_headers() -> dict[str, str]:
+    return {"Content-Type": "application/json"}
 
 
 def _masked_header(key: str) -> dict[str, str]:
@@ -118,10 +136,11 @@ async def main() -> int:
 
         image_resp = await client.post(
             _native_image_url(),
-            headers={**image_headers, "Content-Type": "application/json"},
+            headers=_native_headers(),
             json={
                 "contents": [
                     {
+                        "role": "user",
                         "parts": [
                             {
                                 "text": "Generate a studio-quality bridal portrait in soft natural light."
@@ -130,7 +149,7 @@ async def main() -> int:
                     }
                 ],
                 "generationConfig": {
-                    "responseModalities": ["IMAGE"],
+                    "responseModalities": ["TEXT", "IMAGE"],
                     "imageConfig": {"aspectRatio": settings.wenwen_image_size_single},
                 },
             },
