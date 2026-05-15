@@ -12,6 +12,7 @@ __pycache__
 *.log
 docker-compose.yml
 docs
+artifacts
 logs
 scripts
 frontend/node_modules
