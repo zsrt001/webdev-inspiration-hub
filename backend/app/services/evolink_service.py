@@ -64,7 +64,7 @@ class EvolinkService(WenwenService):
         candidates: list[str] = []
         for value in [model, *(settings.evolink_image_fallback_models or "").split(",")]:
             candidate = str(value or "").strip()
-            if candidate and candidate not in candidates:
+            if candidate and cls._allowed_image_model(candidate) and candidate not in candidates:
                 candidates.append(candidate)
         return candidates
 

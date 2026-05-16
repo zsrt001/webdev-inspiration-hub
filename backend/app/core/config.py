@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     wenwen_vision_model: str = "gemini-3.1-pro-preview"
     wenwen_image_model: str = "gemini-3-pro-image-preview"
     wenwen_image_fallback_models: str = "gemini-3.1-flash-image-preview"
+    generation_allowed_image_models: str = "gemini-3-pro-image-preview,gemini-3.1-flash-image-preview"
     wenwen_image_generate_path: str = "/images/generations"
     wenwen_image_edit_path: str = "/images/edits"
     wenwen_image_edit_model: str = "gemini-3-pro-image-preview"
@@ -457,6 +458,14 @@ class Settings(BaseSettings):
         if self.using_wenwen_generation:
             return int(self.wenwen_max_retries)
         return int(self.comfyui_max_retries)
+
+    @property
+    def generation_allowed_image_model_list(self) -> list[str]:
+        return [
+            item.strip()
+            for item in (self.generation_allowed_image_models or "").split(",")
+            if item.strip()
+        ]
 
 
 @lru_cache

@@ -251,10 +251,15 @@ class WenwenService:
         lowered = str(model or "").strip().lower()
         return bool(lowered.startswith("gemini") or lowered.startswith("models/gemini") or "/gemini" in lowered)
 
+    @staticmethod
+    def _allowed_image_model(model: str) -> bool:
+        allowed = settings.generation_allowed_image_model_list
+        return not allowed or str(model or "").strip() in allowed
+
     @classmethod
     def _native_image_edit_model_candidates(cls, model: str) -> list[str]:
         candidate = str(model or "").strip()
-        if candidate and cls._image_edit_uses_native_model(candidate):
+        if candidate and cls._image_edit_uses_native_model(candidate) and cls._allowed_image_model(candidate):
             return [candidate]
         return []
 
@@ -268,7 +273,7 @@ class WenwenService:
         )
         for value in [model, *str(fallback_models).split(",")]:
             candidate = str(value or "").strip()
-            if candidate and candidate not in candidates:
+            if candidate and cls._allowed_image_model(candidate) and candidate not in candidates:
                 candidates.append(candidate)
         return candidates
 
@@ -291,7 +296,7 @@ class WenwenService:
         candidates: list[str] = []
         for value in [cls._effective_image_model(), *(settings.wenwen_image_fallback_models or "").split(",")]:
             model = str(value or "").strip()
-            if model and model not in candidates:
+            if model and cls._allowed_image_model(model) and model not in candidates:
                 candidates.append(model)
         return candidates
 

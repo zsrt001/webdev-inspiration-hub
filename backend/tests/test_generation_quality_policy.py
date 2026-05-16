@@ -482,6 +482,20 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_image_edit_fallbacks_are_limited_to_allowed_models(self) -> None:
+        original_fallbacks = wenwen_module.settings.wenwen_image_edit_fallback_models
+        try:
+            wenwen_module.settings.wenwen_image_edit_fallback_models = (
+                "gemini-3.1-flash-image-preview,gpt-image-2"
+            )
+
+            self.assertEqual(
+                WenwenService._image_edit_model_candidates("gemini-3-pro-image-preview"),
+                ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"],
+            )
+        finally:
+            wenwen_module.settings.wenwen_image_edit_fallback_models = original_fallbacks
+
     def test_native_gemini_request_uses_url_key_without_bearer_auth(self) -> None:
         original_key = wenwen_module.settings.wenwen_api_key
         original_base_url = wenwen_module.settings.wenwen_api_base_url

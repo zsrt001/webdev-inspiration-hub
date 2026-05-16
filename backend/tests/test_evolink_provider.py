@@ -19,7 +19,7 @@ class EvolinkProviderTest(unittest.TestCase):
         original_fallbacks = evolink_module.settings.evolink_image_fallback_models
         try:
             evolink_module.settings.evolink_image_model = "gemini-3.1-flash-image-preview"
-            evolink_module.settings.evolink_image_fallback_models = "gemini-3-pro-image-preview"
+            evolink_module.settings.evolink_image_fallback_models = "gemini-3-pro-image-preview,gpt-image-2"
 
             self.assertFalse(EvolinkService._image_edit_uses_native_model("gemini-3.1-flash-image-preview"))
             self.assertEqual(EvolinkService._effective_image_edit_model(), "gemini-3.1-flash-image-preview")

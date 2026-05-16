@@ -26,6 +26,16 @@ const sourcesPath = argValue(
 const outDir = argValue('--out-dir', join(root, 'artifacts', 'production-generation-test', 'generated'));
 const pollSeconds = Number(argValue('--poll-seconds', process.env.POLL_SECONDS || '420'));
 const pollIntervalMs = Number(argValue('--poll-interval-ms', process.env.POLL_INTERVAL_MS || '5000'));
+const probeRecoverWindowSeconds = Number(argValue('--probe-recover-window-seconds', process.env.PROBE_RECOVER_WINDOW_SECONDS || '900'));
+const allowedModels = String(
+  argValue(
+    '--allowed-models',
+    process.env.PROBE_ALLOWED_MODELS || 'gemini-3-pro-image-preview,gemini-3.1-flash-image-preview',
+  ),
+)
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
 const executeInlineRaw = argValue('--execute-inline', process.env.PROBE_EXECUTE_INLINE);
 const executeInline = executeInlineRaw === undefined
   ? undefined
@@ -43,13 +53,26 @@ if (token) headers['X-Admin-Token'] = token;
 if (bearerToken) headers.authorization = `Bearer ${bearerToken}`;
 
 async function requestJson(path, options = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      ...headers,
-      ...(options.headers || {}),
-    },
-  });
+  const attempts = Number(options.retries ?? (String(options.method || 'GET').toUpperCase() === 'GET' ? 3 : 1));
+  let response;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      response = await fetch(`${baseUrl}${path}`, {
+        ...options,
+        headers: {
+          ...headers,
+          ...(options.headers || {}),
+        },
+      });
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !isInlineDisconnect(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * attempt, 3000)));
+    }
+  }
+  if (!response) throw lastError || new Error(`No response for ${path}`);
   const text = await response.text();
   let body;
   try {
@@ -108,6 +131,7 @@ function collectImageUrls(value, urls = []) {
 }
 
 async function startProbe(test) {
+  const startedAt = new Date();
   const payload = {
     image_url: test.image_url,
     second_image_url: test.second_image_url,
@@ -120,10 +144,83 @@ async function startProbe(test) {
     prompt_override: test.prompt_override,
   };
   Object.keys(payload).forEach((key) => payload[key] === undefined && delete payload[key]);
-  return requestJson('/api/v1/admin/generation_probe', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  try {
+    return await requestJson('/api/v1/admin/generation_probe', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    if (executeInline !== true || !isInlineDisconnect(error)) {
+      throw error;
+    }
+    const recovered = await recoverProbeOrder(test, startedAt);
+    if (recovered) {
+      return {
+        ok: false,
+        started: true,
+        completed: String(recovered.status || '').toUpperCase() === 'COMPLETED',
+        execution_mode: 'inline',
+        order_id: recovered.id,
+        status: recovered.status,
+        task_id: recovered.task_id || null,
+        template_id: recovered.template_id,
+        error_message: recovered.error_message || null,
+        preview_image_urls: recovered.preview_image_urls || null,
+        final_image_urls: recovered.final_image_urls || null,
+        recovered_after_disconnect: true,
+        disconnect_error: String(error?.message || error).slice(0, 300),
+      };
+    }
+    throw error;
+  }
+}
+
+function isInlineDisconnect(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  const cause = String(error?.cause?.code || error?.cause || '').toLowerCase();
+  return (
+    message.includes('fetch failed')
+    || message.includes('socket')
+    || message.includes('terminated')
+    || message.includes('failed (504)')
+    || message.includes('vercel runtime timeout')
+    || cause.includes('und_err_socket')
+    || cause.includes('econnreset')
+  );
+}
+
+function sameTestOrder(test, order) {
+  if (!order || order.template_id !== test.template_id) return false;
+  const params = order.generation_params && typeof order.generation_params === 'object' ? order.generation_params : {};
+  if (!params.admin_probe) return false;
+  if (Boolean(params.remote_join) !== Boolean(test.remote_join)) return false;
+  const source = order.source_image_urls && typeof order.source_image_urls === 'object' ? order.source_image_urls : {};
+  const images = Array.isArray(source.images) ? source.images.map(String) : [];
+  const expected = [test.image_url, test.second_image_url].filter(Boolean).map(String);
+  return expected.length === images.length && expected.every((url, index) => images[index] === url);
+}
+
+async function recoverProbeOrder(test, startedAt) {
+  const deadline = Date.now() + probeRecoverWindowSeconds * 1000;
+  const startedMs = startedAt.getTime() - 30_000;
+  let best = null;
+  while (Date.now() <= deadline) {
+    const list = await requestJson('/api/v1/admin/orders?page=1&page_size=20');
+    const candidates = Array.isArray(list.orders) ? list.orders : [];
+    const summaries = candidates.filter((order) => {
+      const created = Date.parse(order.created_at || '');
+      return Number.isFinite(created) && created >= startedMs && order.template_id === test.template_id;
+    });
+    for (const summary of summaries) {
+      const detail = await requestJson(`/api/v1/admin/orders/${summary.id}`);
+      if (!sameTestOrder(test, detail)) continue;
+      best = detail;
+      const status = String(detail.status || '').toUpperCase();
+      if (status === 'COMPLETED' || detail.error_message) return detail;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+  return best;
 }
 
 async function pollOrder(orderId) {
@@ -291,6 +388,14 @@ function publicContractEvidence(publicOrderResult) {
     };
   }
   if (!publicOrderResult?.ok) {
+    if (publicOrderResult?.status === 404) {
+      return {
+        checked: true,
+        ok: true,
+        reason: 'admin_probe_not_visible_to_public_user',
+        status: 404,
+      };
+    }
     return {
       checked: true,
       ok: false,
@@ -322,6 +427,7 @@ function publicContractEvidence(publicOrderResult) {
 function acceptanceGates(order, generatedUrlCount, publicEvidence) {
   const billing = billingSummary(order);
   const statusOk = String(order.status || '').toUpperCase() === 'COMPLETED' && !order.error_message;
+  const model = modelSummary(order).actual_generation_model;
   return {
     completed: statusOk,
     has_generated_image: generatedUrlCount > 0,
@@ -329,11 +435,24 @@ function acceptanceGates(order, generatedUrlCount, publicEvidence) {
     no_extra_repair_charge: billing.automatic_repair_extra_charges === 0 && billing.all_repair_rounds_non_billable,
     admin_round_evidence_visible: adminRoundEvidence(order),
     public_contract_checked: publicEvidence.ok,
+    allowed_model_used: !model || allowedModels.length === 0 || allowedModels.includes(model),
+  };
+}
+
+function modelSummary(order) {
+  const params = order.generation_params && typeof order.generation_params === 'object' ? order.generation_params : {};
+  const debug = params.debug && typeof params.debug === 'object' ? params.debug : {};
+  return {
+    engine: params.engine ?? params.provider ?? null,
+    configured_generation_model: params.configured_generation_model ?? debug.wenwen_requested_image_edit_model ?? null,
+    actual_generation_model: params.actual_generation_model ?? debug.wenwen_actual_image_edit_model ?? null,
+    generation_model_fallback_used: Boolean(params.generation_model_fallback_used ?? debug.wenwen_image_edit_fallback_used),
   };
 }
 
 const report = {
   baseUrl,
+  allowedModels,
   sources,
   startedAt: new Date().toISOString(),
   tests: [],
@@ -381,6 +500,7 @@ for (const test of tests) {
     downloaded_files: downloadedFiles,
     qa_summary: qaSummary(order),
     billing_summary: billingSummary(order),
+    model_summary: modelSummary(order),
     generation_rounds: roundSummary(order),
     public_contract,
   };
@@ -392,6 +512,7 @@ for (const test of tests) {
     ok,
     gates,
     public_contract,
+    model_summary: item.model_summary,
     image_count: uniqueUrls.length,
     rounds: item.generation_rounds.map((round) => ({
       round: round.round,
