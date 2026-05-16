@@ -749,6 +749,53 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Couple rule", polish)
         self.assertIn("Negative prompt: generic face", polish)
 
+    def test_lighting_only_round_two_is_relight_edit_not_face_regeneration(self) -> None:
+        reasons = ["face_underexposed", "oily_skin_highlight", "background_brighter_than_face"]
+        prompt = WenwenService._build_image_edit_round_prompt(
+            base_prompt="IDENTITY LOCK: keep face.\nSTUDIO QUALITY: premium.",
+            negative_prompt="generic face",
+            round_number=2,
+            qa_reasons=reasons,
+            identity_pack_note="",
+            include_previous_result=True,
+            is_couple=False,
+        )
+
+        self.assertTrue(WenwenService._is_lighting_only_repair(reasons, round_number=2))
+        self.assertEqual(
+            WenwenService._image_edit_repair_mode(round_number=2, qa_reasons=reasons),
+            "relight_edit_only",
+        )
+        self.assertIn("ROUND 2 RELIGHT/EDIT ONLY", prompt)
+        self.assertIn("previous candidate is the current canvas", prompt)
+        self.assertIn("Only edit lighting and finish", prompt)
+        self.assertIn("Treat this as relight/edit", prompt)
+        self.assertIn("Do not redraw", prompt)
+        self.assertIn("Do not change facial geometry", prompt)
+        self.assertNotIn("regenerate the repair", prompt)
+        self.assertNotIn("replace facial identity", prompt)
+
+    def test_mixed_round_two_failures_do_not_use_relight_only_mode(self) -> None:
+        reasons = ["face_underexposed", "identity_mismatch"]
+        prompt = WenwenService._build_image_edit_round_prompt(
+            base_prompt="IDENTITY LOCK: keep face.\nSTUDIO QUALITY: premium.",
+            negative_prompt="generic face",
+            round_number=2,
+            qa_reasons=reasons,
+            identity_pack_note="",
+            include_previous_result=False,
+            is_couple=False,
+        )
+
+        self.assertFalse(WenwenService._is_lighting_only_repair(reasons, round_number=2))
+        self.assertEqual(
+            WenwenService._image_edit_repair_mode(round_number=2, qa_reasons=reasons),
+            "targeted_repair",
+        )
+        self.assertIn("ROUND 2 TARGETED REPAIR", prompt)
+        self.assertIn("restore facial identity", prompt)
+        self.assertIn("regenerate the repair from the original identity references", prompt)
+
     def test_candidate_selection_prefers_deliverable_identity_safe_image(self) -> None:
         failed_verdict = {
             "passed": False,

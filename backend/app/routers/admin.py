@@ -232,6 +232,7 @@ class AdminGenerationRound(BaseModel):
     round: int | None = None
     generation_attempt: int | None = None
     stage: str | None = None
+    repair_mode: str | None = None
     candidate_url: str | None = None
     candidate_urls: list[str] = Field(default_factory=list)
     selected_candidate_url: str | None = None
@@ -245,6 +246,7 @@ class AdminGenerationRound(BaseModel):
     qa_issues: list[dict[str, Any]] = Field(default_factory=list)
     used_previous_result: bool = False
     billable: bool = False
+    billing_reason: str | None = None
     extra_credits_charged: int = 0
     completed_at: str | None = None
 
@@ -442,6 +444,7 @@ def _admin_generation_rounds(params: dict[str, Any]) -> list[AdminGenerationRoun
                 round=_safe_int(item.get("round")),
                 generation_attempt=_safe_int(item.get("generation_attempt")),
                 stage=str(item.get("stage") or "") or None,
+                repair_mode=str(item.get("repair_mode") or "") or None,
                 candidate_url=str(item.get("candidate_url") or "") or None,
                 candidate_urls=_string_list(item.get("candidate_urls")),
                 selected_candidate_url=str(item.get("selected_candidate_url") or "") or None,
@@ -458,6 +461,7 @@ def _admin_generation_rounds(params: dict[str, Any]) -> list[AdminGenerationRoun
                 qa_issues=[issue for issue in issues if isinstance(issue, dict)],
                 used_previous_result=bool(item.get("used_previous_result")),
                 billable=bool(item.get("billable")),
+                billing_reason=str(item.get("billing_reason") or "") or None,
                 extra_credits_charged=_safe_int(item.get("extra_credits_charged"), 0) or 0,
                 completed_at=str(item.get("completed_at") or "") or None,
             )

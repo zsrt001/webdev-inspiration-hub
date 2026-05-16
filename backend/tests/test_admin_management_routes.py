@@ -73,6 +73,7 @@ class AdminManagementRoutesTest(unittest.TestCase):
                             "round": 1,
                             "generation_attempt": 2,
                             "stage": "primary_generation",
+                            "repair_mode": "relight_edit_only",
                             "candidate_url": "https://cdn.example.com/candidate.jpg",
                             "candidate_urls": [
                                 "https://cdn.example.com/candidate.jpg",
@@ -99,6 +100,7 @@ class AdminManagementRoutesTest(unittest.TestCase):
                             "qa_reasons": ["identity_mismatch"],
                             "qa_issues": [{"code": "identity_mismatch"}],
                             "billable": False,
+                            "billing_reason": "automatic_repair_included",
                             "extra_credits_charged": 0,
                         }
                     ]
@@ -120,7 +122,9 @@ class AdminManagementRoutesTest(unittest.TestCase):
         self.assertEqual(len(detail.generation_rounds[0].candidate_urls), 2)
         self.assertEqual(detail.generation_rounds[0].candidate_scores[1]["score"], 96.0)
         self.assertEqual(detail.generation_rounds[0].selection_policy, "qa_score_v1")
+        self.assertEqual(detail.generation_rounds[0].repair_mode, "relight_edit_only")
         self.assertFalse(detail.generation_rounds[0].billable)
+        self.assertEqual(detail.generation_rounds[0].billing_reason, "automatic_repair_included")
 
     def test_payment_config_summary_does_not_expose_secrets(self) -> None:
         import asyncio

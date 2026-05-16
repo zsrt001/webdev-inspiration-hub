@@ -89,6 +89,17 @@ class WenwenService:
         "mixed_color_temperature",
         "background_brighter_than_face",
     }
+    LIGHTING_ONLY_REPAIR_REASONS = {
+        "face_underexposed",
+        "flat_lighting",
+        "no_catchlights",
+        "oily_skin_highlight",
+        "dress_highlights_blown",
+        "mixed_color_temperature",
+        "poor_subject_separation",
+        "background_brighter_than_face",
+        "harsh_backlight",
+    }
     CANDIDATE_REASON_PENALTIES = {
         "identity_mismatch": 100,
         "identity_swap": 100,
@@ -1349,6 +1360,19 @@ class WenwenService:
         normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
         return not bool(normalized & cls.IMAGE_EDIT_REPAIR_SKIP_PREVIOUS_REASONS)
 
+    @classmethod
+    def _is_lighting_only_repair(cls, reasons: list[str], *, round_number: int) -> bool:
+        if int(round_number or 0) != 2:
+            return False
+        normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
+        return bool(normalized) and normalized <= cls.LIGHTING_ONLY_REPAIR_REASONS
+
+    @classmethod
+    def _image_edit_repair_mode(cls, *, round_number: int, qa_reasons: list[str]) -> str:
+        if cls._is_lighting_only_repair(qa_reasons, round_number=round_number):
+            return "relight_edit_only"
+        return cls._image_edit_round_stage(round_number)
+
     @staticmethod
     def _repair_focus_from_reasons(reasons: list[str], *, is_couple: bool) -> str:
         normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
@@ -1810,17 +1834,30 @@ class WenwenService:
                 "the commercial framing range, lighting polish, and background depth; never vary identity."
             )
         elif stage == "targeted_repair":
-            focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
-            previous_instruction = (
-                "A previous candidate image may be included as the current canvas. Use it only as composition and "
-                "style context; the original identity references remain the authority for the face."
-                if include_previous_result
-                else "Do not rely on the previous failed candidate for facial identity; regenerate the repair from the original identity references."
-            )
-            stage_instruction = (
-                "ROUND 2 TARGETED REPAIR: fix only the QA-targeted issues. "
-                f"Repair focus: {focus}. {previous_instruction}"
-            )
+            if cls._is_lighting_only_repair(qa_reasons, round_number=round_number):
+                focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
+                stage_instruction = (
+                    "ROUND 2 RELIGHT/EDIT ONLY: the previous candidate is the current canvas. "
+                    "Do not redraw, repaint, replace, beautify, morph, or re-synthesize the face. "
+                    "Do not change facial geometry, eye shape, nose, mouth, jawline, chin, age impression, "
+                    "hairline, expression, body shape, pose, crop, camera distance, outfit, role order, or scene layout. "
+                    "Only edit lighting and finish: key light, fill light, rim separation, facial exposure, "
+                    "catchlights, skin specular highlights, dress highlight recovery, color temperature, and "
+                    "face-background exposure balance. Treat this as relight/edit, not character creation. "
+                    f"Relight focus: {focus}."
+                )
+            else:
+                focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
+                previous_instruction = (
+                    "A previous candidate image may be included as the current canvas. Use it only as composition and "
+                    "style context; the original identity references remain the authority for the face."
+                    if include_previous_result
+                    else "Do not rely on the previous failed candidate for facial identity; regenerate the repair from the original identity references."
+                )
+                stage_instruction = (
+                    "ROUND 2 TARGETED REPAIR: fix only the QA-targeted issues. "
+                    f"Repair focus: {focus}. {previous_instruction}"
+                )
         else:
             if qa_reasons:
                 focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
@@ -1883,6 +1920,7 @@ class WenwenService:
         qa_passed: bool,
         qa_reasons: list[str],
         used_previous_result: bool,
+        repair_mode: str | None = None,
         qa_issues: list[dict[str, Any]] | None = None,
         selected_candidate_url: str | None = None,
         selected_candidate_index: int | None = None,
@@ -1902,6 +1940,7 @@ class WenwenService:
                     "round": int(round_number),
                     "generation_attempt": generation_attempt,
                     "stage": stage,
+                    "repair_mode": str(repair_mode or stage),
                     "candidate_url": delivered_urls[0] if delivered_urls else "",
                     "candidate_urls": [str(url) for url in delivered_urls],
                     "selected_candidate_url": selected_candidate_url or (delivered_urls[0] if delivered_urls else ""),
@@ -1920,6 +1959,7 @@ class WenwenService:
                     "qa_issues": qa_issues or [],
                     "used_previous_result": bool(used_previous_result),
                     "billable": False,
+                    "billing_reason": "automatic_repair_included",
                     "extra_credits_charged": 0,
                     "completed_at": self._utc_now_iso(),
                 }
@@ -1948,6 +1988,7 @@ class WenwenService:
         user_images: list[str],
         is_couple: bool,
         include_previous: bool,
+        repair_mode: str | None = None,
     ) -> dict[str, Any]:
         candidate_results: list[dict[str, Any]] = []
         source_images = [str(url) for url in user_images if str(url or "").strip()]
@@ -1996,6 +2037,7 @@ class WenwenService:
             order_uuid,
             round_number=round_number,
             stage=stage,
+            repair_mode=repair_mode or stage,
             delivered_urls=delivered_urls,
             provider_urls=provider_urls,
             provider_model=provider_model,
@@ -2059,7 +2101,12 @@ class WenwenService:
         qa_issues: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         stage = self._image_edit_round_stage(round_number)
-        include_previous = bool(current_result_refs) and self._should_include_previous_edit_result(qa_reasons)
+        repair_mode = self._image_edit_repair_mode(round_number=round_number, qa_reasons=qa_reasons)
+        if repair_mode == "relight_edit_only" and not current_result_refs:
+            raise RuntimeError("relight_edit_only_requires_previous_candidate")
+        include_previous = bool(current_result_refs) and (
+            repair_mode == "relight_edit_only" or self._should_include_previous_edit_result(qa_reasons)
+        )
         identity_pack_note = self._identity_pack_prompt_note(identity_reference_pack)
         edit_prompt = self._build_image_edit_round_prompt(
             base_prompt=prompt_text,
@@ -2103,8 +2150,10 @@ class WenwenService:
                 "_requested_candidate_count": self._image_edit_candidate_count(),
                 "_round": int(round_number),
                 "_stage": stage,
+                "_repair_mode": repair_mode,
                 "_native_image_edit": True,
                 "_billable": False,
+                "_billing_reason": "automatic_repair_included",
                 "_extra_credits_charged": 0,
             },
             prompt_text=edit_prompt,
@@ -2202,6 +2251,7 @@ class WenwenService:
             user_images=user_images,
             is_couple=is_couple,
             include_previous=include_previous,
+            repair_mode=repair_mode,
         )
 
     async def _submit_image_edit_round(
@@ -2227,7 +2277,12 @@ class WenwenService:
             raise RuntimeError("wenwen_native_image_edit_requires_generate_content")
 
         stage = self._image_edit_round_stage(round_number)
-        include_previous = bool(current_result_refs) and self._should_include_previous_edit_result(qa_reasons)
+        repair_mode = self._image_edit_repair_mode(round_number=round_number, qa_reasons=qa_reasons)
+        if repair_mode == "relight_edit_only" and not current_result_refs:
+            raise RuntimeError("relight_edit_only_requires_previous_candidate")
+        include_previous = bool(current_result_refs) and (
+            repair_mode == "relight_edit_only" or self._should_include_previous_edit_result(qa_reasons)
+        )
         identity_pack_note = self._identity_pack_prompt_note(identity_reference_pack)
         edit_prompt = self._build_image_edit_round_prompt(
             base_prompt=prompt_text,
@@ -2263,9 +2318,11 @@ class WenwenService:
                 "requested_candidate_count": self._image_edit_candidate_count(),
                 "round": int(round_number),
                 "stage": stage,
+                "repair_mode": repair_mode,
                 "multi_round_edit": True,
                 "image_edit_max_rounds": self.IMAGE_EDIT_MAX_ROUNDS,
                 "billable": False,
+                "billing_reason": "automatic_repair_included",
                 "extra_credits_charged": 0,
                 "used_previous_result": include_previous,
                 "identity_edit_hard_required": self._identity_edit_required(user_images),
@@ -2341,6 +2398,7 @@ class WenwenService:
             user_images=user_images,
             is_couple=is_couple,
             include_previous=include_previous,
+            repair_mode=repair_mode,
         )
 
     async def _run_image_edit_generation(

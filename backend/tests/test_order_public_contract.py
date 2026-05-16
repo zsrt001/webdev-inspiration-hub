@@ -52,6 +52,8 @@ class OrderPublicContractTest(unittest.TestCase):
                     "image_edit_rounds": [
                         {
                             "candidate_url": "https://cdn.example.com/round-1.jpg",
+                            "repair_mode": "relight_edit_only",
+                            "billing_reason": "automatic_repair_included",
                             "qa_issues": [{"code": "face_too_small"}],
                         }
                     ]

@@ -144,6 +144,10 @@ class OrderCreationServiceTest(unittest.TestCase):
             generation_policy["image_edit_rounds"],
             ["primary_generation", "targeted_repair", "final_polish"],
         )
+        self.assertTrue(generation_policy["lighting_only_round_2_relight_edit"])
+        self.assertTrue(generation_policy["lighting_only_round_2_no_face_redraw"])
+        self.assertEqual(generation_policy["automatic_lighting_repair_extra_charge"], 0)
+        self.assertFalse(generation_policy["process_images_customer_visible"])
         self.assertTrue(generation_policy["best_passing_round_delivery"])
         self.assertEqual(generation_policy["automatic_repair_extra_charge"], 0)
         self.assertTrue(generation_policy["no_extra_debit_for_image_edit_rounds"])
