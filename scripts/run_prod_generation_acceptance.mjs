@@ -26,6 +26,10 @@ const sourcesPath = argValue(
 const outDir = argValue('--out-dir', join(root, 'artifacts', 'production-generation-test', 'generated'));
 const pollSeconds = Number(argValue('--poll-seconds', process.env.POLL_SECONDS || '420'));
 const pollIntervalMs = Number(argValue('--poll-interval-ms', process.env.POLL_INTERVAL_MS || '5000'));
+const executeInlineRaw = argValue('--execute-inline', process.env.PROBE_EXECUTE_INLINE);
+const executeInline = executeInlineRaw === undefined
+  ? undefined
+  : ['1', 'true', 'yes', 'on'].includes(String(executeInlineRaw).trim().toLowerCase());
 
 if (!token && !bearerToken) {
   throw new Error('Provide --admin-token or --bearer-token for production admin auth.');
@@ -109,7 +113,7 @@ async function startProbe(test) {
     second_image_url: test.second_image_url,
     template_id: test.template_id,
     remote_join: Boolean(test.remote_join),
-    execute_inline: false,
+    execute_inline: executeInline,
     global_style_text: test.global_style_text,
     scene_text: test.scene_text,
     outfit_text: test.outfit_text,
