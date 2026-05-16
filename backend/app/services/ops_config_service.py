@@ -295,7 +295,6 @@ def get_public_ops_config() -> dict[str, Any]:
         },
         "auth": {
             "google_oauth_enabled": settings.supabase_oauth_enabled,
-            "password_auth_enabled": settings.password_auth_enabled,
         },
     }
 

@@ -63,7 +63,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useI18nStore } from '../stores/i18n';
 import { get } from '../utils/api';
-import { getUsername, isPasswordLoggedIn, isSupabaseLoggedIn } from '../utils/auth';
+import { isSupabaseLoggedIn } from '../utils/auth';
 
 const creditBalance = ref(0);
 const showMenu = ref(false);
@@ -153,8 +153,7 @@ const fetchProfileRole = async () => {
 };
 
 const refreshAuthState = () => {
-  accountAuthed.value = isPasswordLoggedIn() || isSupabaseLoggedIn();
-  username.value = getUsername() || '';
+  accountAuthed.value = isSupabaseLoggedIn();
 };
 
 const handleAuthTap = async () => {

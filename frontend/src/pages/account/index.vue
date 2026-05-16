@@ -180,7 +180,7 @@ import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { useSubscriptionStore } from '../../stores/subscription';
 import { del, get, resolvePublicUrl } from '../../utils/api';
-import { getAuthProvider, getUsername, isPasswordLoggedIn, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
+import { getAuthProvider, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
 import { refreshSupabaseConfig } from '../../utils/supabase';
 
 interface UserProfile {
@@ -258,8 +258,8 @@ const passwordAuthed = ref(false);
 const supabaseEnabled = ref(false);
 const adminAccess = ref(false);
 
-const accountAuthed = computed(() => passwordAuthed.value || supabaseAuthed.value);
-const displayName = computed(() => profile.value?.nickname || profile.value?.email || getUsername() || tr('访客用户', 'Guest user'));
+const accountAuthed = computed(() => supabaseAuthed.value);
+const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('访客用户', 'Guest user'));
 const profileInitial = computed(() => (displayName.value || 'A').slice(0, 1).toUpperCase());
 const activePlanName = computed(() => subscriptionStore.activePlan?.name || tr('未订阅', 'No subscription'));
 const retentionNotice = computed(() => {
@@ -356,7 +356,6 @@ async function loadAccount(): Promise<void> {
   loading.value = true;
   error.value = '';
   supabaseAuthed.value = isSupabaseLoggedIn();
-  passwordAuthed.value = isPasswordLoggedIn();
   adminAccess.value = false;
 
   try {
@@ -387,7 +386,6 @@ async function loadAccount(): Promise<void> {
     legalPolicies.value = legalResult.status === 'fulfilled' ? legalResult.value : null;
     adminAccess.value = adminResult.status === 'fulfilled';
     supabaseAuthed.value = isSupabaseLoggedIn();
-    passwordAuthed.value = isPasswordLoggedIn();
   } catch (err: any) {
     error.value = err?.message || tr('账户暂时无法刷新，请稍后重试。', 'Account details are temporarily unavailable. Please try again shortly.');
   } finally {

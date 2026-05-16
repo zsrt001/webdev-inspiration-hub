@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import html
 import logging
-import secrets
-import time
 from collections import defaultdict, deque
 from email.utils import parseaddr
 from typing import Any
@@ -54,57 +52,6 @@ async def ensure_email_delivery_log_table(db: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
-# In-memory verification code store (serverless-safe for single instance)
-# ---------------------------------------------------------------------------
-
-class _VerificationCodeStore:
-    """Stores verification codes with TTL and rate limiting."""
-
-    MAX_VERIFY_ATTEMPTS = 5
-
-    def __init__(self) -> None:
-        self._codes: dict[str, tuple[str, float, int]] = {}  # email -> (code, expires_at, attempts)
-        self._send_history: dict[str, deque[float]] = defaultdict(deque)
-
-    def is_rate_limited(self, email: str) -> bool:
-        settings = get_settings()
-        history = self._send_history[email]
-        cutoff = time.time() - 3600
-        while history and history[0] < cutoff:
-            history.popleft()
-        return len(history) >= settings.verification_code_rate_limit
-
-    def generate_and_store(self, email: str) -> str:
-        settings = get_settings()
-        code = f"{secrets.randbelow(900000) + 100000}"
-        expires_at = time.time() + settings.verification_code_ttl_seconds
-        normalized = email.strip().lower()
-        self._codes[normalized] = (code, expires_at, 0)
-        self._send_history[normalized].append(time.time())
-        return code
-
-    def verify(self, email: str, code: str) -> bool:
-        normalized = email.strip().lower()
-        stored = self._codes.get(normalized)
-        if not stored:
-            return False
-        stored_code, expires_at, attempts = stored
-        if time.time() > expires_at:
-            del self._codes[normalized]
-            return False
-        if attempts >= self.MAX_VERIFY_ATTEMPTS:
-            del self._codes[normalized]
-            return False
-        if stored_code != code.strip():
-            self._codes[normalized] = (stored_code, expires_at, attempts + 1)
-            return False
-        del self._codes[normalized]
-        return True
-
-
-_code_store = _VerificationCodeStore()
-
-# ---------------------------------------------------------------------------
 # Disposable email domain blocklist
 # ---------------------------------------------------------------------------
 
@@ -126,40 +73,6 @@ DISPOSABLE_EMAIL_DOMAINS: set[str] = {
 def is_disposable_email(email: str) -> bool:
     domain = email.strip().lower().rsplit("@", 1)[-1]
     return domain in DISPOSABLE_EMAIL_DOMAINS
-
-
-# ---------------------------------------------------------------------------
-# IP-level rate limiter for verification sends (global, not per-email)
-# ---------------------------------------------------------------------------
-
-class _IPVerificationLimiter:
-    """Limit total verification sends per IP to prevent mass farming."""
-
-    def __init__(self, limit: int = 10, window_seconds: int = 3600) -> None:
-        self._limit = limit
-        self._window = window_seconds
-        self._history: dict[str, deque[float]] = defaultdict(deque)
-
-    def is_limited(self, ip: str) -> bool:
-        history = self._history[ip]
-        cutoff = time.time() - self._window
-        while history and history[0] < cutoff:
-            history.popleft()
-        return len(history) >= self._limit
-
-    def record(self, ip: str) -> None:
-        self._history[ip].append(time.time())
-
-
-_ip_verification_limiter = _IPVerificationLimiter(limit=10, window_seconds=3600)
-
-
-def is_ip_verification_rate_limited(ip: str) -> bool:
-    return _ip_verification_limiter.is_limited(ip)
-
-
-def record_ip_verification(ip: str) -> None:
-    _ip_verification_limiter.record(ip)
 
 
 def _normalize_email(value: str) -> str:
@@ -302,42 +215,6 @@ async def send_welcome_email(*, to: str, credits: int) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # Verification code public API
-# ---------------------------------------------------------------------------
-
-def is_verification_rate_limited(email: str) -> bool:
-    return _code_store.is_rate_limited(email)
-
-
-async def send_verification_code(
-    email: str,
-    *,
-    db: AsyncSession | None = None,
-    metadata: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    code = _code_store.generate_and_store(email)
-    html_body = f"""
-    <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-      <h2>Email Verification</h2>
-      <p>Your verification code is:</p>
-      <p style="font-size:32px;font-weight:bold;letter-spacing:4px;text-align:center;
-         padding:16px;background:#f5f5f5;border-radius:8px">{code}</p>
-      <p style="color:#666;font-size:13px">This code expires in 10 minutes. If you did not request this, please ignore.</p>
-    </div>
-    """
-    return await _send_email(
-        to=email,
-        subject=f"Your verification code: {code}",
-        html=html_body,
-        purpose="email_verification",
-        db=db,
-        metadata=metadata,
-    )
-
-
-def verify_email_code(email: str, code: str) -> bool:
-    return _code_store.verify(email, code)
-
-
 async def send_test_email(
     *,
     to: str,

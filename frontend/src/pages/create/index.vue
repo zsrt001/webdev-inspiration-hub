@@ -227,7 +227,7 @@ import { useOpsStore } from '../../stores/ops';
 import { useOrderStore } from '../../stores/order';
 import { type Template, getLocalizedTemplateMarketingSubtitle, getLocalizedTemplateTitle, getTemplateFamilyKey, useTemplateStore } from '../../stores/template';
 import { get, post, resolvePublicUrl, uploadFile, type ApiError } from '../../utils/api';
-import { isPasswordLoggedIn, isSupabaseLoggedIn } from '../../utils/auth';
+import { isSupabaseLoggedIn } from '../../utils/auth';
 import { runLocalSmartInputCheck } from '../../utils/local_smart_input';
 
 type GenerationMode = 'single' | 'couple_local' | 'couple_remote';
@@ -485,6 +485,18 @@ function startRemotePolling() {
   remotePollTimer = setInterval(() => { void refreshRemoteStatus(false); }, 2000);
 }
 async function createRemoteInvite() {
+  if (!isSupabaseLoggedIn()) {
+    uni.showModal({
+      title: i18nStore.locale === 'zh' ? '需要登录' : 'Sign In Required',
+      content: i18nStore.locale === 'zh' ? '使用 Google 登录后可创建异地合拍邀请。' : 'Sign in with Google to create remote couple invites.',
+      confirmText: i18nStore.locale === 'zh' ? '去登录' : 'Sign In',
+      cancelText: i18nStore.locale === 'zh' ? '取消' : 'Cancel',
+      success: (res) => {
+        if (res.confirm) uni.navigateTo({ url: '/pages/auth/login' });
+      },
+    });
+    return;
+  }
   if (!portraitSlots.value[0].localPath) {
     uni.showToast({ title: tr('请先上传你的照片，再创建邀请', 'Upload your portrait before creating an invite'), icon: 'none' });
     return;
@@ -522,14 +534,14 @@ async function syncRemoteHost() {
   await post(`/session/${remoteSession.value.session_id}/upload/host?image_url=${encodeURIComponent(hostUrl)}`, {}, { showLoading: false, showError: false });
 }
 async function submitCreate() {
-  if (!isPasswordLoggedIn() && !isSupabaseLoggedIn()) {
+  if (!isSupabaseLoggedIn()) {
     uni.showModal({
-      title: i18nStore.locale === 'zh' ? '需要注册' : 'Registration Required',
-      content: i18nStore.locale === 'zh' ? '注册并验证邮箱后可获得 2 个体验积分，用于一次基础单人生成。' : 'Sign up and verify your email to get 2 starter credits for one base single portrait.',
-      confirmText: i18nStore.locale === 'zh' ? '去注册' : 'Sign Up',
+      title: i18nStore.locale === 'zh' ? '需要登录' : 'Sign In Required',
+      content: i18nStore.locale === 'zh' ? '使用 Google 登录后可获得免费试用积分，立即开始生成。' : 'Sign in with Google to get free trial credits and start generating.',
+      confirmText: i18nStore.locale === 'zh' ? '去登录' : 'Sign In',
       cancelText: i18nStore.locale === 'zh' ? '取消' : 'Cancel',
       success: (res) => {
-        if (res.confirm) uni.navigateTo({ url: '/pages/auth/register' });
+        if (res.confirm) uni.navigateTo({ url: '/pages/auth/login' });
       },
     });
     return;

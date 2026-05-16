@@ -46,7 +46,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { getAuthProvider, getUsername } from '../../utils/auth';
+import { getAuthProvider } from '../../utils/auth';
 
 const props = defineProps<{
   title: string;
@@ -63,10 +63,8 @@ const navItems = [
 ] as const;
 
 const sessionLabel = computed(() => {
-  const username = getUsername();
   const provider = getAuthProvider();
-  if (username) return username;
-  return provider ? `Provider: ${provider}` : 'Unknown session';
+  return provider === 'supabase' ? 'Google Admin' : provider || 'Unknown session';
 });
 
 function go(path: string) {
