@@ -550,6 +550,23 @@ async function submitCreate() {
     uni.showToast({ title: tr('请先勾选隐私政策与服务条款', 'Please accept the Privacy Policy and Terms first'), icon: 'none' });
     return;
   }
+
+  // Cost confirmation
+  const cost = generationCost.value;
+  const confirmed = await new Promise<boolean>((resolve) => {
+    uni.showModal({
+      title: i18nStore.locale === 'zh' ? '确认生成' : 'Confirm Generation',
+      content: i18nStore.locale === 'zh'
+        ? `本次生成将消耗 ${cost} 积分。确认开始？`
+        : `This generation will cost ${cost} credits. Continue?`,
+      confirmText: i18nStore.locale === 'zh' ? '开始生成' : 'Generate',
+      cancelText: i18nStore.locale === 'zh' ? '取消' : 'Cancel',
+      success: (res) => resolve(res.confirm),
+      fail: () => resolve(false),
+    });
+  });
+  if (!confirmed) return;
+
   submitting.value = true;
   try {
     const seed = resolveSeedTemplate();

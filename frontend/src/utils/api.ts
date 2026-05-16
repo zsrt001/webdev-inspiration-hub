@@ -310,27 +310,49 @@ export async function del<T>(
     return requestJson<T>('DELETE', path, undefined, merged, localeText('处理中...', 'Processing...'));
 }
 
+export interface UploadOptions {
+    onProgress?: (percent: number) => void;
+}
+
 export async function uploadFile(
     path: string,
     filePath: string,
-    name: string = 'file'
+    name: string = 'file',
+    options: UploadOptions = {}
 ): Promise<any> {
-    uni.showLoading({ title: localeText('上传中...', 'Uploading...') });
+    const uploadLabel = localeText('上传中...', 'Uploading...');
+    uni.showLoading({ title: uploadLabel });
 
     try {
-        const requestOnce = async () => {
-            const headers = await buildHeaders(path);
-            return uni.uploadFile({
+        const uploadTask = uni.uploadFile({
+            url: resolveApiUrl(path),
+            filePath,
+            name,
+            header: await buildHeaders(path),
+        });
+
+        uploadTask.onProgressUpdate((res) => {
+            const pct = Math.round(res.progress);
+            uni.showLoading({ title: `${uploadLabel} ${pct}%`, mask: true });
+            if (options.onProgress) options.onProgress(pct);
+        });
+
+        const res = await uploadTask;
+
+        if (res.statusCode === 401 && canRecoverUnauthorized(path) && await rebootstrapSession()) {
+            const retryTask = uni.uploadFile({
                 url: resolveApiUrl(path),
                 filePath,
                 name,
-                header: headers,
+                header: await buildHeaders(path),
             });
-        };
-
-        let res = await requestOnce();
-        if (res.statusCode === 401 && canRecoverUnauthorized(path) && await rebootstrapSession()) {
-            res = await requestOnce();
+            const retryRes = await retryTask;
+            if (retryRes.statusCode >= 200 && retryRes.statusCode < 300) {
+                return JSON.parse(retryRes.data);
+            }
+            let payload: any = retryRes.data;
+            try { payload = JSON.parse(retryRes.data); } catch {}
+            throw createApiError(retryRes.statusCode, payload);
         }
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -338,17 +360,10 @@ export async function uploadFile(
         }
 
         let payload: any = res.data;
-        try {
-            payload = JSON.parse(res.data);
-        } catch {
-            // keep raw payload
-        }
+        try { payload = JSON.parse(res.data); } catch {}
         throw createApiError(res.statusCode, payload);
     } catch (error: any) {
-        uni.showToast({
-            title: error.message || 'Upload failed',
-            icon: 'none',
-        });
+        uni.showToast({ title: error.message || 'Upload failed', icon: 'none' });
         throw error;
     } finally {
         uni.hideLoading();

@@ -1,16 +1,20 @@
 """Session API routes for cross-device Remote Join."""
 
-from fastapi import APIRouter, HTTPException, File, UploadFile
+from fastapi import APIRouter, HTTPException, File, Request, UploadFile
 from pydantic import BaseModel
 from typing import Optional
 
 from app.services.session_service import session_service, SessionStatus
 
 from app.core.config import get_settings
+from app.core.rate_limit import InMemoryRateLimiter
 
 settings = get_settings()
 
 router = APIRouter()
+
+SESSION_CREATE_IP_LIMITER = InMemoryRateLimiter(limit=10, window_seconds=900)  # 10 per 15 min per IP
+SESSION_CREATE_GLOBAL_LIMITER = InMemoryRateLimiter(limit=60, window_seconds=900)  # 60 total per 15 min
 
 
 def _session_store_error(exc: RuntimeError) -> HTTPException:
@@ -85,12 +89,17 @@ class SessionShareMetaResponse(BaseModel):
 
 
 @router.post("/create", response_model=CreateSessionResponse)
-async def create_session(request: CreateSessionRequest) -> CreateSessionResponse:
+async def create_session(request: CreateSessionRequest, http_request: Request) -> CreateSessionResponse:
     """
     Create a new session for couple photo upload.
     Returns a QR code URL that the partner can scan to join.
     """
     _ensure_remote_join_enabled()
+
+    client_ip = http_request.headers.get("x-forwarded-for", "").split(",")[0].strip() or http_request.client.host or "unknown"
+    if SESSION_CREATE_IP_LIMITER.is_limited(client_ip) or SESSION_CREATE_GLOBAL_LIMITER.is_limited("global"):
+        raise HTTPException(status_code=429, detail="Too many session requests. Please try again later.")
+
     try:
         result = await session_service.create_session(
             template_id=request.template_id,

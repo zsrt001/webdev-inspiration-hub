@@ -134,7 +134,7 @@ class Settings(BaseSettings):
 
     # Security
     secret_key: str = "change-me-in-production"
-    access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
+    access_token_expire_minutes: int = 60 * 24 * 30  # 30 days
     admin_token: str = ""  # Backend-only fallback for scripts/internal admin calls. Do not expose in frontend.
     admin_user_ids: str = ""  # Comma-separated local user UUIDs allowed to use admin APIs.
     admin_openids: str = ""  # Comma-separated local openids allowed to use admin APIs.
