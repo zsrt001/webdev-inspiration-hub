@@ -36,9 +36,6 @@
           <text class="chip-icon">CR</text>
           <text class="chip-val">{{ creditBalance }}</text>
         </view>
-        <view v-else class="balance-chip balance-chip-cta" @tap="handleAuthTap">
-          <text class="chip-val">{{ i18nStore.locale === 'zh' ? '登录' : 'Sign in' }}</text>
-        </view>
 
         <view class="menu-dots-mobile" @tap="toggleMenu">
           <view class="dot"></view>
