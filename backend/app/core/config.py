@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     wenwen_max_retries: int = 2
     evolink_api_key: str = ""
     evolink_api_base_url: str = "https://api.evolink.ai"
-    evolink_image_model: str = "gemini-3-pro-image-preview"
+    evolink_image_model: str = "gemini-3.1-flash-image-preview"
     evolink_image_fallback_models: str = ""
     evolink_image_quality: str = "2K"
     evolink_image_size: str = "3:4"
