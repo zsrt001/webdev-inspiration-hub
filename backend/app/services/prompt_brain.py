@@ -34,21 +34,43 @@ COUPLE_IDENTITY_LOCK_PROTOCOL = (
     "swap identities, merge faces, average faces, duplicate one subject, or make both subjects share the same AI face"
 )
 
-STUDIO_QUALITY_PROTOCOL = (
-    "Professional bridal-studio quality: controlled softbox key light, gentle fill light, subtle rim light, visible "
-    "catchlights, face correctly exposed and slightly brighter than the background, preserved highlight detail in "
-    "skin and dress fabric, natural shadow rolloff, balanced contrast, refined skin texture, soft powder-finish "
-    "semi-matte skin, controlled specular highlights, clean but realistic retouching, couture-level fabric detail, "
-    "polished composition, and premium wedding album color grading"
+INDOOR_STUDIO_LIGHTING_PROTOCOL = (
+    "Indoor bridal-studio lighting: use a large soft key light at about 45 degrees from the subject, weak fill "
+    "light on the shadow side, and a subtle rim or hair light for separation. Keep the face naturally exposed and "
+    "slightly brighter than the scene, with the background about 0.3 to 0.8 stops darker than the face. Preserve "
+    "soft shadow rolloff, visible catchlights, semi-matte skin texture, and detailed white dress highlights"
 )
 
 OUTDOOR_PRO_LIGHTING_PROTOCOL = (
     "Outdoor professional lighting protocol: outdoor scenes are allowed only as studio-grade on-location bridal "
-    "photography. Use balanced ambient light with controlled off-camera softbox or strobe fill, accurate facial "
-    "exposure, visible catchlights, preserved sky and dress highlights, natural skin tone, elegant background "
-    "separation, and refined wedding-photographer color grading. Do not use harsh outdoor backlight as the primary "
-    "light. Outdoor must never look like a tourist snapshot, phone photo, harsh noon sun photo, backlit silhouette, "
-    "or casual travel image"
+    "photography. The sun may act only as rim light, hair light, or ambient background light, never as the harsh "
+    "primary light on the face. Use frontal softbox-style fill or bounced fill so every face is correctly exposed "
+    "with visible catchlights. Do not use harsh outdoor backlight as the primary light. Preserve sky detail, window "
+    "detail, and white gown highlights; do not allow the face to fall into shadow, and never let the sky or dress "
+    "blow out"
+)
+
+WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL = (
+    "Window and architectural lighting: use window light as the directional key light, with the face turned toward "
+    "the soft window source and gentle fill controlling shadow density. Darken the background slightly so the "
+    "person separates from architecture, columns, curtains, arches, or walls. Preserve dimensional face modeling, "
+    "natural skin tone, and refined editorial wedding color; do not flatten the face into even phone-photo light"
+)
+
+NIGHT_LOW_LIGHTING_PROTOCOL = (
+    "Night or low-light indoor protocol: use an off-camera key light with weak ambient practical light in the "
+    "background. Keep color temperature controlled and coherent across skin, dress, and environment. Do not use "
+    "phone-flash lighting, direct on-camera flash, muddy underexposure, mixed green/orange color casts, crushed "
+    "shadows, or a background that is brighter than the subjects' faces"
+)
+
+STUDIO_QUALITY_PROTOCOL = (
+    "Professional bridal-studio quality: apply the correct lighting protocol for the scene, with controlled softbox "
+    "key light, gentle fill light, subtle rim separation, visible catchlights, face correctly exposed and slightly "
+    "brighter than the background, preserved highlight detail in skin and dress fabric, natural shadow rolloff, "
+    "balanced contrast, refined skin texture, soft powder-finish semi-matte skin, controlled specular highlights, "
+    "clean but realistic retouching, couture-level fabric detail, polished composition, and premium wedding album "
+    "color grading"
 )
 
 INDOOR_SCENE_BOUNDARY_PROTOCOL = (
@@ -57,13 +79,15 @@ INDOOR_SCENE_BOUNDARY_PROTOCOL = (
 )
 
 STUDIO_LIGHTING_GUARDRAILS = (
-    f"{STUDIO_QUALITY_PROTOCOL}. {OUTDOOR_PRO_LIGHTING_PROTOCOL}. {INDOOR_SCENE_BOUNDARY_PROTOCOL}. "
-    "Hard studio-quality requirements: do not use harsh outdoor backlight as the primary light; "
-    "do not leave the face in shadow; do not blow out sky, windows, or dress highlights; "
-    "use large softbox-style key light plus gentle fill light on every face; "
-    "keep facial exposure natural and slightly brighter than the background without wet or greasy shine; "
+    f"{STUDIO_QUALITY_PROTOCOL}. {INDOOR_STUDIO_LIGHTING_PROTOCOL}. {OUTDOOR_PRO_LIGHTING_PROTOCOL}. "
+    f"{WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL}. {NIGHT_LOW_LIGHTING_PROTOCOL}. {INDOOR_SCENE_BOUNDARY_PROTOCOL}. "
+    "Hard studio-quality requirements: select one coherent lighting plan from the scene type and execute it "
+    "clearly; do not use harsh outdoor backlight as the primary light; do not leave the face in shadow; do not "
+    "blow out sky, windows, or dress highlights; use large softbox-style key light plus gentle fill light on every "
+    "face; keep facial exposure natural and slightly brighter than the background without wet or greasy shine; "
     "avoid tourist-photo lighting, AI-glossy skin, oily skin, waxy specular highlights, fantasy-game styling, "
-    "and cheap composited background"
+    "phone-flash lighting, direct on-camera flash, uncontrolled mixed color temperature, and cheap composited "
+    "background"
 )
 
 FULL_LENGTH_COMPOSITION = (
@@ -134,8 +158,10 @@ NEGATIVE_PROMPT = (
     "over-smoothed bridal ad; "
     "Anatomy failures: headless, cropped head, phantom limbs, fused bodies, merged limbs, duplicate person, "
     "duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, bad hands, extra fingers; "
-    "Lighting failures: bright flat lighting, harsh backlight, face in shadow, no catchlights, blown-out sky, "
-    "blown-out dress, crushed shadows, uncontrolled mixed light; "
+    "Lighting failures: bright flat lighting, harsh backlight, sun as primary face light, missing frontal fill, "
+    "face in shadow, underexposed face, background brighter than face, no catchlights, blown-out sky, blown-out "
+    "window, blown-out dress, crushed shadows, uncontrolled mixed light, mixed color temperature, direct on-camera "
+    "flash, phone-flash lighting, muddy night lighting; "
     "Composition failures: subject too small, face too small, background dominates the subject, excessive headroom, "
     "awkward crop, cropped dress, dress cutoff, cut-off gown train, missing full outfit, flat centered pose, "
     "weak couple interaction, poor subject separation, low-end snapshot, tourist snapshot, phone photo, "
@@ -155,7 +181,10 @@ def _section(title: str, body: str | None) -> str:
 def get_studio_guardrails(*, is_couple: bool = False) -> str:
     parts = [
         _section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL),
+        _section("INDOOR STUDIO LIGHTING", INDOOR_STUDIO_LIGHTING_PROTOCOL),
         _section("OUTDOOR PROFESSIONAL LIGHTING", OUTDOOR_PRO_LIGHTING_PROTOCOL),
+        _section("WINDOW AND ARCHITECTURAL LIGHTING", WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL),
+        _section("NIGHT AND LOW-LIGHTING", NIGHT_LOW_LIGHTING_PROTOCOL),
         _section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL),
         _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
         _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
@@ -198,7 +227,10 @@ def build_prompt(
         _section("WARDROBE", f"A professional wedding portrait of {clothing}"),
         _section("SCENE", scene),
         _section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL),
+        _section("INDOOR STUDIO LIGHTING", INDOOR_STUDIO_LIGHTING_PROTOCOL),
         _section("OUTDOOR PROFESSIONAL LIGHTING", OUTDOOR_PRO_LIGHTING_PROTOCOL),
+        _section("WINDOW AND ARCHITECTURAL LIGHTING", WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL),
+        _section("NIGHT AND LOW-LIGHTING", NIGHT_LOW_LIGHTING_PROTOCOL),
         _section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL),
         _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
         _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
