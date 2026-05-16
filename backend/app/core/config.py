@@ -11,6 +11,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 ENV_FILE_PATH = Path(__file__).resolve().parents[2] / ".env"
+PRODUCTION_ALLOWED_IMAGE_MODELS = (
+    "gemini-3-pro-image-preview",
+    "gemini-3.1-flash-image-preview",
+)
 
 
 class Settings(BaseSettings):
@@ -461,11 +465,15 @@ class Settings(BaseSettings):
 
     @property
     def generation_allowed_image_model_list(self) -> list[str]:
-        return [
+        configured = [
             item.strip()
             for item in (self.generation_allowed_image_models or "").split(",")
             if item.strip()
         ]
+        allowed = list(PRODUCTION_ALLOWED_IMAGE_MODELS)
+        if not configured:
+            return allowed
+        return [model for model in configured if model in allowed]
 
 
 @lru_cache

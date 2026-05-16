@@ -33,6 +33,14 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertEqual(settings.generation_execution_mode, "inline")
 
+    def test_allowed_image_models_cannot_be_widened_by_env(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            generation_allowed_image_models="gemini-3-pro-image-preview,gpt-image-2",
+        )
+
+        self.assertEqual(settings.generation_allowed_image_model_list, ["gemini-3-pro-image-preview"])
+
     def test_cleanup_cron_token_accepts_vercel_cron_secret_alias(self) -> None:
         settings = Settings(cleanup_cron_token="", cron_secret="vercel-cron-secret")
 
