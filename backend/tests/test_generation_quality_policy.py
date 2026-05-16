@@ -189,6 +189,9 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertTrue(should_retry_qa(["bad_hands"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["identity_mismatch"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["poor_studio_quality"], 1, max_attempts=2))
+        self.assertTrue(should_retry_qa(["face_underexposed"], 1, max_attempts=2))
+        self.assertTrue(should_retry_qa(["dress_highlights_blown"], 1, max_attempts=2))
+        self.assertTrue(should_retry_qa(["background_brighter_than_face"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["subject_too_small"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["dress_cropped"], 1, max_attempts=2))
         self.assertFalse(should_retry_qa(["bad_hands"], 2, max_attempts=2))
@@ -216,6 +219,39 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(params["debug"]["qa_history"][-1]["candidate_url"], "https://example.com/candidate.png")
         self.assertEqual(params["debug"]["qa_history"][-1]["issues"][0]["target"], "hands")
 
+    def test_lighting_qa_reasons_are_structured_and_actionable(self) -> None:
+        issues = build_structured_qa_issues(
+            [
+                "underexposed_face",
+                "flat_light",
+                "missing_catchlights",
+                "oily_skin",
+                "blown_out_dress",
+                "mixed_color_temp",
+                "background_brighter",
+            ],
+            source="vision",
+            notes="lighting fail",
+        )
+
+        self.assertEqual(
+            [issue["code"] for issue in issues],
+            [
+                "face_underexposed",
+                "flat_lighting",
+                "no_catchlights",
+                "oily_skin_highlight",
+                "dress_highlights_blown",
+                "mixed_color_temperature",
+                "background_brighter_than_face",
+            ],
+        )
+        self.assertTrue(all(issue["blocking"] for issue in issues))
+        self.assertTrue(all(issue["category"] == "photography_quality" for issue in issues))
+        self.assertEqual(issues[0]["repair_action"], "raise_face_exposure_with_soft_fill")
+        self.assertEqual(issues[3]["repair_action"], "reduce_specular_skin_highlights")
+        self.assertEqual(issues[6]["target"], "face_background_exposure_balance")
+
     def test_structured_qa_issues_classify_face_and_identity_failures(self) -> None:
         issues = build_structured_qa_issues(
             ["bad_face", "identity_mismatch", "poor_studio_quality", "other"],
@@ -224,7 +260,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(normalize_qa_reason("bad_face"), "face_distortion")
-        self.assertEqual(normalize_qa_reason("oily_skin"), "poor_studio_quality")
+        self.assertEqual(normalize_qa_reason("oily_skin"), "oily_skin_highlight")
         self.assertEqual([issue["code"] for issue in issues], [
             "face_distortion",
             "identity_mismatch",
@@ -764,6 +800,28 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("simple professional bridal hand placement", focus)
         self.assertIn("do not preserve the failed hand pose", focus)
 
+    def test_lighting_repair_focus_uses_specific_qa_reasons(self) -> None:
+        focus = WenwenService._repair_focus_from_reasons(
+            [
+                "face_underexposed",
+                "flat_lighting",
+                "no_catchlights",
+                "oily_skin_highlight",
+                "dress_highlights_blown",
+                "mixed_color_temperature",
+                "background_brighter_than_face",
+            ],
+            is_couple=False,
+        )
+
+        self.assertIn("raise facial exposure", focus)
+        self.assertIn("directional key light", focus)
+        self.assertIn("eye catchlights", focus)
+        self.assertIn("semi-matte natural skin texture", focus)
+        self.assertIn("recover white dress", focus)
+        self.assertIn("unify color temperature", focus)
+        self.assertIn("face the clear exposure priority", focus)
+
     async def test_identity_qa_hard_fails_when_vision_provider_is_unavailable(self) -> None:
         original = qa_service.llm_service.is_vision_provider_configured
         original_require_vision = qa_service.settings.qa_require_vision
@@ -847,6 +905,62 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(verdict["passed"])
         self.assertEqual(verdict["reasons"], ["bad_hands"])
         self.assertEqual(verdict["issues"][0]["code"], "bad_hands")
+
+    def test_vision_qa_preserves_specific_lighting_reasons(self) -> None:
+        async def fake_chat(payload, *, title, timeout, provider):
+            prompt_text = str(payload["messages"][0]["content"][0]["text"])
+            self.assertIn("face_underexposed", prompt_text)
+            self.assertIn("oily_skin_highlight", prompt_text)
+            self.assertIn("background_brighter_than_face", prompt_text)
+            self.assertIn("Prefer these specific lighting reasons", prompt_text)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"passed": false, '
+                                '"reasons": ["underexposed_face", "oily_skin", "background_brighter"], '
+                                '"issues": ['
+                                '{"code": "underexposed_face", "evidence": "face is in shadow"}, '
+                                '{"code": "oily_skin", "evidence": "forehead is wet glossy"}, '
+                                '{"code": "background_brighter", "evidence": "window is brighter than face"}'
+                                '], '
+                                '"notes": "lighting issue"}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        original_configured = llm_service.is_vision_provider_configured
+        original_chat = llm_service._llm_chat_for_provider
+        original_provider = llm_service.settings.llm_provider
+        original_jiekou_key = llm_service.settings.jiekou_api_key
+        original_wenwen_vision_key = llm_service.settings.wenwen_vision_api_key
+        llm_service.is_vision_provider_configured = lambda: True
+        llm_service._llm_chat_for_provider = fake_chat
+        llm_service.settings.llm_provider = "jiekou"
+        llm_service.settings.jiekou_api_key = "test-jiekou-key"
+        llm_service.settings.wenwen_vision_api_key = ""
+        try:
+            verdict = asyncio.run(
+                llm_service.verify_generated_image_quality("https://cdn.example.com/generated.jpg")
+            )
+        finally:
+            llm_service.is_vision_provider_configured = original_configured
+            llm_service._llm_chat_for_provider = original_chat
+            llm_service.settings.llm_provider = original_provider
+            llm_service.settings.jiekou_api_key = original_jiekou_key
+            llm_service.settings.wenwen_vision_api_key = original_wenwen_vision_key
+
+        self.assertFalse(verdict["passed"])
+        self.assertEqual(
+            verdict["reasons"],
+            ["face_underexposed", "oily_skin_highlight", "background_brighter_than_face"],
+        )
+        self.assertEqual(verdict["issues"][0]["repair_action"], "raise_face_exposure_with_soft_fill")
+        self.assertEqual(verdict["issues"][1]["code"], "oily_skin_highlight")
+        self.assertEqual(verdict["issues"][2]["target"], "face_background_exposure_balance")
 
     def test_vision_qa_falls_back_to_secondary_provider_on_timeout(self) -> None:
         calls: list[tuple[str | None, str]] = []

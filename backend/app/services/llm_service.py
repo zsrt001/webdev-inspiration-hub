@@ -105,13 +105,47 @@ _QA_REASON_MAP: dict[str, str] = {
     "poor_quality": "poor_studio_quality",
     "ai_look": "poor_studio_quality",
     "waxy_skin": "poor_studio_quality",
-    "oily_skin": "poor_studio_quality",
-    "greasy_skin": "poor_studio_quality",
-    "glossy_skin": "poor_studio_quality",
-    "wet_skin": "poor_studio_quality",
-    "over_shiny_skin": "poor_studio_quality",
-    "specular_skin": "poor_studio_quality",
     "cheap_composite": "poor_studio_quality",
+    "face_underexposed": "face_underexposed",
+    "underexposed_face": "face_underexposed",
+    "face_in_shadow": "face_underexposed",
+    "dark_face": "face_underexposed",
+    "face_too_dark": "face_underexposed",
+    "shadowed_face": "face_underexposed",
+    "flat_lighting": "flat_lighting",
+    "flat_light": "flat_lighting",
+    "no_directional_light": "flat_lighting",
+    "no_light_direction": "flat_lighting",
+    "dead_flat_lighting": "flat_lighting",
+    "no_catchlights": "no_catchlights",
+    "missing_catchlights": "no_catchlights",
+    "no_catchlight": "no_catchlights",
+    "dead_eyes": "no_catchlights",
+    "eyes_no_catchlight": "no_catchlights",
+    "oily_skin_highlight": "oily_skin_highlight",
+    "oily_skin": "oily_skin_highlight",
+    "greasy_skin": "oily_skin_highlight",
+    "glossy_skin": "oily_skin_highlight",
+    "wet_skin": "oily_skin_highlight",
+    "over_shiny_skin": "oily_skin_highlight",
+    "specular_skin": "oily_skin_highlight",
+    "shiny_forehead": "oily_skin_highlight",
+    "shiny_nose": "oily_skin_highlight",
+    "shiny_cheeks": "oily_skin_highlight",
+    "dress_highlights_blown": "dress_highlights_blown",
+    "blown_dress": "dress_highlights_blown",
+    "blown_out_dress": "dress_highlights_blown",
+    "dress_overexposed": "dress_highlights_blown",
+    "white_dress_overexposed": "dress_highlights_blown",
+    "wedding_dress_blown": "dress_highlights_blown",
+    "gown_highlights_blown": "dress_highlights_blown",
+    "mixed_color_temperature": "mixed_color_temperature",
+    "mixed_color_temp": "mixed_color_temperature",
+    "mixed_lighting": "mixed_color_temperature",
+    "bad_color_temperature": "mixed_color_temperature",
+    "color_temperature_mismatch": "mixed_color_temperature",
+    "orange_green_cast": "mixed_color_temperature",
+    "green_orange_cast": "mixed_color_temperature",
     "subject_too_small": "subject_too_small",
     "tiny_subject": "subject_too_small",
     "person_too_small": "subject_too_small",
@@ -138,6 +172,15 @@ _QA_REASON_MAP: dict[str, str] = {
     "train_cutoff": "dress_cropped",
     "poor_subject_separation": "poor_subject_separation",
     "weak_subject_separation": "poor_subject_separation",
+    "no_subject_separation": "poor_subject_separation",
+    "subject_blends_into_background": "poor_subject_separation",
+    "no_rim_light": "poor_subject_separation",
+    "background_brighter_than_face": "background_brighter_than_face",
+    "background_brighter": "background_brighter_than_face",
+    "bright_background": "background_brighter_than_face",
+    "background_too_bright": "background_brighter_than_face",
+    "face_darker_than_background": "background_brighter_than_face",
+    "background_outshines_face": "background_brighter_than_face",
     "flat_centered_pose": "flat_centered_pose",
     "stiff_centered_pose": "flat_centered_pose",
     "tourist_pose": "flat_centered_pose",
@@ -171,6 +214,12 @@ _ALLOWED_QA_REASONS = {
     "bad_hands",
     "dress_exposure_error",
     "poor_studio_quality",
+    "face_underexposed",
+    "flat_lighting",
+    "no_catchlights",
+    "oily_skin_highlight",
+    "dress_highlights_blown",
+    "mixed_color_temperature",
     "subject_too_small",
     "face_too_small",
     "background_dominates",
@@ -178,6 +227,7 @@ _ALLOWED_QA_REASONS = {
     "awkward_crop",
     "dress_cropped",
     "poor_subject_separation",
+    "background_brighter_than_face",
     "flat_centered_pose",
     "weak_couple_interaction",
     "harsh_backlight",
@@ -529,16 +579,17 @@ async def verify_generated_image_quality(
         "}\n"
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
         "- issues must describe each failure with code, category, target, severity, short evidence, and a concrete repair_hint.\n"
         "- Commercial framing standard: single subject should occupy about 72-86% of canvas height, with face height about 8-15%, headroom about 3-7%, and bottom room for shoes/gown/train about 4-9%. Outdoor environmental portraits may be wider, but subject height must not fall below about 55% and the face must stay recognizable.\n"
         "- Commercial couple framing standard: the couple group should occupy about 68-84% of canvas height and 52-78% of canvas width; each face should be about 6-12% of canvas height, both faces readable, both bodies separated, outfits complete, and the pose should show subtle professional interaction rather than flat tourist-photo blocking.\n"
         "- Use subject_too_small when the person or couple is too small for a paid wedding portrait. Use face_too_small when identity cannot be read because the face is too small. Use background_dominates when the scene overwhelms the subjects. Use excessive_headroom for wasted sky/ceiling/head space. Use awkward_crop or dress_cropped for bad body, limb, gown, veil, hem, or train cropping.\n"
-        "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
+        "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use background_brighter_than_face when the background, sky, window, or architecture is brighter than the face and steals exposure priority. Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
-        "- Use poor_studio_quality when the image looks like a generic AI render, cheap composite, tourist snapshot, fantasy costume render, waxy/over-smoothed beauty-filter output, oily or greasy skin, wet glossy skin, over-shiny forehead/nose/cheeks, flat lighting, harsh backlight, blown-out sky/windows/dress, weak facial detail, or otherwise does not look like a paid bridal-studio wedding portrait.\n"
+        "- Use face_underexposed when the face is darker than commercial portrait standard, hidden in shadow, or lacks soft frontal fill. Use flat_lighting when the lighting has no directional key/fill/rim structure. Use no_catchlights when the eyes look dead or have no visible key-light catchlights. Use oily_skin_highlight when forehead, nose, cheeks, or chin have wet, greasy, plastic, or over-shiny highlights. Use dress_highlights_blown when white dress, veil, lace, satin, sky, or window highlights lose detail. Use mixed_color_temperature when key/fill/rim/ambient lights have incoherent green/orange/blue casts or phone-flash color. Prefer these specific lighting reasons instead of poor_studio_quality when they apply.\n"
+        "- Use poor_studio_quality only for broad commercial-finish failures that are not explained by a more specific lighting, composition, identity, anatomy, or wardrobe reason.\n"
         "- If identity is wrong and the image is beautiful, still fail with identity_mismatch.\n"
         f"{couple_rules}"
         f"{identity_rules}"

@@ -81,6 +81,13 @@ class WenwenService:
         "weak_couple_interaction",
         "harsh_backlight",
         "poor_studio_quality",
+        "face_underexposed",
+        "flat_lighting",
+        "no_catchlights",
+        "oily_skin_highlight",
+        "dress_highlights_blown",
+        "mixed_color_temperature",
+        "background_brighter_than_face",
     }
     CANDIDATE_REASON_PENALTIES = {
         "identity_mismatch": 100,
@@ -103,6 +110,13 @@ class WenwenService:
         "weak_couple_interaction": 30,
         "harsh_backlight": 45,
         "poor_studio_quality": 45,
+        "face_underexposed": 50,
+        "flat_lighting": 40,
+        "no_catchlights": 35,
+        "oily_skin_highlight": 35,
+        "dress_highlights_blown": 45,
+        "mixed_color_temperature": 40,
+        "background_brighter_than_face": 45,
         "dress_exposure_error": 80,
         "black_or_blank": 100,
         "watermark_or_text": 70,
@@ -1359,9 +1373,20 @@ class WenwenService:
             focus.append("repair wedding dress coverage and fabric structure")
         if "poor_studio_quality" in normalized:
             focus.append(
-                "upgrade studio-grade lighting, semi-matte realistic skin texture, dress fabric, and professional color grading; "
-                "remove oily shine, wet glossy skin, and plastic specular highlights"
+                "upgrade broad commercial studio finish with controlled key, fill, rim separation, realistic skin texture, dress fabric, and professional color grading"
             )
+        if "face_underexposed" in normalized:
+            focus.append("raise facial exposure with soft frontal fill while preserving natural shadow shape and identity")
+        if "flat_lighting" in normalized:
+            focus.append("rebuild dimensional lighting with a directional key light, weak fill, and subtle rim separation")
+        if "no_catchlights" in normalized:
+            focus.append("restore natural eye catchlights from the key or fill light without changing eye shape or identity")
+        if "oily_skin_highlight" in normalized:
+            focus.append("remove oily, wet, plastic facial shine and restore semi-matte natural skin texture")
+        if "dress_highlights_blown" in normalized:
+            focus.append("recover white dress, lace, satin, veil, sky, and window highlight detail without gray muddy whites")
+        if "mixed_color_temperature" in normalized:
+            focus.append("unify color temperature across key, fill, rim, and ambient light; remove green-orange mixed-light cast")
         if normalized & {"subject_too_small", "face_too_small", "background_dominates", "excessive_headroom"}:
             focus.append(
                 "reframe to commercial wedding proportions: subject prominent, face readable, intentional headroom, and background secondary"
@@ -1372,6 +1397,8 @@ class WenwenService:
             )
         if "poor_subject_separation" in normalized:
             focus.append("improve subject-background separation with controlled depth, rim light, and clean visual hierarchy")
+        if "background_brighter_than_face" in normalized:
+            focus.append("darken the background slightly and make the face the clear exposure priority")
         if "flat_centered_pose" in normalized:
             focus.append("replace stiff centered tourist-photo blocking with directed editorial wedding posing")
         if "weak_couple_interaction" in normalized:
