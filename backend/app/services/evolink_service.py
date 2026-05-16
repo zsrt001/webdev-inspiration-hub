@@ -61,12 +61,10 @@ class EvolinkService(WenwenService):
 
     @classmethod
     def _image_edit_model_candidates(cls, model: str) -> list[str]:
-        candidates: list[str] = []
-        for value in [model, *(settings.evolink_image_fallback_models or "").split(",")]:
-            candidate = str(value or "").strip()
-            if candidate and cls._allowed_image_model(candidate) and candidate not in candidates:
-                candidates.append(candidate)
-        return candidates
+        candidate = str(model or "").strip()
+        if candidate and cls._allowed_image_model(candidate):
+            return [candidate]
+        return []
 
     def validate_runtime_requirements(self, *, force: bool = False) -> None:
         if self._runtime_validation_ok and not force:
@@ -78,6 +76,17 @@ class EvolinkService(WenwenService):
             errors.append("EVOLINK_API_BASE_URL is required")
         if not self._effective_image_edit_model():
             errors.append("EVOLINK_IMAGE_MODEL is required")
+        if self._effective_image_edit_model() and not settings.generation_image_model_allowed(
+            self._effective_image_edit_model()
+        ):
+            errors.append(f"EVOLINK_IMAGE_MODEL is not allowed: {self._effective_image_edit_model()}")
+        fallback_models = [
+            item.strip()
+            for item in (settings.evolink_image_fallback_models or "").split(",")
+            if item.strip()
+        ]
+        if fallback_models:
+            errors.append("EVOLINK_IMAGE_FALLBACK_MODELS must be empty; run explicit model comparisons instead")
         if errors:
             raise ValueError("; ".join(errors))
         self._runtime_validation_ok = True
@@ -144,20 +153,22 @@ class EvolinkService(WenwenService):
         if subjects:
             for subject in subjects[:2]:
                 role = str(subject.get("role") or subject.get("identity_label") or "subject")
-                add(f"{role} original portrait", subject.get("original_url"))
-                add(f"{role} face crop", subject.get("face_crop_url"))
+                # Face crop FIRST (highest priority for flash native image-edit),
+                # then original portrait as full-body anchor
+                add(f"{role} face reference - IDENTITY ANCHOR", subject.get("face_crop_url"))
+                add(f"{role} full reference", subject.get("original_url"))
                 if not is_couple:
-                    add(f"{role} upper-body crop", subject.get("upper_body_crop_url"))
+                    add(f"{role} upper-body reference", subject.get("upper_body_crop_url"))
         else:
             for index, url in enumerate(identity_refs[:2], start=1):
-                add(f"identity full source image {index}", url)
+                add(f"identity anchor image {index}", url)
 
         if include_previous_result:
             for url in current_result_refs[:1]:
-                add("previous candidate canvas for composition repair only", url)
+                add("previous result canvas - composition reference only", url)
 
         for index, url in enumerate(style_refs, start=1):
-            add(f"style or scene reference image {index}", url)
+            add(f"style reference image {index}", url)
 
         return entries[:5]
 

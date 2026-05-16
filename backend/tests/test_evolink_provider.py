@@ -19,17 +19,33 @@ class EvolinkProviderTest(unittest.TestCase):
         original_fallbacks = evolink_module.settings.evolink_image_fallback_models
         try:
             evolink_module.settings.evolink_image_model = "gemini-3.1-flash-image-preview"
-            evolink_module.settings.evolink_image_fallback_models = "gemini-3-pro-image-preview,gpt-image-2"
+            evolink_module.settings.evolink_image_fallback_models = "gemini-3-pro-image-preview"
 
             self.assertFalse(EvolinkService._image_edit_uses_native_model("gemini-3.1-flash-image-preview"))
             self.assertEqual(EvolinkService._effective_image_edit_model(), "gemini-3.1-flash-image-preview")
             self.assertEqual(
                 EvolinkService._image_edit_model_candidates("gemini-3.1-flash-image-preview"),
-                ["gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview"],
+                ["gemini-3.1-flash-image-preview"],
             )
         finally:
             evolink_module.settings.evolink_image_model = original_model
             evolink_module.settings.evolink_image_fallback_models = original_fallbacks
+
+    def test_evolink_runtime_rejects_fallback_model_configuration(self) -> None:
+        original_model = evolink_module.settings.evolink_image_model
+        original_fallbacks = evolink_module.settings.evolink_image_fallback_models
+        original_api_key = evolink_module.settings.evolink_api_key
+        try:
+            evolink_module.settings.evolink_api_key = "test-key"
+            evolink_module.settings.evolink_image_model = "gemini-3-pro-image-preview"
+            evolink_module.settings.evolink_image_fallback_models = "gemini-3.1-flash-image-preview"
+
+            with self.assertRaisesRegex(ValueError, "EVOLINK_IMAGE_FALLBACK_MODELS must be empty"):
+                EvolinkService().validate_runtime_requirements(force=True)
+        finally:
+            evolink_module.settings.evolink_image_model = original_model
+            evolink_module.settings.evolink_image_fallback_models = original_fallbacks
+            evolink_module.settings.evolink_api_key = original_api_key
 
     def test_evolink_reference_entries_keep_identity_first_and_limited(self) -> None:
         service = EvolinkService()
@@ -64,11 +80,11 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertEqual(
             entries,
             [
-                ("bride original portrait", "https://example.test/bride.jpg"),
-                ("bride face crop", "https://example.test/bride-face.jpg"),
-                ("groom original portrait", "https://example.test/groom.jpg"),
-                ("groom face crop", "https://example.test/groom-face.jpg"),
-                ("previous candidate canvas for composition repair only", "https://example.test/previous.jpg"),
+                ("bride face reference - IDENTITY ANCHOR", "https://example.test/bride-face.jpg"),
+                ("bride full reference", "https://example.test/bride.jpg"),
+                ("groom face reference - IDENTITY ANCHOR", "https://example.test/groom-face.jpg"),
+                ("groom full reference", "https://example.test/groom.jpg"),
+                ("previous result canvas - composition reference only", "https://example.test/previous.jpg"),
             ],
         )
 

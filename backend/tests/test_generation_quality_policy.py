@@ -84,29 +84,36 @@ class GenerationQualityPolicyTest(unittest.TestCase):
 
         prompt = build_prompt(template)  # type: ignore[arg-type]
 
+        # Skin & photorealism (new v2 high-priority sections)
+        self.assertIn("SKIN REALISM:", prompt)
+        self.assertIn("natural human skin with visible pores", prompt)
+        self.assertIn("PHOTO REALISM:", prompt)
+        self.assertIn("Hasselblad", prompt)
+        self.assertIn("ANTI AI ARTIFACTS:", prompt)
+        self.assertIn("wedding photograph", prompt)
+        # Composition
         self.assertIn("full-length 3:4 vertical", prompt)
         self.assertIn("complete gown and dress train visible", prompt)
         self.assertIn("controlled softbox key light", prompt)
         self.assertIn("face correctly exposed", prompt)
         self.assertIn("semi-matte skin", prompt)
         self.assertIn("no oily shine", prompt)
-        self.assertIn("INDOOR STUDIO LIGHTING:", prompt)
+        # Smart lighting: royal castle scene (castle-inspired indoor) = INDOOR LIGHTING
+        self.assertIn("INDOOR LIGHTING:", prompt)
         self.assertIn("45 degrees", prompt)
         self.assertIn("0.3 to 0.8 stops darker than the face", prompt)
-        self.assertIn("WINDOW AND ARCHITECTURAL LIGHTING:", prompt)
-        self.assertIn("window light as the directional key light", prompt)
-        self.assertIn("NIGHT AND LOW-LIGHTING:", prompt)
-        self.assertIn("off-camera key light", prompt)
+        # No longer includes all lighting protocols
+        self.assertNotIn("OUTDOOR LIGHTING:", prompt)
+        self.assertNotIn("WINDOW AND ARCHITECTURAL LIGHTING:", prompt)
+        self.assertNotIn("NIGHT AND LOW-LIGHTING:", prompt)
+        # Standard sections
         self.assertIn("CANVAS PROPORTION:", prompt)
         self.assertIn("72-86% of the canvas height", prompt)
         self.assertIn("face should remain large enough", prompt)
-        self.assertIn("DELIVERY GATE:", prompt)
-        self.assertIn("CANDIDATE SELECTION:", prompt)
         self.assertIn("HAND AND ANATOMY SAFETY:", prompt)
         self.assertIn("fingers mostly covered", prompt)
         self.assertIn("IDENTITY LOCK:", prompt)
         self.assertIn("STUDIO QUALITY:", prompt)
-        self.assertIn("OUTDOOR PROFESSIONAL LIGHTING:", prompt)
         self.assertIn("FORBIDDEN CONSTRAINTS:", prompt)
         self.assertIn("Identity lock is mandatory", prompt)
         self.assertIn("preserve the same face shape", prompt)
@@ -117,21 +124,23 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_couple_guardrails_require_studio_lighting_for_both_subjects(self) -> None:
         guardrails = get_studio_guardrails(is_couple=True)
 
+        # Skin & photorealism (v2 additions)
+        self.assertIn("SKIN REALISM:", guardrails)
+        self.assertIn("ANTI AI ARTIFACTS:", guardrails)
+        # Couple-specific quality
         self.assertIn("two-person full-length couple portrait", guardrails)
         self.assertIn("Both subjects must receive flattering studio fill light", guardrails)
         self.assertIn("both faces must be correctly exposed", guardrails)
-        self.assertIn("both identities must remain recognizable", guardrails)
         self.assertIn("COUPLE CANVAS PROPORTION:", guardrails)
         self.assertIn("68-84% of the canvas height", guardrails)
         self.assertIn("52-78% of the canvas width", guardrails)
+        # Lighting negative guardrails (still present via LIGHTING NEGATIVE GUARDRAILS)
         self.assertIn("do not use harsh outdoor backlight", guardrails.lower())
-        self.assertIn("OUTDOOR PROFESSIONAL LIGHTING:", guardrails)
-        self.assertIn("INDOOR STUDIO LIGHTING:", guardrails)
-        self.assertIn("WINDOW AND ARCHITECTURAL LIGHTING:", guardrails)
-        self.assertIn("NIGHT AND LOW-LIGHTING:", guardrails)
-        self.assertIn("studio-grade on-location bridal photography", guardrails)
-        self.assertIn("sun may act only as rim light", guardrails)
         self.assertIn("frontal softbox-style fill", guardrails)
+        # Standard sections
+        self.assertIn("STUDIO QUALITY:", guardrails)
+        self.assertIn("DELIVERY GATE:", guardrails)
+        self.assertIn("CANDIDATE SELECTION:", guardrails)
 
     def test_negative_prompt_blocks_common_non_studio_failures(self) -> None:
         negative = get_negative_prompt()
@@ -166,14 +175,18 @@ class GenerationQualityPolicyTest(unittest.TestCase):
             is_couple=False,
         )
 
+        # User direction preserved
         self.assertIn("outdoor cinematic harsh backlight", prompt)
-        self.assertIn("do not use harsh outdoor backlight", prompt.lower())
         self.assertIn("USER DIRECTION:", prompt)
+        # Forbidden constraints block harmful directives (via NEGATIVE_PROMPT)
         self.assertIn("FORBIDDEN CONSTRAINTS:", prompt)
+        self.assertIn("harsh backlight", prompt.lower())
+        # Studio quality section still present
         self.assertIn("controlled softbox key light", prompt)
-        self.assertIn("sun may act only as rim light", prompt)
-        self.assertIn("frontal softbox-style fill", prompt)
-        self.assertIn("45 degrees", prompt)
+        self.assertIn("45 degrees", prompt)  # indoor lighting
+        # Skin realism v2
+        self.assertIn("SKIN REALISM:", prompt)
+        self.assertIn("INDOOR LIGHTING:", prompt)  # castle is indoor
         self.assertIn("full-length 3:4 vertical", prompt)
         self.assertIn("Identity lock is mandatory", prompt)
 
@@ -355,12 +368,10 @@ class GenerationQualityPolicyTest(unittest.TestCase):
             self.assertLessEqual(max(prepared_image.size), WenwenService.INLINE_REFERENCE_MAX_EDGE)
             self.assertAlmostEqual(prepared_image.size[0] / prepared_image.size[1], 2200 / 1600, places=2)
 
-    def test_wenwen_native_generation_has_fallback_model(self) -> None:
+    def test_wenwen_native_generation_uses_only_configured_model(self) -> None:
         candidates = WenwenService._native_model_candidates()
 
-        self.assertGreaterEqual(len(candidates), 2)
-        self.assertEqual(candidates[0], "gemini-3-pro-image-preview")
-        self.assertIn("gemini-3.1-flash-image-preview", candidates)
+        self.assertEqual(candidates, ["gemini-3-pro-image-preview"])
 
     def test_image_edit_candidate_count_is_clamped(self) -> None:
         original = wenwen_module.settings.wenwen_image_edit_candidate_count
@@ -461,13 +472,12 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Identity reference image 1", joined)
         self.assertIn("Identity reference image 2", joined)
 
-    def test_image_edit_uses_configured_model_with_tracked_fallback(self) -> None:
+    def test_image_edit_uses_only_configured_model(self) -> None:
         self.assertTrue(WenwenService._image_edit_uses_native_model("gemini-3-pro-image-preview"))
         self.assertTrue(WenwenService._image_edit_uses_native_model("models/gemini-3-pro-image-preview"))
         self.assertFalse(WenwenService._image_edit_uses_native_model("gpt-image-1"))
         candidates = WenwenService._image_edit_model_candidates("gemini-3-pro-image-preview")
-        self.assertEqual(candidates[0], "gemini-3-pro-image-preview")
-        self.assertIn("gemini-3.1-flash-image-preview", candidates)
+        self.assertEqual(candidates, ["gemini-3-pro-image-preview"])
         self.assertEqual(
             WenwenService._image_edit_model_candidates("gemini-3.1-flash-image-preview"),
             ["gemini-3.1-flash-image-preview"],
@@ -482,16 +492,16 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_image_edit_fallbacks_are_limited_to_allowed_models(self) -> None:
+    def test_image_edit_fallback_settings_are_ignored_by_candidates(self) -> None:
         original_fallbacks = wenwen_module.settings.wenwen_image_edit_fallback_models
         try:
             wenwen_module.settings.wenwen_image_edit_fallback_models = (
-                "gemini-3.1-flash-image-preview,gpt-image-2"
+                "gemini-3.1-flash-image-preview"
             )
 
             self.assertEqual(
                 WenwenService._image_edit_model_candidates("gemini-3-pro-image-preview"),
-                ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"],
+                ["gemini-3-pro-image-preview"],
             )
         finally:
             wenwen_module.settings.wenwen_image_edit_fallback_models = original_fallbacks

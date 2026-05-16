@@ -1,8 +1,28 @@
 """Prompt Brain - deterministic prompt builder for identity-preserving wedding edits."""
 
+import re
 from typing import Optional
 from app.schemas.template import Template
 
+
+SKIN_REALISM_PROTOCOL = (
+    "CRITICAL SKIN TEXTURE REQUIREMENT (highest priority after identity): "
+    "render natural human skin with visible pores, micro-texture, subtle imperfections, and realistic subsurface "
+    "scattering. Absolutely forbid: smooth plastic skin, airbrushed beauty-filter skin, oily shine on forehead "
+    "nose cheeks or chin, waxy specular highlights, wet glossy skin, CGI-render texture, over-processed bridal "
+    "retouching, beauty-app filter face, doll-like complexion, alpha-matte edge artifacts. "
+    "The face must look like a professionally lit photograph of a real person, not a rendered or retouched image. "
+    "Use semi-matte powder-finish skin with controlled highlight rolloff and just-visible pore texture. "
+    "Aim for Hasselblad medium-format bridal-portrait skin rendering with subtle film-like micro-contrast"
+)
+
+PHOTO_REALISM_PROTOCOL = (
+    "output a photorealistic editorial wedding photograph shot on a Hasselblad H6D with 100mm f/2.2 lens, "
+    "Portra 400 film stock color science, natural film grain barely visible, Zeiss Otus-level micro-contrast, "
+    "professional color grading with gentle warm tone curve, lifted blacks at 5%, subtle S-curve contrast, "
+    "no HDR tone-mapping, no over-sharpened digital edges, no smartphone computational-photography look, "
+    "print-ready 300dpi bridal-studio deliverable"
+)
 
 PHOTO_PROTOCOL = (
     "premium bridal studio finish, print-ready high-end wedding portrait, realistic skin texture, natural pores, "
@@ -10,6 +30,15 @@ PHOTO_PROTOCOL = (
     "commercial bridal retouching with clean but non-plastic semi-matte skin, controlled natural highlights, "
     "no oily shine on forehead, nose, cheeks, or chin, luxury studio-grade color grading, "
     "polished background separation, paid bridal-studio deliverable quality"
+)
+
+ANTI_AI_ARTIFACTS_PROTOCOL = (
+    "Strictly avoid all AI-generated-image artifacts and tells: no overly symmetrical face, no generic AI face, "
+    "no plastic skin, no waxy highlights, no beauty-filter texture, no CGI rendering, no 3D-render look, "
+    "no game-engine lighting, no fantasy concept-art styling, no unnatural eye sharpness, no uncanny-valley "
+    "expression, no over-perfect symmetry in facial features, no identical couple faces, no AI-hallucinated "
+    "background details, no over-sharpened fabric, no chromatic aberration on edges. "
+    "The image must pass as a human-shot professional wedding photograph."
 )
 
 IDENTITY_LOCK_PROTOCOL = (
@@ -180,12 +209,9 @@ def _section(title: str, body: str | None) -> str:
 
 def get_studio_guardrails(*, is_couple: bool = False) -> str:
     parts = [
+        _section("SKIN REALISM", SKIN_REALISM_PROTOCOL),
+        _section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL),
         _section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL),
-        _section("INDOOR STUDIO LIGHTING", INDOOR_STUDIO_LIGHTING_PROTOCOL),
-        _section("OUTDOOR PROFESSIONAL LIGHTING", OUTDOOR_PRO_LIGHTING_PROTOCOL),
-        _section("WINDOW AND ARCHITECTURAL LIGHTING", WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL),
-        _section("NIGHT AND LOW-LIGHTING", NIGHT_LOW_LIGHTING_PROTOCOL),
-        _section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL),
         _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
         _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
         _section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL),
@@ -221,32 +247,63 @@ def build_prompt(
             if val:
                 blocks.append(val)
 
-    parts = [
-        _section("IDENTITY LOCK", IDENTITY_LOCK_PROTOCOL),
-        _section("ALLOWED EDIT SCOPE", EDIT_SCOPE_PROTOCOL),
-        _section("WARDROBE", f"A professional wedding portrait of {clothing}"),
-        _section("SCENE", scene),
-        _section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL),
-        _section("INDOOR STUDIO LIGHTING", INDOOR_STUDIO_LIGHTING_PROTOCOL),
-        _section("OUTDOOR PROFESSIONAL LIGHTING", OUTDOOR_PRO_LIGHTING_PROTOCOL),
-        _section("WINDOW AND ARCHITECTURAL LIGHTING", WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL),
-        _section("NIGHT AND LOW-LIGHTING", NIGHT_LOW_LIGHTING_PROTOCOL),
-        _section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL),
-        _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
-        _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
-        _section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL),
-        _section("DELIVERY GATE", DELIVERY_GATE_PROTOCOL),
-        _section("CANDIDATE SELECTION", CANDIDATE_SELECTION_PROTOCOL),
-    ]
+    # Determine scene type — strip negated clauses to avoid false positives
+    scene_clean = scene.lower()
+    # Remove "no X", "no X Y", "not X" patterns that negate scene keywords
+    scene_clean = re.sub(r'\bno\s+\w+(?:\s+\w+)?\b', '', scene_clean)
+    scene_clean = re.sub(r'\bnot\s+\w+\b', '', scene_clean)
+    is_outdoor = any(w in scene_clean for w in ("outdoor", "beach", "garden", "forest", "mountain", "sunset", "street", "courtyard", "zen garden", "maple", "neon"))
+    is_night = any(w in scene_clean for w in ("night", "candle", "dusk", "twilight", "dark", "low-light"))
+    is_window = any(w in scene_clean for w in ("window", "balcony"))
+
+    parts: list[str] = []
+
+    # Layer 1: Identity (highest priority — placed first)
+    parts.append(_section("IDENTITY LOCK", IDENTITY_LOCK_PROTOCOL))
+    parts.append(_section("ALLOWED EDIT SCOPE", EDIT_SCOPE_PROTOCOL))
     if is_couple:
         parts.append(_section("COUPLE IDENTITY LOCK", COUPLE_IDENTITY_LOCK_PROTOCOL))
+
+    # Layer 2: Skin & photorealism (critical for commercial quality — early placement)
+    parts.append(_section("SKIN REALISM", SKIN_REALISM_PROTOCOL))
+    parts.append(_section("PHOTO REALISM", PHOTO_REALISM_PROTOCOL))
+    parts.append(_section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL))
+
+    # Layer 3: Scene & wardrobe
+    parts.append(_section("WARDROBE", f"A professional wedding portrait of {clothing}"))
+    parts.append(_section("SCENE", scene))
+
+    # Layer 4: Smart lighting — only the relevant protocol, not all
+    if is_night:
+        parts.append(_section("NIGHT LIGHTING", NIGHT_LOW_LIGHTING_PROTOCOL))
+    elif is_outdoor:
+        parts.append(_section("OUTDOOR LIGHTING", OUTDOOR_PRO_LIGHTING_PROTOCOL))
+    elif is_window:
+        parts.append(_section("WINDOW LIGHTING", WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL))
+    else:
+        parts.append(_section("INDOOR LIGHTING", INDOOR_STUDIO_LIGHTING_PROTOCOL))
+
+    parts.append(_section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL))
+    if not is_outdoor:
+        parts.append(_section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL))
+
+    # Layer 5: Composition
+    parts.append(_section("COMPOSITION", FULL_LENGTH_COMPOSITION))
+    parts.append(_section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL))
+    parts.append(_section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL))
+
+    if is_couple:
         parts.append(_section("COUPLE COMPOSITION", COUPLE_COMPOSITION))
         parts.append(_section("COUPLE CANVAS PROPORTION", COUPLE_CANVAS_PROPORTION_PROTOCOL))
         parts.append(_section("COUPLE STUDIO QUALITY", COUPLE_STUDIO_GUARDRAILS))
+
+    # Layer 6: User input + style notes
     if user_text:
         parts.append(_section("USER DIRECTION", user_text))
     if blocks:
         parts.append(_section("TEMPLATE STYLE NOTES", ", ".join(blocks)))
+
+    # Layer 7: Final quality gate
     parts.append(_section("FINAL RENDER QUALITY", PHOTO_PROTOCOL))
     parts.append(_section("FORBIDDEN CONSTRAINTS", NEGATIVE_PROMPT))
 
