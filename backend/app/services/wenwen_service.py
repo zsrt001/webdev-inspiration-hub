@@ -260,8 +260,17 @@ class WenwenService:
 
     @classmethod
     def _image_edit_model_candidates(cls, model: str) -> list[str]:
-        candidate = str(model or "").strip()
-        return [candidate] if candidate else []
+        candidates: list[str] = []
+        fallback_models = (
+            settings.wenwen_image_edit_fallback_models
+            or settings.wenwen_image_fallback_models
+            or ""
+        )
+        for value in [model, *str(fallback_models).split(",")]:
+            candidate = str(value or "").strip()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
 
     @staticmethod
     def _is_model_unavailable_error(error: Exception) -> bool:
