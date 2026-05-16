@@ -176,7 +176,17 @@
             </view>
             <view class="round-body">
               <view class="round-title-row">
-                <text class="strong">Round {{ round.round || '-' }} / {{ round.stage || 'unknown' }}</text>
+                <view class="round-title-copy">
+                  <text class="strong">Round {{ round.round || '-' }} / {{ round.stage || 'unknown' }}</text>
+                  <view class="round-meta-row">
+                    <text v-if="round.repair_mode" class="meta-chip">{{ repairModeLabel(round.repair_mode) }}</text>
+                    <text v-if="round.used_previous_result" class="meta-chip">Used previous canvas</text>
+                    <text class="meta-chip" :class="{ success: !round.billable && Number(round.extra_credits_charged || 0) === 0 }">
+                      {{ round.billable ? 'Billable' : 'Included repair' }}
+                    </text>
+                    <text v-if="round.billing_reason" class="meta-chip">{{ billingReasonLabel(round.billing_reason) }}</text>
+                  </view>
+                </view>
                 <text class="status-pill" :class="{ active: round.qa_passed, failed: round.qa_passed === false }">
                   {{ round.qa_passed ? 'QA passed' : 'QA failed' }}
                 </text>
@@ -273,6 +283,8 @@ interface GenerationRound {
   qa_issues?: QaIssue[];
   used_previous_result?: boolean;
   billable?: boolean;
+  repair_mode?: string | null;
+  billing_reason?: string | null;
   extra_credits_charged?: number;
   completed_at?: string | null;
 }
@@ -563,6 +575,21 @@ function scoreText(score: CandidateScore): string {
   return reasons.length ? reasons.join(', ') : 'failed';
 }
 
+function repairModeLabel(value?: string | null): string {
+  const normalized = String(value || '').trim();
+  if (normalized === 'relight_edit_only') return 'Relight/edit only';
+  if (normalized === 'targeted_repair') return 'Targeted repair';
+  if (normalized === 'primary_generation') return 'Primary generation';
+  if (normalized === 'final_polish') return 'Final polish';
+  return normalized || 'Unknown mode';
+}
+
+function billingReasonLabel(value?: string | null): string {
+  const normalized = String(value || '').trim();
+  if (normalized === 'automatic_repair_included') return 'No extra credits';
+  return normalized || '';
+}
+
 function issueKey(issue: QaIssue): string {
   return `${issue.code || 'issue'}-${issue.target || ''}-${issue.repair_action || ''}`;
 }
@@ -711,6 +738,35 @@ onMounted(fetchOrders);
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+}
+
+.round-title-copy {
+  min-width: 0;
+}
+
+.round-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.meta-chip {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: #eef2f7;
+  color: #374151;
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.meta-chip.success {
+  background: #e8f7ef;
+  color: #137248;
 }
 
 .round-copy {
