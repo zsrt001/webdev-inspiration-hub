@@ -265,17 +265,10 @@ class WenwenService:
 
     @classmethod
     def _image_edit_model_candidates(cls, model: str) -> list[str]:
-        candidates: list[str] = []
-        fallback_models = (
-            settings.wenwen_image_edit_fallback_models
-            or settings.wenwen_image_fallback_models
-            or ""
-        )
-        for value in [model, *str(fallback_models).split(",")]:
-            candidate = str(value or "").strip()
-            if candidate and cls._allowed_image_model(candidate) and candidate not in candidates:
-                candidates.append(candidate)
-        return candidates
+        candidate = str(model or "").strip()
+        if candidate and cls._allowed_image_model(candidate):
+            return [candidate]
+        return []
 
     @staticmethod
     def _is_model_unavailable_error(error: Exception) -> bool:
@@ -293,12 +286,10 @@ class WenwenService:
 
     @classmethod
     def _native_model_candidates(cls) -> list[str]:
-        candidates: list[str] = []
-        for value in [cls._effective_image_model(), *(settings.wenwen_image_fallback_models or "").split(",")]:
-            model = str(value or "").strip()
-            if model and cls._allowed_image_model(model) and model not in candidates:
-                candidates.append(model)
-        return candidates
+        model = cls._effective_image_model()
+        if model and cls._allowed_image_model(model):
+            return [model]
+        return []
 
     @staticmethod
     def _native_read_timeout(*, model_index: int, model_count: int) -> float:
@@ -377,13 +368,17 @@ class WenwenService:
         style_refs: list[str] | None = None,
         identity_reference_pack: dict | None = None,
         current_result_refs: list[str] | None = None,
+        round_number: int = 1,
+        qa_reasons: list[str] | None = None,
     ) -> list[tuple[str, tuple[str, bytes, str]]]:
         """Put identity refs first, current canvas next, then style refs."""
         files: list[tuple[str, tuple[str, bytes, str]]] = []
         identity_source_refs = list(identity_refs[:2])
         extra_refs = list(style_refs or [])
         max_files = max(1, int(self.IMAGE_EDIT_REFERENCE_FILE_LIMIT))
-        pack_files = await self._build_identity_pack_reference_files(identity_reference_pack, max_files=max_files)
+        pack_files = await self._build_identity_pack_reference_files(
+            identity_reference_pack, max_files=max_files, round_number=round_number, qa_reasons=qa_reasons
+        )
         if pack_files:
             files.extend(pack_files)
             seen_pack_urls = self._identity_pack_reference_urls(identity_reference_pack)
@@ -457,24 +452,42 @@ class WenwenService:
         identity_reference_pack: dict | None,
         *,
         max_files: int,
+        round_number: int = 1,
+        qa_reasons: list[str] | None = None,
     ) -> list[tuple[str, tuple[str, bytes, str]]]:
         subjects = self._identity_pack_subjects(identity_reference_pack)
         if not subjects:
             return []
 
+        is_identity_repair = round_number >= 2 and bool(qa_reasons) and any(
+            r in {"identity_mismatch", "identity_swap"} for r in (qa_reasons or [])
+        )
+
         prioritized_refs: list[tuple[str, str]] = []
         is_couple_pack = len(subjects) >= 2
         for subject_index, subject in enumerate(subjects[:2], start=1):
             role = str(subject.get("role") or f"subject_{subject_index}").strip() or f"subject_{subject_index}"
-            for kind in ("original", "face_crop"):
-                key = "original_url" if kind == "original" else "face_crop_url"
-                value = str(subject.get(key) or "").strip()
-                if value:
-                    prioritized_refs.append((f"{role}_{kind}_{subject_index}", value))
-            if not is_couple_pack:
-                value = str(subject.get("upper_body_crop_url") or "").strip()
-                if value:
-                    prioritized_refs.append((f"{role}_upper_body_{subject_index}", value))
+
+            if is_identity_repair:
+                # Progressive: face crops first (weight), then original, skip upper_body
+                face_key = "face_crop_url"
+                face_val = str(subject.get(face_key) or "").strip()
+                if face_val:
+                    prioritized_refs.append((f"{role}_face_crop_identity_lock_{subject_index}", face_val))
+                original_val = str(subject.get("original_url") or "").strip()
+                if original_val:
+                    prioritized_refs.append((f"{role}_original_{subject_index}", original_val))
+            else:
+                # Standard: original first, then face crop
+                for kind in ("original", "face_crop"):
+                    key = "original_url" if kind == "original" else "face_crop_url"
+                    value = str(subject.get(key) or "").strip()
+                    if value:
+                        prioritized_refs.append((f"{role}_{kind}_{subject_index}", value))
+                if not is_couple_pack:
+                    value = str(subject.get("upper_body_crop_url") or "").strip()
+                    if value:
+                        prioritized_refs.append((f"{role}_upper_body_{subject_index}", value))
 
         files: list[tuple[str, tuple[str, bytes, str]]] = []
         seen: set[str] = set()
@@ -541,6 +554,23 @@ class WenwenService:
             errors.append("WENWEN_IMAGE_EDIT_PATH is required")
         if not self._effective_image_edit_model():
             errors.append("WENWEN_IMAGE_EDIT_MODEL or WENWEN_IMAGE_MODEL is required")
+        if self._effective_image_edit_model() and not settings.generation_image_model_allowed(
+            self._effective_image_edit_model()
+        ):
+            errors.append(f"WENWEN_IMAGE_EDIT_MODEL is not allowed: {self._effective_image_edit_model()}")
+        if self._effective_image_model() and not settings.generation_image_model_allowed(
+            self._effective_image_model()
+        ):
+            errors.append(f"WENWEN_IMAGE_MODEL is not allowed: {self._effective_image_model()}")
+        fallback_models = [
+            item.strip()
+            for item in (
+                f"{settings.wenwen_image_fallback_models},{settings.wenwen_image_edit_fallback_models}"
+            ).split(",")
+            if item.strip()
+        ]
+        if fallback_models:
+            errors.append("WENWEN image fallback model settings must be empty; run explicit model comparisons instead")
         if errors:
             raise ValueError("; ".join(errors))
         self._runtime_validation_ok = True
@@ -2204,7 +2234,7 @@ class WenwenService:
                     last_transient_error = exc
                     if model_index < len(model_candidates) - 1:
                         logger.warning(
-                            "Wenwen native image-edit transient error; falling back from %s to %s: %s",
+                            "Wenwen native image-edit transient error on %s; trying configured candidate %s: %s",
                             candidate_model,
                             model_candidates[model_index + 1],
                             exc,
@@ -2221,7 +2251,7 @@ class WenwenService:
                     )
                     if model_unavailable and model_index < len(model_candidates) - 1:
                         logger.warning(
-                            "Wenwen native image-edit model unavailable; falling back from %s to %s: %s",
+                            "Wenwen native image-edit model unavailable on %s; trying configured candidate %s: %s",
                             candidate_model,
                             model_candidates[model_index + 1],
                             candidate_response.status_code,
@@ -2313,6 +2343,8 @@ class WenwenService:
             style_refs=style_refs,
             identity_reference_pack=identity_reference_pack,
             current_result_refs=current_result_refs if include_previous else [],
+            round_number=round_number,
+            qa_reasons=qa_reasons,
         )
         if not files:
             raise RuntimeError("wenwen_image_edit_identity_refs_missing")
@@ -2490,12 +2522,12 @@ class WenwenService:
                         qa_issues=qa_issues,
                     )
                     if candidate_model != model:
-                        logger.warning("Wenwen image-edit model fallback succeeded: %s -> %s", model, candidate_model)
+                        logger.warning("Wenwen image-edit alternate configured model succeeded: %s -> %s", model, candidate_model)
                     break
                 except RuntimeError as exc:
                     if self._is_model_unavailable_error(exc) and model_index < len(model_candidates) - 1:
                         logger.warning(
-                            "Wenwen image-edit model unavailable; falling back from %s to %s: %s",
+                            "Wenwen image-edit model unavailable on %s; trying configured candidate %s: %s",
                             candidate_model,
                             model_candidates[model_index + 1],
                             exc,
@@ -3175,7 +3207,7 @@ class WenwenService:
                     raise
                 if identity_edit_required:
                     raise RuntimeError(f"identity_edit_required_failed:{error_text}") from exc
-                logger.warning("Wenwen image edit path failed; falling back to native generation: %s", exc)
+                logger.warning("Wenwen image edit path failed; trying native generation path: %s", exc)
                 image_edit_completed = False
             if image_edit_completed:
                 await self._queue_completion_email(order_uuid)
@@ -3221,7 +3253,7 @@ class WenwenService:
                             last_transient_error = exc
                             if model_index < len(native_models) - 1:
                                 logger.warning(
-                                    "Wenwen native model transient error; falling back from %s to %s: %s",
+                                    "Wenwen native model transient error on %s; trying configured candidate %s: %s",
                                     native_model,
                                     native_models[model_index + 1],
                                     exc,
@@ -3238,7 +3270,7 @@ class WenwenService:
                             )
                             if model_unavailable and model_index < len(native_models) - 1:
                                 logger.warning(
-                                    "Wenwen native model unavailable; falling back from %s to %s: %s",
+                                    "Wenwen native model unavailable on %s; trying configured candidate %s: %s",
                                     native_model,
                                     native_models[model_index + 1],
                                     candidate_response.status_code,
