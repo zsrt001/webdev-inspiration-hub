@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     postprocess_upscale_factor: int = 2
     postprocess_max_long_edge: int = 2400
     postprocess_jpeg_quality: int = 92
-    postprocess_variants: str = "2x3,3x4,9x16"
+    postprocess_variants: str = "2x3,3x2,3x4,4x5,9x16,1x1"
 
     # ComfyUI
     comfy_provider: str = "local"  # local | cloud

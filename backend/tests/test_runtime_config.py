@@ -40,6 +40,8 @@ class RuntimeConfigTest(unittest.TestCase):
         )
 
         self.assertEqual(settings.generation_allowed_image_model_list, ["gemini-3-pro-image-preview"])
+        self.assertFalse(settings.generation_image_model_allowed("gpt-image-2"))
+        self.assertTrue(settings.generation_image_model_allowed("gemini-3-pro-image-preview"))
 
     def test_cleanup_cron_token_accepts_vercel_cron_secret_alias(self) -> None:
         settings = Settings(cleanup_cron_token="", cron_secret="vercel-cron-secret")

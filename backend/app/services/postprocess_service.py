@@ -23,8 +23,11 @@ class DeliveryVariant:
 
 VARIANT_MAP: dict[str, DeliveryVariant] = {
     "2x3": DeliveryVariant("portrait_2x3", 2 / 3, "2:3 portrait"),
+    "3x2": DeliveryVariant("print_3x2", 3 / 2, "3:2 print"),
     "3x4": DeliveryVariant("xhs_3x4", 3 / 4, "3:4 social"),
+    "4x5": DeliveryVariant("portrait_4x5", 4 / 5, "4:5 portrait"),
     "9x16": DeliveryVariant("wallpaper_9x16", 9 / 16, "9:16 wallpaper"),
+    "1x1": DeliveryVariant("square_1x1", 1, "1:1 square"),
 }
 
 
@@ -58,7 +61,7 @@ async def postprocess_delivery_assets(delivered_urls: Iterable[str]) -> tuple[di
             failures.append(f"{base_key}:{type(exc).__name__}")
 
     return final_urls, {
-        "postprocess_policy": "hd_enhance_upscale_color_crop",
+        "postprocess_policy": "commercial_hd_face_tone_grain_smart_crop",
         "upscale_factor": max(1, int(settings.postprocess_upscale_factor)),
         "max_long_edge": max(900, int(settings.postprocess_max_long_edge)),
         "variants": [variant.suffix for variant in selected_variants],
@@ -86,14 +89,16 @@ def _enhance_master(image):
     mask = _foreground_mask(img.size)
     img = ImageOps.autocontrast(Image.composite(img, blurred, mask), cutoff=0.35)
     img = _apply_studio_tone_balance(img)
+    img = _reduce_oily_skin_highlights(img)
+    img = _apply_face_micro_retouch(img)
 
     smooth = img.filter(ImageFilter.SMOOTH_MORE)
-    img = Image.blend(img, smooth, 0.08)
+    img = Image.blend(img, smooth, 0.055)
     img = ImageEnhance.Color(img).enhance(1.04)
     img = ImageEnhance.Contrast(img).enhance(1.035)
     img = ImageEnhance.Brightness(img).enhance(1.01)
     img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=82, threshold=3))
-    return img
+    return _inject_subtle_film_grain(img)
 
 
 def _apply_studio_tone_balance(image):
@@ -115,6 +120,101 @@ def _apply_studio_tone_balance(image):
     filled = ImageEnhance.Brightness(balanced).enhance(1.045)
     filled = ImageEnhance.Contrast(filled).enhance(0.985)
     return Image.composite(filled, balanced, fill_mask)
+
+
+def _reduce_oily_skin_highlights(image):
+    from PIL import Image, ImageEnhance
+
+    ycbcr = image.convert("YCbCr")
+    y, cb, cr = ycbcr.split()
+    skin_mask = Image.new("L", image.size, 0)
+    src_y = y.load()
+    src_cb = cb.load()
+    src_cr = cr.load()
+    dst = skin_mask.load()
+    width, height = image.size
+    for py in range(height):
+        for px in range(width):
+            lum = src_y[px, py]
+            blue = src_cb[px, py]
+            red = src_cr[px, py]
+            if 86 <= blue <= 132 and 132 <= red <= 178 and lum >= 166:
+                dst[px, py] = min(155, max(0, (lum - 150) * 2))
+    face_window = _face_detail_mask(image.size, opacity=180)
+    skin_mask = Image.composite(skin_mask, Image.new("L", image.size, 0), face_window)
+    softened = ImageEnhance.Brightness(image).enhance(0.975)
+    softened = ImageEnhance.Contrast(softened).enhance(0.985)
+    return Image.composite(softened, image, skin_mask)
+
+
+def _apply_face_micro_retouch(image):
+    from PIL import Image, ImageEnhance, ImageFilter
+
+    face_mask = _face_detail_mask(image.size, opacity=120)
+    detail = image.filter(ImageFilter.UnsharpMask(radius=0.75, percent=72, threshold=4))
+    img = Image.composite(detail, image, face_mask)
+
+    eye_mask = _eye_detail_mask(image.size)
+    eye_detail = ImageEnhance.Contrast(detail).enhance(1.04)
+    eye_detail = eye_detail.filter(ImageFilter.UnsharpMask(radius=0.55, percent=95, threshold=3))
+    img = Image.composite(eye_detail, img, eye_mask)
+
+    smile_mask = _smile_polish_mask(image.size)
+    smile = ImageEnhance.Brightness(img).enhance(1.018)
+    smile = ImageEnhance.Color(smile).enhance(0.985)
+    return Image.composite(smile, img, smile_mask)
+
+
+def _inject_subtle_film_grain(image):
+    from PIL import Image, ImageChops, ImageEnhance
+
+    width, height = image.size
+    noise = Image.effect_noise((width, height), 5.5).convert("L")
+    noise = ImageEnhance.Contrast(noise).enhance(0.32)
+    neutral = Image.new("L", image.size, 128)
+    grain_delta = ImageChops.subtract(noise, neutral, scale=1.0, offset=128)
+    grain_rgb = Image.merge("RGB", (grain_delta, grain_delta, grain_delta))
+    return Image.blend(image, grain_rgb, 0.028)
+
+
+def _face_detail_mask(size: tuple[int, int], *, opacity: int = 150):
+    from PIL import Image, ImageDraw, ImageFilter
+
+    width, height = size
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    left = int(width * 0.30)
+    top = int(height * 0.12)
+    right = int(width * 0.70)
+    bottom = int(height * 0.47)
+    draw.ellipse((left, top, right, bottom), fill=max(0, min(255, int(opacity))))
+    return mask.filter(ImageFilter.GaussianBlur(radius=max(8, int(min(width, height) * 0.025))))
+
+
+def _eye_detail_mask(size: tuple[int, int]):
+    from PIL import Image, ImageDraw, ImageFilter
+
+    width, height = size
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    top = int(height * 0.22)
+    bottom = int(height * 0.32)
+    draw.ellipse((int(width * 0.34), top, int(width * 0.48), bottom), fill=135)
+    draw.ellipse((int(width * 0.52), top, int(width * 0.66), bottom), fill=135)
+    return mask.filter(ImageFilter.GaussianBlur(radius=max(4, int(min(width, height) * 0.012))))
+
+
+def _smile_polish_mask(size: tuple[int, int]):
+    from PIL import Image, ImageDraw, ImageFilter
+
+    width, height = size
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse(
+        (int(width * 0.39), int(height * 0.34), int(width * 0.61), int(height * 0.43)),
+        fill=42,
+    )
+    return mask.filter(ImageFilter.GaussianBlur(radius=max(5, int(min(width, height) * 0.016))))
 
 
 def _subject_fill_mask(size: tuple[int, int]):
@@ -177,7 +277,18 @@ def _crop_to_variant(image, variant: DeliveryVariant):
     else:
         target = (long_edge, max(1, round(long_edge / variant.aspect_ratio)))
     resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", 1)
-    return ImageOps.fit(image, target, method=resample, centering=(0.5, 0.44))
+    return ImageOps.fit(image, target, method=resample, centering=_smart_crop_centering(variant))
+
+
+def _smart_crop_centering(variant: DeliveryVariant) -> tuple[float, float]:
+    ratio = float(variant.aspect_ratio or 1)
+    if ratio <= 0.6:
+        return (0.5, 0.42)
+    if ratio < 1:
+        return (0.5, 0.44)
+    if ratio > 1.2:
+        return (0.5, 0.47)
+    return (0.5, 0.43)
 
 
 def _upload_image(image, filename: str) -> str:

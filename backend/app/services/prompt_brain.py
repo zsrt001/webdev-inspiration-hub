@@ -24,6 +24,17 @@ PHOTO_REALISM_PROTOCOL = (
     "print-ready 300dpi bridal-studio deliverable"
 )
 
+GEMINI_FLASH_EDIT_PROTOCOL = (
+    "Gemini 3.1 Flash image-edit protocol: treat every uploaded image as visual evidence, not optional style "
+    "inspiration. The first identity face crop is the primary facial-geometry anchor, the original portrait is the "
+    "full-body and skin-undertone anchor, and style references may influence only scene, wardrobe, lighting, and "
+    "color. Keep edits local and photographic: preserve source face geometry, skin undertone, age impression, "
+    "expression family, and asymmetry while changing only the wedding styling. Prefer realistic camera optics, "
+    "subtle analog film grain, Kodak Portra-like color response, natural lens falloff, and coherent softbox lighting. "
+    "Avoid the Gemini failure modes of invented beauty-model faces, smeared pores, glossy AI skin, over-clean hair, "
+    "plastic white dresses, text artifacts, and decorative background hallucinations"
+)
+
 PHOTO_PROTOCOL = (
     "premium bridal studio finish, print-ready high-end wedding portrait, realistic skin texture, natural pores, "
     "sharp eyes, realistic hair strands, crisp couture fabric and embroidery details, "
@@ -267,6 +278,7 @@ def build_prompt(
     # Layer 2: Skin & photorealism (critical for commercial quality — early placement)
     parts.append(_section("SKIN REALISM", SKIN_REALISM_PROTOCOL))
     parts.append(_section("PHOTO REALISM", PHOTO_REALISM_PROTOCOL))
+    parts.append(_section("GEMINI FLASH EDIT PROTOCOL", GEMINI_FLASH_EDIT_PROTOCOL))
     parts.append(_section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL))
 
     # Layer 3: Scene & wardrobe

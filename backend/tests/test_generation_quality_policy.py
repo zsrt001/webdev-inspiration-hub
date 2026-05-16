@@ -32,6 +32,12 @@ from app.services.generation_credit_policy import (  # noqa: E402
     resolve_generation_refund_amount,
 )
 from app.services.prompt_brain import build_prompt, get_negative_prompt, get_studio_guardrails  # noqa: E402
+from app.services.postprocess_service import (  # noqa: E402
+    VARIANT_MAP,
+    _crop_to_variant,
+    _enhance_master,
+    _smart_crop_centering,
+)
 from app.services import qa_service  # noqa: E402
 from app.services import llm_service  # noqa: E402
 from app.services import wenwen_service as wenwen_module  # noqa: E402
@@ -89,6 +95,9 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("natural human skin with visible pores", prompt)
         self.assertIn("PHOTO REALISM:", prompt)
         self.assertIn("Hasselblad", prompt)
+        self.assertIn("GEMINI FLASH EDIT PROTOCOL:", prompt)
+        self.assertIn("first identity face crop is the primary facial-geometry anchor", prompt)
+        self.assertIn("Kodak Portra-like color response", prompt)
         self.assertIn("ANTI AI ARTIFACTS:", prompt)
         self.assertIn("wedding photograph", prompt)
         # Composition
@@ -161,6 +170,25 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("background dominates the subject", negative)
         self.assertIn("weak couple interaction", negative)
         self.assertIn("unrequested mountain vista", negative)
+
+    def test_postprocess_variants_cover_commercial_delivery_ratios(self) -> None:
+        self.assertIn("3x2", VARIANT_MAP)
+        self.assertIn("4x5", VARIANT_MAP)
+        self.assertIn("1x1", VARIANT_MAP)
+        self.assertEqual(VARIANT_MAP["3x2"].suffix, "print_3x2")
+        self.assertEqual(VARIANT_MAP["4x5"].suffix, "portrait_4x5")
+        self.assertEqual(VARIANT_MAP["1x1"].suffix, "square_1x1")
+        self.assertEqual(_smart_crop_centering(VARIANT_MAP["9x16"]), (0.5, 0.42))
+
+    def test_postprocess_master_enhance_and_crop_preserve_delivery_geometry(self) -> None:
+        image = Image.new("RGB", (900, 1200), (214, 185, 168))
+        enhanced = _enhance_master(image)
+        crop_4x5 = _crop_to_variant(enhanced, VARIANT_MAP["4x5"])
+        crop_square = _crop_to_variant(enhanced, VARIANT_MAP["1x1"])
+
+        self.assertLessEqual(max(enhanced.size), 2400)
+        self.assertEqual(crop_4x5.size[0] / crop_4x5.size[1], 0.8)
+        self.assertEqual(crop_square.size[0], crop_square.size[1])
 
     def test_legacy_prompt_override_cannot_bypass_studio_guardrails(self) -> None:
         template = get_template_by_id("solo_royal_castle")
