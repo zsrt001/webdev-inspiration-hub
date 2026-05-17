@@ -16,15 +16,11 @@ class OrderStatus(str, Enum):
     Commercial default flow:
     CREATED -> CHECKING -> GENERATING -> COMPLETED
 
-    Legacy statuses are kept for historical record compatibility only.
     """
 
     CREATED = "CREATED"  # Order created, waiting for image upload
     CHECKING = "CHECKING"  # Checking uploaded images (safety/quality)
     GENERATING = "GENERATING"  # AI is generating preview images
-    PREVIEW_READY = "PREVIEW_READY"  # Compatibility-only legacy status
-    PAID = "PAID"  # Compatibility-only legacy status
-    UPSCALING = "UPSCALING"  # Compatibility-only legacy status
     COMPLETED = "COMPLETED"  # Order completed, final images ready
     FAILED = "FAILED"  # Terminal failure after refund/retry protection
 
@@ -163,9 +159,6 @@ class Order(Base):
             OrderStatus.CREATED: [OrderStatus.CHECKING],
             OrderStatus.CHECKING: [OrderStatus.GENERATING, OrderStatus.CREATED, OrderStatus.FAILED],
             OrderStatus.GENERATING: [OrderStatus.COMPLETED, OrderStatus.CREATED, OrderStatus.FAILED],
-            OrderStatus.PREVIEW_READY: [OrderStatus.COMPLETED],  # Compatibility-only legacy path
-            OrderStatus.PAID: [OrderStatus.UPSCALING, OrderStatus.COMPLETED],  # Compatibility-only legacy path
-            OrderStatus.UPSCALING: [OrderStatus.COMPLETED, OrderStatus.PAID],  # Compatibility-only legacy path
             OrderStatus.COMPLETED: [],
             OrderStatus.FAILED: [OrderStatus.CREATED, OrderStatus.GENERATING],
         }

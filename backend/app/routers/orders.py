@@ -115,7 +115,6 @@ async def get_order(
 
 
 @router.post("/create", response_model=OrderRead)
-@router.post("", response_model=OrderRead)
 async def create_order(
     request: OrderCreate,
     background_tasks: BackgroundTasks,

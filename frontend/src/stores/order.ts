@@ -48,6 +48,8 @@ export interface Order {
     qa_attempt_count?: number | null;
     failure_code?: string | null;
     failure_provider?: string | null;
+    generation_stage?: string | null;
+    generation_stage_history?: Array<Record<string, any>> | null;
     created_at: string;
     updated_at: string;
 }
@@ -81,6 +83,7 @@ interface CreateOrderRequest {
     depth_cn_end?: number;
     normal_cn_start?: number;
     normal_cn_end?: number;
+    upload_quality?: Array<Record<string, any>>;
 }
 
 export const useOrderStore = defineStore('order', () => {

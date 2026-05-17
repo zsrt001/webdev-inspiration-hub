@@ -202,6 +202,7 @@ def apply_template_overrides(templates: list[Template]) -> list[Template]:
             "scene_ref_image_url",
             "default_background_prompt",
             "clothing_prompt",
+            "stability",
         ):
             value = override.get(field)
             if value is not None:
@@ -244,6 +245,7 @@ def get_credit_package_overrides() -> list[dict[str, Any]] | None:
                 "id": package_id,
                 "credits": max(1, int(item.get("credits") or 0)),
                 "price": max(0.0, float(item.get("price") or 0)),
+                "currency": str(item.get("currency") or "USD").strip().upper() or "USD",
                 "label": str(item.get("label") or package_id).strip() or package_id,
                 "popular": bool(item.get("popular")),
             }
@@ -334,4 +336,3 @@ def get_crm_config() -> dict[str, Any]:
     except Exception:
         normalized["batch_size"] = DEFAULT_OPS_CONFIG["crm"]["batch_size"]
     return normalized
-

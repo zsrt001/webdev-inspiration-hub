@@ -17,6 +17,7 @@ ENV/
 .antigravity/
 .claude/
 .codex-screenshots/
+.codex-tools/
 *.swp
 *.swo
 *~
@@ -24,6 +25,7 @@ ENV/
 # Environment
 .env
 .env.local
+.vercel-env-*
 *.local
 
 # Node
@@ -48,12 +50,14 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+PROJECT_RECOVERY_CONTEXT.md
 backend/test_wenwen_apis.py
 
 # Build
 build/
 *.egg-info/
 backend/artifacts/
+artifacts/
 backend/backend/
 
 # Offline wheels / vendored deps

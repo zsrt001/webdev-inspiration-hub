@@ -1,6 +1,7 @@
 import { createSSRApp } from 'vue';
 import { createPinia } from 'pinia';
 import App from './App.vue';
+import { registerPwa } from './utils/pwa';
 
 if (typeof window !== 'undefined') {
     window.addEventListener('unhandledrejection', (event) => {
@@ -9,6 +10,7 @@ if (typeof window !== 'undefined') {
             event.preventDefault();
         }
     });
+    registerPwa();
 }
 
 export function createApp() {

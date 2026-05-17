@@ -10,11 +10,11 @@
           <view class="orb-core">✦</view>
         </view>
         <!-- STUDIO 3.0 STORY LOADER -->
-        <text class="ritual-status heading-serif">{{ studioLoadingText }}</text>
-        <text class="ritual-hint">{{ tr('旗舰质检已开启', 'Flagship Quality Control Active') }}</text>
+        <text class="ritual-status heading-serif">{{ generationStageLabel || studioLoadingText }}</text>
+        <text class="ritual-hint">{{ generationStageHint }}</text>
         <text class="ritual-policy">{{ tr('入队即扣费 · 失败自动退款', 'Charged on queueing · Auto-refund on failure') }}</text>
         <view class="ritual-bar-wrap">
-          <view class="ritual-bar-fill" :style="{ width: (progressStep * 25) + '%' }"></view>
+          <view class="ritual-bar-fill" :style="{ width: generationProgressWidth }"></view>
         </view>
       </view>
     </view>
@@ -100,7 +100,7 @@
             <button v-if="canDownload" class="btn btn-primary e-action-btn primary shadow-glow" @tap="downloadHD">
               {{ tr('下载高清图', 'DEVELOP HD PRINT') }}
             </button>
-            <button v-else class="btn btn-primary e-action-btn primary shadow-glow" @tap="showPaymentModal = true">
+            <button v-else class="btn btn-primary e-action-btn primary shadow-glow" @tap="requestUnlockDownload">
               {{ tr('充值解锁高清下载', 'Unlock HD Download') }}
             </button>
             <button
@@ -117,6 +117,22 @@
             <button v-if="livePortraitEnabled" class="btn btn-outline e-action-btn secondary" :disabled="livePortraitBusy" @tap="openLivePortrait">
               {{ livePortraitBusy ? tr('动态生成中...', 'ANIMATING...') : tr('动态人像（5秒）', 'LIVE PORTRAIT (5s)') }}
             </button>
+          </view>
+
+          <view v-if="orderStore.isCompleted && abVariantOptions.length" class="ab-compare-card shadow-md">
+            <view class="c-tag">{{ tr('风格对比', 'Style A/B') }}</view>
+            <text class="c-title">{{ tr('用同一张图再试 2 个稳定模板', 'Try two stable variants with this photo') }}</text>
+            <text class="c-desc">{{ tr('选择会记录到模板排序，后续优先推荐更受欢迎的风格。', 'Your pick feeds future template ranking.') }}</text>
+            <view class="ab-variant-list">
+              <button
+                v-for="variant in abVariantOptions"
+                :key="variant.id"
+                class="btn btn-outline e-action-btn secondary variant-btn"
+                @tap="startAbVariant(variant.id)"
+              >
+                {{ variant.title }}
+              </button>
+            </view>
           </view>
 
           <!-- Studio Concierge -->
@@ -203,7 +219,8 @@
         <view v-if="failureActionHints.length" class="folio-meta error-meta">
           <text v-for="h in failureActionHints" :key="h" class="meta-chip">{{ h }}</text>
         </view>
-        <button class="btn btn-primary retry-btn" @tap="retry">{{ tr('重新开始', 'RESTART RITUAL') }}</button>
+        <button class="btn btn-primary retry-btn" @tap="regenerate">{{ tr('换图或换模板重试', 'Retry with better input') }}</button>
+        <button class="btn btn-outline retry-btn secondary-retry" @tap="retry">{{ tr('刷新当前任务', 'Refresh current task') }}</button>
       </view>
     </view>
 
@@ -252,23 +269,27 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useOrderStore } from '../../stores/order';
 import { useI18nStore } from '../../stores/i18n';
 import { useOpsStore } from '../../stores/ops';
+import { useTemplateStore } from '../../stores/template';
 import NavBar from '../../components/NavBar.vue';
 import PaymentModal from '../../components/PaymentModal.vue';
 import CompareSlider from '../../components/CompareSlider.vue';
 import LegalConsentInline from '../../components/LegalConsentInline.vue';
 import { post, get } from '../../utils/api';
+import { trackEvent } from '../../utils/analytics';
 // @ts-ignore
 import QRCode from 'qrcode';
 
 const orderStore = useOrderStore();
 const i18nStore = useI18nStore();
 const opsStore = useOpsStore();
+const templateStore = useTemplateStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 const navBarRef = ref<InstanceType<typeof NavBar> | null>(null);
 const showPaymentModal = ref(false);
 const showPosterModal = ref(false);
 const qrCodeUrl = ref('');
 const progressStep = ref(1);
+const trackedCompletedOrderId = ref('');
 
 const onPurchaseComplete = () => {
   navBarRef.value?.refreshBalance();
@@ -365,6 +386,42 @@ const loadingTexts = computed(() => [
 ]);
 
 const studioLoadingText = computed(() => loadingTexts.value[currentTextIndex.value]);
+const generationStageOrder = ['queued', 'identity_refs_ready', 'provider_submitted', 'qa_checking', 'repairing', 'postprocessing', 'completed'];
+const generationStage = computed(() => {
+  const direct = orderStore.currentOrder?.generation_stage;
+  if (direct) return String(direct);
+  const params = orderStore.currentOrder?.generation_params as any;
+  return params && typeof params === 'object' ? String(params.generation_stage || '') : '';
+});
+const generationStageLabel = computed(() => {
+  switch (generationStage.value) {
+    case 'queued': return tr('任务已排队', 'Queued');
+    case 'identity_refs_ready': return tr('身份参考已锁定', 'Identity anchors ready');
+    case 'provider_submitted': return tr('已提交生成', 'Submitted to AI');
+    case 'qa_checking': return tr('质检中', 'Quality checking');
+    case 'repairing': return tr('自动修复中', 'Auto repairing');
+    case 'postprocessing': return tr('成片处理中', 'Finishing final images');
+    case 'completed': return tr('已完成', 'Completed');
+    case 'failed': return tr('生成失败', 'Generation failed');
+    default: return '';
+  }
+});
+const generationStageHint = computed(() => {
+  switch (generationStage.value) {
+    case 'queued': return tr('正在等待生成通道', 'Waiting for the generation channel');
+    case 'identity_refs_ready': return tr('人脸与上半身参考已准备好', 'Face and upper-body references are ready');
+    case 'provider_submitted': return tr('Gemini 编辑任务已提交', 'Gemini edit job has been submitted');
+    case 'qa_checking': return tr('正在检查脸像、构图和伪影', 'Checking identity, composition, and artifacts');
+    case 'repairing': return tr('检测到问题，正在自动多轮修复', 'Issue detected, automatic repair is running');
+    case 'postprocessing': return tr('正在整理预览、高清与多比例成片', 'Preparing preview, HD, and aspect variants');
+    default: return tr('旗舰质检已开启', 'Flagship Quality Control Active');
+  }
+});
+const generationProgressWidth = computed(() => {
+  const index = generationStageOrder.indexOf(generationStage.value);
+  if (index >= 0) return `${Math.max(8, Math.round(((index + 1) / generationStageOrder.length) * 100))}%`;
+  return `${progressStep.value * 25}%`;
+});
 
 const userUploadUrl = computed(() => {
   const source = orderStore.currentOrder?.source_image_urls as any;
@@ -392,8 +449,11 @@ const downloadVariants = computed(() => {
   const urls = orderStore.currentOrder?.final_image_urls || {};
   const labels: Record<string, string> = {
     portrait_2x3: tr('2:3 竖图', '2:3 Portrait'),
+    print_3x2: tr('3:2 冲印', '3:2 Print'),
     xhs_3x4: tr('3:4 小红书', '3:4 Social'),
+    portrait_4x5: tr('4:5 竖图', '4:5 Portrait'),
     wallpaper_9x16: tr('9:16 壁纸', '9:16 Wallpaper'),
+    square_1x1: tr('1:1 方图', '1:1 Square'),
   };
   return Object.entries(urls)
     .filter(([key]) => key !== 'image_1')
@@ -404,6 +464,23 @@ const downloadVariants = computed(() => {
         : null;
     })
     .filter(Boolean) as { key: string; url: string; label: string; filename: string }[];
+});
+const abVariantOptions = computed(() => {
+  const templates = templateStore.templates || [];
+  const currentId = String(orderStore.currentOrder?.template_id || '');
+  const current = templates.find((item) => item.id === currentId);
+  const category = current?.category || (currentId.startsWith('solo_') ? 'single' : 'couple');
+  const stableIds = [
+    category === 'single' ? 'solo_korean_minimal' : 'korean_minimal',
+    category === 'single' ? 'solo_old_money' : 'old_money',
+    category === 'single' ? 'solo_royal_castle' : 'royal_castle',
+    category === 'single' ? 'solo_chn_xiuhe' : 'chn_xiuhe',
+  ];
+  return stableIds
+    .filter((id) => id !== currentId)
+    .map((id) => templates.find((item) => item.id === id) || { id, title: id.replace(/^solo_/, '').replace(/_/g, ' ') })
+    .slice(0, 2)
+    .map((item: any) => ({ id: String(item.id), title: String(item.marketing_title || item.title || item.id) }));
 });
 const hasRenderableOutput = computed(() => {
   const preview = orderStore.currentOrder?.preview_image_urls;
@@ -896,6 +973,12 @@ const exportPosterForH5 = async (imageUrl: string, qrUrl: string) => {
 
 const downloadImageUrl = async (url: string, fallbackName = 'ai-wedding-studio-hd.jpg') => {
   if (!canDownload.value) {
+    await trackEvent({
+      eventType: 'download_locked_clicked',
+      sourcePage: 'preview',
+      templateId: orderStore.currentOrder?.template_id || null,
+      meta: { order_id: orderStore.currentOrder?.id || null },
+    });
     showPaymentModal.value = true;
     uni.showToast({ title: tr('请先充值解锁高清下载', 'Top up to unlock HD download'), icon: 'none' });
     return;
@@ -907,6 +990,12 @@ const downloadImageUrl = async (url: string, fallbackName = 'ai-wedding-studio-h
 
   // #ifdef H5
   try {
+    await trackEvent({
+      eventType: 'download_started',
+      sourcePage: 'preview',
+      templateId: orderStore.currentOrder?.template_id || null,
+      meta: { order_id: orderStore.currentOrder?.id || null, filename: fallbackName, runtime: 'h5' },
+    });
     const browser = globalThis as any;
     const doc = browser?.document;
     if (!doc) throw new Error('document_unavailable');
@@ -918,12 +1007,24 @@ const downloadImageUrl = async (url: string, fallbackName = 'ai-wedding-studio-h
     doc.body.appendChild(link);
     link.click();
     doc.body.removeChild(link);
+    await trackEvent({
+      eventType: 'download_success',
+      sourcePage: 'preview',
+      templateId: orderStore.currentOrder?.template_id || null,
+      meta: { order_id: orderStore.currentOrder?.id || null, filename: fallbackName, runtime: 'h5' },
+    });
     uni.showToast({ title: tr('开始下载', 'Download started'), icon: 'success' });
     return;
   } catch (e) {
     console.error(e);
     const browser = globalThis as any;
     browser?.open?.(url, '_blank');
+    await trackEvent({
+      eventType: 'download_success',
+      sourcePage: 'preview',
+      templateId: orderStore.currentOrder?.template_id || null,
+      meta: { order_id: orderStore.currentOrder?.id || null, filename: fallbackName, runtime: 'h5_open' },
+    });
     uni.showToast({ title: tr('已在新标签页打开', 'Opened in new tab'), icon: 'none' });
     return;
   }
@@ -932,6 +1033,12 @@ const downloadImageUrl = async (url: string, fallbackName = 'ai-wedding-studio-h
   // #ifndef H5
   uni.showLoading({ title: tr('下载中...', 'Downloading...') });
   try {
+    await trackEvent({
+      eventType: 'download_started',
+      sourcePage: 'preview',
+      templateId: orderStore.currentOrder?.template_id || null,
+      meta: { order_id: orderStore.currentOrder?.id || null, filename: fallbackName, runtime: 'native' },
+    });
     const result = await uni.downloadFile({ url });
     if ((result as any)?.statusCode !== 200) {
       throw new Error(`download_failed_${(result as any)?.statusCode}`);
@@ -941,6 +1048,12 @@ const downloadImageUrl = async (url: string, fallbackName = 'ai-wedding-studio-h
       throw new Error('missing_temp_file');
     }
     await uni.saveImageToPhotosAlbum({ filePath: tempPath });
+    await trackEvent({
+      eventType: 'download_success',
+      sourcePage: 'preview',
+      templateId: orderStore.currentOrder?.template_id || null,
+      meta: { order_id: orderStore.currentOrder?.id || null, filename: fallbackName, runtime: 'native' },
+    });
     uni.showToast({ title: tr('已保存到相册', 'Saved to album'), icon: 'success' });
   } catch (e) {
     console.error(e);
@@ -1170,7 +1283,7 @@ const openLivePortrait = async () => {
 
 const openPosterModal = async () => {
   if (!canDownload.value) {
-    showPaymentModal.value = true;
+    await requestUnlockDownload();
     uni.showToast({ title: tr('请先充值解锁高清下载', 'Top up to unlock HD download'), icon: 'none' });
     return;
   }
@@ -1185,7 +1298,35 @@ const openPosterModal = async () => {
 };
 
 const closePosterModal = () => showPosterModal.value = false;
-const regenerate = () => uni.navigateBack();
+const goCreateWithTemplate = (templateId?: string | null, ab = false) => {
+  const id = String(templateId || orderStore.currentOrder?.template_id || '').trim();
+  const query = id ? `?id=${encodeURIComponent(id)}${ab ? '&ab=1' : ''}` : '';
+  uni.navigateTo({ url: `/pages/create/index${query}` });
+};
+const regenerate = () => goCreateWithTemplate(orderStore.currentOrder?.template_id || null);
+
+const requestUnlockDownload = async () => {
+  await trackEvent({
+    eventType: 'download_locked_clicked',
+    sourcePage: 'preview',
+    templateId: orderStore.currentOrder?.template_id || null,
+    meta: { order_id: orderStore.currentOrder?.id || null, entry: 'unlock_button' },
+  });
+  showPaymentModal.value = true;
+};
+
+const startAbVariant = async (templateId: string) => {
+  await trackEvent({
+    eventType: 'ab_variant_selected',
+    sourcePage: 'preview',
+    templateId,
+    meta: {
+      order_id: orderStore.currentOrder?.id || null,
+      current_template_id: orderStore.currentOrder?.template_id || null,
+    },
+  });
+  goCreateWithTemplate(templateId, true);
+};
 
 const cityForReco = computed(() => {
   const fallback = tr('你的城市', 'your city');
@@ -1403,6 +1544,19 @@ watch(
   },
   { immediate: true }
 );
+watch(
+  () => [orderStore.currentOrder?.id || '', orderStore.isCompleted] as const,
+  ([orderId, completed]) => {
+    if (!orderId || !completed || trackedCompletedOrderId.value === orderId) return;
+    trackedCompletedOrderId.value = orderId;
+    void trackEvent({
+      eventType: 'generation_result_ready_viewed',
+      sourcePage: 'preview',
+      templateId: orderStore.currentOrder?.template_id || null,
+      meta: { order_id: orderId },
+    });
+  }
+);
 
 const retry = () => {
   if (orderStore.currentOrder?.id) orderStore.startPolling(orderStore.currentOrder.id);
@@ -1410,10 +1564,18 @@ const retry = () => {
 
 onMounted(() => {
   opsStore.fetchPublicConfig();
+  if (!templateStore.templates.length) {
+    void templateStore.fetchTemplates();
+  }
   const pages = getCurrentPages();
   const pageOptions = (pages[pages.length - 1] as any).options || {};
   const id = pageOptions.id || pageOptions.orderId;
   if (id) {
+    void trackEvent({
+      eventType: 'preview_opened',
+      sourcePage: 'preview',
+      meta: { order_id: String(id) },
+    });
     orderStore.fetchOrder(id);
     orderStore.startPolling(id);
   }
@@ -1599,6 +1761,51 @@ onUnmounted(() => {
   gap: 14px;
 }
 
+.ab-compare-card {
+  padding: 20px;
+  border: 1px solid rgba($uni-color-primary, 0.12);
+  border-radius: 8px;
+  background: #ffffff;
+
+  .c-tag {
+    font-size: 10px;
+    font-weight: 900;
+    color: $uni-color-primary;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 10px;
+  }
+
+  .c-title {
+    display: block;
+    font-size: 16px;
+    font-weight: 800;
+    color: $uni-text-color;
+    line-height: 1.35;
+  }
+
+  .c-desc {
+    display: block;
+    margin-top: 8px;
+    font-size: 12px;
+    color: $uni-text-color-muted;
+    line-height: 1.5;
+  }
+
+  .ab-variant-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .e-action-btn {
+    height: 46px;
+    border-radius: 8px;
+    font-size: 12px;
+  }
+}
+
 .secondary-ritual-entry { text-align: center; margin-bottom: 40px; .entry-back { font-size: 14px; font-weight: 700; color: $uni-text-color-muted; opacity: 0.6; } }
 
 /* STUDIO 3.0 LEADS FORM */
@@ -1701,6 +1908,7 @@ onUnmounted(() => {
     }
   }
   .retry-btn { border-radius: 100px; width: 100%; height: 56px; }
+  .secondary-retry { margin-top: 12px; }
 }
 
 /* Poster Ritual */

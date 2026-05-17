@@ -350,7 +350,7 @@ interface RegenerateResponse {
   order: AdminOrderDetail;
 }
 
-const orderStatusOptions = ['CREATED', 'CHECKING', 'GENERATING', 'PREVIEW_READY', 'PAID', 'UPSCALING', 'COMPLETED'];
+const orderStatusOptions = ['CREATED', 'CHECKING', 'GENERATING', 'COMPLETED', 'FAILED'];
 const statusFilterValues = ['', ...orderStatusOptions];
 const statusFilterLabels = ['All statuses', ...orderStatusOptions];
 

@@ -7,6 +7,7 @@ import logging
 from collections import defaultdict, deque
 from email.utils import parseaddr
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import select, text
@@ -186,17 +187,44 @@ async def send_payment_confirmation(*, to: str, credits: int, package_name: str,
     )
 
 
-async def send_order_completed(*, to: str, order_id: str, preview_url: str | None = None) -> dict[str, Any]:
+def build_order_result_url(order_id: str) -> str:
+    settings = get_settings()
+    base_url = str(settings.frontend_base_url or settings.vercel_project_production_url or "").strip().rstrip("/")
+    clean_id = str(order_id or "").strip()
+    if not base_url or not clean_id:
+        return ""
+    return f"{base_url}/#/pages/preview/preview?id={quote(clean_id)}"
+
+
+async def send_order_completed(
+    *,
+    to: str,
+    order_id: str,
+    preview_url: str | None = None,
+    action_url: str | None = None,
+) -> dict[str, Any]:
     safe_id = html.escape(str(order_id)[:8])
     preview_block = ""
     if preview_url:
         safe_url = html.escape(str(preview_url))
         preview_block = f'<p><img src="{safe_url}" style="max-width:100%;border-radius:8px" alt="preview"></p>'
+    resolved_action_url = str(action_url or "").strip() or build_order_result_url(order_id)
+    cta_block = ""
+    if resolved_action_url:
+        safe_action_url = html.escape(resolved_action_url)
+        cta_block = (
+            '<p style="margin:24px 0">'
+            f'<a href="{safe_action_url}" '
+            'style="display:inline-block;background:#111827;color:#fff;text-decoration:none;'
+            'padding:12px 18px;border-radius:8px;font-weight:700">Open your result</a>'
+            "</p>"
+        )
     html_body = f"""
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
       <h2>Your Photo is Ready!</h2>
       {preview_block}
       <p>Order <code>{safe_id}</code> has been completed. Log in to view and download your full-resolution photo.</p>
+      {cta_block}
     </div>
     """
     return await _send_email(to=to, subject="Your AI Wedding Photo is Ready", html=html_body, purpose="order_completed")

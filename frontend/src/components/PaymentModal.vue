@@ -73,9 +73,9 @@
             </view>
 
             <view class="price-line">
-              <text class="currency">$</text>
-              <text class="price-value">{{ pkg.price.toFixed(2) }}</text>
-              <text class="price-unit">USD</text>
+              <text class="currency">{{ packageCurrencySymbol(pkg) }}</text>
+              <text class="price-value">{{ packagePriceValue(pkg) }}</text>
+              <text class="price-unit">{{ pkg.currency || 'USD' }}</text>
             </view>
 
             <text class="plan-description">
@@ -174,11 +174,19 @@ import LegalConsentInline from './LegalConsentInline.vue';
 import { useI18nStore } from '../stores/i18n';
 import { useSubscriptionStore, type SubscriptionPlan } from '../stores/subscription';
 import { get, post } from '../utils/api';
+import { trackEvent } from '../utils/analytics';
 
 interface CreditPackage {
   id: string;
   credits: number;
   price: number;
+  currency?: string;
+  price_cents?: number;
+  display_price?: string | null;
+  region?: string;
+  payment_methods?: string[];
+  refund_policy_url?: string;
+  localized_pricing_ready?: boolean;
   label: string;
   popular: boolean;
 }
@@ -193,9 +201,9 @@ interface PackagesResponse {
 }
 
 const DEFAULT_CREDIT_PACKAGES: CreditPackage[] = [
-  { id: 'pack_50', credits: 50, price: 12.90, label: 'AI Wedding Starter', popular: false },
-  { id: 'pack_120', credits: 120, price: 24.90, label: 'AI Wedding Popular', popular: true },
-  { id: 'pack_300', credits: 300, price: 49.90, label: 'AI Wedding Premium', popular: false },
+  { id: 'pack_50', credits: 50, price: 12.90, currency: 'USD', label: 'AI Wedding Starter', popular: false },
+  { id: 'pack_120', credits: 120, price: 24.90, currency: 'USD', label: 'AI Wedding Popular', popular: true },
+  { id: 'pack_300', credits: 300, price: 49.90, currency: 'USD', label: 'AI Wedding Premium', popular: false },
 ];
 
 function defaultCreditPackages(): CreditPackage[] {
@@ -333,6 +341,17 @@ function priceFromCents(cents: number): string {
   return (Number(cents || 0) / 100).toFixed(2);
 }
 
+function packageCurrencySymbol(pkg: CreditPackage): string {
+  return currencySymbol(pkg.currency || 'USD');
+}
+
+function packagePriceValue(pkg: CreditPackage): string {
+  if (typeof pkg.price_cents === 'number' && pkg.price_cents > 0) {
+    return priceFromCents(pkg.price_cents);
+  }
+  return Number(pkg.price || 0).toFixed(2);
+}
+
 function generationEstimate(credits: number): string {
   const estimate = Math.max(1, Math.floor(Number(credits || 0) / Math.max(costPerGeneration.value, 1)));
   return tr(`约 ${estimate} 次基础生成`, `About ${estimate} base generations`);
@@ -343,6 +362,13 @@ function unitPriceLabel(amount: number, credits: number, currency = 'USD'): stri
   const prefix = currencySymbol(currency);
   const suffix = String(currency || 'USD').toUpperCase() === 'USD' ? '' : ` ${currency}`;
   return `${prefix}${perTenCredits.toFixed(2)}${suffix} / ${tr('10 积分', '10 credits')}`;
+}
+
+function packageUnitPriceLabel(pkg: CreditPackage): string {
+  const amount = typeof pkg.price_cents === 'number' && pkg.price_cents > 0
+    ? pkg.price_cents / 100
+    : Number(pkg.price || 0);
+  return unitPriceLabel(amount, pkg.credits, pkg.currency || 'USD');
 }
 
 function packageTitle(pkg: CreditPackage): string {
@@ -361,13 +387,20 @@ function packageShortName(pkg: CreditPackage): string {
 }
 
 function packageFeatureLines(pkg: CreditPackage): string[] {
-  return [
+  const methods = (pkg.payment_methods || []).map((item) => String(item).replace(/_/g, ' ')).join(' / ');
+  const lines = [
     `${pkg.credits} ${tr('积分一次性到账', 'credits added once')}`,
-    unitPriceLabel(pkg.price, pkg.credits, 'USD'),
+    packageUnitPriceLabel(pkg),
     generationEstimate(pkg.credits),
     tr('适合试风格、继续生成和高清权益', 'Good for style tests, more generations, and HD access'),
     tr('支付完成后自动加入账户', 'Added to your account after payment'),
   ];
+  if (pkg.region) lines.push(`${tr('区域', 'Region')}: ${pkg.region}`);
+  if (methods) lines.push(`${tr('支付方式', 'Payment methods')}: ${methods}`);
+  if (pkg.localized_pricing_ready === false) {
+    lines.push(tr('当前按 USD 结算，区域化货币将后续开放', 'Settled in USD for now; regional currencies will follow'));
+  }
+  return lines;
 }
 
 function planDisplayName(plan: SubscriptionPlan): string {
@@ -452,7 +485,7 @@ async function fetchData() {
     .catch(() => undefined);
 
   const [packagesResult] = await Promise.allSettled([
-    get<PackagesResponse>('/credits/packages', { showLoading: false, showError: false }),
+    get<PackagesResponse>(`/credits/packages?locale=${encodeURIComponent(i18nStore.locale)}`, { showLoading: false, showError: false }),
     subscriptionStore.fetchPlans(true),
   ]);
 
@@ -499,6 +532,17 @@ async function reconcilePendingPurchase() {
     if (!status) return;
     currentBalance.value = status.balance;
     if (status.completed) {
+      await trackEvent({
+        eventType: 'payment_completed',
+        sourcePage: 'payment_modal',
+        templateId: null,
+        meta: {
+          purchase_id: status.purchase_id,
+          package_id: status.package_id,
+          credits_added: status.credits_added,
+          balance: status.balance,
+        },
+      });
       purchaseSuccess.value = true;
       creditsAdded.value = status.credits_added;
       newBalance.value = status.balance;
@@ -532,11 +576,23 @@ async function handlePurchase(pkg?: CreditPackage) {
   processing.value = true;
   processingText.value = tr('正在创建支付订单...', 'Creating checkout...');
   try {
+    await trackEvent({
+      eventType: 'payment_checkout_started',
+      sourcePage: 'payment_modal',
+      templateId: null,
+      meta: { package_id: targetPackage.id, credits: targetPackage.credits, price: targetPackage.price },
+    });
     const response = await post<CheckoutResponse>(
       '/payments/checkout',
       { package_id: targetPackage.id, return_url: currentReturnUrl() },
       { showLoading: false, showError: false },
     );
+    await trackEvent({
+      eventType: 'payment_checkout_created',
+      sourcePage: 'payment_modal',
+      templateId: null,
+      meta: { purchase_id: response.purchase_id, provider: response.provider, package_id: targetPackage.id },
+    });
     savePendingPurchase({ purchaseId: response.purchase_id });
     if (isH5()) {
       window.location.href = response.checkout_url;
@@ -564,7 +620,19 @@ async function handleSubscriptionPurchase(planCode?: string) {
   processing.value = true;
   processingText.value = tr('正在创建订阅订单...', 'Creating subscription checkout...');
   try {
+    await trackEvent({
+      eventType: 'subscription_checkout_started',
+      sourcePage: 'payment_modal',
+      templateId: null,
+      meta: { plan_code: targetPlanCode },
+    });
     const response = await subscriptionStore.startSubscriptionCheckout(targetPlanCode, currentReturnUrl());
+    await trackEvent({
+      eventType: 'subscription_checkout_created',
+      sourcePage: 'payment_modal',
+      templateId: null,
+      meta: { plan_code: targetPlanCode, checkout_url: !!response.checkout_url },
+    });
     if (isH5()) {
       window.location.href = response.checkout_url;
       return;

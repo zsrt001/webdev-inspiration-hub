@@ -26,7 +26,8 @@ class ClickStat(Base):
     source_page: Mapped[str] = mapped_column(String(80), index=True)
     template_id: Mapped[str] = mapped_column(String(64), default="na", index=True)
     count: Mapped[int] = mapped_column(Integer, default=0)
+    value_sum: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    value_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-

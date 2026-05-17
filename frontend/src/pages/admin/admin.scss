@@ -176,8 +176,7 @@
 }
 
 .status-pill.active,
-.status-pill.COMPLETED,
-.status-pill.PAID {
+.status-pill.COMPLETED {
   background: #e7f7ef;
   color: #137248;
 }
@@ -191,9 +190,7 @@
 }
 
 .status-pill.CHECKING,
-.status-pill.GENERATING,
-.status-pill.PREVIEW_READY,
-.status-pill.UPSCALING {
+.status-pill.GENERATING {
   background: #eaf1ff;
   color: #2455a6;
 }

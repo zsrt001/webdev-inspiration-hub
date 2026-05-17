@@ -4,6 +4,8 @@ export type SmartInputVerdict = {
   advice: string[];
   metrics: Record<string, number>;
   risk_flags: string[];
+  quality_score: number;
+  quality_level: 'good' | 'warning' | 'poor';
 };
 
 const FACE_API_SCRIPT = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js';
@@ -17,12 +19,47 @@ const defaultVerdict = (): SmartInputVerdict => ({
   advice: [],
   metrics: {},
   risk_flags: [],
+  quality_score: 100,
+  quality_level: 'good',
 });
 
 const addIssue = (verdict: SmartInputVerdict, reason: string, advice: string) => {
   if (!verdict.reasons.includes(reason)) verdict.reasons.push(reason);
   if (advice && !verdict.advice.includes(advice)) verdict.advice.push(advice);
   verdict.passed = false;
+};
+
+const finalizeQualityScore = (verdict: SmartInputVerdict): SmartInputVerdict => {
+  const penalty: Record<string, number> = {
+    no_face: 45,
+    multiple_faces: 30,
+    face_too_small: 28,
+    face_occluded: 24,
+    not_frontal: 24,
+    face_near_edge: 22,
+    head_maybe_cropped: 22,
+    too_blurry: 26,
+    too_dark: 18,
+    overexposed: 20,
+    low_resolution: 16,
+    abnormal_aspect_ratio: 10,
+    face_too_close: 10,
+  };
+  let score = 100;
+  for (const reason of verdict.reasons) score -= penalty[reason] || 8;
+  const blur = Number(verdict.metrics.blur_score || 0);
+  const faceArea = Number(verdict.metrics.face_area_ratio || 0);
+  const yaw = Number(verdict.metrics.face_yaw_ratio || 0);
+  if (blur > 0 && blur < 10) score -= 8;
+  if (faceArea > 0 && faceArea < 0.055) score -= 10;
+  if (yaw > 0.28) score -= 10;
+  verdict.quality_score = Math.max(0, Math.min(100, Math.round(score)));
+  verdict.quality_level = verdict.quality_score >= 78 ? 'good' : verdict.quality_score >= 55 ? 'warning' : 'poor';
+  verdict.passed = true;
+  if (verdict.quality_level !== 'good' && !verdict.risk_flags.includes('identity_similarity_risk')) {
+    verdict.risk_flags.push('identity_similarity_risk');
+  }
+  return verdict;
 };
 
 const isWebRuntime = (): boolean => {
@@ -182,6 +219,7 @@ const runFaceDetection = async (img: HTMLImageElement): Promise<{ metrics: Recor
     const box = main?.detection?.box;
     const score = Number(main?.detection?.score || 0);
     metrics.face_score = score;
+    if (score > 0 && score < 0.62) reasons.push('face_occluded');
 
     if (box) {
       const faceAreaRatio = (box.width * box.height) / Math.max(1, imageWidth * imageHeight);
@@ -266,17 +304,17 @@ const runUniLightweightCheck = async (imagePath: string): Promise<SmartInputVerd
     verdict.metrics.aspect_ratio = ratio;
 
     if (!width || !height) {
-      addIssue(verdict, 'image_info_unavailable', '无法读取图片信息，请更换照片重试');
-      return verdict;
+      addIssue(verdict, 'image_info_unavailable', 'Image info unavailable. Please try another photo.');
+      return finalizeQualityScore(verdict);
     }
     if (Math.min(width, height) < 512) {
-      addIssue(verdict, 'low_resolution', '分辨率过低，请上传更清晰的照片');
+      addIssue(verdict, 'low_resolution', 'Resolution is low. A clearer photo is recommended.');
     }
     if (ratio < 0.55 || ratio > 1.95) {
-      addIssue(verdict, 'abnormal_aspect_ratio', '图片比例异常，请上传常规自拍照片');
+      addIssue(verdict, 'abnormal_aspect_ratio', 'Please use a regular portrait photo.');
     }
 
-    return verdict.reasons.length ? verdict : { ...verdict, passed: true };
+    return finalizeQualityScore(verdict);
   } catch {
     return null;
   }
@@ -288,7 +326,7 @@ export const runLocalSmartInputCheck = async (imagePath: string): Promise<SmartI
 
   if (!isWebRuntime()) {
     const uniVerdict = await runUniLightweightCheck(imagePath);
-    return uniVerdict || verdict;
+    return uniVerdict ? finalizeQualityScore(uniVerdict) : finalizeQualityScore(verdict);
   }
 
   try {
@@ -297,39 +335,39 @@ export const runLocalSmartInputCheck = async (imagePath: string): Promise<SmartI
     Object.assign(verdict.metrics, pixelMetrics);
 
     if (pixelMetrics.width && pixelMetrics.height && Math.min(pixelMetrics.width, pixelMetrics.height) < 512) {
-      addIssue(verdict, 'low_resolution', '分辨率过低，请上传更清晰的照片');
+      addIssue(verdict, 'low_resolution', 'Resolution is low. A clearer photo is recommended.');
     }
     const aspectRatio = (pixelMetrics.width || 0) / Math.max(1, pixelMetrics.height || 1);
     verdict.metrics.aspect_ratio = aspectRatio;
     if (aspectRatio < 0.55 || aspectRatio > 1.95) {
-      addIssue(verdict, 'abnormal_aspect_ratio', '图片比例异常，请上传常规自拍照片');
+      addIssue(verdict, 'abnormal_aspect_ratio', 'Please use a regular portrait photo.');
     }
     if ((pixelMetrics.brightness || 0) < 58) {
-      addIssue(verdict, 'too_dark', '太暗了，开灯或靠近窗边重拍');
+      addIssue(verdict, 'too_dark', 'The photo is too dark. Better lighting is recommended.');
     }
     if ((pixelMetrics.brightness || 0) > 236) {
-      addIssue(verdict, 'overexposed', '画面过曝，请降低光照后重拍');
+      addIssue(verdict, 'overexposed', 'The photo is overexposed. Softer light is recommended.');
     }
     if ((pixelMetrics.blur_score || 0) < 7.2) {
-      addIssue(verdict, 'too_blurry', '照片偏模糊，请保持稳定并重新对焦');
+      addIssue(verdict, 'too_blurry', 'The photo is blurry. Hold steady and refocus.');
     }
 
     const face = await runFaceDetection(img);
     Object.assign(verdict.metrics, face.metrics);
     const reasons = face.reasons;
     for (const reason of reasons || []) {
-      if (reason === 'no_face') addIssue(verdict, 'no_face', '未检测到人脸，请上传正脸自拍');
-      else if (reason === 'multiple_faces') addIssue(verdict, 'multiple_faces', '检测到多人，请仅保留单人自拍');
-      else if (reason === 'not_frontal' || reason === 'face_tilted') addIssue(verdict, 'not_frontal', '请正对镜头，避免侧脸或大角度偏头');
-      else if (reason === 'face_too_small') addIssue(verdict, 'face_too_small', '人脸过小，请靠近镜头重拍');
-      else if (reason === 'face_too_close') addIssue(verdict, 'face_too_close', '人脸过近，请稍微后退重拍');
-      else if (reason === 'face_near_edge' || reason === 'head_maybe_cropped') addIssue(verdict, 'face_near_edge', '请完整露出头部和肩部，避免贴边或裁头');
+      if (reason === 'no_face') addIssue(verdict, 'no_face', 'No clear face detected. Use a front-facing portrait.');
+      else if (reason === 'multiple_faces') addIssue(verdict, 'multiple_faces', 'Multiple faces detected. Use one clear portrait.');
+      else if (reason === 'face_occluded') addIssue(verdict, 'face_occluded', 'The face may be occluded. Use an unobstructed front-facing photo.');
+      else if (reason === 'not_frontal' || reason === 'face_tilted') addIssue(verdict, 'not_frontal', 'Face the camera and avoid side profiles or heavy tilt.');
+      else if (reason === 'face_too_small') addIssue(verdict, 'face_too_small', 'The face is too small. Move closer to the camera.');
+      else if (reason === 'face_too_close') addIssue(verdict, 'face_too_close', 'The face is too close. Step back slightly.');
+      else if (reason === 'face_near_edge' || reason === 'head_maybe_cropped') addIssue(verdict, 'face_near_edge', 'Keep the full head and shoulders inside the frame.');
     }
   } catch {
     // Keep local checker best-effort; backend gatekeeper is still authoritative.
-    return defaultVerdict();
+    return finalizeQualityScore(defaultVerdict());
   }
 
-  if (!verdict.reasons.length) verdict.passed = true;
-  return verdict;
+  return finalizeQualityScore(verdict);
 };

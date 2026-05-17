@@ -2,8 +2,8 @@
 
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin_token
@@ -15,6 +15,7 @@ from app.services.credit_service import (
     add_credits_async,
     deduct_credits_async,
     get_packages,
+    localize_credit_packages,
     get_package_by_id,
     list_credit_transactions_async,
     COST_PER_GENERATION,
@@ -36,6 +37,13 @@ class CreditPackage(BaseModel):
     id: str
     credits: int
     price: float
+    currency: str = "USD"
+    price_cents: int = 0
+    display_price: str | None = None
+    region: str = "US"
+    payment_methods: list[str] = Field(default_factory=list)
+    refund_policy_url: str = "/pages/legal/refund"
+    localized_pricing_ready: bool = False
     label: str
     popular: bool
 
@@ -93,9 +101,12 @@ async def get_user_balance(
 
 
 @router.get("/packages", response_model=PackagesResponse)
-async def list_packages():
+async def list_packages(
+    region: str | None = Query(default=None, max_length=8),
+    locale: str | None = Query(default=None, max_length=16),
+):
     """Get available credit packages for purchase."""
-    packages = get_packages()
+    packages = localize_credit_packages(get_packages(), region=region, locale=locale)
     return PackagesResponse(packages=[CreditPackage(**p) for p in packages])
 
 

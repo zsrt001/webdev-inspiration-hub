@@ -93,7 +93,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { get, post, uploadFile } from '../../utils/api';
 import { useI18nStore } from '../../stores/i18n';
-import { runLocalSmartInputCheck } from '../../utils/local_smart_input';
+import { runLocalSmartInputCheck, type SmartInputVerdict } from '../../utils/local_smart_input';
+import { trackEvent } from '../../utils/analytics';
 
 const i18nStore = useI18nStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
@@ -105,7 +106,24 @@ const uploadSuccess = ref(false);
 const orderId = ref('');
 const sessionInvalid = ref(false);
 const sessionStatus = ref('waiting');
+const selectedQuality = ref<Record<string, any> | null>(null);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+function serializeUploadQuality(verdict: SmartInputVerdict): Record<string, any> {
+  return {
+    quality_score: Math.max(0, Math.min(100, Math.round(Number(verdict.quality_score || 0)))),
+    quality_level: verdict.quality_level || 'good',
+    reasons: (verdict.reasons || []).map(String).filter(Boolean).slice(0, 12),
+    risk_flags: (verdict.risk_flags || []).map(String).filter(Boolean).slice(0, 12),
+    metrics: Object.fromEntries(
+      Object.entries(verdict.metrics || {})
+        .filter(([, value]) => Number.isFinite(Number(value)))
+        .slice(0, 20)
+        .map(([key, value]) => [key, Number(value)])
+    ),
+    role: 'guest',
+  };
+}
 
 const sessionStatusText = computed(() => {
   if (sessionStatus.value === 'ready') return tr('已就绪，等待生成', 'Ready for generation');
@@ -218,19 +236,21 @@ const selectPhoto = async () => {
   try {
     const res = await uni.chooseImage({
       count: 1,
-      sizeType: ['compressed'],
+      sizeType: ['original'],
       sourceType: ['album', 'camera'],
     });
     const localPath = res.tempFilePaths?.[0];
     if (!localPath) return;
 
     const localVerdict = await runLocalSmartInputCheck(localPath);
-    if (!localVerdict.passed) {
+    selectedQuality.value = serializeUploadQuality(localVerdict);
+    if (localVerdict.quality_level !== 'good') {
+      const score = Math.max(0, Math.min(100, Number(localVerdict.quality_score || 0)));
       uni.showToast({
-        title: localVerdict.advice?.[0] || tr('图片检测未通过，请重新拍摄', 'Image check failed, please retry'),
+        title: tr(`这张可能不像本人，建议换更清晰正脸（${score}分）`, `This may reduce likeness. A clearer front-facing photo is recommended (${score})`),
         icon: 'none',
+        duration: 2600,
       });
-      return;
     }
 
     selectedImage.value = localPath;
@@ -242,9 +262,53 @@ const selectPhoto = async () => {
 const confirmUpload = async () => {
   if (!selectedImage.value || !sessionId.value) return;
   uploading.value = true;
+  const startedAt = Date.now();
+  await trackEvent({
+    eventType: 'asset_upload_started',
+    sourcePage: 'remote_join',
+    templateId: null,
+    meta: { session_id: sessionId.value, role: 'guest' },
+  });
   try {
     const res = await uploadFile('/upload', selectedImage.value, 'file');
     const imageUrl = String(res.url || '').trim();
+    await trackEvent({
+      eventType: 'asset_upload_completed',
+      sourcePage: 'remote_join',
+      templateId: null,
+      meta: {
+        session_id: sessionId.value,
+        role: 'guest',
+        duration_ms: Date.now() - startedAt,
+        has_url: !!imageUrl,
+        quality_score: selectedQuality.value?.quality_score ?? null,
+        quality_level: selectedQuality.value?.quality_level ?? null,
+      },
+    });
+    if (selectedQuality.value) {
+      await trackEvent({
+        eventType: 'asset_upload_quality_scored',
+        sourcePage: 'remote_join',
+        templateId: null,
+        meta: { ...selectedQuality.value, session_id: sessionId.value },
+      });
+      if (selectedQuality.value.quality_level !== 'good') {
+        await trackEvent({
+          eventType: 'asset_upload_quality_warning',
+          sourcePage: 'remote_join',
+          templateId: null,
+          meta: { ...selectedQuality.value, session_id: sessionId.value },
+        });
+        if (selectedQuality.value.quality_level === 'poor') {
+          await trackEvent({
+            eventType: 'asset_upload_quality_poor',
+            sourcePage: 'remote_join',
+            templateId: null,
+            meta: { ...selectedQuality.value, session_id: sessionId.value },
+          });
+        }
+      }
+    }
     await post(`/session/${sessionId.value}/upload/guest?image_url=${encodeURIComponent(imageUrl)}`, {});
     uploadSuccess.value = true;
     sessionStatus.value = 'ready';

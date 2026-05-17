@@ -11,6 +11,7 @@ REFUNDABLE_GENERATION_FAILURE_CODES = {
     "generation_timeout",
     "provider_auth_failed",
     "provider_model_unavailable",
+    "provider_request_rejected",
     "provider_quota_exhausted",
     "qa_reject",
     "unknown_error",

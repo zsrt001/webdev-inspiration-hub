@@ -40,6 +40,12 @@ const executeInlineRaw = argValue('--execute-inline', process.env.PROBE_EXECUTE_
 const executeInline = executeInlineRaw === undefined
   ? undefined
   : ['1', 'true', 'yes', 'on'].includes(String(executeInlineRaw).trim().toLowerCase());
+const testFilter = new Set(
+  String(argValue('--tests', process.env.PROBE_TESTS || ''))
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean),
+);
 
 if (!token && !bearerToken) {
   throw new Error('Provide --admin-token or --bearer-token for production admin auth.');
@@ -262,7 +268,7 @@ if (!bride || !groom) {
   throw new Error(`Missing required source URLs in ${sourcesPath}`);
 }
 
-const tests = [
+const allTests = [
   {
     name: 'single_template',
     label: 'Single person template',
@@ -315,6 +321,12 @@ const tests = [
       'ivory couture wedding dress and tailored cream suit, elegant refined styling, realistic fabric texture',
   },
 ];
+const tests = testFilter.size
+  ? allTests.filter((test) => testFilter.has(test.name))
+  : allTests;
+if (testFilter.size && tests.length === 0) {
+  throw new Error(`No production acceptance tests matched: ${[...testFilter].join(',')}`);
+}
 
 function roundSummary(order) {
   const rounds = Array.isArray(order.generation_rounds) ? order.generation_rounds : [];
@@ -436,6 +448,7 @@ function acceptanceGates(order, generatedUrlCount, publicEvidence) {
     admin_round_evidence_visible: adminRoundEvidence(order),
     public_contract_checked: publicEvidence.ok,
     allowed_model_used: !model || allowedModels.length === 0 || allowedModels.includes(model),
+    no_model_fallback: !modelSummary(order).generation_model_fallback_used,
   };
 }
 
@@ -444,9 +457,21 @@ function modelSummary(order) {
   const debug = params.debug && typeof params.debug === 'object' ? params.debug : {};
   return {
     engine: params.engine ?? params.provider ?? null,
-    configured_generation_model: params.configured_generation_model ?? debug.wenwen_requested_image_edit_model ?? null,
-    actual_generation_model: params.actual_generation_model ?? debug.wenwen_actual_image_edit_model ?? null,
-    generation_model_fallback_used: Boolean(params.generation_model_fallback_used ?? debug.wenwen_image_edit_fallback_used),
+    configured_generation_model:
+      params.configured_generation_model ??
+      debug.evolink_requested_image_edit_model ??
+      debug.wenwen_requested_image_edit_model ??
+      null,
+    actual_generation_model:
+      params.actual_generation_model ??
+      debug.evolink_actual_image_edit_model ??
+      debug.wenwen_actual_image_edit_model ??
+      null,
+    generation_model_fallback_used: Boolean(
+      params.generation_model_fallback_used ??
+      debug.evolink_image_edit_fallback_used ??
+      debug.wenwen_image_edit_fallback_used,
+    ),
   };
 }
 

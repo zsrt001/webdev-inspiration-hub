@@ -22,13 +22,6 @@
             }
         },
         {
-            "path": "pages/upload/upload",
-            "style": {
-                "navigationStyle": "custom",
-                "navigationBarTitleText": ""
-            }
-        },
-        {
             "path": "pages/preview/preview",
             "style": {
                 "navigationStyle": "custom",

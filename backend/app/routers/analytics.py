@@ -30,6 +30,25 @@ def _allow_memory_fallback() -> bool:
     return settings.debug or settings.allow_memory_fallback
 
 
+def _event_value(event: "ClickEvent") -> tuple[int, int]:
+    meta = event.meta if isinstance(event.meta, dict) else {}
+    if event.event_type == "asset_upload_completed":
+        try:
+            duration = int(float(meta.get("duration_ms") or 0))
+        except Exception:
+            duration = 0
+        if duration <= 0:
+            return 0, 0
+        return min(duration, 30 * 60 * 1000), 1
+    if event.event_type == "asset_upload_quality_scored":
+        try:
+            score = int(round(float(meta.get("quality_score") or 0)))
+        except Exception:
+            score = 0
+        return max(0, min(100, score)), 1
+    return 0, 0
+
+
 class ClickEvent(BaseModel):
     """Click event data."""
 
@@ -57,6 +76,7 @@ async def track_click(event: ClickEvent, db: AsyncSession = Depends(get_db)) -> 
     source_page = (event.source_page or "").strip()[:80]
     template_id = ((event.template_id or "na").strip() or "na")[:64]
     key = f"{event_type}:{source_page}:{template_id}"
+    value_sum, value_count = _event_value(event)
 
     # Keep in-memory fallback counters only when explicitly allowed.
     if _allow_memory_fallback():
@@ -75,10 +95,16 @@ async def track_click(event: ClickEvent, db: AsyncSession = Depends(get_db)) -> 
                 source_page=source_page,
                 template_id=template_id,
                 count=1,
+                value_sum=value_sum,
+                value_count=value_count,
             )
             .on_conflict_do_update(
                 index_elements=["day", "event_type", "source_page", "template_id"],
-                set_={"count": ClickStat.count + 1},
+                set_={
+                    "count": ClickStat.count + 1,
+                    "value_sum": ClickStat.value_sum + value_sum,
+                    "value_count": ClickStat.value_count + value_count,
+                },
             )
             .returning(ClickStat.count)
         )

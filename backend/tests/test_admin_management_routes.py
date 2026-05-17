@@ -23,6 +23,7 @@ class AdminManagementRoutesTest(unittest.TestCase):
         self.assertIn("/admin/creem_product_check", paths)
         self.assertIn("/admin/creem_checkout_probe", paths)
         self.assertIn("/admin/generation_probe", paths)
+        self.assertIn("/admin/analytics_overview", paths)
         self.assertIn("/admin/users", paths)
         self.assertIn("/admin/users/{user_id}/status", paths)
         self.assertIn("/admin/orders", paths)
@@ -35,6 +36,17 @@ class AdminManagementRoutesTest(unittest.TestCase):
         from app.routers import admin
 
         self.assertEqual({item.value for item in OrderStatus}, admin.ORDER_STATUS_VALUES)
+        self.assertNotIn("PREVIEW_READY", admin.ORDER_STATUS_VALUES)
+        self.assertNotIn("PAID", admin.ORDER_STATUS_VALUES)
+        self.assertNotIn("UPSCALING", admin.ORDER_STATUS_VALUES)
+
+    def test_legacy_public_routes_are_removed(self) -> None:
+        from app.routers import api_router
+
+        routes = {(route.path, ",".join(sorted(route.methods or []))) for route in api_router.routes}
+
+        self.assertFalse(any(path == "/templates/list" and "GET" in methods for path, methods in routes))
+        self.assertFalse(any(path == "/orders" and "POST" in methods for path, methods in routes))
 
     def test_generation_probe_accepts_text_direction_fields(self) -> None:
         from app.routers.admin import GenerationProbeRequest

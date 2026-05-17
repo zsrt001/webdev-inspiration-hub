@@ -1370,6 +1370,7 @@ class ComfyUIService:
                         preview_urls, final_urls, preview_meta = await prepare_delivered_image_urls(
                             delivered_urls,
                             trial_preview=is_trial_order(base_params),
+                            template_id=order.template_id,
                         )
                         order.preview_image_urls = preview_urls
                         order.final_image_urls = final_urls

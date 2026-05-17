@@ -1,0 +1,17 @@
+.git/
+.venv/
+frontend/node_modules/
+backend/app/_vendor/
+backend/app/_vendor_pkgs/
+.codex-tools/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+artifacts/
+logs/
+*.pyc
+*.log
+*.jpg
+*.jpeg
+*.png
+*.webp

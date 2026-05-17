@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
+from app.core.config import get_settings
 from app.models.user_credit import UserCredit
 from app.services.ops_config_service import get_credit_package_overrides
 from app.services.trial_access_service import _trial_welcome_credits
@@ -471,14 +472,59 @@ def reset_balance(user_id: str = "anonymous_user", amount: int = DEFAULT_CREDITS
 
 
 CREDIT_PACKAGES = [
-    {"id": "pack_50", "credits": 50, "price": 12.90, "label": "AI Wedding Starter", "popular": False},
-    {"id": "pack_120", "credits": 120, "price": 24.90, "label": "AI Wedding Popular", "popular": True},
-    {"id": "pack_300", "credits": 300, "price": 49.90, "label": "AI Wedding Premium", "popular": False},
+    {"id": "pack_50", "credits": 50, "price": 12.90, "currency": "USD", "label": "AI Wedding Starter", "popular": False},
+    {"id": "pack_120", "credits": 120, "price": 24.90, "currency": "USD", "label": "AI Wedding Popular", "popular": True},
+    {"id": "pack_300", "credits": 300, "price": 49.90, "currency": "USD", "label": "AI Wedding Premium", "popular": False},
 ]
 
 
 def get_packages() -> list:
     return get_credit_package_overrides() or CREDIT_PACKAGES
+
+
+def _region_code(region: str | None, locale: str | None = None) -> str:
+    raw = str(region or "").strip().upper()
+    if raw:
+        return raw[:8]
+    normalized_locale = str(locale or "").strip().lower()
+    if normalized_locale.startswith("zh"):
+        return "CN"
+    return "US"
+
+
+def _payment_methods_for_region(region: str) -> list[str]:
+    if region == "CN":
+        return ["international_card", "manual_review"]
+    if region in {"US", "CA", "AU", "GB", "EU"}:
+        return ["card"]
+    return ["card", "manual_review"]
+
+
+def _format_price(amount: float, currency: str, locale: str | None = None) -> str:
+    symbol = "$" if currency.upper() == "USD" else ""
+    suffix = "" if currency.upper() == "USD" else f" {currency.upper()}"
+    return f"{symbol}{amount:.2f}{suffix}"
+
+
+def localize_credit_packages(packages: list[dict], *, region: str | None = None, locale: str | None = None) -> list[dict]:
+    """Add region-ready pricing metadata without changing checkout settlement."""
+    resolved_region = _region_code(region, locale)
+    settings = get_settings()
+    refund_url = settings.refund_policy_url or "/pages/legal/refund"
+    localized: list[dict] = []
+    for package in packages:
+        item = dict(package)
+        currency = str(item.get("currency") or "USD").upper()
+        amount = float(item.get("price") or 0)
+        item["currency"] = currency
+        item["price_cents"] = int(round(amount * 100))
+        item["display_price"] = _format_price(amount, currency, locale)
+        item["region"] = resolved_region
+        item["payment_methods"] = _payment_methods_for_region(resolved_region)
+        item["refund_policy_url"] = refund_url
+        item["localized_pricing_ready"] = False
+        localized.append(item)
+    return localized
 
 
 def get_package_by_id(package_id: str) -> Optional[dict]:

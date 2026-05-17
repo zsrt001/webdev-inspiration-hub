@@ -230,10 +230,18 @@ import { useOrderStore } from '../../stores/order';
 import { type Template, getLocalizedTemplateMarketingSubtitle, getLocalizedTemplateTitle, getTemplateFamilyKey, useTemplateStore } from '../../stores/template';
 import { get, post, resolvePublicUrl, uploadFile, type ApiError } from '../../utils/api';
 import { isSupabaseLoggedIn } from '../../utils/auth';
-import { runLocalSmartInputCheck } from '../../utils/local_smart_input';
+import { runLocalSmartInputCheck, type SmartInputVerdict } from '../../utils/local_smart_input';
+import { trackEvent } from '../../utils/analytics';
 
 type GenerationMode = 'single' | 'couple_local' | 'couple_remote';
-type PortraitSlot = { localPath: string; uploadedUrl: string };
+type UploadQuality = {
+  quality_score: number;
+  quality_level: 'good' | 'warning' | 'poor';
+  reasons: string[];
+  risk_flags: string[];
+  metrics: Record<string, number>;
+};
+type PortraitSlot = { localPath: string; uploadedUrl: string; uploadQuality?: UploadQuality | null };
 type RemoteSessionResponse = { session_id: string; join_url: string; qr_code_url: string; expires_in_minutes: number };
 type RemoteSessionStatus = { exists: boolean; status: string; host_ready?: boolean; guest_ready?: boolean; order_id?: string | null; template_id?: string | null };
 type RemoteSessionImages = { host_image_url: string; guest_image_url: string; template_id: string };
@@ -415,6 +423,38 @@ function hasStyleForMode(familyKey: string, mode: GenerationMode) {
     return desiredCategories.includes(String(item.category || '').toLowerCase());
   });
 }
+function serializeUploadQuality(verdict: SmartInputVerdict): UploadQuality {
+  return {
+    quality_score: Math.max(0, Math.min(100, Math.round(Number(verdict.quality_score || 0)))),
+    quality_level: verdict.quality_level || 'good',
+    reasons: (verdict.reasons || []).map(String).filter(Boolean).slice(0, 12),
+    risk_flags: (verdict.risk_flags || []).map(String).filter(Boolean).slice(0, 12),
+    metrics: Object.fromEntries(
+      Object.entries(verdict.metrics || {})
+        .filter(([, value]) => Number.isFinite(Number(value)))
+        .slice(0, 20)
+        .map(([key, value]) => [key, Number(value)])
+    ),
+  };
+}
+function buildOrderUploadQuality(images: string[]): Array<Record<string, any>> {
+  return portraitSlots.value
+    .map((slot, index) => {
+      if (!slot.uploadQuality) return null;
+      const role = generationMode.value === 'single'
+        ? 'subject'
+        : index === 0
+          ? 'host'
+          : 'guest';
+      return {
+        ...slot.uploadQuality,
+        slot_index: index,
+        role,
+        image_url: images[index] || slot.uploadedUrl || null,
+      };
+    })
+    .filter((item): item is Record<string, any> => !!item);
+}
 function stopRemotePolling() {
   if (remotePollTimer) clearInterval(remotePollTimer);
   remotePollTimer = null;
@@ -431,47 +471,94 @@ function portraitCta(index: number) {
   return generationMode.value === 'single' ? tr('上传人物照片', 'Upload portrait') : generationMode.value === 'couple_local' ? (index === 0 ? tr('上传第一张照片', 'Upload first portrait') : tr('上传第二张照片', 'Upload second portrait')) : tr('上传你的照片', 'Upload your portrait');
 }
 async function pickLocalImage() {
-  const res = await uni.chooseImage({ count: 1, sizeType: ['compressed'], sourceType: ['album', 'camera'] });
+  const res = await uni.chooseImage({ count: 1, sizeType: ['original'], sourceType: ['album', 'camera'] });
   const localPath = res.tempFilePaths?.[0];
-  if (!localPath) return '';
+  if (!localPath) return { localPath: '', uploadQuality: null };
   const verdict = await runLocalSmartInputCheck(localPath);
-  if (!verdict.passed) {
-    uni.showToast({ title: verdict.advice?.[0] || tr('照片质量不符合要求，请重新上传', 'Image quality check failed, please retry'), icon: 'none' });
-    return '';
+  const uploadQuality = serializeUploadQuality(verdict);
+  if (verdict.quality_level !== 'good') {
+    const score = Math.max(0, Math.min(100, Number(verdict.quality_score || 0)));
+    uni.showToast({
+      title: tr(`这张可能不像本人，建议换更清晰正脸（${score}分）`, `This may reduce likeness. A clearer front-facing photo is recommended (${score})`),
+      icon: 'none',
+      duration: 2600,
+    });
   }
-  return localPath;
+  return { localPath, uploadQuality };
 }
 async function pickPortrait(index: number) {
   try {
-    const localPath = await pickLocalImage();
+    const { localPath, uploadQuality } = await pickLocalImage();
     if (!localPath) return;
-    portraitSlots.value[index] = { localPath, uploadedUrl: '' };
+    portraitSlots.value[index] = { localPath, uploadedUrl: '', uploadQuality };
     if (generationMode.value === 'couple_remote' && remoteSession.value) remoteStatus.value = { ...(remoteStatus.value || { exists: true, status: 'waiting' }), host_ready: false };
   } catch (error) {
     console.error(error);
   }
 }
 function clearPortrait(index: number) {
-  portraitSlots.value[index] = { localPath: '', uploadedUrl: '' };
+  portraitSlots.value[index] = { localPath: '', uploadedUrl: '', uploadQuality: null };
   if (generationMode.value === 'couple_remote' && index === 0) resetRemote();
 }
-async function pickSceneReference() { sceneReferencePath.value = await pickLocalImage(); }
-async function pickOutfitReference() { outfitReferencePath.value = await pickLocalImage(); }
+async function pickSceneReference() { sceneReferencePath.value = (await pickLocalImage()).localPath; }
+async function pickOutfitReference() { outfitReferencePath.value = (await pickLocalImage()).localPath; }
 function resolveSeedTemplate(): Template {
   if (selectedTemplate.value) return selectedTemplate.value;
   return templateStore.templates.find((item) => item.id === 'custom' || item.is_custom) || {
     id: 'custom', category: 'custom', title: 'Custom Mode', image_url: '/style-previews/custom_mode.jpg', style_family: 'custom_mode', is_custom: true,
   };
 }
-async function uploadLocalAsset(localPath: string) {
+async function uploadLocalAsset(localPath: string, uploadQuality?: UploadQuality | null) {
+  const startedAt = Date.now();
+  await trackEvent({
+    eventType: 'asset_upload_started',
+    sourcePage: 'create',
+    templateId: selectedTemplate.value?.id || null,
+  });
   const result = await uploadFile('/upload', localPath, 'file');
-  return String(result.url || '').trim();
+  const url = String(result.url || '').trim();
+  await trackEvent({
+    eventType: 'asset_upload_completed',
+    sourcePage: 'create',
+    templateId: selectedTemplate.value?.id || null,
+    meta: {
+      duration_ms: Date.now() - startedAt,
+      has_url: !!url,
+      quality_score: uploadQuality?.quality_score ?? null,
+      quality_level: uploadQuality?.quality_level ?? null,
+    },
+  });
+  if (uploadQuality) {
+    await trackEvent({
+      eventType: 'asset_upload_quality_scored',
+      sourcePage: 'create',
+      templateId: selectedTemplate.value?.id || null,
+      meta: uploadQuality,
+    });
+    if (uploadQuality.quality_level !== 'good') {
+      await trackEvent({
+        eventType: 'asset_upload_quality_warning',
+        sourcePage: 'create',
+        templateId: selectedTemplate.value?.id || null,
+        meta: uploadQuality,
+      });
+      if (uploadQuality.quality_level === 'poor') {
+        await trackEvent({
+          eventType: 'asset_upload_quality_poor',
+          sourcePage: 'create',
+          templateId: selectedTemplate.value?.id || null,
+          meta: uploadQuality,
+        });
+      }
+    }
+  }
+  return url;
 }
 async function ensurePortraitUploaded(index: number) {
   const slot = portraitSlots.value[index];
   if (!slot.localPath) return '';
   if (slot.uploadedUrl) return slot.uploadedUrl;
-  const url = await uploadLocalAsset(slot.localPath);
+  const url = await uploadLocalAsset(slot.localPath, slot.uploadQuality);
   portraitSlots.value[index].uploadedUrl = url;
   return url;
 }
@@ -587,6 +674,7 @@ async function submitCreate() {
     }
     const sceneImageUrl = sceneReferencePath.value ? await uploadLocalAsset(sceneReferencePath.value) : undefined;
     const clothingImageUrl = outfitReferencePath.value ? await uploadLocalAsset(outfitReferencePath.value) : undefined;
+    const uploadQuality = buildOrderUploadQuality(images);
     const order = await orderStore.createOrder(seed.id, images, {
       legal_accepted: true,
       director_mode: !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim() || sceneImageUrl || clothingImageUrl),
@@ -596,6 +684,19 @@ async function submitCreate() {
       outfit_text: outfitText.value.trim() || undefined,
       scene_image_url: sceneImageUrl,
       clothing_image_url: clothingImageUrl,
+      upload_quality: uploadQuality.length ? uploadQuality : undefined,
+    });
+    await trackEvent({
+      eventType: 'generation_order_created',
+      sourcePage: 'create',
+      templateId: seed.id,
+      meta: {
+        generation_mode: generationMode.value,
+        subject_count: images.length,
+        director_mode: !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim() || sceneImageUrl || clothingImageUrl),
+        credits_cost: generationCost.value,
+        order_id: order.id,
+      },
     });
     if (generationMode.value === 'couple_remote' && remoteSession.value) {
       await post(`/session/${remoteSession.value.session_id}/bind_order`, { order_id: order.id }, { showLoading: false, showError: false });
