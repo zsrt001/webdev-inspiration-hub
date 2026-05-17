@@ -1,5 +1,6 @@
 """Order Pydantic schemas."""
 
+import math
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -32,6 +33,9 @@ PUBLIC_GENERATION_PARAM_KEYS = {
     "failure_code",
     "failure_provider",
     "commercial_standard_version",
+    "generation_stage",
+    "generation_stage_history",
+    "upload_quality_summary",
 }
 
 
@@ -105,6 +109,7 @@ class OrderCreate(BaseModel):
     depth_cn_end: float | None = None
     normal_cn_start: float | None = None
     normal_cn_end: float | None = None
+    upload_quality: list[dict[str, Any]] | None = None
 
     @model_validator(mode="after")
     def _normalize_director_inputs(self):
@@ -136,6 +141,55 @@ class OrderCreate(BaseModel):
                 start_value, end_value = end_value, start_value
             return start_value, end_value
 
+        def _clean_string_list(value: Any, limit: int) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            return [str(item).strip()[:80] for item in value if str(item).strip()][:limit]
+
+        def _safe_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except Exception:
+                return default
+
+        def _normalize_upload_quality(items: Any) -> list[dict[str, Any]] | None:
+            if not isinstance(items, list):
+                return None
+            normalized: list[dict[str, Any]] = []
+            for item in items[:4]:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    score = int(round(float(item.get("quality_score", 0))))
+                except Exception:
+                    score = 0
+                score = max(0, min(100, score))
+                level = str(item.get("quality_level") or "good").strip().lower()
+                if level not in {"good", "warning", "poor"}:
+                    level = "good" if score >= 70 else "warning" if score >= 45 else "poor"
+                metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+                clean_metrics: dict[str, float] = {}
+                for key, value in list(metrics.items())[:20]:
+                    try:
+                        numeric = float(value)
+                    except Exception:
+                        continue
+                    if math.isfinite(numeric):
+                        clean_metrics[str(key).strip()[:48]] = round(numeric, 4)
+                normalized.append(
+                    {
+                        "slot_index": _safe_int(item.get("slot_index"), len(normalized)),
+                        "role": str(item.get("role") or "").strip()[:24] or None,
+                        "image_url": _clean_scalar(item.get("image_url")),
+                        "quality_score": score,
+                        "quality_level": level,
+                        "reasons": _clean_string_list(item.get("reasons"), 12),
+                        "risk_flags": _clean_string_list(item.get("risk_flags"), 12),
+                        "metrics": clean_metrics,
+                    }
+                )
+            return normalized or None
+
         self.template_id = str(self.template_id).strip()
         self.user_images = [str(item).strip() for item in (self.user_images or []) if str(item).strip()]
 
@@ -161,6 +215,7 @@ class OrderCreate(BaseModel):
         self.pose_cn_start, self.pose_cn_end = _normalize_range(self.pose_cn_start, self.pose_cn_end)
         self.depth_cn_start, self.depth_cn_end = _normalize_range(self.depth_cn_start, self.depth_cn_end)
         self.normal_cn_start, self.normal_cn_end = _normalize_range(self.normal_cn_start, self.normal_cn_end)
+        self.upload_quality = _normalize_upload_quality(self.upload_quality)
         return self
 
 
@@ -219,6 +274,8 @@ class OrderRead(OrderBase):
     refunded_credits: int | None = None
     failure_code: str | None = None
     failure_provider: str | None = None
+    generation_stage: str | None = None
+    generation_stage_history: list[dict] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -293,6 +350,13 @@ class OrderRead(OrderBase):
             self.failure_code = str(failure_code) if failure_code else None
             failure_provider = params.get("failure_provider")
             self.failure_provider = str(failure_provider) if failure_provider else None
+            generation_stage = params.get("generation_stage")
+            self.generation_stage = str(generation_stage) if generation_stage else None
+            generation_stage_history = params.get("generation_stage_history")
+            if isinstance(generation_stage_history, list):
+                self.generation_stage_history = [
+                    item for item in generation_stage_history if isinstance(item, dict)
+                ][-12:]
             access_tier = params.get("access_tier")
             self.access_tier = str(access_tier) if access_tier else None
         self.source_image_urls = public_source_image_urls(self.source_image_urls)

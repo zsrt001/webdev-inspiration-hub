@@ -730,7 +730,8 @@ def _build_generation_params(
         if is_couple_request
         else subject_count
     )
-    upload_quality_summary = _upload_quality_summary(request.upload_quality)
+    upload_quality = getattr(request, "upload_quality", None)
+    upload_quality_summary = _upload_quality_summary(upload_quality)
     params = {
         "credits_cost": credit_context.credits_cost,
         "commercial_standard_version": COMMERCIAL_STANDARD_VERSION,
@@ -813,7 +814,7 @@ def _build_generation_params(
         "subject_count": subject_count,
         "director_mode": bool(request.director_mode),
         "content_policy": {"passed": True},
-        "upload_quality": request.upload_quality,
+        "upload_quality": upload_quality,
         "upload_quality_summary": upload_quality_summary,
         "prompt_override": director_decision.legacy_prompt_override,
         "global_style_text": director_decision.global_style_text,
