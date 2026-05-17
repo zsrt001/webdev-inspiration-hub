@@ -9,6 +9,7 @@ export interface Template {
   image_url: string;
   style_family?: string | null;
   tags?: string[];
+  stability?: 'stable' | 'experimental' | 'hidden' | string;
   marketing_title?: string | null;
   marketing_subtitle?: string | null;
   recommended_for?: string | null;
@@ -274,6 +275,28 @@ const PORTRAIT_TEMPLATE_FAMILIES = [
   },
 ] as const;
 
+const EXPERIMENTAL_TEMPLATE_FAMILIES = new Set([
+  'gothic_romance',
+  'beach_sunset',
+  'hk_retro',
+  'twilight_forest',
+  'japanese_shiromuku',
+  'cyberpunk_city',
+  'school_days',
+]);
+
+function inferTemplateStability(template: Template): 'stable' | 'experimental' | 'hidden' {
+  const explicit = String(template.stability || '').trim().toLowerCase();
+  if (explicit === 'stable' || explicit === 'experimental' || explicit === 'hidden') return explicit;
+  if (template.is_custom || template.category === 'custom') return 'hidden';
+  const family = String(template.style_family || '').trim().toLowerCase();
+  return EXPERIMENTAL_TEMPLATE_FAMILIES.has(family) ? 'experimental' : 'stable';
+}
+
+function commercialTemplates(items: Template[]): Template[] {
+  return items.filter((item) => inferTemplateStability(item) === 'stable');
+}
+
 const FALLBACK_TEMPLATES: Template[] = [
   ...PORTRAIT_TEMPLATE_FAMILIES.flatMap((family) => [
     {
@@ -283,6 +306,7 @@ const FALLBACK_TEMPLATES: Template[] = [
       image_url: family.single.image_url,
       style_family: family.style_family,
       tags: [...family.single.tags],
+      stability: EXPERIMENTAL_TEMPLATE_FAMILIES.has(family.style_family) ? 'experimental' : 'stable',
     },
     {
       id: family.couple.id,
@@ -291,6 +315,7 @@ const FALLBACK_TEMPLATES: Template[] = [
       image_url: family.couple.image_url,
       style_family: family.style_family,
       tags: [...family.couple.tags],
+      stability: EXPERIMENTAL_TEMPLATE_FAMILIES.has(family.style_family) ? 'experimental' : 'stable',
     },
   ]),
   {
@@ -299,6 +324,7 @@ const FALLBACK_TEMPLATES: Template[] = [
     title: 'Golden Anniversary · 80s/90s Studio',
     image_url: '/style-previews/golden_vintage_studio_8090.jpg',
     style_family: 'golden_vintage_studio_8090',
+    stability: 'stable',
     marketing_title: 'Recreate a classic wedding portrait for parents',
     marketing_subtitle: '80s/90s studio mood with modern restoration quality',
   },
@@ -308,6 +334,7 @@ const FALLBACK_TEMPLATES: Template[] = [
     title: 'Golden Anniversary · Chinese Courtyard',
     image_url: '/style-previews/golden_chinese_courtyard.jpg',
     style_family: 'golden_chinese_courtyard',
+    stability: 'stable',
     marketing_title: 'Traditional courtyard keepsake for elders',
     marketing_subtitle: 'Warm red-gold palette with realistic skin detail',
   },
@@ -317,6 +344,7 @@ const FALLBACK_TEMPLATES: Template[] = [
     title: 'Golden Anniversary · Modern Remake',
     image_url: '/style-previews/golden_modern_remake.jpg',
     style_family: 'golden_modern_remake',
+    stability: 'stable',
     marketing_title: 'Modern remake for milestone memories',
     marketing_subtitle: 'Clean composition and premium soft lighting',
   },
@@ -326,6 +354,7 @@ const FALLBACK_TEMPLATES: Template[] = [
     title: 'Custom Mode',
     image_url: '/style-previews/custom_mode.jpg',
     style_family: 'custom_mode',
+    stability: 'hidden',
     is_custom: true,
   },
 ];
@@ -407,12 +436,14 @@ function normalizeTemplates(items: Template[] | undefined | null): Template[] {
     const id = String(item.id).trim();
     if (!id) continue;
 
-    byId.set(id, {
+    const normalized: Template = {
       ...item,
       id,
       category: normalizeCategory(item.category),
       image_url: String(item.image_url || '').trim() || '/style-previews/royal_castle.jpg',
-    });
+    };
+    normalized.stability = inferTemplateStability(normalized);
+    byId.set(id, normalized);
   }
 
   return Array.from(byId.values());
@@ -431,10 +462,11 @@ export const useTemplateStore = defineStore('template', () => {
         showError: false,
       } as any);
       const normalized = normalizeTemplates(res?.templates);
-      templates.value = normalized.length ? normalized : FALLBACK_TEMPLATES;
+      const commercial = commercialTemplates(normalized);
+      templates.value = commercial.length ? commercial : commercialTemplates(FALLBACK_TEMPLATES);
     } catch (error) {
       console.error('Failed to fetch templates:', error);
-      templates.value = FALLBACK_TEMPLATES;
+      templates.value = commercialTemplates(FALLBACK_TEMPLATES);
     } finally {
       loading.value = false;
     }

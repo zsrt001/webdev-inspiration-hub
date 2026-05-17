@@ -31,4 +31,6 @@ backend/__pycache__
 backend/app/__pycache__
 backend/app/_vendor
 backend/app/_vendor_pkgs
+backend/app/_vendor_path.txt
+backend/wheels
 backend/scripts/__pycache__
