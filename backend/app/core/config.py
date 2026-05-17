@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     supabase_pooler_host: str = ""
 
     # Generation engine
-    generation_engine: str = "wenwen"  # comfyui | wenwen | evolink
+    generation_engine: str = "evolink"  # comfyui | wenwen | evolink
 
     # Security
     secret_key: str = "change-me-in-production"

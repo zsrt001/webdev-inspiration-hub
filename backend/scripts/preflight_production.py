@@ -58,6 +58,7 @@ def _build_env_summary(settings: Any) -> dict[str, list[dict[str, Any]]]:
         "security": [
             _item("SECRET_KEY", str(settings.secret_key), secret=True),
             _item("ADMIN_TOKEN", str(settings.admin_token), secret=True),
+            _item("EVOLINK_API_KEY", str(settings.evolink_api_key), secret=True),
             _item("PHONE_CRYPTO_KEY", str(settings.phone_crypto_key), secret=True),
             _item("WENWEN_API_KEY", str(settings.wenwen_api_key), secret=True),
             _item("WENWEN_CHAT_API_KEY", str(settings.wenwen_text_api_key_effective), secret=True),
@@ -72,7 +73,16 @@ def _build_env_summary(settings: Any) -> dict[str, list[dict[str, Any]]]:
         ],
     }
 
-    if generation_engine == "wenwen":
+    if generation_engine == "evolink":
+        summary["connectivity"].extend(
+            [
+                _item("EVOLINK_API_BASE_URL", str(settings.evolink_api_base_url)),
+                _item("EVOLINK_IMAGE_MODEL", str(settings.evolink_image_model)),
+                _item("EVOLINK_IMAGE_SIZE", str(settings.evolink_image_size)),
+                _item("EVOLINK_IMAGE_QUALITY", str(settings.evolink_image_quality)),
+            ]
+        )
+    elif generation_engine == "wenwen":
         summary["connectivity"].extend(
             [
                 _item("WENWEN_API_BASE_URL", str(settings.wenwen_api_base_url)),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -15,17 +16,21 @@ from app.core.config import get_settings
 from app.core.database import async_session_maker
 from app.models.order import Order, OrderStatus
 from app.services.trial_access_service import prepare_delivered_image_urls, is_trial_order
-from app.services.wenwen_service import WenwenService
+from app.services.generation_stage_service import merge_generation_stage
+from app.services.provider_workflow import GenerationProviderWorkflow
 
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-class EvolinkService(WenwenService):
-    """Use Evolink through the same order, credit, QA, and delivery flow."""
+class EvolinkService(GenerationProviderWorkflow):
+    """Evolink provider adapter bound to the shared workflow and policy."""
 
     PROVIDER = "evolink"
+    # EvoLink's Nano Banana 2 endpoint documents prompt max length as 2000.
+    # Keep a little headroom because production prompts contain dense guardrails.
+    PROMPT_CHAR_LIMIT = 1900
 
     @staticmethod
     def _base_url() -> str:
@@ -109,6 +114,80 @@ class EvolinkService(WenwenService):
     def _evolink_quality() -> str:
         return str(settings.evolink_image_quality or "2K").strip() or "2K"
 
+    @classmethod
+    def _compact_prompt_for_evolink(cls, prompt: str) -> str:
+        """Keep Evolink prompts under provider limits without dropping hard gates."""
+        cleaned = "\n".join(line.strip() for line in str(prompt or "").splitlines() if line.strip())
+        if len(cleaned) <= cls.PROMPT_CHAR_LIMIT:
+            return cleaned
+
+        sentences = [item.strip() for item in re.split(r"(?<=[.!?。！？])\s+", cleaned) if item.strip()]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for sentence in sentences:
+            normalized = re.sub(r"\s+", " ", sentence).strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(sentence)
+
+        couple_hint = (
+            "Couple rule: preserve bride/person A and groom/person B separately; no role swap, face merge, duplicate identity, or body fusion. "
+            if re.search(r"\b(couple|bride|groom|person a|person b)\b", cleaned, flags=re.IGNORECASE)
+            else ""
+        )
+        hard_header = (
+            "Identity-preserving image edit using image_urls as source references. "
+            "Do not do text-only generation. Preserve exact face shape, eyes, nose, mouth, jawline, age impression, skin undertone, and natural expression. "
+            f"{couple_hint}"
+            "Commercial wedding deliverable: professional studio/on-location lighting, natural skin texture, catchlights, face correctly exposed, complete wedding wardrobe, readable face, 3:4 vertical composition, no awkward crop. "
+            "Use sun only as rim/ambient light outdoors; keep soft frontal fill. "
+            "Negative: generic face, identity change, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, blown white dress, mixed color temperature, background brighter than face, watermark, text."
+        ).strip()
+
+        selected: list[str] = [hard_header]
+        current_len = len(hard_header)
+
+        priority_groups = (
+            ("round", "qa reasons", "qa notes", "targeted repair", "relight", "polish"),
+            ("scene", "outdoor", "garden", "castle", "studio", "window", "architecture", "background"),
+            ("lighting", "soft key", "fill light", "rim light", "catchlight", "exposure", "backlight"),
+            ("composition", "canvas", "full body", "headroom", "face readable", "crop", "subject"),
+            ("wardrobe", "wedding gown", "dress", "veil", "suit", "fabric", "lace"),
+            ("negative prompt", "forbid", "avoid", "no "),
+        )
+
+        def try_add(sentence: str) -> None:
+            nonlocal current_len
+            compact_sentence = re.sub(r"\s+", " ", sentence).strip()
+            if not compact_sentence:
+                return
+            sentence_len = len(compact_sentence) + 1
+            if current_len + sentence_len > cls.PROMPT_CHAR_LIMIT:
+                return
+            selected.append(compact_sentence)
+            current_len += sentence_len
+
+        used: set[int] = set()
+        for group in priority_groups:
+            for index, sentence in enumerate(deduped):
+                if index in used:
+                    continue
+                lower = sentence.lower()
+                if not any(marker in lower for marker in group):
+                    continue
+                before = current_len
+                try_add(sentence)
+                if current_len != before:
+                    used.add(index)
+
+        compacted = " ".join(selected)
+        if len(compacted) <= cls.PROMPT_CHAR_LIMIT:
+            return compacted
+
+        clipped = compacted[: cls.PROMPT_CHAR_LIMIT]
+        return clipped.rsplit(" ", 1)[0] or clipped
+
     @staticmethod
     def _evolink_usage(payload: Any, usage: dict[str, float] | None = None) -> dict[str, float]:
         usage = usage if usage is not None else {}
@@ -156,8 +235,9 @@ class EvolinkService(WenwenService):
                 # Face crop FIRST (highest priority for flash native image-edit),
                 # then original portrait as full-body anchor
                 add(f"{role} face reference - IDENTITY ANCHOR", subject.get("face_crop_url"))
-                add(f"{role} full reference", subject.get("original_url"))
-                if not is_couple:
+                if not (is_couple and include_previous_result):
+                    add(f"{role} full reference", subject.get("original_url"))
+                if not is_couple and not include_previous_result:
                     add(f"{role} upper-body reference", subject.get("upper_body_crop_url"))
         else:
             for index, url in enumerate(identity_refs[:2], start=1):
@@ -170,7 +250,11 @@ class EvolinkService(WenwenService):
         for index, url in enumerate(style_refs, start=1):
             add(f"style reference image {index}", url)
 
-        return entries[:5]
+        # Nano Banana 2 accepts up to 14 image_urls, but its docs cap real-person
+        # reference images at 4. Couple repair rounds already include a generated
+        # candidate with two people, so keep identity anchors concise there.
+        max_entries = 4 if is_couple else 5
+        return entries[:max_entries]
 
     async def _poll_task(self, client: httpx.AsyncClient, task_id: str) -> dict[str, Any]:
         deadline = time.monotonic() + max(30, int(settings.evolink_poll_timeout or 720))
@@ -221,6 +305,7 @@ class EvolinkService(WenwenService):
             include_previous_result=include_previous,
             is_couple=is_couple,
         )
+        edit_prompt = self._compact_prompt_for_evolink(edit_prompt)
         reference_entries = self._evolink_reference_entries(
             identity_refs=identity_refs,
             style_refs=style_refs,
@@ -265,10 +350,13 @@ class EvolinkService(WenwenService):
                 raise RuntimeError(f"evolink_auth_failed:{response.status_code}")
             if response.status_code in {402, 429}:
                 raise RuntimeError(f"evolink_quota_rejected:{response.status_code}:{response.text[:200]}")
+            response_body = response.text[:500]
             if response.status_code in {400, 404, 422, 500, 503}:
                 lowered = response.text.lower()
                 if "model" in lowered and any(token in lowered for token in ("not", "missing", "available", "support")):
                     raise RuntimeError(f"evolink_model_unavailable:{model}:{response.status_code}:{response.text[:240]}")
+            if response.status_code in {400, 422}:
+                raise RuntimeError(f"evolink_request_rejected:{response.status_code}:{response_body}")
             response.raise_for_status()
             created = response.json() if response.content else {}
             task_id = self._extract_task_id(created)
@@ -319,6 +407,7 @@ class EvolinkService(WenwenService):
             order.status = OrderStatus.GENERATING
             order.task_id = task_id
             params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+            params = merge_generation_stage(params, "provider_submitted", detail=generation_mode or provider_task_status)
             debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
             payload_model = str(payload.get("_provider_model") or payload.get("model") or "").strip()
             requested_model = str(payload.get("_requested_model") or payload.get("requested_model") or payload_model).strip()
@@ -326,6 +415,10 @@ class EvolinkService(WenwenService):
             debug.update(
                 {
                     "evolink_submit_payload_keys": sorted(payload.keys()),
+                    "evolink_submit_reference_count": len(payload.get("image_urls") or []),
+                    "evolink_submit_prompt_chars": len(str(payload.get("prompt") or "")),
+                    "evolink_submit_size": str(payload.get("size") or ""),
+                    "evolink_submit_quality": str(payload.get("quality") or ""),
                     "evolink_model": self._effective_image_model(),
                     "evolink_configured_model": settings.evolink_image_model,
                     "evolink_requested_image_edit_model": requested_model,
@@ -377,9 +470,11 @@ class EvolinkService(WenwenService):
                 return
             order.status = OrderStatus.COMPLETED
             params = order.generation_params if isinstance(order.generation_params, dict) else {}
+            params = merge_generation_stage(params, "postprocessing")
             preview_urls, final_urls, preview_meta = await prepare_delivered_image_urls(
                 delivered_urls,
                 trial_preview=is_trial_order(params),
+                template_id=order.template_id,
             )
             order.preview_image_urls = preview_urls
             order.final_image_urls = final_urls
@@ -407,6 +502,7 @@ class EvolinkService(WenwenService):
                 "subject_count": subject_count,
                 "couple_flow": couple_flow,
             }
+            params = merge_generation_stage(params, "completed")
             order.generation_params = params
             await db.commit()
 

@@ -84,6 +84,18 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(settings.generation_poll_timeout, 321)
         self.assertEqual(settings.generation_max_retries, 4)
 
+    def test_default_generation_provider_is_evolink(self) -> None:
+        settings = Settings(_env_file=None)
+
+        self.assertTrue(settings.using_evolink_generation)
+        self.assertFalse(settings.using_wenwen_generation)
+        self.assertEqual(settings.generation_provider_name, "evolink")
+
+    def test_default_postprocess_variants_include_commercial_delivery_crops(self) -> None:
+        settings = Settings(_env_file=None)
+
+        self.assertEqual(settings.postprocess_variants, "2x3,3x2,3x4,4x5,9x16,1x1")
+
 
 if __name__ == "__main__":
     unittest.main()
