@@ -120,7 +120,9 @@
             </view>
             <view class="style-grid">
               <view v-for="card in styleCards" :key="card.familyKey" class="style-card" :class="{ active: selectedStyleFamily === card.familyKey }" @tap="selectedStyleFamily = card.familyKey">
-                <image :src="card.imageUrl" class="style-image" mode="aspectFill" />
+                <view class="style-image-frame">
+                  <image :src="card.imageUrl" class="style-image" mode="aspectFit" />
+                </view>
                 <view class="style-copy">
                   <text class="style-title heading-serif">{{ card.title }}</text>
                   <text class="style-subtitle">{{ card.subtitle }}</text>
@@ -941,7 +943,7 @@ onUnmounted(() => stopRemotePolling());
 }
 
 .style-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
 
 .free-mode-card {
@@ -1135,7 +1137,6 @@ onUnmounted(() => stopRemotePolling());
 }
 
 .preview-image,
-.style-image,
 .summary-image {
   width: 100%;
   display: block;
@@ -1147,9 +1148,24 @@ onUnmounted(() => stopRemotePolling());
   height: 100%;
 }
 
-.style-image,
 .summary-image {
   aspect-ratio: 4 / 5;
+}
+
+.style-image-frame {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-bottom: 1px solid #edf0f4;
+  background: #eef1f4;
+}
+
+.style-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  object-position: center center;
 }
 
 .preview-actions {
@@ -1208,10 +1224,14 @@ onUnmounted(() => stopRemotePolling());
   border-radius: 8px;
   border: 1px solid #dde1e8;
   background: #ffffff;
+  box-shadow: 0 10px 28px rgba(23, 25, 31, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .style-copy {
+  min-height: 112px;
   padding: 14px 14px 16px;
+  background: #ffffff;
 }
 
 .style-title,
@@ -1223,6 +1243,11 @@ onUnmounted(() => stopRemotePolling());
 
 .style-title {
   font-size: 20px;
+  line-height: 1.2;
+}
+
+.style-subtitle {
+  min-height: 44px;
 }
 
 .summary-title {
@@ -1320,7 +1345,7 @@ onUnmounted(() => stopRemotePolling());
   }
 
   .style-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
 }
 
