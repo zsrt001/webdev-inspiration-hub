@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
       subtitle: 'Premium wedding portraits in minutes',
       cta_label: 'Start Now',
       secondary_cta_label: 'Browse Collection',
-      image_url: '/style-previews/royal_castle.jpg',
+      image_url: '/legacy_promo_banner.jpg',
       legacy_enabled: true,
       portal_enabled: true,
     },

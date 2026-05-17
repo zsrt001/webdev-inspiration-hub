@@ -229,6 +229,13 @@ const showPaymentModal = ref(false);
 const templateImageAttempts = ref<Record<string, number>>({});
 
 const homeBanner = computed(() => opsStore.publicConfig.placements.home_banner);
+const heroBackgroundFallback = '/legacy_promo_banner.jpg';
+const portraitHeroBackgrounds = new Set([
+  '/style-previews/royal_castle.jpg',
+  '/static/style-previews/royal_castle.jpg',
+  '/style-previews/solo_royal_castle.jpg',
+  '/static/style-previews/solo_royal_castle.jpg',
+]);
 
 const styleImageFallbacks: Record<string, string[]> = {
   chn_xiuhe: ['/style-previews/couple_chn_xiuhe.jpg', '/style-previews/chn_xiuhe.jpg'],
@@ -250,9 +257,12 @@ const styleImageFallbacks: Record<string, string[]> = {
 };
 
 const heroImageUrl = computed(() => {
-  const configured = resolvePublicUrl(homeBanner.value.image_url);
-  if (configured) return configured;
-  return resolvePublicUrl('/style-previews/royal_castle.jpg');
+  const raw = String(homeBanner.value.image_url || '').trim();
+  const normalized = raw.startsWith('/static/') ? raw.replace(/^\/static/, '') : raw;
+  if (!raw || portraitHeroBackgrounds.has(raw) || portraitHeroBackgrounds.has(normalized)) {
+    return resolvePublicUrl(heroBackgroundFallback);
+  }
+  return resolvePublicUrl(raw);
 });
 
 const heroPreviewUrl = computed(() => {
@@ -525,15 +535,16 @@ onMounted(async () => {
   min-height: 100vh;
   background: #f6f7f8;
   color: #17191f;
+  overflow-x: hidden;
 }
 
 .hero-section {
   position: relative;
-  min-height: clamp(520px, calc(100dvh - 110px), 620px);
+  min-height: clamp(600px, calc(100dvh - 96px), 720px);
   display: flex;
   align-items: stretch;
   overflow: hidden;
-  background: #e4e8eb;
+  background: #eef1f2;
 }
 
 .hero-media {
@@ -542,9 +553,10 @@ onMounted(async () => {
   width: 100%;
   height: 100%;
   z-index: 1;
-  filter: saturate(0.9) contrast(1.06);
+  opacity: 0.36;
+  filter: saturate(0.82) contrast(1.04);
   object-fit: cover;
-  object-position: 58% center;
+  object-position: 72% 44%;
 }
 
 .hero-overlay {
@@ -552,19 +564,20 @@ onMounted(async () => {
   inset: 0;
   z-index: 2;
   background:
-    linear-gradient(90deg, rgba(246, 247, 248, 0.99) 0%, rgba(246, 247, 248, 0.9) 43%, rgba(246, 247, 248, 0.5) 72%, rgba(246, 247, 248, 0.22) 100%),
-    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.34) 18%, rgba(246, 247, 248, 0.04) 46%);
+    linear-gradient(90deg, rgba(246, 247, 248, 0.99) 0%, rgba(246, 247, 248, 0.93) 43%, rgba(246, 247, 248, 0.72) 68%, rgba(246, 247, 248, 0.5) 100%),
+    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.52) 18%, rgba(246, 247, 248, 0.1) 52%);
 }
 
 .hero-content {
   position: relative;
   z-index: 3;
-  width: min(1280px, calc(100% - 48px));
+  width: calc(100% - 48px);
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 42px 0 44px;
+  padding: 54px 0 58px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 300px);
-  gap: clamp(36px, 5vw, 72px);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: clamp(44px, 6vw, 92px);
   align-items: center;
 }
 
@@ -588,6 +601,7 @@ onMounted(async () => {
   line-height: 1.02;
   color: #17191f;
   text-wrap: balance;
+  overflow-wrap: break-word;
 }
 
 .hero-subtitle {
@@ -674,20 +688,24 @@ onMounted(async () => {
 
 .hero-preview {
   align-self: center;
+  justify-self: end;
   width: 100%;
-  padding: 12px;
-  border: 1px solid rgba(32, 43, 62, 0.12);
-  background: rgba(255, 255, 255, 0.88);
-  border-radius: 8px;
-  box-shadow: 0 24px 64px rgba(23, 25, 31, 0.12);
+  max-width: 390px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
   cursor: pointer;
 }
 
 .preview-frame {
   overflow: hidden;
-  border-radius: 6px;
-  aspect-ratio: 4 / 5;
+  border-radius: 8px;
+  aspect-ratio: 2 / 3;
   background: #d9dde3;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 0 28px 70px rgba(23, 25, 31, 0.18);
 }
 
 .preview-image {
@@ -695,11 +713,11 @@ onMounted(async () => {
   height: 100%;
   display: block;
   object-fit: cover;
-  object-position: center top;
+  object-position: center center;
 }
 
 .preview-copy {
-  padding: 16px 4px 10px;
+  display: none;
 }
 
 .preview-title {
@@ -726,7 +744,8 @@ onMounted(async () => {
 }
 
 .landing-body {
-  width: min(1280px, calc(100% - 48px));
+  width: calc(100% - 48px);
+  max-width: 1280px;
   margin: 0 auto;
 }
 
@@ -758,6 +777,7 @@ onMounted(async () => {
   color: #17191f;
   font-size: clamp(32px, 4vw, 48px);
   line-height: 1.15;
+  overflow-wrap: break-word;
 }
 
 .section-note {
@@ -926,7 +946,7 @@ onMounted(async () => {
 }
 
 .style-image-frame {
-  aspect-ratio: 4 / 5;
+  aspect-ratio: 2 / 3;
   overflow: hidden;
   background: #d9dde3;
 }
@@ -936,7 +956,7 @@ onMounted(async () => {
   height: 100%;
   display: block;
   object-fit: cover;
-  object-position: center top;
+  object-position: center center;
 }
 
 .style-copy {
@@ -1159,7 +1179,7 @@ onMounted(async () => {
   }
 
   .hero-preview {
-    width: min(360px, 100%);
+    width: min(340px, 100%);
     justify-self: start;
   }
 
@@ -1210,7 +1230,8 @@ onMounted(async () => {
 @media (max-width: 560px) {
   .landing-body,
   .hero-content {
-    width: min(100% - 32px, 1280px);
+    width: calc(100% - 32px);
+    max-width: 1280px;
   }
 
   .section-block {
@@ -1226,12 +1247,20 @@ onMounted(async () => {
   }
 
   .hero-title {
-    font-size: 38px;
+    max-width: 100%;
+    font-size: 32px;
     line-height: 1.06;
   }
 
   .hero-subtitle {
+    max-width: 100%;
     font-size: 16px;
+  }
+
+  .section-title {
+    max-width: 100%;
+    font-size: 30px;
+    line-height: 1.16;
   }
 
   .hero-proof-grid {
@@ -1265,7 +1294,7 @@ onMounted(async () => {
   .feature-image {
     min-height: auto;
     height: auto;
-    aspect-ratio: 4 / 5;
+    aspect-ratio: 2 / 3;
   }
 
   .hero-actions,
@@ -1294,4 +1323,3 @@ onMounted(async () => {
   }
 }
 </style>
-  margin-bottom: 8px;
