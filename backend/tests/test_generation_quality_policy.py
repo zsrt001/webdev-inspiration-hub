@@ -40,10 +40,12 @@ from app.services.postprocess_service import (  # noqa: E402
 )
 from app.services import qa_service  # noqa: E402
 from app.services import llm_service  # noqa: E402
+from app.services import repair_policy  # noqa: E402
 from app.services import wenwen_service as wenwen_module  # noqa: E402
 from app.services.qa_service import blocking_vision_reasons  # noqa: E402
+from app.services.identity_control import classify_identity_qa  # noqa: E402
 from app.services.qa_rules import build_structured_qa_issues, normalize_qa_reason  # noqa: E402
-from app.services.template_service import get_template_by_id  # noqa: E402
+from app.services.template_service import get_all_templates, get_commercial_templates, get_template_by_id  # noqa: E402
 from app.services.wenwen_service import WenwenService  # noqa: E402
 
 
@@ -237,6 +239,11 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertTrue(should_retry_qa(["dress_cropped"], 1, max_attempts=2))
         self.assertFalse(should_retry_qa(["bad_hands"], 2, max_attempts=2))
         self.assertFalse(should_retry_qa(["low_resolution"], 1, max_attempts=2))
+
+    def test_final_round_allows_delivery_repair_for_hard_commercial_blockers(self) -> None:
+        self.assertTrue(repair_policy.can_enter_final_polish_round(["bad_hands", "dress_cropped"]))
+        self.assertTrue(repair_policy.can_enter_final_polish_round(["subject_too_small"]))
+        self.assertFalse(repair_policy.can_enter_final_polish_round(["nsfw"]))
 
     def test_qa_failure_state_uses_shared_audit_shape(self) -> None:
         issues = build_structured_qa_issues(["bad_hands"], source="vision", notes="extra fingers")
@@ -802,6 +809,18 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Couple rule", polish)
         self.assertIn("Negative prompt: generic face", polish)
 
+    def test_identity_qa_grade_splits_mismatch_and_role_swap(self) -> None:
+        self.assertEqual(classify_identity_qa([], []), "identity_pass")
+        self.assertEqual(
+            classify_identity_qa(
+                [],
+                [{"code": "identity_mismatch", "category": "identity", "severity": "minor"}],
+            ),
+            "minor_drift",
+        )
+        self.assertEqual(classify_identity_qa(["identity_mismatch"], []), "major_mismatch")
+        self.assertEqual(classify_identity_qa(["identity_swap"], [], is_couple=True), "role_swap")
+
     def test_lighting_only_round_two_is_relight_edit_not_face_regeneration(self) -> None:
         reasons = ["face_underexposed", "oily_skin_highlight", "background_brighter_than_face"]
         prompt = WenwenService._build_image_edit_round_prompt(
@@ -849,6 +868,40 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("restore facial identity", prompt)
         self.assertIn("regenerate the repair from the original identity references", prompt)
 
+    def test_round_three_allows_final_delivery_repairs(self) -> None:
+        self.assertTrue(WenwenService._can_enter_final_polish_round(["poor_studio_quality", "face_underexposed"]))
+        self.assertTrue(WenwenService._can_enter_final_polish_round(["identity_mismatch"]))
+        self.assertTrue(WenwenService._can_enter_final_polish_round(["bad_hands"]))
+        self.assertFalse(WenwenService._can_enter_final_polish_round(["nsfw"]))
+
+        prompt = WenwenService._build_image_edit_round_prompt(
+            base_prompt="IDENTITY LOCK: keep face.\nSTUDIO QUALITY: premium.",
+            negative_prompt="generic face",
+            round_number=3,
+            qa_reasons=["poor_studio_quality"],
+            identity_pack_note="",
+            include_previous_result=True,
+            is_couple=False,
+        )
+
+        self.assertIn("ROUND 3 FINAL POLISH ONLY", prompt)
+        self.assertIn("reject the candidate instead of redrawing it", prompt)
+        self.assertIn("Allowed edits are facial exposure", prompt)
+
+        repair_prompt = WenwenService._build_image_edit_round_prompt(
+            base_prompt="IDENTITY LOCK: keep face.\nSTUDIO QUALITY: premium.",
+            negative_prompt="generic face",
+            round_number=3,
+            qa_reasons=["bad_hands", "dress_cropped"],
+            identity_pack_note="",
+            include_previous_result=True,
+            is_couple=False,
+        )
+
+        self.assertIn("ROUND 3 FINAL DELIVERY REPAIR", repair_prompt)
+        self.assertIn("cover difficult fingers", repair_prompt)
+        self.assertIn("complete shoes, gown hem, veil/train", repair_prompt)
+
     def test_candidate_selection_prefers_deliverable_identity_safe_image(self) -> None:
         failed_verdict = {
             "passed": False,
@@ -885,6 +938,8 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(failed_selection["passed"])
         self.assertIn("identity_mismatch", failed_selection["hard_gate_reasons"])
+        self.assertEqual(failed_selection["identity_grade"], "major_mismatch")
+        self.assertTrue(failed_selection["identity_blocking"])
         self.assertTrue(passed_selection["passed"])
         self.assertEqual(selected["url"], "https://cdn.example.com/good.jpg")
 
@@ -893,6 +948,18 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(WenwenService._should_include_previous_edit_result(["identity_swap"]))
         self.assertTrue(WenwenService._should_include_previous_edit_result(["poor_studio_quality"]))
         self.assertTrue(WenwenService._should_include_previous_edit_result(["bad_hands"]))
+
+    def test_commercial_templates_expose_only_stable_styles(self) -> None:
+        all_templates = get_all_templates()
+        commercial_templates = get_commercial_templates(all_templates)
+        all_ids = {template.id for template in all_templates}
+        commercial_ids = {template.id for template in commercial_templates}
+
+        self.assertIn("cyberpunk_city", all_ids)
+        self.assertNotIn("cyberpunk_city", commercial_ids)
+        self.assertNotIn("custom", commercial_ids)
+        self.assertTrue(commercial_templates)
+        self.assertTrue(all(template.stability == "stable" for template in commercial_templates))
 
     def test_bad_hands_repair_allows_simpler_hand_pose(self) -> None:
         focus = WenwenService._repair_focus_from_reasons(["bad_hands"], is_couple=False)

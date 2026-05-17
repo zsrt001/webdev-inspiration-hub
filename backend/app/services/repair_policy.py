@@ -52,6 +52,21 @@ LIGHTING_ONLY_REPAIR_REASONS = {
 }
 
 FINAL_POLISH_ONLY_REASONS = LIGHTING_ONLY_REPAIR_REASONS | {"poor_studio_quality"}
+FINAL_DELIVERY_REPAIR_REASONS = FINAL_POLISH_ONLY_REASONS | {
+    "identity_mismatch",
+    "identity_swap",
+    "subject_missing",
+    "bad_hands",
+    "extra_limbs",
+    "body_fusion",
+    "cropped_face",
+    "awkward_crop",
+    "dress_cropped",
+    "subject_too_small",
+    "face_too_small",
+    "background_dominates",
+    "excessive_headroom",
+}
 
 CANDIDATE_REASON_PENALTIES = {
     "identity_mismatch": 100,
@@ -132,7 +147,7 @@ def is_lighting_only_repair(reasons: list[str], *, round_number: int) -> bool:
 
 def can_enter_final_polish_round(reasons: list[str]) -> bool:
     normalized = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
-    return not normalized or normalized <= FINAL_POLISH_ONLY_REASONS
+    return not normalized or normalized <= FINAL_DELIVERY_REPAIR_REASONS
 
 
 def image_edit_repair_mode(*, round_number: int, qa_reasons: list[str]) -> str:
