@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
-from app.services.qa_rules import build_structured_qa_issues
+from app.services.qa_rules import build_structured_qa_issues, expand_specific_lighting_qa_reasons
 
 settings = get_settings()
 
@@ -639,6 +639,7 @@ async def verify_generated_image_quality(
                 notes = f"{notes}; qa_provider_fallback={provider}"[:200] if notes else f"qa_provider_fallback={provider}"
             issues_raw = data.get("issues") or []
             issues: list[dict[str, Any]] = []
+            lighting_evidence_texts: list[str] = [notes]
             if isinstance(issues_raw, list):
                 for item in issues_raw:
                     if not isinstance(item, dict):
@@ -664,6 +665,10 @@ async def verify_generated_image_quality(
                         issue["repair_hint"] = str(item.get("repair_hint"))[:240]
                     if item.get("evidence"):
                         issue["evidence"] = str(item.get("evidence"))[:240]
+                    for key in ("code", "reason", "evidence", "notes", "repair_hint"):
+                        value = item.get(key)
+                        if value:
+                            lighting_evidence_texts.append(str(value))
                     issues.append(issue)
             if not reasons and issues:
                 reasons = [
@@ -673,6 +678,31 @@ async def verify_generated_image_quality(
                 ]
             if not issues and reasons:
                 issues = build_structured_qa_issues(reasons, source="vision", notes=notes)
+            expanded_reasons = expand_specific_lighting_qa_reasons(
+                reasons,
+                evidence_texts=lighting_evidence_texts,
+            )
+            if expanded_reasons != reasons:
+                issue_by_code = {
+                    str(issue.get("code") or ""): issue
+                    for issue in issues
+                    if isinstance(issue, dict) and str(issue.get("code") or "").strip()
+                }
+                rebuilt_issues: list[dict[str, Any]] = []
+                for reason in expanded_reasons:
+                    existing = issue_by_code.get(reason)
+                    if existing:
+                        rebuilt_issues.append(existing)
+                        continue
+                    rebuilt_issues.extend(
+                        build_structured_qa_issues(
+                            [reason],
+                            source="vision",
+                            notes=notes or "\n".join(lighting_evidence_texts)[:200],
+                        )
+                    )
+                reasons = expanded_reasons
+                issues = rebuilt_issues
             if reasons or any(bool(issue.get("blocking")) for issue in issues if isinstance(issue, dict)):
                 passed = False
             return {"passed": passed, "reasons": reasons, "issues": issues, "notes": notes}

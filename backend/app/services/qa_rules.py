@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 try:
@@ -55,6 +56,112 @@ ALLOWED_QA_REASONS = {
     "low_contrast_or_blank",
     "vision_error",
 }
+
+SPECIFIC_LIGHTING_QA_REASONS = {
+    "face_underexposed",
+    "flat_lighting",
+    "no_catchlights",
+    "oily_skin_highlight",
+    "dress_highlights_blown",
+    "mixed_color_temperature",
+    "poor_subject_separation",
+    "background_brighter_than_face",
+}
+
+_SPECIFIC_LIGHTING_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "face_underexposed",
+        (
+            r"\bunderexposed face\b",
+            r"\bface (?:is |looks |appears )?(?:too )?dark\b",
+            r"\bface (?:is |looks |appears )?(?:hidden )?in shadow\b",
+            r"\bshadowed face\b",
+            r"\bno soft frontal fill\b",
+            r"\bmissing frontal fill\b",
+        ),
+    ),
+    (
+        "flat_lighting",
+        (
+            r"\bflat lighting\b",
+            r"\bflat light\b",
+            r"\bno directional light(?:ing)?\b",
+            r"\bno key light\b",
+            r"\bno key/fill/rim\b",
+            r"\bshadowless\b",
+            r"\b(?:lighting|light) lacks direction\b",
+        ),
+    ),
+    (
+        "no_catchlights",
+        (
+            r"\bno catchlights?\b",
+            r"\bmissing catchlights?\b",
+            r"\bdead eyes\b",
+            r"\beyes? (?:have|has) no (?:visible )?catchlights?\b",
+        ),
+    ),
+    (
+        "oily_skin_highlight",
+        (
+            r"\boily skin\b",
+            r"\bgreasy skin\b",
+            r"\bglossy skin\b",
+            r"\bwet glossy\b",
+            r"\bwet skin\b",
+            r"\bplastic shine\b",
+            r"\bover[- ]?shiny\b",
+            r"\bshiny (?:forehead|nose|cheeks|chin)\b",
+            r"\bspecular (?:skin|face) highlights?\b",
+        ),
+    ),
+    (
+        "dress_highlights_blown",
+        (
+            r"\bdress highlights? (?:are )?blown\b",
+            r"\bblown[- ]out (?:dress|gown|veil|lace|satin|sky|window)s?\b",
+            r"\b(?:dress|gown|veil|lace|satin|sky|window) (?:is |looks |appears )?overexposed\b",
+            r"\bclipped (?:dress|gown|veil|lace|satin|sky|window) highlights?\b",
+            r"\bwhite dress .*?(?:loses|lost|lacks?) detail\b",
+        ),
+    ),
+    (
+        "mixed_color_temperature",
+        (
+            r"\bmixed color temp(?:erature)?\b",
+            r"\bmixed lighting\b",
+            r"\bcolor temperature (?:is )?(?:mixed|incoherent|mismatched)\b",
+            r"\bgreen/orange\b",
+            r"\borange/green\b",
+            r"\bgreen cast\b",
+            r"\borange cast\b",
+            r"\bphone[- ]?flash color\b",
+        ),
+    ),
+    (
+        "poor_subject_separation",
+        (
+            r"\bpoor subject separation\b",
+            r"\bweak subject separation\b",
+            r"\bno subject separation\b",
+            r"\bsubjects? blend(?:s)? into (?:the )?background\b",
+            r"\bsubject(?:s)? (?:is |are )?not separated\b",
+            r"\bno rim light\b",
+            r"\bbackground and subject(?:s)? merge\b",
+        ),
+    ),
+    (
+        "background_brighter_than_face",
+        (
+            r"\bbackground (?:is |looks |appears )?brighter than (?:the )?face\b",
+            r"\bwindow (?:is |looks |appears )?brighter than (?:the )?face\b",
+            r"\bsky (?:is |looks |appears )?brighter than (?:the )?face\b",
+            r"\bface (?:is |looks |appears )?darker than (?:the )?(?:background|window|sky)\b",
+            r"\bbackground outshines (?:the )?face\b",
+            r"\bexposure prioritizes (?:the )?(?:background|window|sky)\b",
+        ),
+    ),
+)
 
 QA_REASON_SYNONYMS: dict[str, str] = {
     "cropped_head": "cropped_face",
@@ -393,7 +500,7 @@ QA_REASON_DETAILS: dict[str, dict[str, str | bool]] = {
         "repair_hint": "Restore full gown hem, veil, and dress train with enough bottom breathing room.",
     },
     "poor_subject_separation": {
-        "category": "composition",
+        "category": "photography_quality",
         "target": "subject_background_separation",
         "severity": "major",
         "blocking": True,
@@ -545,6 +652,56 @@ def normalize_qa_reason(reason: str) -> str:
         return "other"
     normalized = QA_REASON_SYNONYMS.get(key, key)
     return normalized if normalized in ALLOWED_QA_REASONS else "other"
+
+
+def infer_specific_lighting_reasons(text: str) -> list[str]:
+    content = str(text or "").strip().lower()
+    if not content:
+        return []
+    inferred: list[str] = []
+    seen: set[str] = set()
+    for reason, patterns in _SPECIFIC_LIGHTING_TEXT_PATTERNS:
+        if reason in seen:
+            continue
+        if any(re.search(pattern, content, flags=re.IGNORECASE) for pattern in patterns):
+            seen.add(reason)
+            inferred.append(reason)
+    return inferred
+
+
+def expand_specific_lighting_qa_reasons(
+    reasons: list[str],
+    *,
+    evidence_texts: list[str] | None = None,
+) -> list[str]:
+    """Prefer actionable lighting reasons over generic poor_studio_quality."""
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        canonical = normalize_qa_reason(str(reason))
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            normalized.append(canonical)
+
+    joined_evidence = "\n".join(str(text or "") for text in (evidence_texts or []) if str(text or "").strip())
+    inferred = infer_specific_lighting_reasons(joined_evidence)
+    if not inferred:
+        return normalized
+
+    expanded: list[str] = []
+    expanded_seen: set[str] = set()
+    for reason in normalized:
+        if reason == "poor_studio_quality":
+            continue
+        if reason not in expanded_seen:
+            expanded_seen.add(reason)
+            expanded.append(reason)
+    for reason in inferred:
+        if reason not in expanded_seen:
+            expanded_seen.add(reason)
+            expanded.append(reason)
+    return expanded
 
 
 def structured_qa_issue(

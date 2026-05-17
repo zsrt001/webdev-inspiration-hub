@@ -1062,6 +1062,68 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verdict["issues"][1]["code"], "oily_skin_highlight")
         self.assertEqual(verdict["issues"][2]["target"], "face_background_exposure_balance")
 
+    def test_vision_qa_decomposes_generic_studio_quality_from_evidence(self) -> None:
+        async def fake_chat(payload, *, title, timeout, provider):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"passed": false, '
+                                '"reasons": ["poor_studio_quality"], '
+                                '"issues": [{'
+                                '"code": "poor_studio_quality", '
+                                '"evidence": "face is in shadow, flat lighting, no catchlights, wet glossy skin, '
+                                'dress highlights are blown, mixed color temperature, weak subject separation, '
+                                'background is brighter than the face"'
+                                '}], '
+                                '"notes": "generic commercial lighting failure"}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        original_configured = llm_service.is_vision_provider_configured
+        original_chat = llm_service._llm_chat_for_provider
+        original_provider = llm_service.settings.llm_provider
+        original_jiekou_key = llm_service.settings.jiekou_api_key
+        original_wenwen_vision_key = llm_service.settings.wenwen_vision_api_key
+        llm_service.is_vision_provider_configured = lambda: True
+        llm_service._llm_chat_for_provider = fake_chat
+        llm_service.settings.llm_provider = "jiekou"
+        llm_service.settings.jiekou_api_key = "test-jiekou-key"
+        llm_service.settings.wenwen_vision_api_key = ""
+        try:
+            verdict = asyncio.run(
+                llm_service.verify_generated_image_quality("https://cdn.example.com/generated.jpg")
+            )
+        finally:
+            llm_service.is_vision_provider_configured = original_configured
+            llm_service._llm_chat_for_provider = original_chat
+            llm_service.settings.llm_provider = original_provider
+            llm_service.settings.jiekou_api_key = original_jiekou_key
+            llm_service.settings.wenwen_vision_api_key = original_wenwen_vision_key
+
+        self.assertFalse(verdict["passed"])
+        self.assertEqual(
+            verdict["reasons"],
+            [
+                "face_underexposed",
+                "flat_lighting",
+                "no_catchlights",
+                "oily_skin_highlight",
+                "dress_highlights_blown",
+                "mixed_color_temperature",
+                "poor_subject_separation",
+                "background_brighter_than_face",
+            ],
+        )
+        self.assertNotIn("poor_studio_quality", verdict["reasons"])
+        self.assertEqual([issue["category"] for issue in verdict["issues"]], ["photography_quality"] * 8)
+        self.assertEqual(verdict["issues"][0]["repair_action"], "raise_face_exposure_with_soft_fill")
+        self.assertEqual(verdict["issues"][4]["repair_action"], "recover_white_dress_highlight_detail")
+
     def test_vision_qa_falls_back_to_secondary_provider_on_timeout(self) -> None:
         calls: list[tuple[str | None, str]] = []
 
