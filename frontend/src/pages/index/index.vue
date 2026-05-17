@@ -529,7 +529,7 @@ onMounted(async () => {
 
 .hero-section {
   position: relative;
-  min-height: min(540px, calc(100dvh - 230px));
+  min-height: clamp(520px, calc(100dvh - 110px), 620px);
   display: flex;
   align-items: stretch;
   overflow: hidden;
@@ -544,7 +544,7 @@ onMounted(async () => {
   z-index: 1;
   filter: saturate(0.9) contrast(1.06);
   object-fit: cover;
-  object-position: center;
+  object-position: 58% center;
 }
 
 .hero-overlay {
@@ -552,8 +552,8 @@ onMounted(async () => {
   inset: 0;
   z-index: 2;
   background:
-    linear-gradient(90deg, rgba(246, 247, 248, 0.98) 0%, rgba(246, 247, 248, 0.82) 45%, rgba(246, 247, 248, 0.2) 100%),
-    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.05) 36%);
+    linear-gradient(90deg, rgba(246, 247, 248, 0.99) 0%, rgba(246, 247, 248, 0.9) 43%, rgba(246, 247, 248, 0.5) 72%, rgba(246, 247, 248, 0.22) 100%),
+    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.34) 18%, rgba(246, 247, 248, 0.04) 46%);
 }
 
 .hero-content {
@@ -561,15 +561,15 @@ onMounted(async () => {
   z-index: 3;
   width: min(1280px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 46px 0 44px;
+  padding: 42px 0 44px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 40px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 300px);
+  gap: clamp(36px, 5vw, 72px);
+  align-items: center;
 }
 
 .hero-copy {
-  max-width: 740px;
+  max-width: 720px;
 }
 
 .section-label {
@@ -584,7 +584,7 @@ onMounted(async () => {
 .hero-title {
   display: block;
   max-width: 720px;
-  font-size: clamp(40px, 4.8vw, 62px);
+  font-size: clamp(42px, 4.6vw, 64px);
   line-height: 1.02;
   color: #17191f;
   text-wrap: balance;
@@ -592,7 +592,7 @@ onMounted(async () => {
 
 .hero-subtitle {
   display: block;
-  max-width: 620px;
+  max-width: 600px;
   margin-top: 22px;
   color: #454b57;
   font-size: 17px;
@@ -643,7 +643,7 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  max-width: 650px;
+  max-width: 640px;
   margin-top: 22px;
 }
 
@@ -674,9 +674,10 @@ onMounted(async () => {
 
 .hero-preview {
   align-self: center;
+  width: 100%;
   padding: 12px;
   border: 1px solid rgba(32, 43, 62, 0.12);
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.88);
   border-radius: 8px;
   box-shadow: 0 24px 64px rgba(23, 25, 31, 0.12);
   cursor: pointer;
@@ -685,7 +686,7 @@ onMounted(async () => {
 .preview-frame {
   overflow: hidden;
   border-radius: 6px;
-  aspect-ratio: 1 / 1.05;
+  aspect-ratio: 4 / 5;
   background: #d9dde3;
 }
 
@@ -694,11 +695,11 @@ onMounted(async () => {
   height: 100%;
   display: block;
   object-fit: cover;
-  object-position: center;
+  object-position: center top;
 }
 
 .preview-copy {
-  padding: 16px 4px 12px;
+  padding: 16px 4px 10px;
 }
 
 .preview-title {
@@ -730,7 +731,11 @@ onMounted(async () => {
 }
 
 .section-block {
-  padding: 92px 0;
+  padding: 88px 0;
+}
+
+.benefits-section {
+  padding-top: 70px;
 }
 
 .section-heading {
@@ -1154,7 +1159,7 @@ onMounted(async () => {
   }
 
   .hero-preview {
-    width: min(420px, 100%);
+    width: min(360px, 100%);
     justify-self: start;
   }
 
@@ -1169,7 +1174,7 @@ onMounted(async () => {
   }
 
   .hero-content {
-    padding: 48px 0 56px;
+    padding: 46px 0 52px;
   }
 
   .section-heading.split,
@@ -1210,6 +1215,10 @@ onMounted(async () => {
 
   .section-block {
     padding: 64px 0;
+  }
+
+  .benefits-section {
+    padding-top: 56px;
   }
 
   .hero-content {

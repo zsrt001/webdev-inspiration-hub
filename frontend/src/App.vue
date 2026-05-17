@@ -210,4 +210,23 @@ page {
 .cursor-pointer {
   cursor: pointer;
 }
+
+/* H5 desktop already has the fixed top navigation. Hide the mobile tab bar
+   so it does not cover landing page cards or footer content on wide screens. */
+@media (min-width: 769px) {
+  uni-tabbar,
+  uni-tabbar.uni-tabbar,
+  .uni-tabbar,
+  .uni-tabbar-bottom,
+  .uni-tabbar__placeholder {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+  }
+
+  uni-page-body,
+  body {
+    padding-bottom: 0 !important;
+  }
+}
 </style>
