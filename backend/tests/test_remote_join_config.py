@@ -68,7 +68,7 @@ class RemoteJoinConfigTest(unittest.TestCase):
     def test_public_config_uses_wide_home_banner(self) -> None:
         config = ops_config_service.get_public_ops_config()
 
-        self.assertEqual(config["placements"]["home_banner"]["image_url"], "/legacy_promo_banner.jpg")
+        self.assertEqual(config["placements"]["home_banner"]["image_url"], "/hero_wedding_luxury_bg.jpg")
 
     def test_public_config_normalizes_legacy_heavy_home_banner(self) -> None:
         legacy_config = {
@@ -84,7 +84,7 @@ class RemoteJoinConfigTest(unittest.TestCase):
         with patch.object(ops_config_service, "get_ops_config", return_value=legacy_config):
             config = ops_config_service.get_public_ops_config()
 
-        self.assertEqual(config["placements"]["home_banner"]["image_url"], "/legacy_promo_banner.jpg")
+        self.assertEqual(config["placements"]["home_banner"]["image_url"], "/hero_wedding_luxury_bg.jpg")
 
 
 if __name__ == "__main__":

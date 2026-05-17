@@ -3,7 +3,7 @@
     <NavBar ref="navBarRef" @show-payment="showPaymentModal = true" />
 
     <view v-if="homeBanner.enabled" class="hero-section">
-      <image :src="heroImageUrl" mode="aspectFill" class="hero-media" />
+      <view class="hero-media" :style="heroBackgroundStyle"></view>
       <view class="hero-overlay"></view>
       <view class="hero-content">
         <view class="hero-copy">
@@ -229,8 +229,10 @@ const showPaymentModal = ref(false);
 const templateImageAttempts = ref<Record<string, number>>({});
 
 const homeBanner = computed(() => opsStore.publicConfig.placements.home_banner);
-const heroBackgroundFallback = '/legacy_promo_banner.jpg';
-const portraitHeroBackgrounds = new Set([
+const heroBackgroundFallback = '/hero_wedding_luxury_bg.jpg';
+const staleHeroBackgrounds = new Set([
+  '/legacy_promo_banner.jpg',
+  '/static/legacy_promo_banner.jpg',
   '/style-previews/royal_castle.jpg',
   '/static/style-previews/royal_castle.jpg',
   '/style-previews/solo_royal_castle.jpg',
@@ -259,11 +261,15 @@ const styleImageFallbacks: Record<string, string[]> = {
 const heroImageUrl = computed(() => {
   const raw = String(homeBanner.value.image_url || '').trim();
   const normalized = raw.startsWith('/static/') ? raw.replace(/^\/static/, '') : raw;
-  if (!raw || portraitHeroBackgrounds.has(raw) || portraitHeroBackgrounds.has(normalized)) {
+  if (!raw || staleHeroBackgrounds.has(raw) || staleHeroBackgrounds.has(normalized)) {
     return resolvePublicUrl(heroBackgroundFallback);
   }
   return resolvePublicUrl(raw);
 });
+
+const heroBackgroundStyle = computed(() => ({
+  backgroundImage: `url(${heroImageUrl.value})`,
+}));
 
 const heroPreviewUrl = computed(() => {
   const candidate = templates.value.find((item) => item.category === 'couple')?.image_url || '/style-previews/royal_castle.jpg';
@@ -477,14 +483,13 @@ const dedupeTemplateCards = (source: Template[]): Template[] => {
 const filteredTemplates = computed(() => {
   if (selectedCategory.value !== 'all') {
     if (selectedCategory.value === 'single') {
-      const portraitLike = templates.value.filter(
+      return templates.value.filter(
         (item) => item.category === 'single' || item.category === 'solo' || item.category === 'couple'
       );
-      return dedupeTemplateCards(portraitLike);
     }
     return templates.value.filter((item) => item.category === selectedCategory.value);
   }
-  return dedupeTemplateCards(templates.value);
+  return templates.value;
 });
 
 const focusCategory = (category: 'single' | 'vintage' | 'custom') => {
@@ -553,10 +558,11 @@ onMounted(async () => {
   width: 100%;
   height: 100%;
   z-index: 1;
-  opacity: 0.36;
-  filter: saturate(0.82) contrast(1.04);
-  object-fit: cover;
-  object-position: 72% 44%;
+  opacity: 1;
+  filter: saturate(0.96) contrast(1.02);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center center;
 }
 
 .hero-overlay {
@@ -564,8 +570,8 @@ onMounted(async () => {
   inset: 0;
   z-index: 2;
   background:
-    linear-gradient(90deg, rgba(246, 247, 248, 0.99) 0%, rgba(246, 247, 248, 0.93) 43%, rgba(246, 247, 248, 0.72) 68%, rgba(246, 247, 248, 0.5) 100%),
-    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.52) 18%, rgba(246, 247, 248, 0.1) 52%);
+    linear-gradient(90deg, rgba(246, 247, 248, 0.92) 0%, rgba(246, 247, 248, 0.8) 33%, rgba(246, 247, 248, 0.28) 56%, rgba(246, 247, 248, 0.04) 100%),
+    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.34) 16%, rgba(246, 247, 248, 0) 48%);
 }
 
 .hero-content {
@@ -687,16 +693,7 @@ onMounted(async () => {
 }
 
 .hero-preview {
-  align-self: center;
-  justify-self: end;
-  width: 100%;
-  max-width: 390px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  border-radius: 0;
-  box-shadow: none;
-  cursor: pointer;
+  display: none;
 }
 
 .preview-frame {
@@ -1244,6 +1241,16 @@ onMounted(async () => {
 
   .hero-content {
     padding: 36px 0 42px;
+  }
+
+  .hero-media {
+    background-position: left center;
+  }
+
+  .hero-overlay {
+    background:
+      linear-gradient(90deg, rgba(246, 247, 248, 0.94) 0%, rgba(246, 247, 248, 0.88) 52%, rgba(246, 247, 248, 0.42) 100%),
+      linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.46) 20%, rgba(246, 247, 248, 0.12) 52%);
   }
 
   .hero-title {

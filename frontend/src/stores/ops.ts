@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
       subtitle: 'Premium wedding portraits in minutes',
       cta_label: 'Start Now',
       secondary_cta_label: 'Browse Collection',
-      image_url: '/legacy_promo_banner.jpg',
+      image_url: '/hero_wedding_luxury_bg.jpg',
       legacy_enabled: true,
       portal_enabled: true,
     },

@@ -22,7 +22,7 @@ DEFAULT_OPS_CONFIG: dict[str, Any] = {
             "subtitle": "Premium wedding portraits in minutes",
             "cta_label": "Start Now",
             "secondary_cta_label": "Browse Collection",
-            "image_url": "/legacy_promo_banner.jpg",
+            "image_url": "/hero_wedding_luxury_bg.jpg",
             "legacy_enabled": True,
             "portal_enabled": True,
         }
@@ -264,6 +264,8 @@ def get_public_ops_config() -> dict[str, Any]:
         "/static/hero_banner.jpg",
         "/style-previews/hero_banner.jpg",
         "/static/style-previews/hero_banner.jpg",
+        "/legacy_promo_banner.jpg",
+        "/static/legacy_promo_banner.jpg",
         "/style-previews/royal_castle.jpg",
         "/static/style-previews/royal_castle.jpg",
         "/style-previews/solo_royal_castle.jpg",
