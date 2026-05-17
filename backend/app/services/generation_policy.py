@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.prompt_brain import build_prompt, get_negative_prompt
+from app.services.shot_library_service import build_shot_library_prompt, commercial_shot_library_standard
 
 
 DEFAULT_ASPECT_RATIO = "3:4"
@@ -30,6 +31,11 @@ COMMERCIAL_WEDDING_STANDARD = {
     },
     "blocking_reasons": [
         "identity_mismatch",
+        "identity_similarity_low",
+        "identity_margin_low",
+        "identity_averaging",
+        "identity_face_missing",
+        "identity_embedding_unavailable",
         "face_too_small",
         "subject_too_small",
         "background_dominates",
@@ -66,6 +72,7 @@ COMMERCIAL_WEDDING_STANDARD = {
             "background_supports_subject",
         ],
     },
+    "shot_library": commercial_shot_library_standard(),
 }
 
 QA_MAX_ATTEMPTS = 3
@@ -97,6 +104,11 @@ QA_RETRY_REASONS = {
     "weak_couple_interaction",
     "harsh_backlight",
     "identity_mismatch",
+    "identity_similarity_low",
+    "identity_margin_low",
+    "identity_averaging",
+    "identity_face_missing",
+    "identity_embedding_unavailable",
     "identity_swap",
     "subject_missing",
     "headless",
@@ -165,6 +177,7 @@ def build_studio_generation_prompt(
         clothing_text=normalized_outfit_text,
         is_couple=is_couple,
     )
+    prompt_text = f"{prompt_text.rstrip()}\n{build_shot_library_prompt(template, is_couple=is_couple)}"
     if is_couple:
         prompt_text = f"{prompt_text.rstrip()}\nCOUPLE ROLE GUARDRAILS: {COUPLE_PROMPT_GUARDRAILS}."
     return prompt_text

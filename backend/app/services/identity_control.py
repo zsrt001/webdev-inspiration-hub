@@ -22,9 +22,17 @@ def classify_identity_qa(
     normalized = {normalize_qa_reason(str(reason)) for reason in (reasons or []) if str(reason or "").strip()}
     if "identity_swap" in normalized:
         return "role_swap"
-    if normalized & {"face_distortion", "fused_faces", "subject_missing", "headless"}:
+    if normalized & {
+        "face_distortion",
+        "fused_faces",
+        "subject_missing",
+        "headless",
+        "identity_similarity_low",
+        "identity_averaging",
+        "identity_face_missing",
+    }:
         return "major_mismatch"
-    if "identity_mismatch" in normalized:
+    if normalized & {"identity_mismatch", "identity_margin_low"}:
         return "major_mismatch"
 
     saw_identity_issue = False
@@ -37,9 +45,17 @@ def classify_identity_qa(
         severity = str(issue.get("severity") or "").strip().lower()
         if code == "identity_swap" or (is_couple and "role" in target and "swap" in target):
             return "role_swap"
-        if code in {"face_distortion", "fused_faces", "subject_missing", "headless"}:
+        if code in {
+            "face_distortion",
+            "fused_faces",
+            "subject_missing",
+            "headless",
+            "identity_similarity_low",
+            "identity_averaging",
+            "identity_face_missing",
+        }:
             return "major_mismatch"
-        if code == "identity_mismatch" or category == "identity" or "identity" in target:
+        if code in {"identity_mismatch", "identity_margin_low"} or category == "identity" or "identity" in target:
             saw_identity_issue = True
             if severity in {"critical", "major", "blocking"}:
                 return "major_mismatch"

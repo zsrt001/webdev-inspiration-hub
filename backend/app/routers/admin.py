@@ -26,6 +26,7 @@ from app.services.admin_audit_service import list_admin_audit_logs, log_admin_ac
 from app.services.analytics_reporting_service import (
     get_city_ranking,
     get_funnel_report,
+    get_quality_dashboard,
     get_template_ranking,
 )
 from app.services.lead_crm_service import build_crm_payload, list_crm_push_history, push_leads_to_crm, query_leads_for_crm
@@ -302,6 +303,7 @@ class AnalyticsOverviewResponse(BaseModel):
     funnel: dict[str, Any]
     template_ranking: list[dict[str, Any]]
     city_ranking: list[dict[str, Any]]
+    quality_dashboard: dict[str, Any] | None = None
 
 
 class OpsOverviewResponse(BaseModel):
@@ -1330,11 +1332,23 @@ async def get_admin_analytics_overview(
     funnel = await get_funnel_report(db, days=days)
     template_ranking = await get_template_ranking(db, days=ranking_days, limit=limit)
     city_ranking = await get_city_ranking(db, days=ranking_days, limit=limit)
+    quality_dashboard = await get_quality_dashboard(db, days=ranking_days, limit=limit)
     return AnalyticsOverviewResponse(
         funnel=funnel,
         template_ranking=template_ranking,
         city_ranking=city_ranking,
+        quality_dashboard=quality_dashboard,
     )
+
+
+@router.get("/quality_dashboard")
+async def get_admin_quality_dashboard(
+    days: int = 30,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return order-level generation quality stats by template, reason, and repair round."""
+    return await get_quality_dashboard(db, days=days, limit=limit)
 
 
 @router.get("/ops_overview", response_model=OpsOverviewResponse)

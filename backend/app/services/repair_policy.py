@@ -11,6 +11,11 @@ CANDIDATE_SELECTION_POLICY = "qa_score_v1"
 
 IDENTITY_HARD_GATE_REASONS = {
     "identity_mismatch",
+    "identity_similarity_low",
+    "identity_margin_low",
+    "identity_averaging",
+    "identity_face_missing",
+    "identity_embedding_unavailable",
     "identity_swap",
     "face_distortion",
     "fused_faces",
@@ -54,6 +59,10 @@ LIGHTING_ONLY_REPAIR_REASONS = {
 FINAL_POLISH_ONLY_REASONS = LIGHTING_ONLY_REPAIR_REASONS | {"poor_studio_quality"}
 FINAL_DELIVERY_REPAIR_REASONS = FINAL_POLISH_ONLY_REASONS | {
     "identity_mismatch",
+    "identity_similarity_low",
+    "identity_margin_low",
+    "identity_averaging",
+    "identity_face_missing",
     "identity_swap",
     "subject_missing",
     "bad_hands",
@@ -70,6 +79,11 @@ FINAL_DELIVERY_REPAIR_REASONS = FINAL_POLISH_ONLY_REASONS | {
 
 CANDIDATE_REASON_PENALTIES = {
     "identity_mismatch": 100,
+    "identity_similarity_low": 100,
+    "identity_margin_low": 90,
+    "identity_averaging": 100,
+    "identity_face_missing": 100,
+    "identity_embedding_unavailable": 100,
     "identity_swap": 100,
     "face_distortion": 90,
     "fused_faces": 90,
@@ -107,6 +121,11 @@ CANDIDATE_REASON_PENALTIES = {
 
 IMAGE_EDIT_REPAIR_SKIP_PREVIOUS_REASONS = {
     "identity_mismatch",
+    "identity_similarity_low",
+    "identity_margin_low",
+    "identity_averaging",
+    "identity_face_missing",
+    "identity_embedding_unavailable",
     "identity_swap",
     "subject_missing",
     "face_distortion",

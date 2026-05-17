@@ -90,6 +90,18 @@ _QA_REASON_MAP: dict[str, str] = {
     "face_not_like_source": "identity_mismatch",
     "face_mismatch": "identity_mismatch",
     "identity_not_preserved": "identity_mismatch",
+    "identity_similarity_low": "identity_similarity_low",
+    "low_identity_similarity": "identity_similarity_low",
+    "face_similarity_low": "identity_similarity_low",
+    "identity_margin_low": "identity_margin_low",
+    "identity_match_margin_low": "identity_margin_low",
+    "identity_averaging": "identity_averaging",
+    "same_ai_face": "identity_averaging",
+    "identity_face_missing": "identity_face_missing",
+    "source_face_missing": "identity_face_missing",
+    "generated_face_missing": "identity_face_missing",
+    "identity_embedding_unavailable": "identity_embedding_unavailable",
+    "identity_embedding_error": "identity_embedding_unavailable",
     "extra_limbs": "extra_limbs",
     "extra_arms": "extra_limbs",
     "bad_hands": "bad_hands",
@@ -210,6 +222,11 @@ _ALLOWED_QA_REASONS = {
     "subject_missing",
     "identity_swap",
     "identity_mismatch",
+    "identity_similarity_low",
+    "identity_margin_low",
+    "identity_averaging",
+    "identity_face_missing",
+    "identity_embedding_unavailable",
     "extra_limbs",
     "bad_hands",
     "dress_exposure_error",
@@ -493,10 +510,10 @@ async def optimize_generation_prompt(prompt: str, *, is_couple: bool = False) ->
         "Preserve the sectioned prompt contract and keep section labels such as IDENTITY LOCK, STUDIO QUALITY, "
         "INDOOR STUDIO LIGHTING, OUTDOOR PROFESSIONAL LIGHTING, WINDOW AND ARCHITECTURAL LIGHTING, "
         "NIGHT AND LOW-LIGHTING, COMPOSITION, CANVAS PROPORTION, DELIVERY GATE, "
-        "CANDIDATE SELECTION, and FORBIDDEN CONSTRAINTS. "
+        "SHOT LIBRARY, PRIMARY SHOT, CANDIDATE SHOT SEQUENCE, CANDIDATE SELECTION, and FORBIDDEN CONSTRAINTS. "
         "Never weaken or remove identity lock, reference-face preservation, studio lighting, outdoor lighting protocol, "
         "window/architectural lighting protocol, night/low-light protocol, canvas proportion rules, delivery gate rules, "
-        "candidate selection rules, or negative-quality constraints. "
+        "shot-library composition rules, candidate selection rules, or negative-quality constraints. "
         "Do not add camera jargon, safety disclaimers, or markdown. "
         "Return one concise production-ready prompt string only."
     )
@@ -511,7 +528,7 @@ async def optimize_generation_prompt(prompt: str, *, is_couple: bool = False) ->
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.4,
-        "max_tokens": 500,
+        "max_tokens": 850,
     }
     try:
         result = await _text_chat(payload, title="AI Wedding Prompt Optimizer", timeout=30.0)

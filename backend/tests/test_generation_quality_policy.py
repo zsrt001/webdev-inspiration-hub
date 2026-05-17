@@ -45,6 +45,11 @@ from app.services import wenwen_service as wenwen_module  # noqa: E402
 from app.services.qa_service import blocking_vision_reasons  # noqa: E402
 from app.services.identity_control import classify_identity_qa  # noqa: E402
 from app.services.qa_rules import build_structured_qa_issues, normalize_qa_reason  # noqa: E402
+from app.services.shot_library_service import (  # noqa: E402
+    SHOT_LIBRARY_VERSION,
+    build_shot_library_prompt,
+    resolve_shot_suite,
+)
 from app.services.template_service import get_all_templates, get_commercial_templates, get_template_by_id  # noqa: E402
 from app.services.wenwen_service import WenwenService  # noqa: E402
 
@@ -219,6 +224,9 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("INDOOR LIGHTING:", prompt)  # castle is indoor
         self.assertIn("full-length 3:4 vertical", prompt)
         self.assertIn("Identity lock is mandatory", prompt)
+        self.assertIn("SHOT LIBRARY:", prompt)
+        self.assertIn("PRIMARY SHOT full gown editorial", prompt)
+        self.assertIn("CANDIDATE SHOT SEQUENCE:", prompt)
 
     def test_couple_generation_policy_adds_dedicated_negative_terms(self) -> None:
         negative = build_generation_negative_prompt(is_couple=True)
@@ -361,6 +369,41 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("background_dominates", standard["blocking_reasons"])
         self.assertTrue(standard["delivery_gate"]["identity_required"])
         self.assertTrue(standard["candidate_selection"]["enabled"])
+        self.assertEqual(standard["shot_library"]["version"], SHOT_LIBRARY_VERSION)
+        self.assertIn("single_bridal", standard["shot_library"]["suites"])
+
+    def test_shot_library_directs_single_and_couple_compositions(self) -> None:
+        single_template = get_template_by_id("solo_royal_castle")
+        couple_template = get_template_by_id("royal_castle")
+        self.assertIsNotNone(single_template)
+        self.assertIsNotNone(couple_template)
+
+        single_suite = resolve_shot_suite(single_template, is_couple=False)
+        couple_suite = resolve_shot_suite(couple_template, is_couple=True)
+        single_prompt = build_shot_library_prompt(single_template, is_couple=False)
+        couple_prompt = build_shot_library_prompt(couple_template, is_couple=True)
+
+        self.assertEqual(single_suite["primary"], "bridal_full_gown_editorial")
+        self.assertEqual(couple_suite["primary"], "couple_interaction_full_length")
+        self.assertIn("SHOT LIBRARY:", single_prompt)
+        self.assertIn("PRIMARY SHOT full gown editorial", single_prompt)
+        self.assertIn("subject height 0.72-0.84", single_prompt)
+        self.assertIn("CANDIDATE SHOT SEQUENCE:", single_prompt)
+        self.assertIn("PRIMARY SHOT full-length couple interaction", couple_prompt)
+        self.assertIn("group height 0.68-0.84", couple_prompt)
+        self.assertIn("subtle eye-line or shoulder interaction", couple_prompt)
+
+    def test_golden_anniversary_uses_respectful_shot_suite(self) -> None:
+        template = get_template_by_id("golden_vintage_studio_8090")
+        self.assertIsNotNone(template)
+
+        suite = resolve_shot_suite(template, is_couple=True)
+        prompt = build_shot_library_prompt(template, is_couple=True)
+
+        self.assertEqual(suite["name"], "golden_anniversary")
+        self.assertEqual(suite["primary"], "golden_anniversary_respectful_three_quarter")
+        self.assertIn("authentic age impression", prompt)
+        self.assertIn("avoid: over-young beautification", prompt)
 
     def test_generation_credit_policy_charges_once_and_refunds_failed_qa(self) -> None:
         policy = build_generation_credit_policy(credits_cost=4)

@@ -10,27 +10,16 @@ except Exception:  # pragma: no cover
     ImageStat = None  # type: ignore[assignment]
 from app.core.config import get_settings
 from app.services import llm_service
+from app.services.identity_embedding_service import identity_embedding_service
+from app.services.photometric_qa_service import photometric_qa_service
+from app.services.qa_pipeline import attach_identity_grade, blocking_vision_reasons as _blocking_vision_reasons
 from app.services.qa_rules import build_structured_qa_issues, normalize_qa_reason, run_local_qa_rules
 
 settings = get_settings()
 
 
 def blocking_vision_reasons(reasons: list[str]) -> list[str]:
-    """Return actionable vision QA failures.
-
-    A generic "other" verdict is not enough to block delivery when local image
-    checks already passed; it is too vague for users and operators to act on.
-    """
-    blocking: list[str] = []
-    seen: set[str] = set()
-    for reason in reasons:
-        normalized = normalize_qa_reason(reason)
-        if normalized == "other":
-            continue
-        if normalized not in seen:
-            seen.add(normalized)
-            blocking.append(normalized)
-    return blocking
+    return _blocking_vision_reasons(reasons)
 
 
 async def basic_image_check(image_url: str) -> tuple[bool, list[str], dict[str, float]]:
@@ -113,21 +102,27 @@ async def verify_with_vision_verdict(
     if not llm_service.is_vision_provider_configured():
         if settings.qa_require_vision or identity_vision_required:
             reasons = ["vision_error"]
-            return {
+            return attach_identity_grade({
                 "passed": False,
                 "reasons": reasons,
                 "issues": build_structured_qa_issues(reasons, source="vision", notes="vision_not_configured"),
                 "notes": "identity_vision_required" if identity_vision_required else "vision_not_configured",
                 "source": "vision",
-            }
-        return {"passed": True, "reasons": [], "issues": [], "notes": "llm_not_configured", "source": "vision"}
+            }, is_couple=is_couple)
+        return attach_identity_grade(
+            {"passed": True, "reasons": [], "issues": [], "notes": "llm_not_configured", "source": "vision"},
+            is_couple=is_couple,
+        )
     verdict = await llm_service.verify_generated_image_quality(
         image_url,
         is_couple=is_couple,
         source_image_urls=source_image_urls,
     )
     if verdict.get("passed") is True:
-        return {"passed": True, "reasons": [], "issues": [], "notes": verdict.get("notes") or "", "source": "vision"}
+        return attach_identity_grade(
+            {"passed": True, "reasons": [], "issues": [], "notes": verdict.get("notes") or "", "source": "vision"},
+            is_couple=is_couple,
+        )
     reasons = verdict.get("reasons") or ["vision_fail"]
     if not isinstance(reasons, list):
         reasons = [str(reasons)]
@@ -146,13 +141,13 @@ async def verify_with_vision_verdict(
             source="vision",
             notes=str(verdict.get("notes") or ""),
         )
-    return {
+    return attach_identity_grade({
         "passed": False,
         "reasons": normalized,
         "issues": issues,
         "notes": str(verdict.get("notes") or ""),
         "source": "vision",
-    }
+    }, is_couple=is_couple)
 
 
 async def output_passes(
@@ -179,14 +174,58 @@ async def output_verdict(
     identity_vision_required = bool(source_images) and bool(settings.qa_require_identity_vision)
     local_verdict = await basic_image_verdict(image_url)
     if not local_verdict["passed"]:
-        return {
+        return attach_identity_grade({
             "passed": False,
             "reasons": local_verdict["reasons"],
             "issues": local_verdict["issues"],
             "local": local_verdict,
             "vision": None,
             "notes": "local_qa_failed",
-        }
+        }, is_couple=is_couple)
+
+    identity_embedding_verdict = None
+    if source_images and bool(settings.qa_require_identity_embedding):
+        identity_embedding_verdict = await identity_embedding_service.verify_identity_similarity(
+            image_url,
+            is_couple=is_couple,
+            source_image_urls=source_images,
+        )
+        if not bool(identity_embedding_verdict.get("passed")):
+            return attach_identity_grade({
+                "passed": False,
+                "reasons": list(identity_embedding_verdict.get("reasons") or []),
+                "issues": [
+                    issue
+                    for issue in (identity_embedding_verdict.get("issues") or [])
+                    if isinstance(issue, dict)
+                ],
+                "local": local_verdict,
+                "identity_embedding": identity_embedding_verdict,
+                "vision": None,
+                "notes": "identity_embedding_qa_failed",
+            }, is_couple=is_couple)
+
+    photometric_verdict = None
+    if bool(settings.qa_require_photometric):
+        photometric_verdict = await photometric_qa_service.verify_lighting(
+            image_url,
+            is_couple=is_couple,
+        )
+        if not bool(photometric_verdict.get("passed")):
+            return attach_identity_grade({
+                "passed": False,
+                "reasons": list(photometric_verdict.get("reasons") or []),
+                "issues": [
+                    issue
+                    for issue in (photometric_verdict.get("issues") or [])
+                    if isinstance(issue, dict)
+                ],
+                "local": local_verdict,
+                "identity_embedding": identity_embedding_verdict,
+                "photometric": photometric_verdict,
+                "vision": None,
+                "notes": "photometric_qa_failed",
+            }, is_couple=is_couple)
 
     vision_verdict = await verify_with_vision_verdict(
         image_url,
@@ -199,32 +238,38 @@ async def output_verdict(
         blocking_reasons = blocking_vision_reasons(vision_reasons)
         if (settings.qa_fail_on_vision_error or identity_vision_required) and "vision_error" in blocking_reasons:
             reasons = ["vision_error"]
-            return {
+            return attach_identity_grade({
                 "passed": False,
                 "reasons": reasons,
                 "issues": build_structured_qa_issues(reasons, source="vision", notes=vision_verdict.get("notes")),
                 "local": local_verdict,
+                "identity_embedding": identity_embedding_verdict,
+                "photometric": photometric_verdict,
                 "vision": vision_verdict,
                 "notes": "identity_vision_required" if identity_vision_required else "vision_error_blocked",
-            }
+            }, is_couple=is_couple)
         if not blocking_reasons:
-            return {
+            return attach_identity_grade({
                 "passed": True,
                 "reasons": [],
                 "issues": [],
                 "local": local_verdict,
+                "identity_embedding": identity_embedding_verdict,
+                "photometric": photometric_verdict,
                 "vision": vision_verdict,
                 "notes": "vision_non_blocking",
-            }
+            }, is_couple=is_couple)
         if blocking_reasons == ["vision_error"]:
-            return {
+            return attach_identity_grade({
                 "passed": True,
                 "reasons": [],
                 "issues": [],
                 "local": local_verdict,
+                "identity_embedding": identity_embedding_verdict,
+                "photometric": photometric_verdict,
                 "vision": vision_verdict,
                 "notes": "vision_error_degraded",
-            }
+            }, is_couple=is_couple)
         combined: list[str] = []
         seen: set[str] = set()
         for reason in [*(local_verdict["reasons"] or []), *(blocking_reasons or vision_reasons)]:
@@ -233,19 +278,23 @@ async def output_verdict(
                 seen.add(normalized)
                 combined.append(normalized)
         issues = build_structured_qa_issues(combined, source="vision", notes=vision_verdict.get("notes"))
-        return {
+        return attach_identity_grade({
             "passed": False,
             "reasons": combined,
             "issues": issues,
             "local": local_verdict,
+            "identity_embedding": identity_embedding_verdict,
+            "photometric": photometric_verdict,
             "vision": vision_verdict,
             "notes": "vision_qa_failed",
-        }
-    return {
+        }, is_couple=is_couple)
+    return attach_identity_grade({
         "passed": True,
         "reasons": [],
         "issues": [],
         "local": local_verdict,
+        "identity_embedding": identity_embedding_verdict,
+        "photometric": photometric_verdict,
         "vision": vision_verdict,
         "notes": "passed",
-    }
+    }, is_couple=is_couple)

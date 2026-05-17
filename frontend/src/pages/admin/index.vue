@@ -39,6 +39,180 @@
         </view>
       </view>
 
+      <view class="admin-card overview-section">
+        <view class="section-head">
+          <view>
+            <text class="section-title">Commercial funnel</text>
+            <text class="section-copy">7-day funnel with upload quality, identity grade, payment, and delivery signals.</text>
+          </view>
+          <button class="ghost-action" @tap="refreshOps">Refresh</button>
+        </view>
+
+        <view class="funnel-grid">
+          <view v-for="item in funnelCards" :key="item.label" class="funnel-cell">
+            <text class="metric-label">{{ item.label }}</text>
+            <text class="metric-value small-value">{{ item.value }}</text>
+            <text v-if="item.sub" class="metric-sub">{{ item.sub }}</text>
+          </view>
+        </view>
+
+        <view class="template-ranking">
+          <view class="section-head compact-head">
+            <view>
+              <text class="section-title small-title">Template conversion</text>
+              <text class="section-copy">A/B picks now feed template ranking together with clicks, orders, completions, downloads, and leads.</text>
+            </view>
+          </view>
+          <view v-if="templateRanking.length === 0" class="admin-state compact-state">
+            <text class="state-title">No template data yet</text>
+            <text class="state-copy">Template activity will appear after users browse and generate.</text>
+          </view>
+          <view v-else class="recent-list">
+            <view v-for="item in templateRanking" :key="item.template_id" class="template-row">
+              <view>
+                <text class="strong">{{ item.template_title || item.template_id }}</text>
+                <text class="subtle mono">{{ item.template_id }}</text>
+              </view>
+              <text class="td-muted">Clicks {{ item.clicks || 0 }}</text>
+              <text class="td-muted">A/B {{ item.ab_picks || 0 }}</text>
+              <text class="td-muted">Orders {{ item.orders || 0 }}</text>
+              <text class="td-muted">Done {{ formatPercent(item.completion_rate) }}</text>
+              <text class="td-muted">Score {{ formatNumber(item.ranking_score) }}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <view class="admin-card overview-section quality-dashboard">
+        <view class="section-head">
+          <view>
+            <text class="section-title">Order quality dashboard</text>
+            <text class="section-copy">30-day gate results by template, failure reason, and repair-round recovery.</text>
+          </view>
+          <button class="ghost-action" @tap="refreshOps">Refresh</button>
+        </view>
+
+        <view class="quality-kpi-grid">
+          <view v-for="item in qualityKpis" :key="item.label" class="quality-kpi">
+            <text class="metric-label">{{ item.label }}</text>
+            <text class="metric-value small-value">{{ item.value }}</text>
+            <text class="metric-sub">{{ item.sub }}</text>
+          </view>
+        </view>
+
+        <view class="quality-tables-grid">
+          <view>
+            <view class="section-head compact-head quality-table-head">
+              <view>
+                <text class="section-title small-title">Template failure map</text>
+                <text class="section-copy">Top templates ranked by QA failures and order volume.</text>
+              </view>
+            </view>
+            <view v-if="qualityTemplates.length === 0" class="admin-state compact-state">
+              <text class="state-title">No quality data yet</text>
+              <text class="state-copy">Template-level QA data will appear after orders complete or fail gates.</text>
+            </view>
+            <view v-else class="quality-table">
+              <view class="quality-row quality-head-row template-quality-row">
+                <text class="th">Template</text>
+                <text class="th">Orders</text>
+                <text class="th">QA fail</text>
+                <text class="th">Identity</text>
+                <text class="th">Lighting</text>
+                <text class="th">Top reason</text>
+              </view>
+              <view v-for="item in qualityTemplates" :key="item.template_id" class="quality-row template-quality-row">
+                <view>
+                  <text class="strong">{{ item.template_id }}</text>
+                  <text class="subtle">Done {{ formatPercent(item.completion_rate) }} · repair {{ formatNumber(item.avg_repair_rounds) }}</text>
+                </view>
+                <text class="td">{{ item.orders || 0 }}</text>
+                <text class="td">{{ formatPercent(item.qa_failure_rate) }}</text>
+                <text class="td">{{ formatPercent(item.identity_failure_rate) }}</text>
+                <text class="td">{{ formatPercent(item.lighting_failure_rate) }}</text>
+                <text class="td-muted">{{ topReasonLabel(item.top_reasons) }}</text>
+              </view>
+            </view>
+          </view>
+
+          <view>
+            <view class="section-head compact-head quality-table-head">
+              <view>
+                <text class="section-title small-title">Failure reasons</text>
+                <text class="section-copy">Reason codes grouped into identity, lighting, composition, and technical buckets.</text>
+              </view>
+            </view>
+            <view v-if="qualityReasons.length === 0" class="admin-state compact-state">
+              <text class="state-title">No failure reasons</text>
+              <text class="state-copy">Hard-gate rejects and repair-round misses will be counted here.</text>
+            </view>
+            <view v-else class="quality-table">
+              <view class="quality-row quality-head-row reason-quality-row">
+                <text class="th">Reason</text>
+                <text class="th">Group</text>
+                <text class="th">Count</text>
+                <text class="th">Rounds</text>
+                <text class="th">Top template</text>
+              </view>
+              <view v-for="item in qualityReasons" :key="item.reason" class="quality-row reason-quality-row">
+                <text class="td mono">{{ item.reason }}</text>
+                <text class="status-pill">{{ item.group || 'ops' }}</text>
+                <text class="td">{{ item.count || 0 }}</text>
+                <text class="td-muted">{{ roundCountsLabel(item.round_counts) }}</text>
+                <text class="td-muted">{{ topTemplateLabel(item.top_templates) }}</text>
+              </view>
+            </view>
+          </view>
+        </view>
+
+        <view class="repair-grid">
+          <view>
+            <view class="section-head compact-head quality-table-head">
+              <view>
+                <text class="section-title small-title">Repair rounds</text>
+                <text class="section-copy">Success rate by generation / repair pass.</text>
+              </view>
+            </view>
+            <view class="repair-strip">
+              <view v-for="item in qualityRepairRounds" :key="item.round" class="repair-cell">
+                <text class="metric-label">Round {{ item.round }}</text>
+                <text class="metric-value small-value">{{ formatPercent(item.success_rate) }}</text>
+                <text class="metric-sub">{{ item.successes || 0 }}/{{ item.attempts || 0 }} passed · score {{ formatNumber(item.avg_selected_score) }}</text>
+                <text class="subtle">{{ topReasonLabel(item.top_reasons) }}</text>
+              </view>
+              <view v-if="qualityRepairRounds.length === 0" class="admin-state compact-state">
+                <text class="state-title">No repair rounds</text>
+                <text class="state-copy">Repair pass rates will appear after QA attempts are recorded.</text>
+              </view>
+            </view>
+          </view>
+
+          <view>
+            <view class="section-head compact-head quality-table-head">
+              <view>
+                <text class="section-title small-title">Repair modes</text>
+                <text class="section-copy">Shows whether relight-only and other repair policies are recovering usable images.</text>
+              </view>
+            </view>
+            <view class="quality-table compact-quality-table">
+              <view v-for="item in qualityRepairModes" :key="item.repair_mode" class="mode-row">
+                <view>
+                  <text class="strong mono">{{ item.repair_mode }}</text>
+                  <text class="subtle">{{ item.successes || 0 }}/{{ item.attempts || 0 }} recovered</text>
+                </view>
+                <text class="status-pill" :class="{ active: Number(item.success_rate || 0) >= 0.8 }">
+                  {{ formatPercent(item.success_rate) }}
+                </text>
+              </view>
+              <view v-if="qualityRepairModes.length === 0" class="admin-state compact-state">
+                <text class="state-title">No repair modes</text>
+                <text class="state-copy">Mode-level recovery stats will appear after repair attempts.</text>
+              </view>
+            </view>
+          </view>
+        </view>
+      </view>
+
       <view class="ops-grid">
         <view class="admin-card ops-card">
           <view class="section-head compact-head">
@@ -322,6 +496,26 @@ interface RiskOverview {
   recent_events: RiskEvent[];
 }
 
+interface AnalyticsOverview {
+  funnel?: {
+    totals?: Record<string, number>;
+    daily?: Array<Record<string, any>>;
+  };
+  template_ranking?: Array<Record<string, any>>;
+  city_ranking?: Array<Record<string, any>>;
+  quality_dashboard?: QualityDashboard;
+}
+
+interface QualityDashboard {
+  days?: number;
+  sampled_orders?: number;
+  totals?: Record<string, any>;
+  templates?: Array<Record<string, any>>;
+  failure_reasons?: Array<Record<string, any>>;
+  repair_rounds?: Array<Record<string, any>>;
+  repair_modes?: Array<Record<string, any>>;
+}
+
 interface ProbeResponse {
   ok: boolean;
   started: boolean;
@@ -347,6 +541,8 @@ const stats = ref<DashboardStats>({
 const emailDiagnostics = ref<EmailDiagnostics | null>(null);
 const emailLogs = ref<EmailLogItem[]>([]);
 const riskOverview = ref<RiskOverview | null>(null);
+const analyticsOverview = ref<AnalyticsOverview | null>(null);
+const qualityDashboard = ref<QualityDashboard | null>(null);
 const testEmailTo = ref('');
 const testEmailResult = ref('');
 const sendingTestEmail = ref(false);
@@ -361,6 +557,13 @@ const lastProbeInputs = ref<{ primary: string; second: string }>({ primary: '', 
 
 const recentOrders = computed(() => (stats.value.recent_activity || []).slice(0, 8));
 const recentRiskEvents = computed(() => (riskOverview.value?.recent_events || []).slice(0, 6));
+const funnelTotals = computed(() => analyticsOverview.value?.funnel?.totals || {});
+const templateRanking = computed(() => (analyticsOverview.value?.template_ranking || []).slice(0, 8));
+const qualityTotals = computed(() => qualityDashboard.value?.totals || {});
+const qualityTemplates = computed(() => (qualityDashboard.value?.templates || []).slice(0, 6));
+const qualityReasons = computed(() => (qualityDashboard.value?.failure_reasons || []).slice(0, 8));
+const qualityRepairRounds = computed(() => qualityDashboard.value?.repair_rounds || []);
+const qualityRepairModes = computed(() => qualityDashboard.value?.repair_modes || []);
 const adminRoleLabel = computed(() => (adminMe.value?.admin_roles || []).join(', ') || '--');
 const defaultProbeTemplateId = computed(() => (probeRemoteJoin.value ? 'royal_castle' : 'solo_royal_castle'));
 const dnsSummary = computed(() => {
@@ -383,6 +586,60 @@ const probePreviewUrl = computed(() => {
   const previewValues = result.preview_image_urls ? Object.values(result.preview_image_urls) : [];
   if (previewValues.length && previewValues[0]) return resolvePublicUrl(previewValues[0]);
   return '';
+});
+
+const funnelCards = computed(() => {
+  const totals = funnelTotals.value;
+  const grades = (totals.identity_grade_counts || {}) as Record<string, number>;
+  const blockingIdentity = Number(grades.major_mismatch || 0) + Number(grades.role_swap || 0);
+  return [
+    { label: 'Registered', value: fmtCount(totals.registered), sub: `Pay ${formatPercent(totals.payment_conversion_rate)}` },
+    { label: 'Upload start', value: fmtCount(totals.upload_started), sub: `Success ${formatPercent(totals.upload_success_rate)}` },
+    { label: 'Upload success', value: fmtCount(totals.upload_completed), sub: `Avg ${formatDuration(totals.avg_upload_duration_ms)}` },
+    { label: 'Upload quality', value: formatNumber(totals.avg_upload_quality_score), sub: `Warn ${fmtCount(totals.upload_quality_warning)} / Poor ${fmtCount(totals.upload_quality_poor)}` },
+    { label: 'Order created', value: fmtCount(totals.order_created), sub: `Done ${formatPercent(totals.generation_success_rate)}` },
+    { label: 'Completed', value: fmtCount(totals.order_completed), sub: `QA fail ${formatPercent(totals.qa_failure_rate)}` },
+    { label: 'Identity grade', value: fmtCount(blockingIdentity), sub: `Minor ${fmtCount(grades.minor_drift)} / Pass ${fmtCount(grades.identity_pass)}` },
+    { label: 'Result viewed', value: fmtCount(totals.result_viewed), sub: `Repair ${formatNumber(totals.avg_repair_rounds)}` },
+    { label: 'Paid', value: fmtCount(totals.payments_completed), sub: `Revenue $${formatNumber(totals.payment_revenue_usd)}` },
+    { label: 'Downloaded', value: fmtCount(totals.download_success), sub: `Lock ${fmtCount(totals.download_locked_clicked)}` },
+  ];
+});
+
+const qualityKpis = computed(() => {
+  const totals = qualityTotals.value;
+  return [
+    {
+      label: 'Sampled orders',
+      value: fmtCount(qualityDashboard.value?.sampled_orders || totals.orders),
+      sub: `${qualityDashboard.value?.days || 30} days · done ${formatPercent(totals.completion_rate)}`,
+    },
+    {
+      label: 'QA failure',
+      value: formatPercent(totals.qa_failure_rate),
+      sub: `${fmtCount(totals.qa_failed_orders)} blocked before delivery`,
+    },
+    {
+      label: 'Identity failures',
+      value: formatPercent(totals.identity_failure_rate),
+      sub: `${fmtCount(totals.identity_failed_orders)} face-consistency misses`,
+    },
+    {
+      label: 'Lighting failures',
+      value: formatPercent(totals.lighting_failure_rate),
+      sub: `${fmtCount(totals.lighting_failed_orders)} photometric misses`,
+    },
+    {
+      label: 'Relight recovery',
+      value: formatPercent(totals.relight_success_rate),
+      sub: `${fmtCount(totals.relight_successes)}/${fmtCount(totals.relight_attempts)} relight-only passed`,
+    },
+    {
+      label: 'Avg repair rounds',
+      value: formatNumber(totals.avg_repair_rounds),
+      sub: `${fmtCount(totals.completed_orders)} completed · ${fmtCount(totals.failed_orders)} failed`,
+    },
+  ];
 });
 
 const currentProbeInputImages = computed(() => buildProbeInputImages(probeImageUrl.value, probeSecondImageUrl.value));
@@ -416,6 +673,52 @@ function formatMoney(cents: number): string {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
+function fmtCount(value: unknown): string {
+  return String(Number(value || 0));
+}
+
+function formatNumber(value: unknown): string {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) ? numeric.toFixed(2).replace(/\.00$/, '') : '0';
+}
+
+function formatPercent(value: unknown): string {
+  const numeric = Number(value || 0);
+  return `${(numeric * 100).toFixed(1)}%`;
+}
+
+function formatDuration(value: unknown): string {
+  const ms = Number(value || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return '--';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function topReasonLabel(items: unknown): string {
+  const rows = Array.isArray(items) ? items : [];
+  const first = rows[0] as Record<string, any> | undefined;
+  if (!first) return '--';
+  const reason = String(first.reason || first.template_id || '--');
+  return `${reason} (${Number(first.count || 0)})`;
+}
+
+function topTemplateLabel(items: unknown): string {
+  const rows = Array.isArray(items) ? items : [];
+  const first = rows[0] as Record<string, any> | undefined;
+  if (!first) return '--';
+  return `${first.template_id || 'unknown'} (${Number(first.count || 0)})`;
+}
+
+function roundCountsLabel(value: unknown): string {
+  if (!value || typeof value !== 'object') return '--';
+  const entries = Object.entries(value as Record<string, number>)
+    .filter(([, count]) => Number(count || 0) > 0)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .slice(0, 3);
+  if (!entries.length) return '--';
+  return entries.map(([round, count]) => `R${round}:${count}`).join(' / ');
+}
+
 async function loadDashboard() {
   loading.value = true;
   error.value = '';
@@ -439,14 +742,20 @@ async function loadCoreDashboard() {
 }
 
 async function refreshOps() {
-  const [emailDiag, logs, risk] = await Promise.allSettled([
+  const [emailDiag, logs, risk, analytics, quality] = await Promise.allSettled([
     get<EmailDiagnostics>('/admin/email_diagnostics', { showLoading: false, showError: false }),
     get<EmailLogItem[]>('/admin/email_logs?limit=8', { showLoading: false, showError: false }),
     get<RiskOverview>('/admin/risk_overview?days=7&limit=8', { showLoading: false, showError: false }),
+    get<AnalyticsOverview>('/admin/analytics_overview?days=7&ranking_days=30&limit=8', { showLoading: false, showError: false }),
+    get<QualityDashboard>('/admin/quality_dashboard?days=30&limit=10', { showLoading: false, showError: false }),
   ]);
   emailDiagnostics.value = emailDiag.status === 'fulfilled' ? emailDiag.value : null;
   emailLogs.value = logs.status === 'fulfilled' ? logs.value : [];
   riskOverview.value = risk.status === 'fulfilled' ? risk.value : null;
+  analyticsOverview.value = analytics.status === 'fulfilled' ? analytics.value : null;
+  qualityDashboard.value = quality.status === 'fulfilled'
+    ? quality.value
+    : (analyticsOverview.value?.quality_dashboard || null);
 }
 
 async function sendAdminTestEmail() {
@@ -579,6 +888,7 @@ onMounted(loadDashboard);
 
 .overview-section {
   padding: 20px;
+  margin-bottom: 18px;
 }
 
 .ops-grid {
@@ -737,6 +1047,134 @@ onMounted(loadDashboard);
   font-size: 22px;
 }
 
+.small-title {
+  font-size: 15px;
+}
+
+.funnel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
+}
+
+.funnel-cell {
+  min-height: 116px;
+  padding: 14px;
+  border: 1px solid #edf1f6;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.template-ranking {
+  margin-top: 18px;
+}
+
+.quality-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.quality-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quality-kpi,
+.repair-cell {
+  min-height: 112px;
+  padding: 14px;
+  border: 1px solid #edf1f6;
+  border-radius: 8px;
+  background: #fbfcfd;
+  box-sizing: border-box;
+}
+
+.quality-tables-grid,
+.repair-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.quality-table-head {
+  min-height: 52px;
+  margin-bottom: 10px;
+}
+
+.quality-table {
+  border: 1px solid #edf1f6;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.quality-row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #edf1f6;
+  box-sizing: border-box;
+}
+
+.quality-row:last-child {
+  border-bottom: 0;
+}
+
+.quality-head-row {
+  min-height: 42px;
+  background: #f8fafc;
+}
+
+.template-quality-row {
+  grid-template-columns: minmax(0, 1.4fr) 64px 78px 78px 78px minmax(0, 1fr);
+}
+
+.reason-quality-row {
+  grid-template-columns: minmax(0, 1.2fr) 88px 58px 92px minmax(0, 1fr);
+}
+
+.repair-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.compact-quality-table {
+  min-height: 112px;
+}
+
+.mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #edf1f6;
+  box-sizing: border-box;
+}
+
+.mode-row:last-child {
+  border-bottom: 0;
+}
+
+.template-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(5, minmax(72px, 0.5fr));
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 0 14px;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.template-row:last-child {
+  border-bottom: 0;
+}
+
 .recent-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px 150px;
@@ -755,11 +1193,29 @@ onMounted(loadDashboard);
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .quality-kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .quality-tables-grid,
+  .repair-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .funnel-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
   .metrics-grid,
   .ops-grid,
+  .funnel-grid,
+  .quality-kpi-grid,
+  .template-quality-row,
+  .reason-quality-row,
+  .template-row,
   .recent-row {
     grid-template-columns: 1fr;
   }

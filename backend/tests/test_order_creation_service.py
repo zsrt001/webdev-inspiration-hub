@@ -87,6 +87,18 @@ class OrderCreationServiceTest(unittest.TestCase):
             template_id="classic",
             user_images=["https://cdn.example.com/person-a.jpg"],
             legal_accepted=True,
+            upload_quality=[
+                {
+                    "slot_index": "0",
+                    "role": "subject",
+                    "image_url": "https://cdn.example.com/person-a.jpg",
+                    "quality_score": 82.6,
+                    "quality_level": "good",
+                    "reasons": ["clear_face"],
+                    "risk_flags": [],
+                    "metrics": {"face_ratio": 0.34},
+                }
+            ],
         )
         identity_reference_pack = {
             "version": 1,
@@ -139,6 +151,7 @@ class OrderCreationServiceTest(unittest.TestCase):
         self.assertTrue(generation_policy["identity_edit_required_by_code"])
         self.assertFalse(generation_policy["text_to_image_fallback_allowed"])
         self.assertFalse(generation_policy["native_generation_fallback_allowed_for_identity"])
+        self.assertTrue(generation_policy["shot_library_director"])
         self.assertTrue(generation_policy["multi_round_image_edit"])
         self.assertEqual(
             generation_policy["image_edit_rounds"],
@@ -157,6 +170,44 @@ class OrderCreationServiceTest(unittest.TestCase):
         self.assertTrue(params["credit_policy"]["refund_on_blocking_qa_failure"])
         self.assertIn("qa_reject", params["credit_policy"]["refund_failure_codes"])
         self.assertEqual(params["identity_reference_pack"], identity_reference_pack)
+        self.assertEqual(params["upload_quality"][0]["quality_score"], 83)
+        self.assertEqual(params["upload_quality_summary"]["avg_score"], 83)
+        self.assertEqual(params["upload_quality_summary"]["warning_count"], 0)
+
+    def test_upload_quality_is_normalized_for_order_params(self) -> None:
+        request = OrderCreate(
+            template_id="classic",
+            user_images=["https://cdn.example.com/person-a.jpg"],
+            legal_accepted=True,
+            upload_quality=[
+                {
+                    "slot_index": "bad",
+                    "role": "host",
+                    "image_url": "https://cdn.example.com/person-a.jpg",
+                    "quality_score": 142,
+                    "quality_level": "unknown",
+                    "reasons": ["low_light"] * 20,
+                    "risk_flags": ["small_face"],
+                    "metrics": {"blur": "3.45678", "bad": "nan"},
+                },
+                {
+                    "slot_index": 1,
+                    "role": "guest",
+                    "quality_score": 31,
+                    "quality_level": "poor",
+                },
+            ],
+        )
+
+        self.assertEqual(request.upload_quality[0]["slot_index"], 0)
+        self.assertEqual(request.upload_quality[0]["quality_score"], 100)
+        self.assertEqual(request.upload_quality[0]["quality_level"], "good")
+        self.assertEqual(len(request.upload_quality[0]["reasons"]), 12)
+
+        summary = service._upload_quality_summary(request.upload_quality)
+        self.assertEqual(summary["count"], 2)
+        self.assertEqual(summary["avg_score"], 65.5)
+        self.assertEqual(summary["poor_count"], 1)
 
 
 if __name__ == "__main__":

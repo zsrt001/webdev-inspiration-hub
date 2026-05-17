@@ -774,6 +774,7 @@ def _build_generation_params(
                 "text_to_image_fallback_allowed": False,
                 "native_generation_fallback_allowed_for_identity": False,
                 "studio_prompt_guardrails": True,
+                "shot_library_director": True,
                 "multi_round_image_edit": True,
                 "candidate_selection": {
                     "enabled": True,

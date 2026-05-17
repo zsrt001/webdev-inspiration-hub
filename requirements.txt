@@ -19,6 +19,12 @@ arq>=0.25.0
 boto3>=1.34.0
 botocore>=1.34.0
 
+# AI / imaging utilities
+numpy>=1.26.0
+opencv-python-headless>=4.9.0.80
+onnxruntime>=1.17.0
+insightface>=0.7.3
+
 # Utilities
 python-multipart>=0.0.6
 httpx>=0.26.0
