@@ -1,8 +1,10 @@
 """Evolink provider adapter contract tests."""
 
 from pathlib import Path
+import asyncio
 import sys
 import unittest
+import uuid
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -10,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services import evolink_service as evolink_module  # noqa: E402
+from app.services import provider_workflow as workflow_module  # noqa: E402
 from app.services.evolink_service import EvolinkService  # noqa: E402
 from app.services.provider_workflow import GenerationProviderWorkflow  # noqa: E402
 from app.services.provider_workflow import build_generation_negative_prompt, build_studio_generation_prompt  # noqa: E402
@@ -188,6 +191,90 @@ class EvolinkProviderTest(unittest.TestCase):
                 ("groom full reference", "https://example.test/groom.jpg"),
             ],
         )
+
+    def test_vision_error_retry_exhaustion_delivers_candidate_when_non_blocking(self) -> None:
+        service = EvolinkService()
+        order_id = uuid.uuid4()
+        candidate_url = "https://example.test/generated.png"
+        calls: list[tuple[str, object]] = []
+        original_output_verdict = workflow_module.output_verdict
+        original_fail_on_error = workflow_module.settings.qa_fail_on_vision_error
+        original_retry_attempts = workflow_module.settings.qa_vision_error_retry_attempts
+
+        async def fake_output_verdict(*args, **kwargs) -> dict:
+            return {
+                "passed": False,
+                "reasons": ["vision_error"],
+                "issues": [{"code": "vision_error", "blocking": False}],
+            }
+
+        async def fake_update_state(*args, **kwargs) -> None:
+            calls.append(("update", kwargs["attempt"]))
+
+        async def fake_record_failure(*args, **kwargs) -> None:
+            calls.append(("record_failure", kwargs["reasons"]))
+
+        async def fake_mark_retry(*args, **kwargs) -> None:
+            calls.append(("retry", kwargs["attempt"]))
+
+        async def fake_fail_order(*args, **kwargs) -> None:
+            calls.append(("fail", args))
+
+        async def fake_complete_order(*args, **kwargs) -> None:
+            calls.append(("complete", kwargs["selection_summary"]))
+
+        async def fake_completion_email(*args, **kwargs) -> None:
+            calls.append(("email", args))
+
+        try:
+            workflow_module.output_verdict = fake_output_verdict  # type: ignore[assignment]
+            workflow_module.settings.qa_fail_on_vision_error = False
+            workflow_module.settings.qa_vision_error_retry_attempts = 3
+            service._update_image_edit_round_qa_state = fake_update_state  # type: ignore[method-assign]
+            service._record_qa_failure = fake_record_failure  # type: ignore[method-assign]
+            service._mark_qa_retry_pending = fake_mark_retry  # type: ignore[method-assign]
+            service._fail_order = fake_fail_order  # type: ignore[method-assign]
+            service._complete_order = fake_complete_order  # type: ignore[method-assign]
+            service._queue_completion_email = fake_completion_email  # type: ignore[method-assign]
+
+            handled = asyncio.run(
+                service._retry_pending_vision_recheck(
+                    order_id,
+                    params={
+                        "qa_attempt_count": 2,
+                        "qa_retry_kind": "vision_recheck",
+                        "qa_retry_candidate_url": candidate_url,
+                        "debug": {
+                            "image_edit_rounds": [
+                                {
+                                    "round": 1,
+                                    "stage": "primary_generation",
+                                    "candidate_url": candidate_url,
+                                    "provider_urls": [candidate_url],
+                                    "candidate_scores": [{"index": 0, "score": 72.0}],
+                                }
+                            ]
+                        },
+                    },
+                    user_images=["https://example.test/source.jpg"],
+                    subject_count=1,
+                    couple_flow=None,
+                )
+            )
+        finally:
+            workflow_module.output_verdict = original_output_verdict  # type: ignore[assignment]
+            workflow_module.settings.qa_fail_on_vision_error = original_fail_on_error
+            workflow_module.settings.qa_vision_error_retry_attempts = original_retry_attempts
+
+        self.assertTrue(handled)
+        self.assertIn(("update", 3), calls)
+        self.assertTrue(any(call[0] == "record_failure" for call in calls))
+        self.assertFalse(any(call[0] == "retry" for call in calls))
+        self.assertFalse(any(call[0] == "fail" for call in calls))
+        complete_calls = [call for call in calls if call[0] == "complete"]
+        self.assertEqual(len(complete_calls), 1)
+        self.assertEqual(complete_calls[0][1]["qa_degraded_reason"], "vision_error_retry_exhausted")
+        self.assertTrue(complete_calls[0][1]["requires_admin_review"])
 
 
 if __name__ == "__main__":

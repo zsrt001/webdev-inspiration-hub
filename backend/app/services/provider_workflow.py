@@ -1691,11 +1691,44 @@ class GenerationProviderWorkflow:
                     retry_kind="vision_recheck",
                 )
             else:
-                await self._fail_order(
-                    order_uuid,
-                    f"QA failed: {','.join(qa_reasons or ['vision_error'])}",
-                    "qa_reject",
-                )
+                if not settings.qa_fail_on_vision_error:
+                    round_item = self._image_edit_round_for_candidate(params, candidate_url)
+                    provider_urls = [
+                        str(url)
+                        for url in (round_item.get("provider_urls") if isinstance(round_item.get("provider_urls"), list) else [])
+                        if str(url or "").strip()
+                    ] or [candidate_url]
+                    selected_round = self._safe_int(round_item.get("round"), attempt) if round_item else attempt
+                    selected_stage = str(round_item.get("stage") or "vision_qa_degraded_delivery")
+                    await self._complete_order(
+                        order_uuid,
+                        delivered_urls=[candidate_url],
+                        provider_urls=provider_urls,
+                        qa_attempt_count=attempt,
+                        is_couple=is_couple,
+                        subject_count=subject_count,
+                        couple_flow=couple_flow,
+                        selected_round=selected_round,
+                        selected_stage=selected_stage,
+                        selection_summary={
+                            "policy": self.CANDIDATE_SELECTION_POLICY,
+                            "selected_round": selected_round,
+                            "selected_stage": selected_stage,
+                            "score": self._result_selection_score(self._round_result_from_debug(round_item)) if round_item else 0.0,
+                            "candidate_scores": round_item.get("candidate_scores") if isinstance(round_item.get("candidate_scores"), list) else [],
+                            "qa_degraded": True,
+                            "qa_degraded_reason": "vision_error_retry_exhausted",
+                            "vision_qa_retry_attempt": attempt,
+                            "requires_admin_review": True,
+                        },
+                    )
+                    await self._queue_completion_email(order_uuid)
+                else:
+                    await self._fail_order(
+                        order_uuid,
+                        f"QA failed: {','.join(qa_reasons or ['vision_error'])}",
+                        "qa_reject",
+                    )
             return True
 
         # A retry reached the vision model and returned actionable QA reasons.
