@@ -1882,7 +1882,8 @@ class GenerationProviderWorkflow:
         reasons_text = ", ".join(str(reason) for reason in qa_reasons if str(reason).strip()) or "none"
         issues_text = cls._structured_issue_repair_summary(qa_issues)
         couple_note = (
-            "Couple rule: person A/bride and person B/groom must remain separate, with no role swap or face averaging. "
+            "Couple rule: the output must contain exactly two primary wedding subjects in the same frame. "
+            "Person A/bride and person B/groom must remain separate, with no solo portrait, no missing partner, no role swap, and no face averaging. "
             if is_couple
             else ""
         )

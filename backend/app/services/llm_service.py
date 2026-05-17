@@ -620,10 +620,11 @@ async def verify_generated_image_quality(
         payload = dict(base_payload)
         payload["model"] = _vision_model_for_provider(provider)
         try:
+            timeout_seconds = max(30.0, min(120.0, float(settings.qa_vision_timeout_seconds or 75.0)))
             result = await _llm_chat_for_provider(
                 payload,
                 title="AI Wedding QA",
-                timeout=45.0,
+                timeout=timeout_seconds,
                 provider=provider,
             )
             content_text = _coerce_message_content_text(result["choices"][0]["message"]["content"])

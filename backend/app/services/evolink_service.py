@@ -132,7 +132,8 @@ class EvolinkService(GenerationProviderWorkflow):
             deduped.append(sentence)
 
         couple_hint = (
-            "Couple rule: preserve bride/person A and groom/person B separately; no role swap, face merge, duplicate identity, or body fusion. "
+            "Couple rule: output exactly two primary wedding subjects in the same frame, bride/person A and groom/person B. "
+            "Never create a solo portrait, never omit either subject, and preserve each identity separately with no role swap, face merge, duplicate identity, or body fusion. "
             if re.search(r"\b(couple|bride|groom|person a|person b)\b", cleaned, flags=re.IGNORECASE)
             else ""
         )

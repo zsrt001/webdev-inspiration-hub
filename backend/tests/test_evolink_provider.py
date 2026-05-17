@@ -115,6 +115,7 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertLessEqual(len(compacted), EvolinkService.PROMPT_CHAR_LIMIT)
         self.assertIn("image_urls", compacted)
         self.assertIn("Couple rule", compacted)
+        self.assertIn("exactly two primary wedding subjects", compacted)
         self.assertIn("Negative", compacted)
 
     def test_evolink_reference_entries_keep_identity_first_and_limited(self) -> None:

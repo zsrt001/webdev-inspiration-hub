@@ -70,8 +70,9 @@ EDIT_SCOPE_PROTOCOL = (
 
 COUPLE_IDENTITY_LOCK_PROTOCOL = (
     "For couples, reference image 1 must remain subject A/bride and reference image 2 must remain subject B/groom; "
-    "preserve each person's separate facial identity, age impression, face geometry, expression, and role. Never "
-    "swap identities, merge faces, average faces, duplicate one subject, or make both subjects share the same AI face"
+    "the output must contain exactly two primary wedding subjects in the same frame. Preserve each person's separate "
+    "facial identity, age impression, face geometry, expression, and role. Never create a solo portrait, omit either "
+    "subject, swap identities, merge faces, average faces, duplicate one subject, or make both subjects share the same AI face"
 )
 
 INDOOR_STUDIO_LIGHTING_PROTOCOL = (
@@ -177,8 +178,8 @@ CANDIDATE_SELECTION_PROTOCOL = (
 )
 
 COUPLE_COMPOSITION = (
-    "two-person full-length couple portrait, both faces visible, stable 3:4 vertical framing, natural anatomy, "
-    "clear separation between two subjects, balanced spacing, bride and groom both fully readable, "
+    "exactly two-person full-length couple portrait, never solo, never missing one partner, both faces visible, "
+    "stable 3:4 vertical framing, natural anatomy, clear separation between two subjects, balanced spacing, bride and groom both fully readable, "
     "complete outfits visible, independent shoulders and arms, no fused bodies, no merged limbs, no shared torso, "
     "simple readable hand placement with no interlaced fingers or hidden fused hands"
 )
@@ -268,6 +269,18 @@ def build_prompt(
     is_window = any(w in scene_clean for w in ("window", "balcony"))
 
     parts: list[str] = []
+    parts.append(
+        _section(
+            "PROMPT ARCHITECTURE",
+            "three-layer commercial edit contract: identity layer is immutable, photography layer controls light skin lens and color, delivery layer controls crop size and anti-AI finish",
+        )
+    )
+    parts.append(
+        _section(
+            "IDENTITY LAYER - IMMUTABLE",
+            "highest priority, never reinterpret, never average, never beautify into another person; all later photography and delivery choices must yield to identity preservation",
+        )
+    )
 
     # Layer 1: Identity (highest priority — placed first)
     parts.append(_section("IDENTITY LOCK", IDENTITY_LOCK_PROTOCOL))
@@ -276,11 +289,15 @@ def build_prompt(
         parts.append(_section("COUPLE IDENTITY LOCK", COUPLE_IDENTITY_LOCK_PROTOCOL))
 
     # Layer 2: Skin & photorealism (critical for commercial quality — early placement)
+    parts.append(
+        _section(
+            "PHOTOGRAPHY LAYER",
+            "control only lighting, skin texture, lens rendering, color science, depth separation, and studio polish while preserving the immutable identity layer",
+        )
+    )
     parts.append(_section("SKIN REALISM", SKIN_REALISM_PROTOCOL))
     parts.append(_section("PHOTO REALISM", PHOTO_REALISM_PROTOCOL))
     parts.append(_section("GEMINI FLASH EDIT PROTOCOL", GEMINI_FLASH_EDIT_PROTOCOL))
-    parts.append(_section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL))
-
     # Layer 3: Scene & wardrobe
     parts.append(_section("WARDROBE", f"A professional wedding portrait of {clothing}"))
     parts.append(_section("SCENE", scene))
@@ -300,6 +317,13 @@ def build_prompt(
         parts.append(_section("SCENE BOUNDARY", INDOOR_SCENE_BOUNDARY_PROTOCOL))
 
     # Layer 5: Composition
+    parts.append(
+        _section(
+            "DELIVERY LAYER",
+            "final output must be a commercial wedding deliverable with correct 3:4 master framing, complete gown or suit, clean crop variants, protected white highlights, subtle film grain, and no visible AI tells",
+        )
+    )
+    parts.append(_section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL))
     parts.append(_section("COMPOSITION", FULL_LENGTH_COMPOSITION))
     parts.append(_section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL))
     parts.append(_section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL))
