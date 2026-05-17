@@ -1563,6 +1563,64 @@ class GenerationProviderWorkflow:
                 return round_item
         return {}
 
+    async def _complete_vision_error_degraded_delivery(
+        self,
+        order_uuid: uuid.UUID,
+        *,
+        params: dict[str, Any],
+        candidate_url: str,
+        attempt: int,
+        subject_count: int | None,
+        couple_flow: str | None,
+    ) -> bool:
+        if settings.qa_fail_on_vision_error:
+            await self._fail_order(
+                order_uuid,
+                "QA failed: vision_error",
+                "qa_reject",
+            )
+            return True
+
+        round_item = self._image_edit_round_for_candidate(params, candidate_url)
+        provider_urls = [
+            str(url)
+            for url in (round_item.get("provider_urls") if isinstance(round_item.get("provider_urls"), list) else [])
+            if str(url or "").strip()
+        ]
+        if not provider_urls:
+            provider_urls = [
+                str(url)
+                for url in (round_item.get("candidate_urls") if isinstance(round_item.get("candidate_urls"), list) else [])
+                if str(url or "").strip()
+            ]
+        provider_urls = provider_urls or [candidate_url]
+        selected_round = self._safe_int(round_item.get("round"), attempt) if round_item else attempt
+        selected_stage = str(round_item.get("stage") or "vision_qa_degraded_delivery")
+        await self._complete_order(
+            order_uuid,
+            delivered_urls=[candidate_url],
+            provider_urls=provider_urls,
+            qa_attempt_count=attempt,
+            is_couple=bool(subject_count and int(subject_count) >= 2),
+            subject_count=subject_count,
+            couple_flow=couple_flow,
+            selected_round=selected_round,
+            selected_stage=selected_stage,
+            selection_summary={
+                "policy": self.CANDIDATE_SELECTION_POLICY,
+                "selected_round": selected_round,
+                "selected_stage": selected_stage,
+                "score": self._result_selection_score(self._round_result_from_debug(round_item)) if round_item else 0.0,
+                "candidate_scores": round_item.get("candidate_scores") if isinstance(round_item.get("candidate_scores"), list) else [],
+                "qa_degraded": True,
+                "qa_degraded_reason": "vision_error_retry_exhausted",
+                "vision_qa_retry_attempt": attempt,
+                "requires_admin_review": True,
+            },
+        )
+        await self._queue_completion_email(order_uuid)
+        return True
+
     async def _update_image_edit_round_qa_state(
         self,
         order_uuid: uuid.UUID,
@@ -1624,7 +1682,20 @@ class GenerationProviderWorkflow:
         candidate_url = self._pending_vision_recheck_candidate(params)
         if not candidate_url:
             return False
-        attempt = self._safe_int(params.get("qa_attempt_count"), 0) + 1
+        previous_attempt = self._safe_int(params.get("qa_attempt_count"), 0)
+        if (
+            self._vision_error_only(params.get("qa_last_reasons"))
+            and previous_attempt >= self._safe_vision_retry_limit()
+        ):
+            return await self._complete_vision_error_degraded_delivery(
+                order_uuid,
+                params=params,
+                candidate_url=candidate_url,
+                attempt=previous_attempt,
+                subject_count=subject_count,
+                couple_flow=couple_flow,
+            )
+        attempt = previous_attempt + 1
         is_couple = bool(subject_count and int(subject_count) >= 2)
         qa_verdict = await output_verdict(
             candidate_url,
@@ -1691,44 +1762,14 @@ class GenerationProviderWorkflow:
                     retry_kind="vision_recheck",
                 )
             else:
-                if not settings.qa_fail_on_vision_error:
-                    round_item = self._image_edit_round_for_candidate(params, candidate_url)
-                    provider_urls = [
-                        str(url)
-                        for url in (round_item.get("provider_urls") if isinstance(round_item.get("provider_urls"), list) else [])
-                        if str(url or "").strip()
-                    ] or [candidate_url]
-                    selected_round = self._safe_int(round_item.get("round"), attempt) if round_item else attempt
-                    selected_stage = str(round_item.get("stage") or "vision_qa_degraded_delivery")
-                    await self._complete_order(
-                        order_uuid,
-                        delivered_urls=[candidate_url],
-                        provider_urls=provider_urls,
-                        qa_attempt_count=attempt,
-                        is_couple=is_couple,
-                        subject_count=subject_count,
-                        couple_flow=couple_flow,
-                        selected_round=selected_round,
-                        selected_stage=selected_stage,
-                        selection_summary={
-                            "policy": self.CANDIDATE_SELECTION_POLICY,
-                            "selected_round": selected_round,
-                            "selected_stage": selected_stage,
-                            "score": self._result_selection_score(self._round_result_from_debug(round_item)) if round_item else 0.0,
-                            "candidate_scores": round_item.get("candidate_scores") if isinstance(round_item.get("candidate_scores"), list) else [],
-                            "qa_degraded": True,
-                            "qa_degraded_reason": "vision_error_retry_exhausted",
-                            "vision_qa_retry_attempt": attempt,
-                            "requires_admin_review": True,
-                        },
-                    )
-                    await self._queue_completion_email(order_uuid)
-                else:
-                    await self._fail_order(
-                        order_uuid,
-                        f"QA failed: {','.join(qa_reasons or ['vision_error'])}",
-                        "qa_reject",
-                    )
+                await self._complete_vision_error_degraded_delivery(
+                    order_uuid,
+                    params=params,
+                    candidate_url=candidate_url,
+                    attempt=attempt,
+                    subject_count=subject_count,
+                    couple_flow=couple_flow,
+                )
             return True
 
         # A retry reached the vision model and returned actionable QA reasons.
@@ -2886,7 +2927,25 @@ class GenerationProviderWorkflow:
             if status_value != OrderStatus.GENERATING.value:
                 return False
             params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
-            if bool(params.get("qa_retry_pending")):
+            pending_candidate = self._pending_vision_recheck_candidate(params)
+            if (
+                pending_candidate
+                and self._vision_error_only(params.get("qa_last_reasons"))
+                and self._safe_int(params.get("qa_attempt_count"), 0) >= self._safe_vision_retry_limit()
+            ):
+                user_images = self._order_source_images(order)
+                try:
+                    subject_count = int(params.get("subject_count") or len(user_images) or 0) or None
+                except Exception:
+                    subject_count = len(user_images) or None
+                couple_flow = str(params.get("couple_flow") or "") or None
+                retry_context = {
+                    "user_images": list(user_images),
+                    "subject_count": subject_count,
+                    "couple_flow": couple_flow,
+                }
+                pending_vision_recheck_params = params
+            if retry_context is None and (bool(params.get("qa_retry_pending")) or bool(params.get("qa_retry_in_progress"))):
                 retry_started_at = params.get("qa_retry_started_at")
                 if bool(params.get("qa_retry_in_progress")) and (self._seconds_since(retry_started_at) or 0) < 20 * 60:
                     return False

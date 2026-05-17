@@ -276,6 +276,67 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertEqual(complete_calls[0][1]["qa_degraded_reason"], "vision_error_retry_exhausted")
         self.assertTrue(complete_calls[0][1]["requires_admin_review"])
 
+    def test_exhausted_pending_vision_error_does_not_call_vision_again(self) -> None:
+        service = EvolinkService()
+        order_id = uuid.uuid4()
+        candidate_url = "https://example.test/generated.png"
+        calls: list[tuple[str, object]] = []
+        original_output_verdict = workflow_module.output_verdict
+        original_fail_on_error = workflow_module.settings.qa_fail_on_vision_error
+        original_retry_attempts = workflow_module.settings.qa_vision_error_retry_attempts
+
+        async def fake_output_verdict(*args, **kwargs) -> dict:
+            calls.append(("vision_called", args))
+            return {"passed": False, "reasons": ["vision_error"], "issues": []}
+
+        async def fake_complete_order(*args, **kwargs) -> None:
+            calls.append(("complete", kwargs["qa_attempt_count"]))
+
+        async def fake_completion_email(*args, **kwargs) -> None:
+            calls.append(("email", args))
+
+        try:
+            workflow_module.output_verdict = fake_output_verdict  # type: ignore[assignment]
+            workflow_module.settings.qa_fail_on_vision_error = False
+            workflow_module.settings.qa_vision_error_retry_attempts = 3
+            service._complete_order = fake_complete_order  # type: ignore[method-assign]
+            service._queue_completion_email = fake_completion_email  # type: ignore[method-assign]
+
+            handled = asyncio.run(
+                service._retry_pending_vision_recheck(
+                    order_id,
+                    params={
+                        "qa_attempt_count": 3,
+                        "qa_last_reasons": ["vision_error"],
+                        "qa_retry_kind": "vision_recheck",
+                        "qa_retry_candidate_url": candidate_url,
+                        "debug": {
+                            "image_edit_rounds": [
+                                {
+                                    "round": 1,
+                                    "stage": "primary_generation",
+                                    "candidate_url": candidate_url,
+                                    "provider_urls": [candidate_url],
+                                    "candidate_scores": [{"index": 0, "score": 72.0}],
+                                }
+                            ]
+                        },
+                    },
+                    user_images=["https://example.test/source.jpg"],
+                    subject_count=1,
+                    couple_flow=None,
+                )
+            )
+        finally:
+            workflow_module.output_verdict = original_output_verdict  # type: ignore[assignment]
+            workflow_module.settings.qa_fail_on_vision_error = original_fail_on_error
+            workflow_module.settings.qa_vision_error_retry_attempts = original_retry_attempts
+
+        self.assertTrue(handled)
+        self.assertNotIn("vision_called", [call[0] for call in calls])
+        self.assertIn(("complete", 3), calls)
+        self.assertTrue(any(call[0] == "email" for call in calls))
+
 
 if __name__ == "__main__":
     unittest.main()
