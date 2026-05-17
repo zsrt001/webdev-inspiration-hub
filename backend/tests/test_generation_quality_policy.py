@@ -681,10 +681,14 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         async def fake_complete_order(order_uuid: uuid.UUID, **kwargs) -> None:
             calls.append(("complete", ",".join(kwargs["delivered_urls"])))
 
+        async def fake_update_generation_stage(*args, **kwargs) -> None:
+            return None
+
         service._load_image_edit_resume_state = fake_resume_state  # type: ignore[method-assign]
         service._submit_native_image_edit_round = fake_native_round  # type: ignore[method-assign]
         service._submit_image_edit_round = fail_multipart_round  # type: ignore[method-assign]
         service._complete_order = fake_complete_order  # type: ignore[method-assign]
+        service._update_generation_stage = fake_update_generation_stage  # type: ignore[method-assign]
 
         completed = asyncio.run(
             service._run_image_edit_generation(
