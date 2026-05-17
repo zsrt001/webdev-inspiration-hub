@@ -134,7 +134,9 @@ STUDIO_LIGHTING_GUARDRAILS = (
 FULL_LENGTH_COMPOSITION = (
     "full-length 3:4 vertical editorial composition, complete gown and dress train visible, "
     "no cropped hem, elegant headroom, subject not overfilled, enough breathing room around the body, "
-    "luxury bridal studio posing with refined posture"
+    "luxury bridal studio posing with refined posture. For outdoor bridal portraits, keep the same full-gown "
+    "delivery standard: no cropped shoes, gown hem, veil, or train, and use simple waist-level bouquet/veil/gown "
+    "hand posing so difficult fingers are naturally covered"
 )
 
 HAND_POSE_SAFETY_PROTOCOL = (

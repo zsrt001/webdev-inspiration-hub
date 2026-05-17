@@ -68,7 +68,7 @@ COMMERCIAL_WEDDING_STANDARD = {
     },
 }
 
-QA_MAX_ATTEMPTS = 2
+QA_MAX_ATTEMPTS = 3
 QA_RETRY_REASONS = {
     "bad_hands",
     "extra_limbs",

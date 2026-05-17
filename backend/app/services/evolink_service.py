@@ -142,6 +142,7 @@ class EvolinkService(GenerationProviderWorkflow):
             "Do not do text-only generation. Preserve exact face shape, eyes, nose, mouth, jawline, age impression, skin undertone, and natural expression. "
             f"{couple_hint}"
             "Commercial wedding deliverable: professional studio/on-location lighting, natural skin texture, catchlights, face correctly exposed, complete wedding wardrobe, readable face, 3:4 vertical composition, no awkward crop. "
+            "Use simple professional hand posing with bouquet, veil, sleeve, or gown fabric covering difficult fingers; preserve full gown hem, shoes, veil/train, and bottom breathing room. "
             "Use sun only as rim/ambient light outdoors; keep soft frontal fill. "
             "Negative: generic face, identity change, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, blown white dress, mixed color temperature, background brighter than face, watermark, text."
         ).strip()

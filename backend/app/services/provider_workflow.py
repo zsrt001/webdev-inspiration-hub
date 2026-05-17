@@ -1861,7 +1861,38 @@ class GenerationProviderWorkflow:
                     f"Repair focus: {focus}. {previous_instruction}"
                 )
         else:
-            if qa_reasons:
+            normalized_final_reasons = {
+                str(reason or "").strip()
+                for reason in (qa_reasons or [])
+                if str(reason or "").strip()
+            }
+            final_hard_repair_reasons = normalized_final_reasons & {
+                "identity_mismatch",
+                "identity_swap",
+                "subject_missing",
+                "bad_hands",
+                "extra_limbs",
+                "body_fusion",
+                "cropped_face",
+                "awkward_crop",
+                "dress_cropped",
+                "subject_too_small",
+                "face_too_small",
+                "background_dominates",
+                "excessive_headroom",
+            }
+            if final_hard_repair_reasons:
+                focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
+                stage_instruction = (
+                    "ROUND 3 FINAL DELIVERY REPAIR: fix the remaining hard QA blockers from the original identity "
+                    "references and current candidate. This is the last automatic repair before rejection. Preserve "
+                    "the face identity exactly, but you may repair the targeted canvas, crop, gown hem/train, hands, "
+                    "subject scale, and missing-subject issues needed for delivery. For hand failures, simplify the "
+                    "pose and cover difficult fingers with bouquet, veil, sleeve, or gown fabric. For crop or gown "
+                    "failures, expand/reframe to show complete shoes, gown hem, veil/train, and clean bottom room. "
+                    f"Final repair focus: {focus}."
+                )
+            elif qa_reasons:
                 focus = cls._repair_focus_from_reasons(qa_reasons, is_couple=is_couple)
                 stage_instruction = (
                     "ROUND 3 FINAL POLISH ONLY: edit lighting and finish, not identity, anatomy, hands, crop, pose, "
