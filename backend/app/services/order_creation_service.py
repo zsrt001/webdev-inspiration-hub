@@ -10,6 +10,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import BackgroundTasks, HTTPException
@@ -33,6 +34,7 @@ from app.services.credit_service import (
 from app.services.generation_credit_policy import build_generation_credit_policy
 from app.services.generation_policy import COMMERCIAL_STANDARD_VERSION, commercial_wedding_standard
 from app.services.generation_service import generation_service
+from app.services.generation_stage_service import merge_generation_stage
 from app.services.identity_reference_service import build_identity_reference_pack
 from app.services.preset_service import (
     get_outfit_preset,
@@ -226,6 +228,18 @@ async def _enforce_active_order_limit(
         return
 
     existing = active_orders[0]
+    try:
+        await generation_service.refresh_order(str(existing.id))
+        await db.refresh(existing)
+    except Exception:
+        pass
+    if existing.status not in {OrderStatus.CHECKING, OrderStatus.GENERATING}:
+        return
+    if existing.final_image_urls or existing.preview_image_urls:
+        existing.status = OrderStatus.COMPLETED
+        await db.commit()
+        return
+
     params = dict(existing.generation_params) if isinstance(existing.generation_params, dict) else {}
     if params.get("request_fingerprint") == request_fingerprint:
         raise HTTPException(
@@ -656,6 +670,50 @@ def _build_order(
     )
 
 
+def _upload_quality_summary(upload_quality: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    if not upload_quality:
+        return None
+    scores = [
+        int(item.get("quality_score", 0))
+        for item in upload_quality
+        if isinstance(item, dict) and isinstance(item.get("quality_score"), int)
+    ]
+    if not scores:
+        return None
+    levels = [
+        str(item.get("quality_level") or "good")
+        for item in upload_quality
+        if isinstance(item, dict)
+    ]
+    risk_flags = sorted(
+        {
+            str(flag)
+            for item in upload_quality
+            if isinstance(item, dict)
+            for flag in (item.get("risk_flags") or [])
+            if str(flag).strip()
+        }
+    )
+    reasons = sorted(
+        {
+            str(reason)
+            for item in upload_quality
+            if isinstance(item, dict)
+            for reason in (item.get("reasons") or [])
+            if str(reason).strip()
+        }
+    )
+    return {
+        "count": len(scores),
+        "avg_score": round(sum(scores) / len(scores), 2),
+        "min_score": min(scores),
+        "warning_count": sum(1 for level in levels if level == "warning"),
+        "poor_count": sum(1 for level in levels if level == "poor"),
+        "risk_flags": risk_flags[:12],
+        "reasons": reasons[:12],
+    }
+
+
 def _build_generation_params(
     *,
     request: OrderCreate,
@@ -672,7 +730,8 @@ def _build_generation_params(
         if is_couple_request
         else subject_count
     )
-    return {
+    upload_quality_summary = _upload_quality_summary(request.upload_quality)
+    params = {
         "credits_cost": credit_context.credits_cost,
         "commercial_standard_version": COMMERCIAL_STANDARD_VERSION,
         "request_fingerprint": _request_fingerprint(request),
@@ -754,6 +813,8 @@ def _build_generation_params(
         "subject_count": subject_count,
         "director_mode": bool(request.director_mode),
         "content_policy": {"passed": True},
+        "upload_quality": request.upload_quality,
+        "upload_quality_summary": upload_quality_summary,
         "prompt_override": director_decision.legacy_prompt_override,
         "global_style_text": director_decision.global_style_text,
         "scene_text": director_decision.scene_text,
@@ -823,6 +884,8 @@ def _build_generation_params(
         "normal_cn_start": request.normal_cn_start,
         "normal_cn_end": request.normal_cn_end,
     }
+    params = merge_generation_stage(params, "queued")
+    return merge_generation_stage(params, "identity_refs_ready")
 
 
 async def _persist_order_with_retention(
