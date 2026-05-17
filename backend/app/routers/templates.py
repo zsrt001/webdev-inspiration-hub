@@ -6,7 +6,7 @@ from typing import Optional
 router = APIRouter()
 
 from app.services.ops_config_service import apply_template_overrides, get_template_override
-from app.services.template_service import get_all_templates, get_template_by_id
+from app.services.template_service import get_all_templates, get_commercial_templates, get_template_by_id
 from app.schemas.template import Template, TemplateListResponse
 
 
@@ -40,10 +40,10 @@ def construct_final_prompt(template: Template, user_custom_scene: Optional[str] 
 
 @router.get("", response_model=TemplateListResponse)
 @router.get("/", response_model=TemplateListResponse)
-@router.get("/list", response_model=TemplateListResponse, include_in_schema=False)
 async def list_templates() -> TemplateListResponse:
     """Get list of available wedding photo templates."""
-    return TemplateListResponse(templates=apply_template_overrides(get_all_templates()))
+    templates = apply_template_overrides(get_all_templates())
+    return TemplateListResponse(templates=get_commercial_templates(templates))
 
 
 @router.get("/{template_id}", response_model=Template)
@@ -68,9 +68,13 @@ async def get_template(template_id: str) -> Template:
             "scene_ref_image_url",
             "default_background_prompt",
             "clothing_prompt",
+            "stability",
         }
         and value is not None
     }
     if isinstance(override.get("tags"), list):
         updates["tags"] = [str(item).strip() for item in override["tags"] if str(item).strip()]
-    return template.model_copy(update=updates)
+    template = template.model_copy(update=updates)
+    if template.stability == "hidden":
+        raise HTTPException(status_code=404, detail="Template not found")
+    return template

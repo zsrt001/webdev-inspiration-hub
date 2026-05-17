@@ -11,6 +11,17 @@ from app.schemas.template import Template
 
 logger = logging.getLogger(__name__)
 
+TEMPLATE_STABILITY_VALUES = {"stable", "experimental", "hidden"}
+EXPERIMENTAL_STYLE_FAMILIES = {
+    "gothic_romance",
+    "beach_sunset",
+    "hk_retro",
+    "twilight_forest",
+    "japanese_shiromuku",
+    "cyberpunk_city",
+    "school_days",
+}
+
 
 def _portrait_pair(
     *,
@@ -29,7 +40,9 @@ def _portrait_pair(
     couple_background_prompt: str,
     single_prompt_blocks: dict | None = None,
     couple_prompt_blocks: dict | None = None,
+    stability: str = "stable",
 ) -> list[Template]:
+    normalized_stability = normalize_template_stability(stability)
     return [
         Template(
             id=single_id,
@@ -38,6 +51,7 @@ def _portrait_pair(
             image_url=single_image_url,
             style_family=style_family,
             tags=single_tags,
+            stability=normalized_stability,
             clothing_prompt=single_clothing_prompt,
             default_background_prompt=single_background_prompt,
             prompt_blocks=single_prompt_blocks,
@@ -49,11 +63,21 @@ def _portrait_pair(
             image_url=couple_image_url,
             style_family=style_family,
             tags=couple_tags,
+            stability=normalized_stability,
             clothing_prompt=couple_clothing_prompt,
             default_background_prompt=couple_background_prompt,
             prompt_blocks=couple_prompt_blocks,
         ),
     ]
+
+
+def normalize_template_stability(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in TEMPLATE_STABILITY_VALUES else "stable"
+
+
+def template_is_commercial(template: Template) -> bool:
+    return normalize_template_stability(template.stability) == "stable"
 
 
 def _build_templates() -> list[Template]:
@@ -142,6 +166,7 @@ def _build_templates() -> list[Template]:
     templates.extend(
         _portrait_pair(
             style_family="gothic_romance",
+            stability="experimental",
             single_id="solo_gothic_romance",
             single_title="Gothic Romance",
             single_image_url="/style-previews/solo_gothic_romance.jpg",
@@ -159,6 +184,7 @@ def _build_templates() -> list[Template]:
     templates.extend(
         _portrait_pair(
             style_family="beach_sunset",
+            stability="experimental",
             single_id="solo_beach_sunset",
             single_title="Beach Sunset",
             single_image_url="/style-previews/solo_beach_sunset.jpg",
@@ -176,6 +202,7 @@ def _build_templates() -> list[Template]:
     templates.extend(
         _portrait_pair(
             style_family="hk_retro",
+            stability="experimental",
             single_id="solo_hk_retro",
             single_title="Hong Kong Retro",
             single_image_url="/style-previews/hk_retro.jpg",
@@ -193,6 +220,7 @@ def _build_templates() -> list[Template]:
     templates.extend(
         _portrait_pair(
             style_family="twilight_forest",
+            stability="experimental",
             single_id="solo_twilight_forest",
             single_title="Twilight Forest",
             single_image_url="/style-previews/twilight_forest.jpg",
@@ -210,6 +238,7 @@ def _build_templates() -> list[Template]:
     templates.extend(
         _portrait_pair(
             style_family="japanese_shiromuku",
+            stability="experimental",
             single_id="solo_japanese_shiromuku",
             single_title="Japanese Shiromuku",
             single_image_url="/style-previews/japanese_shiromuku.jpg",
@@ -227,6 +256,7 @@ def _build_templates() -> list[Template]:
     templates.extend(
         _portrait_pair(
             style_family="cyberpunk_city",
+            stability="experimental",
             single_id="solo_cyberpunk_city",
             single_title="Cyberpunk City",
             single_image_url="/style-previews/cyberpunk_city.jpg",
@@ -244,6 +274,7 @@ def _build_templates() -> list[Template]:
     templates.extend(
         _portrait_pair(
             style_family="school_days",
+            stability="experimental",
             single_id="solo_school_days",
             single_title="School Days",
             single_image_url="/style-previews/school_days.jpg",
@@ -342,6 +373,7 @@ def _build_templates() -> list[Template]:
                 image_url="/style-previews/custom_mode.jpg",
                 style_family="custom_mode",
                 tags=["custom", "bespoke"],
+                stability="hidden",
                 clothing_prompt="person or couple in high fashion wedding attire, editorial styling",
                 default_background_prompt="luxurious scene tailored to user prompt",
                 is_custom=True,
@@ -373,6 +405,12 @@ _templates: List[Template] = _deduplicate_templates(_build_templates())
 def get_all_templates() -> List[Template]:
     """Return the full list of available styles."""
     return list(_templates)
+
+
+def get_commercial_templates(templates: list[Template] | None = None) -> List[Template]:
+    """Return templates safe for the commercial entry point."""
+    source = templates if templates is not None else _templates
+    return [template for template in source if template_is_commercial(template)]
 
 
 def get_template_by_id(template_id: str) -> Optional[Template]:

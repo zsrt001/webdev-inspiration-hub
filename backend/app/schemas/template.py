@@ -12,6 +12,7 @@ class Template(BaseModel):
     image_url: str
     style_family: str | None = None
     tags: list[str] = []
+    stability: str = "stable"
     clothing_prompt: str = ""
     default_background_prompt: str = ""
     is_custom: bool = False
