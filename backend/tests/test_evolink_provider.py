@@ -5,6 +5,7 @@ import asyncio
 import sys
 import unittest
 import uuid
+from inspect import signature
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -17,6 +18,7 @@ from app.services.evolink_service import EvolinkService  # noqa: E402
 from app.services.provider_workflow import GenerationProviderWorkflow  # noqa: E402
 from app.services.provider_workflow import build_generation_negative_prompt, build_studio_generation_prompt  # noqa: E402
 from app.services.template_service import get_template_by_id  # noqa: E402
+from app.services.trial_access_service import prepare_delivered_image_urls  # noqa: E402
 from app.services.wenwen_service import WenwenService  # noqa: E402
 
 
@@ -63,6 +65,9 @@ class EvolinkProviderTest(unittest.TestCase):
         failure_code = EvolinkService()._classify_error(RuntimeError("evolink_request_rejected:400:{\"error\":\"bad request\"}"))
 
         self.assertEqual(failure_code, "provider_request_rejected")
+
+    def test_delivery_helper_accepts_template_id_for_provider_completion(self) -> None:
+        self.assertIn("template_id", signature(prepare_delivered_image_urls).parameters)
 
     def test_evolink_compacts_long_prompts_under_provider_limit(self) -> None:
         prompt = (

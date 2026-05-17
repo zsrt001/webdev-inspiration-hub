@@ -21,6 +21,19 @@ class DeliveryVariant:
     label: str
 
 
+@dataclass(frozen=True)
+class PostprocessProfile:
+    name: str
+    highlight_protection: float = 0.52
+    face_sharpen: float = 1.0
+    skin_tone_unify: float = 0.42
+    shadow_denoise: float = 0.34
+    grain: float = 0.028
+    contrast: float = 1.035
+    color: float = 1.04
+    black_white: bool = False
+
+
 VARIANT_MAP: dict[str, DeliveryVariant] = {
     "2x3": DeliveryVariant("portrait_2x3", 2 / 3, "2:3 portrait"),
     "3x2": DeliveryVariant("print_3x2", 3 / 2, "3:2 print"),
@@ -31,7 +44,58 @@ VARIANT_MAP: dict[str, DeliveryVariant] = {
 }
 
 
-async def postprocess_delivery_assets(delivered_urls: Iterable[str]) -> tuple[dict[str, str], dict]:
+def resolve_postprocess_profile(template_id: str | None = None) -> PostprocessProfile:
+    """Resolve deterministic template-level finishing parameters."""
+    key = str(template_id or "").strip().lower()
+    if "classic_bw" in key or key in {"classic", "bw", "black_white"}:
+        return PostprocessProfile(
+            name="classic_bw_contrast",
+            highlight_protection=0.58,
+            face_sharpen=1.08,
+            skin_tone_unify=0.32,
+            shadow_denoise=0.40,
+            grain=0.035,
+            contrast=1.13,
+            color=0.0,
+            black_white=True,
+        )
+    if "korean" in key or "minimal" in key:
+        return PostprocessProfile(
+            name="korean_clean_low_grain",
+            highlight_protection=0.50,
+            face_sharpen=0.92,
+            skin_tone_unify=0.50,
+            shadow_denoise=0.42,
+            grain=0.012,
+            contrast=1.015,
+            color=1.025,
+        )
+    if "castle" in key or "royal" in key:
+        return PostprocessProfile(
+            name="royal_castle_highlight_guard",
+            highlight_protection=0.78,
+            face_sharpen=1.0,
+            skin_tone_unify=0.42,
+            shadow_denoise=0.36,
+            grain=0.026,
+            contrast=1.04,
+            color=1.035,
+        )
+    if "xiuhe" in key or "chinese" in key:
+        return PostprocessProfile(
+            name="xiuhe_rich_fabric",
+            highlight_protection=0.56,
+            face_sharpen=1.02,
+            skin_tone_unify=0.38,
+            shadow_denoise=0.30,
+            grain=0.022,
+            contrast=1.055,
+            color=1.065,
+        )
+    return PostprocessProfile(name="balanced_bridal_finish")
+
+
+async def postprocess_delivery_assets(delivered_urls: Iterable[str], *, template_id: str | None = None) -> tuple[dict[str, str], dict]:
     """Create enhanced HD assets and common crop variants for delivery."""
     raw_urls = [str(url).strip() for url in delivered_urls if str(url).strip()]
     if not raw_urls:
@@ -42,12 +106,13 @@ async def postprocess_delivery_assets(delivered_urls: Iterable[str]) -> tuple[di
     final_urls: dict[str, str] = {}
     failures: list[str] = []
     selected_variants = _selected_variants()
+    profile = resolve_postprocess_profile(template_id)
 
     for index, url in enumerate(raw_urls):
         base_key = f"image_{index + 1}"
         try:
             image = await _download_image(url)
-            enhanced = _enhance_master(image)
+            enhanced = _enhance_master(image, profile=profile)
             final_urls[base_key] = _upload_image(enhanced, f"{base_key}_hd.jpg")
 
             for variant in selected_variants:
@@ -62,6 +127,16 @@ async def postprocess_delivery_assets(delivered_urls: Iterable[str]) -> tuple[di
 
     return final_urls, {
         "postprocess_policy": "commercial_hd_face_tone_grain_smart_crop",
+        "postprocess_profile": profile.name,
+        "template_id": template_id or "",
+        "profile_parameters": {
+            "highlight_protection": profile.highlight_protection,
+            "face_sharpen": profile.face_sharpen,
+            "skin_tone_unify": profile.skin_tone_unify,
+            "shadow_denoise": profile.shadow_denoise,
+            "grain": profile.grain,
+            "contrast": profile.contrast,
+        },
         "upscale_factor": max(1, int(settings.postprocess_upscale_factor)),
         "max_long_edge": max(900, int(settings.postprocess_max_long_edge)),
         "variants": [variant.suffix for variant in selected_variants],
@@ -78,9 +153,10 @@ async def _download_image(image_url: str):
     return Image.open(io.BytesIO(response.content)).convert("RGB")
 
 
-def _enhance_master(image):
+def _enhance_master(image, *, profile: PostprocessProfile | None = None):
     from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
+    profile = profile or resolve_postprocess_profile(None)
     img = image.convert("RGB")
     img = _resize_long_edge(img, _target_master_long_edge(img))
 
@@ -88,29 +164,60 @@ def _enhance_master(image):
     blurred = img.filter(ImageFilter.GaussianBlur(radius=max(1.0, min(img.size) / 360)))
     mask = _foreground_mask(img.size)
     img = ImageOps.autocontrast(Image.composite(img, blurred, mask), cutoff=0.35)
-    img = _apply_studio_tone_balance(img)
+    img = _protect_white_gown_highlights(img, strength=profile.highlight_protection)
+    img = _apply_studio_tone_balance(img, profile=profile)
+    img = _unify_skin_tone(img, strength=profile.skin_tone_unify)
     img = _reduce_oily_skin_highlights(img)
-    img = _apply_face_micro_retouch(img)
+    img = _apply_face_micro_retouch(img, strength=profile.face_sharpen)
+    img = _denoise_shadows(img, strength=profile.shadow_denoise)
 
     smooth = img.filter(ImageFilter.SMOOTH_MORE)
     img = Image.blend(img, smooth, 0.055)
-    img = ImageEnhance.Color(img).enhance(1.04)
-    img = ImageEnhance.Contrast(img).enhance(1.035)
+    if profile.black_white:
+        img = ImageOps.grayscale(img).convert("RGB")
+    else:
+        img = ImageEnhance.Color(img).enhance(profile.color)
+    img = ImageEnhance.Contrast(img).enhance(profile.contrast)
     img = ImageEnhance.Brightness(img).enhance(1.01)
-    img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=82, threshold=3))
-    return _inject_subtle_film_grain(img)
+    img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=round(82 * profile.face_sharpen), threshold=3))
+    return _inject_subtle_film_grain(img, amount=profile.grain)
 
 
-def _apply_studio_tone_balance(image):
+def _protect_white_gown_highlights(image, *, strength: float = 0.52):
     from PIL import Image, ImageEnhance
 
+    strength = max(0.0, min(1.0, float(strength)))
+    ycbcr = image.convert("YCbCr")
+    y, cb, cr = ycbcr.split()
+    mask = Image.new("L", image.size, 0)
+    src_y = y.load()
+    src_cb = cb.load()
+    src_cr = cr.load()
+    dst = mask.load()
+    width, height = image.size
+    for py in range(height):
+        for px in range(width):
+            lum = src_y[px, py]
+            blue = src_cb[px, py]
+            red = src_cr[px, py]
+            if lum >= 214 and 116 <= blue <= 142 and 116 <= red <= 146:
+                dst[px, py] = min(210, round((lum - 204) * 4 * strength))
+    protected = ImageEnhance.Brightness(image).enhance(1.0 - 0.065 * strength)
+    protected = ImageEnhance.Contrast(protected).enhance(1.0 - 0.035 * strength)
+    return Image.composite(protected, image, mask)
+
+
+def _apply_studio_tone_balance(image, *, profile: PostprocessProfile | None = None):
+    from PIL import Image, ImageEnhance
+
+    profile = profile or resolve_postprocess_profile(None)
     # Lift the central subject area gently while compressing harsh highlights.
     lut: list[int] = []
     for value in range(256):
         if value < 72:
-            mapped = value * 1.08 + 4
+            mapped = value * (1.04 + 0.08 * profile.shadow_denoise) + 4
         elif value > 218:
-            mapped = 218 + (value - 218) * 0.78
+            mapped = 218 + (value - 218) * (0.88 - 0.18 * profile.highlight_protection)
         else:
             mapped = value
         lut.append(max(0, min(255, round(mapped))))
@@ -120,6 +227,32 @@ def _apply_studio_tone_balance(image):
     filled = ImageEnhance.Brightness(balanced).enhance(1.045)
     filled = ImageEnhance.Contrast(filled).enhance(0.985)
     return Image.composite(filled, balanced, fill_mask)
+
+
+def _unify_skin_tone(image, *, strength: float = 0.42):
+    from PIL import Image, ImageEnhance, ImageFilter
+
+    strength = max(0.0, min(1.0, float(strength)))
+    ycbcr = image.convert("YCbCr")
+    y, cb, cr = ycbcr.split()
+    mask = Image.new("L", image.size, 0)
+    src_y = y.load()
+    src_cb = cb.load()
+    src_cr = cr.load()
+    dst = mask.load()
+    width, height = image.size
+    for py in range(height):
+        for px in range(width):
+            blue = src_cb[px, py]
+            red = src_cr[px, py]
+            lum = src_y[px, py]
+            if 82 <= blue <= 138 and 128 <= red <= 184 and lum >= 72:
+                dst[px, py] = round(130 * strength)
+    mask = Image.composite(mask, Image.new("L", image.size, 0), _face_detail_mask(image.size, opacity=210))
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=max(3, int(min(image.size) * 0.012))))
+    softened = image.filter(ImageFilter.SMOOTH)
+    softened = ImageEnhance.Color(softened).enhance(1.0 - 0.08 * strength)
+    return Image.composite(softened, image, mask)
 
 
 def _reduce_oily_skin_highlights(image):
@@ -147,16 +280,17 @@ def _reduce_oily_skin_highlights(image):
     return Image.composite(softened, image, skin_mask)
 
 
-def _apply_face_micro_retouch(image):
+def _apply_face_micro_retouch(image, *, strength: float = 1.0):
     from PIL import Image, ImageEnhance, ImageFilter
 
-    face_mask = _face_detail_mask(image.size, opacity=120)
-    detail = image.filter(ImageFilter.UnsharpMask(radius=0.75, percent=72, threshold=4))
+    strength = max(0.25, min(1.6, float(strength)))
+    face_mask = _face_detail_mask(image.size, opacity=round(120 * strength))
+    detail = image.filter(ImageFilter.UnsharpMask(radius=0.75, percent=round(72 * strength), threshold=4))
     img = Image.composite(detail, image, face_mask)
 
     eye_mask = _eye_detail_mask(image.size)
     eye_detail = ImageEnhance.Contrast(detail).enhance(1.04)
-    eye_detail = eye_detail.filter(ImageFilter.UnsharpMask(radius=0.55, percent=95, threshold=3))
+    eye_detail = eye_detail.filter(ImageFilter.UnsharpMask(radius=0.55, percent=round(95 * strength), threshold=3))
     img = Image.composite(eye_detail, img, eye_mask)
 
     smile_mask = _smile_polish_mask(image.size)
@@ -165,16 +299,30 @@ def _apply_face_micro_retouch(image):
     return Image.composite(smile, img, smile_mask)
 
 
-def _inject_subtle_film_grain(image):
+def _denoise_shadows(image, *, strength: float = 0.34):
+    from PIL import Image, ImageFilter
+
+    strength = max(0.0, min(1.0, float(strength)))
+    ycbcr = image.convert("YCbCr")
+    y = ycbcr.split()[0]
+    mask = y.point(lambda value: max(0, min(180, round((96 - value) * 2.4 * strength))) if value < 112 else 0)
+    denoised = image.filter(ImageFilter.MedianFilter(size=3)).filter(ImageFilter.SMOOTH)
+    return Image.composite(denoised, image, mask)
+
+
+def _inject_subtle_film_grain(image, *, amount: float = 0.028):
     from PIL import Image, ImageChops, ImageEnhance
 
+    amount = max(0.0, min(0.08, float(amount)))
+    if amount <= 0:
+        return image
     width, height = image.size
-    noise = Image.effect_noise((width, height), 5.5).convert("L")
+    noise = Image.effect_noise((width, height), 4.0 + amount * 80).convert("L")
     noise = ImageEnhance.Contrast(noise).enhance(0.32)
     neutral = Image.new("L", image.size, 128)
     grain_delta = ImageChops.subtract(noise, neutral, scale=1.0, offset=128)
     grain_rgb = Image.merge("RGB", (grain_delta, grain_delta, grain_delta))
-    return Image.blend(image, grain_rgb, 0.028)
+    return Image.blend(image, grain_rgb, amount)
 
 
 def _face_detail_mask(size: tuple[int, int], *, opacity: int = 150):

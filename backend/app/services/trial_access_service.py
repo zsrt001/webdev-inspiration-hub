@@ -72,9 +72,14 @@ def is_trial_order(generation_params: dict | None) -> bool:
     return str(params.get("access_tier") or "").strip() == TRIAL_ACCESS_TIER
 
 
-async def prepare_delivered_image_urls(delivered_urls: Iterable[str], *, trial_preview: bool) -> tuple[dict, dict, dict]:
+async def prepare_delivered_image_urls(
+    delivered_urls: Iterable[str],
+    *,
+    trial_preview: bool,
+    template_id: str | None = None,
+) -> tuple[dict, dict, dict]:
     """Return preview/final URL dicts plus metadata for generated assets."""
-    final_urls, postprocess_meta = await postprocess_delivery_assets(delivered_urls)
+    final_urls, postprocess_meta = await postprocess_delivery_assets(delivered_urls, template_id=template_id)
     if not trial_preview:
         return final_urls, final_urls, {"preview_policy": "paid_original", **postprocess_meta}
 
