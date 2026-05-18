@@ -22,6 +22,18 @@
             "schedule": "0 20 * * *"
         }
     ],
+    "redirects": [
+        {
+            "source": "/create",
+            "destination": "/pages/create/index",
+            "permanent": false
+        },
+        {
+            "source": "/studio",
+            "destination": "/pages/create/index",
+            "permanent": false
+        }
+    ],
     "rewrites": [
         {
             "source": "/health",
