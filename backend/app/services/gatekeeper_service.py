@@ -47,6 +47,16 @@ _VISION_REASON_RULES: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "Please use a front-facing photo instead of a strong side profile.",
     ),
     (
+        ("face too small", "tiny face", "small face"),
+        "face_too_small",
+        "A closer portrait is recommended so the face is easier to preserve.",
+    ),
+    (
+        ("low resolution", "low-res", "resolution too low"),
+        "low_resolution",
+        "A higher-resolution portrait is recommended.",
+    ),
+    (
         ("too dark", "dark", "underexposed"),
         "face_too_dark",
         "The photo is too dark. Please upload a brighter portrait.",
@@ -75,6 +85,26 @@ class GatekeeperResult(BaseModel):
     advice: List[str]
     metrics: Dict[str, float]
     risk_flags: List[str] = []
+    warnings: List[str] = []
+    warning_advice: List[str] = []
+
+
+_QUALITY_WARNING_RESPONSES: dict[str, str] = {
+    "low_resolution": "This photo may reduce detail. A higher-resolution portrait is recommended, but you can continue.",
+    "too_dark": "This photo is a bit dark and may reduce likeness. Brighter front light is recommended, but you can continue.",
+    "overexposed": "This photo is very bright and may lose facial detail. Softer lighting is recommended, but you can continue.",
+    "too_blurry": "This photo may be soft. A sharper face or upper-body portrait is recommended, but you can continue.",
+    "face_too_small": "The face may be small. A closer portrait is recommended, but you can continue.",
+    "not_frontal": "A front-facing portrait gives better likeness. You can continue if this is the best available photo.",
+}
+
+
+def _add_warning(warnings: list[str], advice: list[str], code: str, message: str | None = None) -> None:
+    if code not in warnings:
+        warnings.append(code)
+    warning_message = message or _QUALITY_WARNING_RESPONSES.get(code)
+    if warning_message and warning_message not in advice:
+        advice.append(warning_message)
 
 
 def _build_blocked_flag_response(risk_flags: list[str], metrics: dict[str, float]) -> GatekeeperResult:
@@ -114,6 +144,46 @@ def _normalize_vision_reject_reason(raw_reason: str | None) -> tuple[str, str]:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _crop_ratio(image, box: tuple[float, float, float, float]):
+    width, height = image.size
+    left, top, right, bottom = box
+    return image.crop(
+        (
+            int(width * left),
+            int(height * top),
+            max(int(width * right), int(width * left) + 1),
+            max(int(height * bottom), int(height * top) + 1),
+        )
+    )
+
+
+def _sharpness_metrics(image) -> dict[str, float]:
+    gray = image.convert("L")
+    contrast = float(ImageStat.Stat(gray).stddev[0])
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    edge_mean = float(ImageStat.Stat(edges).mean[0])
+    return {"edge_mean": edge_mean, "contrast": contrast}
+
+
+def _portrait_roi_sharpness_metrics(image) -> dict[str, float]:
+    """Prefer likely face/upper-body sharpness over whole-image background edges."""
+    face_roi = _crop_ratio(image, (0.25, 0.08, 0.75, 0.42))
+    upper_body_roi = _crop_ratio(image, (0.18, 0.08, 0.82, 0.68))
+    whole = _sharpness_metrics(image)
+    face = _sharpness_metrics(face_roi)
+    upper = _sharpness_metrics(upper_body_roi)
+    return {
+        "edge_mean": whole["edge_mean"],
+        "contrast": whole["contrast"],
+        "face_roi_edge_mean": face["edge_mean"],
+        "face_roi_contrast": face["contrast"],
+        "upper_body_edge_mean": upper["edge_mean"],
+        "upper_body_contrast": upper["contrast"],
+        "portrait_roi_edge_mean": max(face["edge_mean"], upper["edge_mean"]),
+        "portrait_roi_contrast": max(face["contrast"], upper["contrast"]),
+    }
 
 
 def _compute_colorfulness(image) -> float:
@@ -223,6 +293,7 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
     """
     risk_flags: list[str] = []
     ocr_metrics: dict[str, float] = {}
+    vision: dict | None = None
     if llm_service.is_vision_provider_configured():
         try:
             vision = await llm_service.analyze_face_quality(image_url)
@@ -283,6 +354,35 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
             reason_code, advice = _normalize_vision_reject_reason(reject_reason)
             if reason_code == "vision_unavailable":
                 ocr_metrics["vision_degraded"] = 1.0
+            elif reason_code in {
+                "face_too_dark",
+                "image_overexposed",
+                "image_too_blurry",
+                "side_face_detected",
+                "face_too_small",
+                "low_resolution",
+            }:
+                warning_code = {
+                    "face_too_dark": "too_dark",
+                    "image_overexposed": "overexposed",
+                    "image_too_blurry": "too_blurry",
+                    "side_face_detected": "not_frontal",
+                    "face_too_small": "face_too_small",
+                    "low_resolution": "low_resolution",
+                }[reason_code]
+                warnings: list[str] = []
+                warning_advice: list[str] = []
+                _add_warning(warnings, warning_advice, warning_code)
+                ocr_metrics["vision_quality_warning"] = 1.0
+                return GatekeeperResult(
+                    passed=True,
+                    reasons=[],
+                    advice=[],
+                    metrics=ocr_metrics,
+                    risk_flags=sorted(set(risk_flags)),
+                    warnings=warnings,
+                    warning_advice=warning_advice,
+                )
             else:
                 return GatekeeperResult(
                     passed=False,
@@ -328,25 +428,41 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
     width, height = image.size
     reasons: list[str] = []
     advice: list[str] = []
+    warnings: list[str] = []
+    warning_advice: list[str] = []
 
     if min(width, height) < 512:
-        reasons.append("low_resolution")
-        advice.append("The photo resolution is too low. Please upload a clearer portrait.")
+        _add_warning(warnings, warning_advice, "low_resolution")
 
     gray = image.convert("L")
-    brightness = ImageStat.Stat(gray).mean[0]
-    if brightness < 60:
-        reasons.append("too_dark")
-        advice.append("The photo is too dark. Please use a brighter portrait.")
-    if brightness > 230:
-        reasons.append("overexposed")
-        advice.append("The photo is overexposed. Please use softer lighting.")
+    gray_stat = ImageStat.Stat(gray)
+    brightness = float(gray_stat.mean[0])
+    contrast = float(gray_stat.stddev[0])
+    hist = gray.histogram()
+    dynamic_min = next((idx for idx, count in enumerate(hist) if count), 0)
+    dynamic_max = next((idx for idx in range(255, -1, -1) if hist[idx]), 255)
+    dynamic_range = float(dynamic_max - dynamic_min)
 
-    edges = gray.filter(ImageFilter.FIND_EDGES)
-    edge_mean = ImageStat.Stat(edges).mean[0]
-    if edge_mean < 7:
+    if brightness < 12 or (dynamic_range < 18 and contrast < 8):
+        reasons.append("black_or_blank")
+        advice.append("The image is too dark or blank to generate a usable portrait.")
+    elif brightness < 60:
+        _add_warning(warnings, warning_advice, "too_dark")
+    if brightness > 248 and contrast < 10:
+        reasons.append("severely_overexposed")
+        advice.append("The image is too overexposed to preserve facial detail.")
+    elif brightness > 230:
+        _add_warning(warnings, warning_advice, "overexposed")
+
+    sharpness = _portrait_roi_sharpness_metrics(image)
+    edge_mean = sharpness["edge_mean"]
+    portrait_roi_edge_mean = sharpness["portrait_roi_edge_mean"]
+    portrait_roi_contrast = sharpness["portrait_roi_contrast"]
+    if portrait_roi_edge_mean < 2.7 and portrait_roi_contrast < 10:
         reasons.append("too_blurry")
-        advice.append("The photo is too blurry. Please upload a sharper portrait.")
+        advice.append("The face and upper-body area are too blurry to preserve identity.")
+    elif portrait_roi_edge_mean < 7:
+        _add_warning(warnings, warning_advice, "too_blurry")
 
     doc_blocked, doc_flags, doc_metrics = _estimate_document_risk(
         image,
@@ -371,9 +487,16 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
             "width": float(width),
             "height": float(height),
             "brightness": _clamp(float(brightness), 0.0, 255.0),
+            "contrast": _clamp(float(contrast), 0.0, 255.0),
+            "dynamic_range": _clamp(float(dynamic_range), 0.0, 255.0),
             "edge_mean": _clamp(float(edge_mean), 0.0, 255.0),
+            "face_roi_edge_mean": _clamp(float(sharpness["face_roi_edge_mean"]), 0.0, 255.0),
+            "upper_body_edge_mean": _clamp(float(sharpness["upper_body_edge_mean"]), 0.0, 255.0),
+            "portrait_roi_edge_mean": _clamp(float(portrait_roi_edge_mean), 0.0, 255.0),
             **ocr_metrics,
             **doc_metrics,
         },
         risk_flags=sorted(set(risk_flags)),
+        warnings=warnings,
+        warning_advice=warning_advice,
     )

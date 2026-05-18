@@ -3,7 +3,7 @@
     <NavBar ref="navBarRef" @show-payment="showPaymentModal = true" />
 
     <view v-if="homeBanner.enabled" class="hero-section">
-      <view class="hero-media" :style="heroBackgroundStyle"></view>
+      <image :src="heroImageUrl" mode="aspectFill" class="hero-media" />
       <view class="hero-overlay"></view>
       <view class="hero-content">
         <view class="hero-copy">
@@ -229,14 +229,12 @@ const showPaymentModal = ref(false);
 const templateImageAttempts = ref<Record<string, number>>({});
 
 const homeBanner = computed(() => opsStore.publicConfig.placements.home_banner);
-const heroBackgroundFallback = '/hero_wedding_luxury_bg.jpg';
+const heroBackgroundFallback = '/style-previews/royal_castle.jpg';
 const staleHeroBackgrounds = new Set([
+  '/hero_wedding_luxury_bg.jpg',
+  '/static/hero_wedding_luxury_bg.jpg',
   '/legacy_promo_banner.jpg',
   '/static/legacy_promo_banner.jpg',
-  '/style-previews/royal_castle.jpg',
-  '/static/style-previews/royal_castle.jpg',
-  '/style-previews/solo_royal_castle.jpg',
-  '/static/style-previews/solo_royal_castle.jpg',
 ]);
 
 const styleImageFallbacks: Record<string, string[]> = {
@@ -267,12 +265,9 @@ const heroImageUrl = computed(() => {
   return resolvePublicUrl(raw);
 });
 
-const heroBackgroundStyle = computed(() => ({
-  backgroundImage: `url(${heroImageUrl.value})`,
-}));
-
 const heroPreviewUrl = computed(() => {
-  return heroImageUrl.value;
+  const candidate = templates.value.find((item) => item.category === 'couple')?.image_url || '/style-previews/royal_castle.jpg';
+  return resolvePublicUrl(candidate);
 });
 
 const heroProofs = computed(() => [
@@ -544,17 +539,22 @@ onMounted(async () => {
 
 .hero-section {
   position: relative;
-  min-height: clamp(600px, calc(100dvh - 120px), 700px);
+  min-height: clamp(520px, calc(100dvh - 110px), 620px);
   display: flex;
   align-items: stretch;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 84% 28%, rgba(232, 218, 199, 0.5), rgba(232, 218, 199, 0) 30%),
-    linear-gradient(110deg, #f8f8f7 0%, #f3f5f5 58%, #eef1ef 100%);
+  background: #e4e8eb;
 }
 
 .hero-media {
-  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  filter: saturate(0.9) contrast(1.06);
+  object-fit: cover;
+  object-position: 58% center;
 }
 
 .hero-overlay {
@@ -562,21 +562,19 @@ onMounted(async () => {
   inset: 0;
   z-index: 2;
   background:
-    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.72) 13%, rgba(246, 247, 248, 0) 38%),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0) 52%);
-  pointer-events: none;
+    linear-gradient(90deg, rgba(246, 247, 248, 0.99) 0%, rgba(246, 247, 248, 0.9) 43%, rgba(246, 247, 248, 0.5) 72%, rgba(246, 247, 248, 0.22) 100%),
+    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.34) 18%, rgba(246, 247, 248, 0.04) 46%);
 }
 
 .hero-content {
   position: relative;
   z-index: 3;
-  width: calc(100% - 48px);
-  max-width: 1280px;
+  width: min(1280px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 54px 0 76px;
+  padding: 42px 0 44px;
   display: grid;
-  grid-template-columns: minmax(0, 0.98fr) minmax(360px, 460px);
-  gap: clamp(48px, 7vw, 104px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 300px);
+  gap: clamp(36px, 5vw, 72px);
   align-items: center;
 }
 
@@ -686,18 +684,21 @@ onMounted(async () => {
 }
 
 .hero-preview {
-  display: block;
-  width: min(460px, 100%);
-  justify-self: end;
+  align-self: center;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(32, 43, 62, 0.12);
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgba(23, 25, 31, 0.12);
+  cursor: pointer;
 }
 
 .preview-frame {
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: 6px;
   aspect-ratio: 4 / 5;
   background: #d9dde3;
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  box-shadow: 0 28px 70px rgba(23, 25, 31, 0.16);
 }
 
 .preview-image {
@@ -705,12 +706,11 @@ onMounted(async () => {
   height: 100%;
   display: block;
   object-fit: cover;
-  object-position: 70% center;
+  object-position: center top;
 }
 
 .preview-copy {
-  display: block;
-  padding: 16px 4px 0;
+  padding: 16px 4px 10px;
 }
 
 .preview-title {
@@ -1172,7 +1172,7 @@ onMounted(async () => {
   }
 
   .hero-preview {
-    width: min(340px, 100%);
+    width: min(360px, 100%);
     justify-self: start;
   }
 
@@ -1223,8 +1223,7 @@ onMounted(async () => {
 @media (max-width: 560px) {
   .landing-body,
   .hero-content {
-    width: calc(100% - 32px);
-    max-width: 1280px;
+    width: min(100% - 32px, 1280px);
   }
 
   .section-block {
@@ -1239,31 +1238,13 @@ onMounted(async () => {
     padding: 36px 0 42px;
   }
 
-  .hero-media {
-    background-position: left center;
-  }
-
-  .hero-overlay {
-    background:
-      linear-gradient(90deg, rgba(246, 247, 248, 0.94) 0%, rgba(246, 247, 248, 0.88) 52%, rgba(246, 247, 248, 0.42) 100%),
-      linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.46) 20%, rgba(246, 247, 248, 0.12) 52%);
-  }
-
   .hero-title {
-    max-width: 100%;
-    font-size: 32px;
+    font-size: 38px;
     line-height: 1.06;
   }
 
   .hero-subtitle {
-    max-width: 100%;
     font-size: 16px;
-  }
-
-  .section-title {
-    max-width: 100%;
-    font-size: 30px;
-    line-height: 1.16;
   }
 
   .hero-proof-grid {
@@ -1297,7 +1278,7 @@ onMounted(async () => {
   .feature-image {
     min-height: auto;
     height: auto;
-    aspect-ratio: 2 / 3;
+    aspect-ratio: 4 / 5;
   }
 
   .hero-actions,

@@ -19,6 +19,8 @@ class GatekeeperResponse(BaseModel):
     advice: List[str]
     metrics: Dict[str, float]
     risk_flags: List[str] = []
+    warnings: List[str] = []
+    warning_advice: List[str] = []
 
 
 @router.post("/check", response_model=GatekeeperResponse)

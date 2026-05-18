@@ -894,6 +894,29 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("regenerate the repair", prompt)
         self.assertNotIn("replace facial identity", prompt)
 
+    def test_oily_skin_highlight_uses_relight_repair_before_final_blocking_failure(self) -> None:
+        reasons = ["oily_skin_highlight"]
+
+        self.assertTrue(WenwenService._is_lighting_only_repair(reasons, round_number=2))
+        self.assertEqual(
+            WenwenService._image_edit_repair_mode(round_number=2, qa_reasons=reasons),
+            "relight_edit_only",
+        )
+        self.assertTrue(WenwenService._can_enter_final_polish_round(reasons))
+
+        selection = WenwenService._score_candidate_verdict(
+            {
+                "passed": False,
+                "reasons": reasons,
+                "issues": build_structured_qa_issues(reasons, source="photometric"),
+            },
+            round_number=3,
+            candidate_index=0,
+        )
+
+        self.assertFalse(selection["passed"])
+        self.assertIn("oily_skin_highlight", selection["hard_gate_reasons"])
+
     def test_mixed_round_two_failures_do_not_use_relight_only_mode(self) -> None:
         reasons = ["face_underexposed", "identity_mismatch"]
         prompt = WenwenService._build_image_edit_round_prompt(

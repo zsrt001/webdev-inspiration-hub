@@ -1,6 +1,7 @@
 """Order creation service contract tests."""
 
 from pathlib import Path
+import asyncio
 import sys
 import unittest
 
@@ -12,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
 from fastapi import HTTPException  # noqa: E402
 
 from app.schemas.order import OrderCreate  # noqa: E402
+from app.services.gatekeeper_service import GatekeeperResult  # noqa: E402
 from app.services import order_creation_service as service  # noqa: E402
 
 
@@ -32,6 +34,49 @@ class OrderCreationServiceTest(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertEqual(ctx.exception.detail["error"], "duplicate_subject_images")
+
+    def test_gatekeeper_quality_warnings_do_not_block_order_creation(self) -> None:
+        original_check = service.gatekeeper_service.check_image_quality
+
+        async def fake_check(_image_url: str) -> GatekeeperResult:
+            return GatekeeperResult(
+                passed=True,
+                reasons=[],
+                advice=[],
+                metrics={"portrait_roi_edge_mean": 6.4},
+                warnings=["too_blurry"],
+                warning_advice=["A sharper portrait is recommended, but you can continue."],
+            )
+
+        service.gatekeeper_service.check_image_quality = fake_check
+        try:
+            result = asyncio.run(service._run_gatekeeper_checks(["https://cdn.example.com/person.jpg"]))
+        finally:
+            service.gatekeeper_service.check_image_quality = original_check
+
+        self.assertEqual(result[0]["warnings"], ["too_blurry"])
+        self.assertEqual(result[0]["reasons"], [])
+
+    def test_gatekeeper_hard_failure_still_blocks_order_creation(self) -> None:
+        original_check = service.gatekeeper_service.check_image_quality
+
+        async def fake_check(_image_url: str) -> GatekeeperResult:
+            return GatekeeperResult(
+                passed=False,
+                reasons=["no_face_detected"],
+                advice=["No clear face was detected."],
+                metrics={},
+            )
+
+        service.gatekeeper_service.check_image_quality = fake_check
+        try:
+            with self.assertRaises(HTTPException) as ctx:
+                asyncio.run(service._run_gatekeeper_checks(["https://cdn.example.com/no-face.jpg"]))
+        finally:
+            service.gatekeeper_service.check_image_quality = original_check
+
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertEqual(ctx.exception.detail["reasons"], ["no_face_detected"])
 
     def test_director_upload_overrides_scene_text_and_preset(self) -> None:
         request = OrderCreate(

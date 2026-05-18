@@ -478,11 +478,20 @@ async function pickLocalImage() {
   const uploadQuality = serializeUploadQuality(verdict);
   if (verdict.quality_level !== 'good') {
     const score = Math.max(0, Math.min(100, Number(verdict.quality_score || 0)));
-    uni.showToast({
-      title: tr(`这张可能不像本人，建议换更清晰正脸（${score}分）`, `This may reduce likeness. A clearer front-facing photo is recommended (${score})`),
-      icon: 'none',
-      duration: 2600,
+    const confirmed = await new Promise<boolean>((resolve) => {
+      uni.showModal({
+        title: tr('照片可继续使用', 'Photo Can Continue'),
+        content: tr(
+          `这张照片可能会影响人物一致性或成片清晰度，建议更换更清晰的正脸/半身照片。你也可以继续尝试生成。（评分 ${score}）`,
+          `This photo may affect likeness or final clarity. A clearer front-facing or upper-body portrait is recommended, but you can continue. (Score ${score})`
+        ),
+        confirmText: tr('继续生成', 'Continue'),
+        cancelText: tr('重新上传', 'Re-upload'),
+        success: (modalRes) => resolve(!!modalRes.confirm),
+        fail: () => resolve(true),
+      });
     });
+    if (!confirmed) return { localPath: '', uploadQuality: null };
   }
   return { localPath, uploadQuality };
 }
