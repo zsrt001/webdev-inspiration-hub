@@ -566,7 +566,7 @@ def _resolve_director_decision(
                 ignored_inputs.append("scene_preset_id")
         elif scene_text_present:
             effective_scene_source = "text"
-            effective_scene_text = scene_text or legacy_prompt_override
+            effective_scene_text = scene_text or legacy_prompt_override or global_style_text
             effective_scene_image_url = None
             effective_scene_ip_weight = None
             if request.scene_preset_id:
@@ -596,7 +596,7 @@ def _resolve_director_decision(
                 ignored_inputs.append("clothing_preset_id")
         elif outfit_text_present:
             effective_outfit_source = "text"
-            effective_outfit_text = outfit_text or legacy_prompt_override
+            effective_outfit_text = outfit_text or legacy_prompt_override or global_style_text
             effective_clothing_image_url = None
             effective_clothing_ip_weight = None
             if request.clothing_preset_id:

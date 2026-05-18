@@ -169,8 +169,8 @@ class OrderCreationServiceTest(unittest.TestCase):
         self.assertEqual(decision.global_style_text, "editorial black-and-white wedding portrait in a quiet museum mood")
         self.assertEqual(decision.effective_scene_source, "text")
         self.assertEqual(decision.effective_outfit_source, "text")
-        self.assertIsNone(decision.effective_scene_text)
-        self.assertIsNone(decision.effective_outfit_text)
+        self.assertEqual(decision.effective_scene_text, "editorial black-and-white wedding portrait in a quiet museum mood")
+        self.assertEqual(decision.effective_outfit_text, "editorial black-and-white wedding portrait in a quiet museum mood")
         self.assertIsNone(decision.effective_scene_image_url)
         self.assertIsNone(decision.effective_clothing_image_url)
         self.assertEqual(decision.ignored_inputs, [])
@@ -183,8 +183,8 @@ class OrderCreationServiceTest(unittest.TestCase):
             legal_accepted=True,
             director_mode=True,
             global_style_text="French manor, afternoon backlight, low saturation film, satin wedding gown",
-            scene_preset_id="studio",
-            clothing_preset_id="couture",
+            scene_preset_id="scene_royal_castle",
+            clothing_preset_id="outfit_old_money",
         )
 
         decision = service._resolve_director_decision(
@@ -195,10 +195,41 @@ class OrderCreationServiceTest(unittest.TestCase):
 
         self.assertEqual(decision.effective_scene_source, "text")
         self.assertEqual(decision.effective_outfit_source, "text")
+        self.assertEqual(
+            decision.effective_scene_text,
+            "French manor, afternoon backlight, low saturation film, satin wedding gown",
+        )
+        self.assertEqual(
+            decision.effective_outfit_text,
+            "French manor, afternoon backlight, low saturation film, satin wedding gown",
+        )
         self.assertIsNone(decision.effective_scene_image_url)
         self.assertIsNone(decision.effective_clothing_image_url)
         self.assertIn("scene_preset_id", decision.ignored_inputs)
         self.assertIn("clothing_preset_id", decision.ignored_inputs)
+
+    def test_valid_presets_apply_only_when_no_upload_or_text_direction(self) -> None:
+        request = OrderCreate(
+            template_id="classic",
+            user_images=["https://cdn.example.com/person-a.jpg"],
+            legal_accepted=True,
+            director_mode=True,
+            scene_preset_id="scene_royal_castle",
+            clothing_preset_id="outfit_old_money",
+        )
+
+        decision = service._resolve_director_decision(
+            request,
+            is_couple_request=False,
+            couple_flow=None,
+        )
+
+        self.assertEqual(decision.effective_scene_source, "preset")
+        self.assertEqual(decision.effective_outfit_source, "preset")
+        self.assertEqual(decision.effective_scene_preset_id, "scene_royal_castle")
+        self.assertEqual(decision.effective_outfit_preset_id, "outfit_old_money")
+        self.assertIsNone(decision.effective_scene_text)
+        self.assertIsNone(decision.effective_outfit_text)
 
     def test_director_hints_include_remote_couple_flow_and_sorted_ignored_inputs(self) -> None:
         hints = service.build_director_decision_hints(
