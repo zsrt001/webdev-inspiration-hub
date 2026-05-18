@@ -227,6 +227,7 @@ class EvolinkService(GenerationProviderWorkflow):
         identity_reference_pack: dict | None,
         include_previous_result: bool,
         is_couple: bool,
+        user_text_mode: bool = False,
     ) -> list[tuple[str, str]]:
         entries: list[tuple[str, str]] = []
         seen: set[str] = set()
@@ -245,12 +246,15 @@ class EvolinkService(GenerationProviderWorkflow):
                 # Face crop FIRST (highest priority for flash native image-edit),
                 # then original portrait as full-body anchor
                 add(f"{role} face reference - IDENTITY ANCHOR", subject.get("face_crop_url"))
+                if user_text_mode:
+                    continue
                 if not (is_couple and include_previous_result):
                     add(f"{role} full reference", subject.get("original_url"))
                 if not is_couple and not include_previous_result:
                     add(f"{role} upper-body reference", subject.get("upper_body_crop_url"))
         else:
-            for index, url in enumerate(identity_refs[:2], start=1):
+            identity_limit = 1 if user_text_mode and not is_couple else 2
+            for index, url in enumerate(identity_refs[:identity_limit], start=1):
                 add(f"identity anchor image {index}", url)
 
         if include_previous_result:
@@ -316,6 +320,7 @@ class EvolinkService(GenerationProviderWorkflow):
             is_couple=is_couple,
         )
         edit_prompt = self._compact_prompt_for_evolink(edit_prompt, is_couple=is_couple)
+        user_text_mode = "USER TEXT PRIORITY" in str(prompt_text or "") or "USER DIRECTION:" in str(prompt_text or "")
         reference_entries = self._evolink_reference_entries(
             identity_refs=identity_refs,
             style_refs=style_refs,
@@ -323,6 +328,7 @@ class EvolinkService(GenerationProviderWorkflow):
             identity_reference_pack=identity_reference_pack,
             include_previous_result=include_previous,
             is_couple=is_couple,
+            user_text_mode=user_text_mode,
         )
         if self._identity_edit_required(user_images) and not reference_entries:
             raise RuntimeError("evolink_identity_refs_missing")

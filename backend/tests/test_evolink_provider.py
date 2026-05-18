@@ -236,6 +236,32 @@ class EvolinkProviderTest(unittest.TestCase):
             ],
         )
 
+    def test_evolink_user_text_mode_uses_face_crop_only_for_single_identity(self) -> None:
+        service = EvolinkService()
+        pack = {
+            "subjects": [
+                {
+                    "role": "bride",
+                    "identity_label": "person_a",
+                    "original_url": "https://example.test/source-castle-white-dress.jpg",
+                    "face_crop_url": "https://example.test/bride-face.jpg",
+                    "upper_body_crop_url": "https://example.test/source-upper-white-dress.jpg",
+                }
+            ]
+        }
+
+        entries = service._evolink_reference_entries(
+            identity_refs=[],
+            style_refs=[],
+            current_result_refs=[],
+            identity_reference_pack=pack,
+            include_previous_result=False,
+            is_couple=False,
+            user_text_mode=True,
+        )
+
+        self.assertEqual(entries, [("bride face reference - IDENTITY ANCHOR", "https://example.test/bride-face.jpg")])
+
     def test_vision_error_retry_exhaustion_delivers_candidate_when_non_blocking(self) -> None:
         service = EvolinkService()
         order_id = uuid.uuid4()
