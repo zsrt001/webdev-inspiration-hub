@@ -160,10 +160,8 @@ def _enhance_master(image, *, profile: PostprocessProfile | None = None):
     img = image.convert("RGB")
     img = _resize_long_edge(img, _target_master_long_edge(img))
 
-    # Gentle background softening: preserve the central subject area and blur only the outer field.
-    blurred = img.filter(ImageFilter.GaussianBlur(radius=max(1.0, min(img.size) / 360)))
-    mask = _foreground_mask(img.size)
-    img = ImageOps.autocontrast(Image.composite(img, blurred, mask), cutoff=0.35)
+    # Preserve venue/set detail; use only a light outer falloff for subject separation.
+    img = ImageOps.autocontrast(_apply_subtle_background_falloff(img), cutoff=0.35)
     img = _protect_white_gown_highlights(img, strength=profile.highlight_protection)
     img = _apply_studio_tone_balance(img, profile=profile)
     img = _unify_mixed_color_temperature(img)
@@ -327,6 +325,18 @@ def _denoise_shadows(image, *, strength: float = 0.34):
     mask = y.point(lambda value: max(0, min(180, round((96 - value) * 2.4 * strength))) if value < 112 else 0)
     denoised = image.filter(ImageFilter.MedianFilter(size=3)).filter(ImageFilter.SMOOTH)
     return Image.composite(denoised, image, mask)
+
+
+def _apply_subtle_background_falloff(image):
+    from PIL import Image, ImageFilter
+
+    blur_radius = max(0.35, min(image.size) / 1200)
+    softened_edges = Image.composite(
+        image,
+        image.filter(ImageFilter.GaussianBlur(radius=blur_radius)),
+        _foreground_mask(image.size),
+    )
+    return Image.blend(image, softened_edges, 0.30)
 
 
 def _inject_subtle_film_grain(image, *, amount: float = 0.028):

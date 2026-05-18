@@ -9,7 +9,7 @@ import unittest
 import uuid
 from urllib.parse import parse_qs, urlparse
 
-from PIL import Image
+from PIL import Image, ImageStat
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -34,6 +34,7 @@ from app.services.generation_credit_policy import (  # noqa: E402
 from app.services.prompt_brain import build_prompt, get_negative_prompt, get_studio_guardrails  # noqa: E402
 from app.services.postprocess_service import (  # noqa: E402
     VARIANT_MAP,
+    _apply_subtle_background_falloff,
     _crop_to_variant,
     _enhance_master,
     _smart_crop_centering,
@@ -156,6 +157,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("frontal softbox-style fill", guardrails)
         # Standard sections
         self.assertIn("STUDIO QUALITY:", guardrails)
+        self.assertIn("BACKGROUND DETAIL:", guardrails)
+        self.assertIn("recognizable", guardrails)
         self.assertIn("DELIVERY GATE:", guardrails)
         self.assertIn("CANDIDATE SELECTION:", guardrails)
 
@@ -176,6 +179,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("cropped dress", negative)
         self.assertIn("subject too small", negative)
         self.assertIn("background dominates the subject", negative)
+        self.assertIn("over-blurred background", negative)
+        self.assertIn("unrecognizable venue", negative)
         self.assertIn("weak couple interaction", negative)
         self.assertIn("unrequested mountain vista", negative)
 
@@ -197,6 +202,20 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertLessEqual(max(enhanced.size), 2400)
         self.assertEqual(crop_4x5.size[0] / crop_4x5.size[1], 0.8)
         self.assertEqual(crop_square.size[0], crop_square.size[1])
+
+    def test_postprocess_preserves_readable_background_detail(self) -> None:
+        image = Image.new("RGB", (360, 480), (200, 190, 178))
+        pixels = image.load()
+        for y in range(image.height):
+            for x in range(image.width):
+                if x < 60 or x > 300:
+                    v = 78 if ((x // 4 + y // 4) % 2) else 218
+                    pixels[x, y] = (v, v, v)
+
+        processed = _apply_subtle_background_falloff(image)
+        edge_patch = processed.crop((0, 0, 60, 480)).convert("L")
+
+        self.assertGreater(ImageStat.Stat(edge_patch).stddev[0], 40)
 
     def test_postprocess_unifies_mixed_color_temperature(self) -> None:
         image = Image.new("RGB", (120, 120), (220, 150, 100))
@@ -253,6 +272,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertTrue(should_retry_qa(["face_underexposed"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["dress_highlights_blown"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["background_brighter_than_face"], 1, max_attempts=2))
+        self.assertTrue(should_retry_qa(["background_over_blurred"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["subject_too_small"], 1, max_attempts=2))
         self.assertTrue(should_retry_qa(["dress_cropped"], 1, max_attempts=2))
         self.assertFalse(should_retry_qa(["bad_hands"], 2, max_attempts=2))
@@ -295,6 +315,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
                 "blown_out_dress",
                 "mixed_color_temp",
                 "background_brighter",
+                "background_too_blurry",
             ],
             source="vision",
             notes="lighting fail",
@@ -310,6 +331,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
                 "dress_highlights_blown",
                 "mixed_color_temperature",
                 "background_brighter_than_face",
+                "background_over_blurred",
             ],
         )
         self.assertTrue(all(issue["blocking"] for issue in issues))
@@ -317,6 +339,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(issues[0]["repair_action"], "raise_face_exposure_with_soft_fill")
         self.assertEqual(issues[3]["repair_action"], "reduce_specular_skin_highlights")
         self.assertEqual(issues[6]["target"], "face_background_exposure_balance")
+        self.assertEqual(issues[7]["target"], "venue_detail_readability")
 
     def test_structured_qa_issues_classify_face_and_identity_failures(self) -> None:
         issues = build_structured_qa_issues(
@@ -1076,6 +1099,7 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
                 "dress_highlights_blown",
                 "mixed_color_temperature",
                 "background_brighter_than_face",
+                "background_over_blurred",
             ],
             is_couple=False,
         )
@@ -1087,6 +1111,7 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("recover white dress", focus)
         self.assertIn("unify color temperature", focus)
         self.assertIn("face the clear exposure priority", focus)
+        self.assertIn("recognizable premium venue", focus)
 
     async def test_identity_qa_hard_fails_when_vision_provider_is_unavailable(self) -> None:
         original = qa_service.llm_service.is_vision_provider_configured
@@ -1178,6 +1203,7 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("face_underexposed", prompt_text)
             self.assertIn("oily_skin_highlight", prompt_text)
             self.assertIn("background_brighter_than_face", prompt_text)
+            self.assertIn("background_over_blurred", prompt_text)
             self.assertIn("Prefer these specific lighting reasons", prompt_text)
             return {
                 "choices": [
@@ -1241,7 +1267,7 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
                                 '"code": "poor_studio_quality", '
                                 '"evidence": "face is in shadow, flat lighting, no catchlights, wet glossy skin, '
                                 'dress highlights are blown, mixed color temperature, weak subject separation, '
-                                'background is brighter than the face"'
+                                'background is brighter than the face, background is over-blurred and has no readable venue detail"'
                                 '}], '
                                 '"notes": "generic commercial lighting failure"}'
                             )
@@ -1283,10 +1309,11 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
                 "mixed_color_temperature",
                 "poor_subject_separation",
                 "background_brighter_than_face",
+                "background_over_blurred",
             ],
         )
         self.assertNotIn("poor_studio_quality", verdict["reasons"])
-        self.assertEqual([issue["category"] for issue in verdict["issues"]], ["photography_quality"] * 8)
+        self.assertEqual([issue["category"] for issue in verdict["issues"]], ["photography_quality"] * 9)
         self.assertEqual(verdict["issues"][0]["repair_action"], "raise_face_exposure_with_soft_fill")
         self.assertEqual(verdict["issues"][4]["repair_action"], "recover_white_dress_highlight_detail")
 

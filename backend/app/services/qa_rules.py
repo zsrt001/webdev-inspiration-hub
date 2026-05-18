@@ -45,6 +45,7 @@ ALLOWED_QA_REASONS = {
     "dress_cropped",
     "poor_subject_separation",
     "background_brighter_than_face",
+    "background_over_blurred",
     "flat_centered_pose",
     "weak_couple_interaction",
     "harsh_backlight",
@@ -71,6 +72,7 @@ SPECIFIC_LIGHTING_QA_REASONS = {
     "mixed_color_temperature",
     "poor_subject_separation",
     "background_brighter_than_face",
+    "background_over_blurred",
 }
 
 _SPECIFIC_LIGHTING_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -164,6 +166,16 @@ _SPECIFIC_LIGHTING_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             r"\bface (?:is |looks |appears )?darker than (?:the )?(?:background|window|sky)\b",
             r"\bbackground outshines (?:the )?face\b",
             r"\bexposure prioritizes (?:the )?(?:background|window|sky)\b",
+        ),
+    ),
+    (
+        "background_over_blurred",
+        (
+            r"\bbackground (?:is |looks |appears )?(?:too |over[- ]?)?blur(?:red|ry)\b",
+            r"\bover[- ]?blurred background\b",
+            r"\bbackground (?:is |looks |appears )?(?:smeared|mushy|melted)\b",
+            r"\bvenue (?:is |looks |appears )?(?:unrecognizable|unreadable)\b",
+            r"\bbackground (?:has )?no (?:readable )?(?:detail|structure)\b",
         ),
     ),
 )
@@ -281,6 +293,14 @@ QA_REASON_SYNONYMS: dict[str, str] = {
     "background_too_bright": "background_brighter_than_face",
     "face_darker_than_background": "background_brighter_than_face",
     "background_outshines_face": "background_brighter_than_face",
+    "background_too_blurry": "background_over_blurred",
+    "over_blurred_background": "background_over_blurred",
+    "overblurred_background": "background_over_blurred",
+    "blurred_background": "background_over_blurred",
+    "background_smeared": "background_over_blurred",
+    "mushy_background": "background_over_blurred",
+    "melted_background": "background_over_blurred",
+    "unrecognizable_venue": "background_over_blurred",
     "centered_pose": "flat_centered_pose",
     "stiff_centered_pose": "flat_centered_pose",
     "tourist_pose": "flat_centered_pose",
@@ -584,6 +604,15 @@ QA_REASON_DETAILS: dict[str, dict[str, str | bool]] = {
         "repair_action": "darken_background_and_prioritize_face",
         "repair_stage": "final_polish",
         "repair_hint": "Make the face the exposure priority and keep the background slightly darker than the face.",
+    },
+    "background_over_blurred": {
+        "category": "photography_quality",
+        "target": "venue_detail_readability",
+        "severity": "major",
+        "blocking": True,
+        "repair_action": "restore_recognizable_venue_detail",
+        "repair_stage": "final_polish",
+        "repair_hint": "Keep natural depth of field but restore readable architecture, studio-set, garden, floor, window, or drapery detail so the venue remains recognizable.",
     },
     "flat_centered_pose": {
         "category": "composition",

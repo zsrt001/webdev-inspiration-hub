@@ -193,6 +193,14 @@ _QA_REASON_MAP: dict[str, str] = {
     "background_too_bright": "background_brighter_than_face",
     "face_darker_than_background": "background_brighter_than_face",
     "background_outshines_face": "background_brighter_than_face",
+    "background_over_blurred": "background_over_blurred",
+    "background_too_blurry": "background_over_blurred",
+    "over_blurred_background": "background_over_blurred",
+    "overblurred_background": "background_over_blurred",
+    "background_smeared": "background_over_blurred",
+    "mushy_background": "background_over_blurred",
+    "melted_background": "background_over_blurred",
+    "unrecognizable_venue": "background_over_blurred",
     "flat_centered_pose": "flat_centered_pose",
     "stiff_centered_pose": "flat_centered_pose",
     "tourist_pose": "flat_centered_pose",
@@ -245,6 +253,7 @@ _ALLOWED_QA_REASONS = {
     "dress_cropped",
     "poor_subject_separation",
     "background_brighter_than_face",
+    "background_over_blurred",
     "flat_centered_pose",
     "weak_couple_interaction",
     "harsh_backlight",
@@ -596,12 +605,12 @@ async def verify_generated_image_quality(
         "}\n"
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","background_over_blurred","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
         "- issues must describe each failure with code, category, target, severity, short evidence, and a concrete repair_hint.\n"
         "- Commercial framing standard: single subject should occupy about 72-86% of canvas height, with face height about 8-15%, headroom about 3-7%, and bottom room for shoes/gown/train about 4-9%. Outdoor environmental portraits may be wider, but subject height must not fall below about 55% and the face must stay recognizable.\n"
         "- Commercial couple framing standard: the couple group should occupy about 68-84% of canvas height and 52-78% of canvas width; each face should be about 6-12% of canvas height, both faces readable, both bodies separated, outfits complete, and the pose should show subtle professional interaction rather than flat tourist-photo blocking.\n"
         "- Use subject_too_small when the person or couple is too small for a paid wedding portrait. Use face_too_small when identity cannot be read because the face is too small. Use background_dominates when the scene overwhelms the subjects. Use excessive_headroom for wasted sky/ceiling/head space. Use awkward_crop or dress_cropped for bad body, limb, gown, veil, hem, or train cropping.\n"
-        "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use background_brighter_than_face when the background, sky, window, or architecture is brighter than the face and steals exposure priority. Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
+        "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use background_brighter_than_face when the background, sky, window, or architecture is brighter than the face and steals exposure priority. Use background_over_blurred when the venue, garden, architecture, drapery, floor, or studio backdrop is smeared into unrecognizable blur instead of natural optical falloff. Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"

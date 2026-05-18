@@ -31,6 +31,7 @@ COMMERCIAL_HARD_GATE_REASONS = {
     "awkward_crop",
     "dress_cropped",
     "poor_subject_separation",
+    "background_over_blurred",
     "flat_centered_pose",
     "weak_couple_interaction",
     "harsh_backlight",
@@ -52,6 +53,7 @@ LIGHTING_ONLY_REPAIR_REASONS = {
     "mixed_color_temperature",
     "poor_subject_separation",
     "background_brighter_than_face",
+    "background_over_blurred",
     "harsh_backlight",
 }
 
@@ -98,6 +100,7 @@ CANDIDATE_REASON_PENALTIES = {
     "awkward_crop": 55,
     "dress_cropped": 55,
     "poor_subject_separation": 35,
+    "background_over_blurred": 35,
     "flat_centered_pose": 30,
     "weak_couple_interaction": 30,
     "harsh_backlight": 45,

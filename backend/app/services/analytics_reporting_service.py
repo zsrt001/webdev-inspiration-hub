@@ -41,6 +41,7 @@ QUALITY_REASON_GROUPS = {
         "mixed_color_temperature",
         "poor_subject_separation",
         "background_brighter_than_face",
+        "background_over_blurred",
         "harsh_backlight",
     },
     "composition": {

@@ -24,6 +24,14 @@ PHOTO_REALISM_PROTOCOL = (
     "print-ready 300dpi bridal-studio deliverable"
 )
 
+BACKGROUND_DETAIL_PROTOCOL = (
+    "Commercial wedding background detail: keep the venue or studio set recognizable and valuable, with readable "
+    "architecture, garden texture, drapery, floor lines, arches, columns, windows, floral styling, or painted studio "
+    "backdrop details where they exist. Use natural optical depth falloff and subject separation, but do not smear "
+    "the background into creamy color blocks, melted bokeh, foggy mush, or an unidentifiable blur. The background "
+    "should be secondary to the faces while still proving this is a premium wedding location"
+)
+
 GEMINI_FLASH_EDIT_PROTOCOL = (
     "Gemini 3.1 Flash image-edit protocol: treat every uploaded image as visual evidence, not optional style "
     "inspiration. The first identity face crop is the primary facial-geometry anchor, the original portrait is the "
@@ -40,7 +48,7 @@ PHOTO_PROTOCOL = (
     "sharp eyes, realistic hair strands, crisp couture fabric and embroidery details, "
     "commercial bridal retouching with clean but non-plastic semi-matte skin, controlled natural highlights, "
     "no oily shine on forehead, nose, cheeks, or chin, luxury studio-grade color grading, "
-    "polished background separation, paid bridal-studio deliverable quality"
+    "polished background separation, recognizable venue or studio-set detail, paid bridal-studio deliverable quality"
 )
 
 ANTI_AI_ARTIFACTS_PROTOCOL = (
@@ -110,8 +118,8 @@ STUDIO_QUALITY_PROTOCOL = (
     "key light, gentle fill light, subtle rim separation, visible catchlights, face correctly exposed and slightly "
     "brighter than the background, preserved highlight detail in skin and dress fabric, natural shadow rolloff, "
     "balanced contrast, refined skin texture, soft powder-finish semi-matte skin, controlled specular highlights, "
-    "clean but realistic retouching, couture-level fabric detail, polished composition, and premium wedding album "
-    "color grading"
+    "clean but realistic retouching, couture-level fabric detail, readable premium venue detail, polished "
+    "composition, and premium wedding album color grading"
 )
 
 INDOOR_SCENE_BOUNDARY_PROTOCOL = (
@@ -207,8 +215,9 @@ NEGATIVE_PROMPT = (
     "flash, phone-flash lighting, muddy night lighting; "
     "Composition failures: subject too small, face too small, background dominates the subject, excessive headroom, "
     "awkward crop, cropped dress, dress cutoff, cut-off gown train, missing full outfit, flat centered pose, "
-    "weak couple interaction, poor subject separation, low-end snapshot, tourist snapshot, phone photo, "
-    "outdoor travel snapshot; "
+    "weak couple interaction, poor subject separation, over-blurred background, background smeared into color blocks, "
+    "melted bokeh background, unrecognizable venue, low-end snapshot, tourist snapshot, phone photo, outdoor travel "
+    "snapshot; "
     "Scene failures: fantasy game costume, cheap composite, unrequested mountain vista, unrequested open sky, "
     "unrequested beach, unrequested forest, unrelated travel background"
 )
@@ -226,6 +235,7 @@ def get_studio_guardrails(*, is_couple: bool = False) -> str:
         _section("SKIN REALISM", SKIN_REALISM_PROTOCOL),
         _section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL),
         _section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL),
+        _section("BACKGROUND DETAIL", BACKGROUND_DETAIL_PROTOCOL),
         _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
         _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
         _section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL),
@@ -299,6 +309,7 @@ def build_prompt(
     )
     parts.append(_section("SKIN REALISM", SKIN_REALISM_PROTOCOL))
     parts.append(_section("PHOTO REALISM", PHOTO_REALISM_PROTOCOL))
+    parts.append(_section("BACKGROUND DETAIL", BACKGROUND_DETAIL_PROTOCOL))
     parts.append(_section("GEMINI FLASH EDIT PROTOCOL", GEMINI_FLASH_EDIT_PROTOCOL))
     # Layer 3: Scene & wardrobe
     parts.append(_section("WARDROBE", f"A professional wedding portrait of {clothing}"))

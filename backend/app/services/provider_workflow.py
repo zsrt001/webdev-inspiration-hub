@@ -1380,6 +1380,10 @@ class GenerationProviderWorkflow:
             focus.append("improve subject-background separation with controlled depth, rim light, and clean visual hierarchy")
         if "background_brighter_than_face" in normalized:
             focus.append("darken the background slightly and make the face the clear exposure priority")
+        if "background_over_blurred" in normalized:
+            focus.append(
+                "restore recognizable premium venue or studio-set detail with natural optical falloff; keep the background secondary but readable, not smeared into color blocks"
+            )
         if "flat_centered_pose" in normalized:
             focus.append("replace stiff centered tourist-photo blocking with directed editorial wedding posing")
         if "weak_couple_interaction" in normalized:
