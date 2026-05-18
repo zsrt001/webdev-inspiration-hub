@@ -105,13 +105,17 @@ def _supabase_pooler_hosts() -> list[str]:
     explicit = str(settings.supabase_pooler_host or "").strip()
     if explicit:
         return [explicit]
+    region = str(settings.supabase_pooler_region or "us-east-1").strip() or "us-east-1"
+    preferred_hosts = [
+        f"{prefix}-{region}.pooler.supabase.com"
+        for prefix in _SUPABASE_POOLER_PREFIXES
+    ]
     hosts = [
         f"{prefix}-{region}.pooler.supabase.com"
         for prefix in _SUPABASE_POOLER_PREFIXES
         for region in _SUPABASE_POOLER_REGIONS
     ]
-    preferred = _supabase_pooler_host()
-    return [preferred, *(host for host in hosts if host != preferred)]
+    return [*preferred_hosts, *(host for host in hosts if host not in preferred_hosts)]
 
 
 def _build_supabase_pooler_async_creator(database_url: str):

@@ -272,8 +272,7 @@ const heroBackgroundStyle = computed(() => ({
 }));
 
 const heroPreviewUrl = computed(() => {
-  const candidate = templates.value.find((item) => item.category === 'couple')?.image_url || '/style-previews/royal_castle.jpg';
-  return resolvePublicUrl(candidate);
+  return heroImageUrl.value;
 });
 
 const heroProofs = computed(() => [
@@ -545,24 +544,17 @@ onMounted(async () => {
 
 .hero-section {
   position: relative;
-  min-height: clamp(600px, calc(100dvh - 96px), 720px);
+  min-height: clamp(600px, calc(100dvh - 120px), 700px);
   display: flex;
   align-items: stretch;
   overflow: hidden;
-  background: #eef1f2;
+  background:
+    radial-gradient(circle at 84% 28%, rgba(232, 218, 199, 0.5), rgba(232, 218, 199, 0) 30%),
+    linear-gradient(110deg, #f8f8f7 0%, #f3f5f5 58%, #eef1ef 100%);
 }
 
 .hero-media {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 1;
-  opacity: 1;
-  filter: saturate(0.96) contrast(1.02);
-  background-repeat: no-repeat;
-  background-size: cover;
-  background-position: center center;
+  display: none;
 }
 
 .hero-overlay {
@@ -570,8 +562,9 @@ onMounted(async () => {
   inset: 0;
   z-index: 2;
   background:
-    linear-gradient(90deg, rgba(246, 247, 248, 0.92) 0%, rgba(246, 247, 248, 0.8) 33%, rgba(246, 247, 248, 0.28) 56%, rgba(246, 247, 248, 0.04) 100%),
-    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.34) 16%, rgba(246, 247, 248, 0) 48%);
+    linear-gradient(0deg, #f6f7f8 0%, rgba(246, 247, 248, 0.72) 13%, rgba(246, 247, 248, 0) 38%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0) 52%);
+  pointer-events: none;
 }
 
 .hero-content {
@@ -580,10 +573,10 @@ onMounted(async () => {
   width: calc(100% - 48px);
   max-width: 1280px;
   margin: 0 auto;
-  padding: 54px 0 58px;
+  padding: 54px 0 76px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
-  gap: clamp(44px, 6vw, 92px);
+  grid-template-columns: minmax(0, 0.98fr) minmax(360px, 460px);
+  gap: clamp(48px, 7vw, 104px);
   align-items: center;
 }
 
@@ -693,16 +686,18 @@ onMounted(async () => {
 }
 
 .hero-preview {
-  display: none;
+  display: block;
+  width: min(460px, 100%);
+  justify-self: end;
 }
 
 .preview-frame {
   overflow: hidden;
   border-radius: 8px;
-  aspect-ratio: 2 / 3;
+  aspect-ratio: 4 / 5;
   background: #d9dde3;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  box-shadow: 0 28px 70px rgba(23, 25, 31, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 28px 70px rgba(23, 25, 31, 0.16);
 }
 
 .preview-image {
@@ -710,11 +705,12 @@ onMounted(async () => {
   height: 100%;
   display: block;
   object-fit: cover;
-  object-position: center center;
+  object-position: 70% center;
 }
 
 .preview-copy {
-  display: none;
+  display: block;
+  padding: 16px 4px 0;
 }
 
 .preview-title {
