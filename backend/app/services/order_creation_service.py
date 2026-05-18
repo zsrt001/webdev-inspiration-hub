@@ -72,6 +72,9 @@ class DirectorDecision:
     scene_text: str | None
     outfit_text: str | None
     legacy_prompt_override: str | None
+    effective_global_style_text: str | None
+    effective_scene_text: str | None
+    effective_outfit_text: str | None
     effective_scene_source: str | None
     effective_outfit_source: str | None
     effective_scene_image_url: str | None
@@ -545,20 +548,27 @@ def _resolve_director_decision(
     effective_outfit_preset_id: str | None = None
     effective_scene_preset_title: str | None = None
     effective_outfit_preset_title: str | None = None
+    effective_global_style_text: str | None = global_style_text
+    effective_scene_text: str | None = None
+    effective_outfit_text: str | None = None
+    compatible_refinements: list[str] = []
 
     if apply_scene_cascade:
-        if scene_text_present:
-            effective_scene_source = "text"
-            effective_scene_image_url = None
-            effective_scene_ip_weight = None
-            if request.scene_image_url:
-                ignored_inputs.append("scene_image_url")
-            if request.scene_preset_id:
-                ignored_inputs.append("scene_preset_id")
-        elif request.scene_image_url:
+        if request.scene_image_url:
             effective_scene_source = "upload"
             effective_scene_image_url = request.scene_image_url
             effective_scene_ip_weight = request.scene_ip_weight if request.scene_ip_weight is not None else 0.6
+            if scene_text:
+                compatible_refinements.append(
+                    f"Scene reference refinement, compatible with uploaded scene reference: {scene_text}"
+                )
+            if request.scene_preset_id:
+                ignored_inputs.append("scene_preset_id")
+        elif scene_text_present:
+            effective_scene_source = "text"
+            effective_scene_text = scene_text or legacy_prompt_override
+            effective_scene_image_url = None
+            effective_scene_ip_weight = None
             if request.scene_preset_id:
                 ignored_inputs.append("scene_preset_id")
         else:
@@ -574,18 +584,21 @@ def _resolve_director_decision(
             effective_scene_ip_weight = request.scene_ip_weight if request.scene_ip_weight is not None else 0.5
 
     if apply_outfit_cascade:
-        if outfit_text_present:
-            effective_outfit_source = "text"
-            effective_clothing_image_url = None
-            effective_clothing_ip_weight = None
-            if request.clothing_image_url:
-                ignored_inputs.append("clothing_image_url")
-            if request.clothing_preset_id:
-                ignored_inputs.append("clothing_preset_id")
-        elif request.clothing_image_url:
+        if request.clothing_image_url:
             effective_outfit_source = "upload"
             effective_clothing_image_url = request.clothing_image_url
             effective_clothing_ip_weight = request.clothing_ip_weight if request.clothing_ip_weight is not None else 0.6
+            if outfit_text:
+                compatible_refinements.append(
+                    f"Outfit reference refinement, compatible with uploaded outfit reference: {outfit_text}"
+                )
+            if request.clothing_preset_id:
+                ignored_inputs.append("clothing_preset_id")
+        elif outfit_text_present:
+            effective_outfit_source = "text"
+            effective_outfit_text = outfit_text or legacy_prompt_override
+            effective_clothing_image_url = None
+            effective_clothing_ip_weight = None
             if request.clothing_preset_id:
                 ignored_inputs.append("clothing_preset_id")
         else:
@@ -599,6 +612,11 @@ def _resolve_director_decision(
             effective_outfit_preset_title = preset["title"]
             effective_clothing_image_url = to_public_url(preset["image_url"])
             effective_clothing_ip_weight = request.clothing_ip_weight if request.clothing_ip_weight is not None else 0.5
+
+    if compatible_refinements:
+        effective_global_style_text = " ".join(
+            part for part in [global_style_text, *compatible_refinements] if part
+        )
 
     director_decision_hints = build_director_decision_hints(
         director_mode=bool(request.director_mode),
@@ -617,6 +635,9 @@ def _resolve_director_decision(
         scene_text=scene_text,
         outfit_text=outfit_text,
         legacy_prompt_override=legacy_prompt_override,
+        effective_global_style_text=effective_global_style_text,
+        effective_scene_text=effective_scene_text,
+        effective_outfit_text=effective_outfit_text,
         effective_scene_source=effective_scene_source,
         effective_outfit_source=effective_outfit_source,
         effective_scene_image_url=effective_scene_image_url,
@@ -815,6 +836,9 @@ def _build_generation_params(
         "global_style_text": director_decision.global_style_text,
         "scene_text": director_decision.scene_text,
         "outfit_text": director_decision.outfit_text,
+        "effective_global_style_text": director_decision.effective_global_style_text,
+        "effective_scene_text": director_decision.effective_scene_text,
+        "effective_outfit_text": director_decision.effective_outfit_text,
         "scene_image_url": request.scene_image_url,
         "clothing_image_url": request.clothing_image_url,
         "scene_preset_id": request.scene_preset_id,
@@ -836,7 +860,10 @@ def _build_generation_params(
                 "source": director_decision.effective_scene_source,
                 "preset_id": director_decision.effective_scene_preset_id,
                 "preset_title": director_decision.effective_scene_preset_title,
-                "text_applied": bool(director_decision.scene_text),
+                "text_applied": bool(
+                    director_decision.effective_scene_text
+                    or (director_decision.effective_scene_source == "upload" and director_decision.scene_text)
+                ),
                 "upload_applied": bool(request.scene_image_url),
                 "ip_weight": director_decision.effective_scene_ip_weight,
             },
@@ -844,7 +871,10 @@ def _build_generation_params(
                 "source": director_decision.effective_outfit_source,
                 "preset_id": director_decision.effective_outfit_preset_id,
                 "preset_title": director_decision.effective_outfit_preset_title,
-                "text_applied": bool(director_decision.outfit_text),
+                "text_applied": bool(
+                    director_decision.effective_outfit_text
+                    or (director_decision.effective_outfit_source == "upload" and director_decision.outfit_text)
+                ),
                 "upload_applied": bool(request.clothing_image_url),
                 "ip_weight": director_decision.effective_clothing_ip_weight,
             },

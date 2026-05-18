@@ -285,8 +285,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("SHOT LIBRARY:", prompt)
         self.assertIn("PRIMARY SHOT full gown editorial", prompt)
         self.assertIn("CANDIDATE SHOT SEQUENCE:", prompt)
-        self.assertIn("USER TEXT PRIORITY:", prompt)
-        self.assertIn("uploaded identity image is only a face", prompt)
+        self.assertIn("DIRECTOR SOURCE PRIORITY:", prompt)
+        self.assertIn("When no uploaded reference exists", prompt)
 
     def test_couple_generation_policy_adds_dedicated_negative_terms(self) -> None:
         negative = build_generation_negative_prompt(is_couple=True)

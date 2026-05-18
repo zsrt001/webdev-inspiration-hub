@@ -6,7 +6,7 @@
         <view class="hero-main">
           <text class="hero-kicker">{{ tr('AI 婚纱创作台', 'AI Wedding Studio') }}</text>
           <text class="hero-title heading-serif">{{ tr('先把照片上传好，再决定要不要加风格', 'Upload portraits first, then add style if needed') }}</text>
-          <text class="hero-subtitle">{{ tr('主线只有两步：选择生成对象、上传人物照片。自由文字、模板风格和参考图都是增强项，用来让结果更贴近你的想法。', 'The core path has two steps: choose the subject count and upload portraits. Text direction, style templates, and references are enhancers that refine the result.') }}</text>
+          <text class="hero-subtitle">{{ tr('主线只有两步：选择生成对象、上传人物照片。身份和人数会被锁定；参考图优先控制场景/服装，没参考图时文字就是主创作指令。', 'The core path has two steps: choose the subject count and upload portraits. Identity and count stay locked; references control scene/outfit first, and text becomes the main creative brief when no reference is uploaded.') }}</text>
           <view class="flow-strip">
             <view class="flow-step primary">{{ tr('1 选人数', '1 Choose count') }}</view>
             <view class="flow-step primary">{{ tr('2 上传照片', '2 Upload portraits') }}</view>
@@ -17,7 +17,7 @@
         <view class="hero-aside">
           <text class="aside-title">{{ tr('当前主线', 'Core Flow') }}</text>
           <text class="aside-mode">{{ outputModeLabel }}</text>
-          <text class="aside-copy">{{ tr('照片齐了就能生成；风格、文字和参考图只负责提升命中率，不再挡住主流程。', 'Once portraits are ready, generation can start. Style, text, and references only improve precision without blocking the core path.') }}</text>
+          <text class="aside-copy">{{ tr('照片齐了就能生成；参考图是强参考，文字在无参考图时主控，有参考图时负责氛围、镜头、布光和质感。', 'Once portraits are ready, generation can start. References are strong controls; text leads when no reference exists and otherwise refines mood, lens, lighting, and texture.') }}</text>
         </view>
       </view>
 
@@ -90,6 +90,26 @@
               <text class="panel-title heading-serif">{{ directionPanelTitle }}</text>
             </view>
             <text class="panel-desc">{{ directionPanelDesc }}</text>
+            <view class="priority-guide">
+              <view class="priority-guide-head">
+                <text>{{ tr('创作控制顺序', 'Creative Control Order') }}</text>
+                <text>{{ tr('越靠前越不会被后面的选择改掉', 'Earlier choices cannot be changed by later ones') }}</text>
+              </view>
+              <view class="priority-steps">
+                <view v-for="item in priorityGuideItems" :key="item.key" class="priority-step" :class="{ active: item.active }">
+                  <text class="priority-index">{{ item.index }}</text>
+                  <view>
+                    <text class="priority-title">{{ item.title }}</text>
+                    <text class="priority-copy">{{ item.copy }}</text>
+                  </view>
+                </view>
+              </view>
+              <view class="priority-current">
+                <text>{{ tr('当前控制', 'Current control') }}</text>
+                <text>{{ tr('场景', 'Scene') }}：{{ sceneControlLabel }}</text>
+                <text>{{ tr('服装', 'Outfit') }}：{{ outfitControlLabel }}</text>
+              </view>
+            </view>
             <view class="direction-card">
               <view class="direction-head">
                 <view>
@@ -114,7 +134,7 @@
             <view v-if="generationMode !== 'golden_anniversary'" class="free-mode-card compact" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">
               <view class="free-mode-copy">
                 <text class="free-mode-label">{{ tr('默认', 'Default') }}</text>
-                <text class="free-mode-title heading-serif">{{ tr('不套模板，按文字自由生成', 'No template, follow text freely') }}</text>
+                <text class="free-mode-title heading-serif">{{ tr('不套模板，按文字或参考图生成', 'No template, follow text or references') }}</text>
                 <text class="free-mode-desc">{{ tr('适合已经有明确服装、场景或氛围想法的用户。', 'Best when you already know the outfit, scene, or mood you want.') }}</text>
               </view>
             </view>
@@ -132,7 +152,7 @@
 
             <view class="style-section-head reference-head">
               <text>{{ tr('参考图（可选）', 'Reference Images (optional)') }}</text>
-              <text>{{ tr('只有需要精准复刻服装或场景时再上传', 'Only upload when outfit or scene needs to be very specific') }}</text>
+              <text>{{ tr('上传后会强控对应方向，文字只做兼容微调', 'Uploaded references strongly control their domain; text only refines compatibly') }}</text>
             </view>
             <view class="reference-grid">
               <view class="upload-card">
@@ -306,7 +326,7 @@ const primaryPhotoInstruction = computed(() => {
     return tr('主流程只需要 1 张人物照片。上传后可以直接生成；想控制服装或场景时，再补充下方增强项。', 'The core flow only needs 1 portrait. After upload, you can generate directly; add enhancers only when you want outfit or scene control.');
   }
   if (generationMode.value === 'couple_local') {
-    return tr('主流程需要 2 张人物照片。两张照片齐了即可生成；模板、文字和参考图只是帮助画面更精准。', 'The core flow needs 2 portraits. Once both are uploaded, generation is ready; templates, text, and references only improve precision.');
+    return tr('主流程需要 2 张人物照片。两张照片齐了即可生成；人数不会被文字或模板改掉。', 'The core flow needs 2 portraits. Once both are uploaded, generation is ready; text or templates cannot change the subject count.');
   }
   if (isGoldenAnniversaryMode.value) {
     return tr('金婚重塑需要 2 张人物照片。系统会默认选择纪念合照模板，你也可以在下方切换 80/90 影楼、中式庭院或现代翻拍。', 'Golden Anniversary remake needs 2 portraits. A legacy template is selected by default, and you can switch between studio, courtyard, or modern remake below.');
@@ -351,8 +371,8 @@ const directionPanelTitle = computed(() => selectedStyleFamily.value
   ? tr('增强创作方向（可选）', 'Enhance Direction (optional)')
   : tr('补充服装、场景与氛围（可选）', 'Add Outfit, Scene, and Mood (optional)'));
 const directionPanelDesc = computed(() => selectedStyleFamily.value
-  ? tr('你已经选择了参考风格。这里负责补充细节，例如指定礼服、地点、光线或想避开的元素。', 'You already selected a reference style. Use this area only to refine details such as outfit, location, lighting, or what to avoid.')
-  : tr('自由模式不强制选模板。想要更可控的结果时，优先写清楚服装、场景和整体氛围。', 'Free mode does not require a template. For more control, describe outfit, scene, and overall mood first.'));
+  ? tr('你已经选择了参考风格。这里负责补充细节；如果上传场景/服装参考图，参考图会优先控制对应方向。', 'You already selected a reference style. Use this area to refine details; uploaded scene/outfit references control their matching direction first.')
+  : tr('自由模式不强制选模板。没有参考图时，文字就是主创作指令；上传参考图后，文字负责补充氛围、镜头、布光和质感。', 'Free mode does not require a template. Without references, text is the main creative brief; after uploading references, text refines mood, lens, lighting, and texture.'));
 const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const stylePanelTitle = computed(() => {
   if (generationMode.value === 'single') return tr('参考风格（单人）', 'Reference Styles (solo)');
@@ -361,9 +381,58 @@ const stylePanelTitle = computed(() => {
 });
 const stylePanelNote = computed(() => isGoldenAnniversaryMode.value
   ? tr('必选：用于父母/长辈纪念合照的专项模板', 'Required: legacy templates for parents and elders')
-  : tr('可选：不选模板时按文字自由生成', 'Optional: skip templates to follow text freely'));
+  : tr('可选：无参考图时按文字主控生成', 'Optional: text leads when no reference is uploaded'));
 const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : isGoldenAnniversaryMode.value ? tr('金婚重塑', 'Golden Anniversary') : tr('双人异地', 'Couple Remote'));
-const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式优先', 'Free Direction First'));
+const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式', 'Free Mode'));
+const sceneControlLabel = computed(() => {
+  if (sceneReferencePath.value) return tr('参考图强控', 'Reference control');
+  if (sceneText.value.trim()) return tr('文字主控', 'Text control');
+  if (selectedStyleFamily.value) return tr('模板兜底', 'Template fallback');
+  return tr('随机兜底', 'Random fallback');
+});
+const outfitControlLabel = computed(() => {
+  if (outfitReferencePath.value) return tr('参考图强控', 'Reference control');
+  if (outfitText.value.trim()) return tr('文字主控', 'Text control');
+  if (selectedStyleFamily.value) return tr('模板兜底', 'Template fallback');
+  return tr('随机兜底', 'Random fallback');
+});
+const priorityGuideItems = computed(() => [
+  {
+    key: 'identity',
+    index: '01',
+    title: tr('身份照片', 'Identity upload'),
+    copy: tr('锁定人脸、年龄感和人物一致性。', 'Locks face, age impression, and identity consistency.'),
+    active: portraitSlots.value.some((slot) => !!slot.localPath),
+  },
+  {
+    key: 'mode',
+    index: '02',
+    title: tr('单人/双人/金婚', 'Single/Couple/Golden'),
+    copy: tr('锁定输出人数，单人不会变双人。', 'Locks subject count, so solo cannot become couple.'),
+    active: true,
+  },
+  {
+    key: 'reference',
+    index: '03',
+    title: tr('场景/服装参考图', 'Scene/outfit references'),
+    copy: tr('有图时优先复刻对应方向。', 'When uploaded, they control their matching domain.'),
+    active: !!(sceneReferencePath.value || outfitReferencePath.value),
+  },
+  {
+    key: 'text',
+    index: '04',
+    title: tr('文字创作', 'Text direction'),
+    copy: tr('无参考图时主控；有参考图时微调氛围、镜头和布光。', 'Controls when no reference exists; otherwise refines mood, lens, and lighting.'),
+    active: hasDirectionText.value,
+  },
+  {
+    key: 'preset',
+    index: '05',
+    title: tr('模板/随机', 'Preset/random'),
+    copy: tr('只在没有明确图文方向时兜底。', 'Only fills in when no clear image or text direction exists.'),
+    active: !!selectedStyleFamily.value || (!hasDirectionText.value && !sceneReferencePath.value && !outfitReferencePath.value),
+  },
+]);
 const generationCost = computed(() => {
   if (generationMode.value === 'couple_remote') return 4;
   if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return 3;
@@ -397,8 +466,8 @@ const enhancerStateText = computed(() => {
   return tr('增强项未填写，可跳过', 'No enhancers added, can skip');
 });
 const summaryTip = computed(() => selectedTemplate.value
-  ? tr('参考风格只用来确定画面基调；人物照片仍是主体。服装、场景文字和参考图会作为细节补充。', 'The reference style only anchors the look; portraits remain the subject. Outfit, scene text, and references refine the details.')
-  : tr('不选择模板也可以生成。若想减少随机性，优先填写服装方向和场景方向，再上传参考图。', 'You can generate without a template. To reduce randomness, add outfit and scene direction first, then reference images if needed.'));
+  ? tr('身份和人数始终锁定。场景/服装参考图优先控制对应方向；无参考图时文字主控；模板只补未指定细节。', 'Identity and subject count stay locked. Scene/outfit references control their matching direction first; text leads when no reference exists; templates only fill unspecified details.')
+  : tr('不选择模板也可以生成。若只写文字，文字会主控场景和服装；若上传参考图，参考图优先控制对应方向，文字只做兼容微调。', 'You can generate without a template. Text controls scene and outfit when used alone; uploaded references take priority for their matching direction, with text used only for compatible refinement.'));
 const remoteStatusText = computed(() => {
   if (generationMode.value !== 'couple_remote') return '';
   const status = remoteStatus.value?.status || '';
@@ -1199,6 +1268,90 @@ onUnmounted(() => stopRemotePolling());
   border-radius: 8px;
   border: 1px solid #dde1e8;
   background: #ffffff;
+}
+
+.priority-guide {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 106, 96, 0.18);
+  background: #f7fbfa;
+}
+
+.priority-guide-head,
+.priority-current {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.priority-guide-head text:first-child,
+.priority-current text:first-child {
+  color: #0b5e55;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.priority-guide-head text:last-child {
+  color: #657080;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.priority-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.priority-step {
+  min-height: 118px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #dde1e8;
+  background: #ffffff;
+}
+
+.priority-step.active {
+  border-color: rgba(17, 106, 96, 0.34);
+  background: #eff8f6;
+}
+
+.priority-index,
+.priority-title,
+.priority-copy {
+  display: block;
+}
+
+.priority-index {
+  margin-bottom: 8px;
+  color: #116a60;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.priority-title {
+  color: #17191f;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.priority-copy {
+  margin-top: 6px;
+  color: #4c5360;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.priority-current {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(17, 106, 96, 0.16);
+  color: #38414d;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .direction-head {

@@ -70,14 +70,15 @@ GEMINI_FLASH_EDIT_PROTOCOL = (
     "over-clean hair, plastic white dresses, text artifacts, and decorative background hallucinations"
 )
 
-USER_TEXT_PRIORITY_PROTOCOL = (
-    "User text override lock: when the user supplies overall direction, scene text, outfit text, or prompt override, "
-    "that text is the binding creative brief after identity and safety. The uploaded identity image is only a face, "
-    "body-scale, age, skin-tone, and expression-family reference; it is not permission to copy the source photo's "
-    "background, venue, clothing, bouquet, veil, color palette, or existing wedding concept when those conflict with "
-    "the user's words. If the user writes black gown, indoor gallery, beach sunset, Chinese courtyard, or any other "
-    "specific clothing or scene, the generated result must visibly follow that text instead of drifting back to the "
-    "uploaded source image or default template"
+SOURCE_PRIORITY_PROTOCOL = (
+    "Director source priority: identity upload is the immutable person lock, and the selected subject mode "
+    "(single, couple, or golden anniversary) is the immutable person-count lock. For scene and outfit domains, "
+    "uploaded reference images are binding when present; user text may refine compatible mood, lens, lighting, "
+    "color, and texture but must not overturn an uploaded scene or outfit reference. When no uploaded reference "
+    "exists for a domain, user text is the primary creative instruction for that domain. Template presets fill only "
+    "unspecified details, and random choices are last-resort defaults. The uploaded identity image remains only a "
+    "face, body-scale, age, skin-tone, and expression-family reference; never copy the source portrait's original "
+    "background or clothing unless it is explicitly provided as the active scene/outfit reference"
 )
 
 PHOTO_PROTOCOL = (
@@ -119,9 +120,10 @@ EDIT_SCOPE_PROTOCOL = (
 TEMPLATE_STYLE_LOCK_PROTOCOL = (
     "Selected-template style lock: the template wardrobe and scene are hard style anchors for generation and QA. "
     "Use the exact template clothing family, background family, lighting environment, and prompt-block style unless "
-    "the user explicitly provides director-mode text or reference overrides. User-written scene, outfit, or overall "
-    "style direction is a higher-priority creative brief than template defaults; the template fills only unspecified "
-    "details. Do not switch style families, do not turn an indoor studio template into an outdoor garden, balcony, "
+    "the user explicitly provides director-mode text or reference overrides. Active uploaded scene/outfit references "
+    "outrank text for their domain; when no reference exists, User-written scene, outfit, or overall style direction "
+    "is a higher-priority creative brief than template defaults. The template fills only unspecified details. "
+    "Do not switch style families, do not turn an indoor studio template into an outdoor garden, balcony, "
     "terrace, travel, or landscape scene unless the user explicitly asked for that scene, and do not replace a "
     "requested bridal gown, groom suit, couple wardrobe, cultural attire, or royal embroidered styling with an "
     "unrelated outfit. Identity preservation may refine face and body realism, but it must not erase the selected "
@@ -385,7 +387,7 @@ def build_prompt(
     parts.append(_section("TEMPLATE STYLE LOCK", TEMPLATE_STYLE_LOCK_PROTOCOL))
     has_user_text_override = bool(user_text or scene_text or clothing_text)
     if has_user_text_override:
-        parts.append(_section("USER TEXT PRIORITY", USER_TEXT_PRIORITY_PROTOCOL))
+        parts.append(_section("DIRECTOR SOURCE PRIORITY", SOURCE_PRIORITY_PROTOCOL))
     if is_couple:
         parts.append(_section("COUPLE IDENTITY LOCK", COUPLE_IDENTITY_LOCK_PROTOCOL))
     else:

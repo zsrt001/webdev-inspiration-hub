@@ -78,7 +78,7 @@ class OrderCreationServiceTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertEqual(ctx.exception.detail["reasons"], ["no_face_detected"])
 
-    def test_director_scene_text_overrides_upload_and_preset(self) -> None:
+    def test_director_scene_upload_overrides_text_and_preset(self) -> None:
         request = OrderCreate(
             template_id="classic",
             user_images=["https://cdn.example.com/person-a.jpg"],
@@ -95,12 +95,61 @@ class OrderCreationServiceTest(unittest.TestCase):
             couple_flow=None,
         )
 
+        self.assertEqual(decision.effective_scene_source, "upload")
+        self.assertEqual(decision.effective_scene_image_url, "https://cdn.example.com/scene.jpg")
+        self.assertEqual(decision.effective_scene_ip_weight, 0.6)
+        self.assertIsNone(decision.effective_scene_text)
+        self.assertIn("compatible with uploaded scene reference: a bright garden", decision.effective_global_style_text or "")
+        self.assertIn("scene_preset_id", decision.ignored_inputs)
+        self.assertIn("scene:upload:w=0.60", decision.director_decision_hints)
+
+    def test_director_scene_text_controls_when_no_upload_reference(self) -> None:
+        request = OrderCreate(
+            template_id="classic",
+            user_images=["https://cdn.example.com/person-a.jpg"],
+            legal_accepted=True,
+            director_mode=True,
+            scene_text="a bright garden",
+            scene_preset_id="studio",
+        )
+
+        decision = service._resolve_director_decision(
+            request,
+            is_couple_request=False,
+            couple_flow=None,
+        )
+
         self.assertEqual(decision.effective_scene_source, "text")
+        self.assertEqual(decision.effective_scene_text, "a bright garden")
         self.assertIsNone(decision.effective_scene_image_url)
         self.assertIsNone(decision.effective_scene_ip_weight)
-        self.assertIn("scene_image_url", decision.ignored_inputs)
         self.assertIn("scene_preset_id", decision.ignored_inputs)
         self.assertIn("scene:text", decision.director_decision_hints)
+
+    def test_director_outfit_upload_overrides_text_and_preset(self) -> None:
+        request = OrderCreate(
+            template_id="classic",
+            user_images=["https://cdn.example.com/person-a.jpg"],
+            legal_accepted=True,
+            director_mode=True,
+            clothing_image_url="https://cdn.example.com/dress.jpg",
+            outfit_text="black satin mermaid gown",
+            clothing_preset_id="couture",
+        )
+
+        decision = service._resolve_director_decision(
+            request,
+            is_couple_request=False,
+            couple_flow=None,
+        )
+
+        self.assertEqual(decision.effective_outfit_source, "upload")
+        self.assertEqual(decision.effective_clothing_image_url, "https://cdn.example.com/dress.jpg")
+        self.assertEqual(decision.effective_clothing_ip_weight, 0.6)
+        self.assertIsNone(decision.effective_outfit_text)
+        self.assertIn("compatible with uploaded outfit reference: black satin mermaid gown", decision.effective_global_style_text or "")
+        self.assertIn("clothing_preset_id", decision.ignored_inputs)
+        self.assertIn("outfit:upload:w=0.60", decision.director_decision_hints)
 
     def test_global_style_text_does_not_trigger_random_scene_or_outfit(self) -> None:
         request = OrderCreate(
@@ -199,6 +248,9 @@ class OrderCreationServiceTest(unittest.TestCase):
                 scene_text=None,
                 outfit_text=None,
                 legacy_prompt_override=None,
+                effective_global_style_text=None,
+                effective_scene_text=None,
+                effective_outfit_text=None,
                 effective_scene_source=None,
                 effective_outfit_source=None,
                 effective_scene_image_url=None,

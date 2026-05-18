@@ -139,16 +139,14 @@ class EvolinkService(GenerationProviderWorkflow):
         )
         hard_header = (
             "Identity-preserving image edit using image_urls as source references. "
-            "Do not do text-only generation. Preserve exact face shape, eyes, nose bridge and tip, nostrils, mouth, jawline, side-profile silhouette, age impression, skin undertone, and natural expression. Never enlarge or stylize the nose. "
+            "Do not do text-only generation. Preserve exact face shape, eyes, nose, mouth, jawline, side-profile silhouette, age, skin undertone, and natural expression. Never enlarge or stylize the nose. "
             f"{subject_count_hint}"
-            "Negative: generic face, identity change, enlarged nose, altered nose, altered side-profile silhouette, copied source outfit/background against user text, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, blown white dress, mixed color temperature, background brighter than face, watermark, text. "
-            "Template style lock: obey the selected template's WARDROBE, SCENE, and TEMPLATE STYLE NOTES clauses exactly unless the user provided explicit director overrides. "
-            "When USER DIRECTION, scene text, outfit text, or prompt_override is present, follow that user text as the creative brief and use the template only for unspecified details. "
-            "In user-text mode, image_urls are identity references only: do not copy the source photo's original background, location, dress, suit, bouquet, veil, or color palette when they conflict with user text. "
-            "Do not switch style family, wedding role, outfit concept, indoor/outdoor setting, or background concept. If the template says indoor studio, never generate an outdoor garden, terrace, balcony, travel, mountain, or landscape scene. "
+            "Director source priority: identity upload and subject mode are immutable; uploaded scene/outfit references bind their domains; follow that user text only when no uploaded reference exists, otherwise use it as compatible mood/lens/lighting/color/texture refinement. "
+            "Template style lock: preserve WARDROBE and SCENE, including indoor studio boundaries; template fills only unspecified details and cannot override active identity, subject mode, uploaded reference, or user text control. "
+            "Negative: generic face, identity change, altered or enlarged nose, copied source outfit/background against the active control source, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, blown white dress, mixed color temperature, background brighter than face, watermark, text. "
             "Commercial wedding deliverable: professional studio/on-location lighting, natural skin texture, catchlights, face correctly exposed, complete wedding wardrobe, readable face, 3:4 vertical composition, no awkward crop. "
-            "Use the shot-library direction: primary shot, commercial subject scale, readable face, intentional headroom, complete gown/suit boundaries, and professional pose family. "
-            "Use simple professional hand posing with bouquet, veil, sleeve, or gown fabric covering difficult fingers; preserve full gown hem, shoes, veil/train, and bottom breathing room. "
+            "Shot library and composition: primary shot, commercial subject scale, readable face, intentional headroom, complete gown/suit boundaries, professional pose family. "
+            "Simple professional hand posing with bouquet, veil, sleeve, or gown fabric covering difficult fingers; preserve full gown hem, shoes, veil/train, and bottom breathing room. "
             "Use sun only as rim/ambient light outdoors; keep soft frontal fill."
         ).strip()
 
@@ -157,7 +155,7 @@ class EvolinkService(GenerationProviderWorkflow):
 
         priority_groups = (
             ("round", "qa reasons", "qa notes", "targeted repair", "relight", "polish"),
-            ("user text priority", "user direction", "creative brief", "prompt override"),
+            ("director source priority", "user direction", "creative brief", "prompt override"),
             ("template style lock", "wardrobe:", "scene:", "template style notes"),
             ("scene", "outdoor", "garden", "castle", "studio", "window", "architecture", "background"),
             ("shot library", "primary shot", "candidate shot", "pose family", "must show"),
@@ -320,7 +318,7 @@ class EvolinkService(GenerationProviderWorkflow):
             is_couple=is_couple,
         )
         edit_prompt = self._compact_prompt_for_evolink(edit_prompt, is_couple=is_couple)
-        user_text_mode = "USER TEXT PRIORITY" in str(prompt_text or "") or "USER DIRECTION:" in str(prompt_text or "")
+        user_text_mode = "DIRECTOR SOURCE PRIORITY" in str(prompt_text or "") or "USER DIRECTION:" in str(prompt_text or "")
         reference_entries = self._evolink_reference_entries(
             identity_refs=identity_refs,
             style_refs=style_refs,

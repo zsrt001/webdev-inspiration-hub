@@ -737,9 +737,14 @@ class GenerationProviderWorkflow:
         if not template:
             return ""
         params = params if isinstance(params, dict) else {}
-        user_direction = str(params.get("global_style_text") or params.get("legacy_prompt_override") or "").strip()
-        scene = str(params.get("scene_text") or getattr(template, "default_background_prompt", "") or "").strip()
-        wardrobe = str(params.get("outfit_text") or getattr(template, "clothing_prompt", "") or "").strip()
+        user_direction = str(
+            params.get("effective_global_style_text")
+            or params.get("global_style_text")
+            or params.get("legacy_prompt_override")
+            or ""
+        ).strip()
+        scene = str(params.get("effective_scene_text") or getattr(template, "default_background_prompt", "") or "").strip()
+        wardrobe = str(params.get("effective_outfit_text") or getattr(template, "clothing_prompt", "") or "").strip()
         blocks = getattr(template, "prompt_blocks", None)
         block_text = ""
         if isinstance(blocks, dict):
@@ -2940,9 +2945,9 @@ class GenerationProviderWorkflow:
                 "subject_count": params.get("subject_count"),
                 "couple_flow": params.get("couple_flow"),
                 "prompt_override": params.get("prompt_override"),
-                "global_style_text": params.get("global_style_text"),
-                "scene_text": params.get("scene_text"),
-                "outfit_text": params.get("outfit_text"),
+                "global_style_text": params.get("effective_global_style_text") or params.get("global_style_text"),
+                "scene_text": params.get("effective_scene_text"),
+                "outfit_text": params.get("effective_outfit_text"),
                 "scene_image_url": params.get("effective_scene_image_url") or params.get("scene_image_url"),
                 "clothing_image_url": params.get("effective_clothing_image_url") or params.get("clothing_image_url"),
             }
