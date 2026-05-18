@@ -12,7 +12,7 @@ from copy import deepcopy
 from typing import Any
 
 
-SHOT_LIBRARY_VERSION = "commercial_shot_library_v3"
+SHOT_LIBRARY_VERSION = "commercial_shot_library_v4"
 
 
 SHOT_SPECS: dict[str, dict[str, Any]] = {
@@ -23,9 +23,9 @@ SHOT_SPECS: dict[str, dict[str, Any]] = {
         "face_height_range": [0.09, 0.14],
         "headroom_range": [0.03, 0.06],
         "bottom_room_range": [0.05, 0.08],
-        "pose_family": "near-frontal or three-quarter body turn with refined waist-level hand placement and warm serene bridal expression",
-        "must_show": ["complete gown", "hem", "train or veil", "feet or clean bottom hem", "readable premium background detail", "alive eyes with gentle wedding warmth"],
-        "avoid": ["flat centered ID-photo stance", "detached cold side profile", "mouth-only smile", "cropped hem", "cropped veil", "tiny unreadable face", "melted background blur"],
+        "pose_family": "camera-readable near-frontal or soft three-quarter body turn, both eyes or both eye corners visible, refined waist-level hand placement, warm serene bridal expression",
+        "must_show": ["complete gown", "hem", "train or veil", "feet or clean bottom hem", "readable premium background detail", "alive eyes with gentle wedding warmth", "face angle readable enough for identity and emotion"],
+        "avoid": ["flat centered ID-photo stance", "full side profile hiding one eye", "detached cold side profile", "runway profile stare", "mouth-only smile", "cropped hem", "cropped veil", "tiny unreadable face", "melted background blur"],
     },
     "bridal_three_quarter_beauty": {
         "label": "three-quarter beauty portrait",
@@ -34,9 +34,9 @@ SHOT_SPECS: dict[str, dict[str, Any]] = {
         "face_height_range": [0.12, 0.17],
         "headroom_range": [0.03, 0.06],
         "bottom_room_range": [0.03, 0.08],
-        "pose_family": "soft shoulder angle, chin natural, near-frontal or three-quarter gaze, bouquet or veil touch below chest",
-        "must_show": ["face identity", "upper dress structure", "hands simplified or partly covered", "recognizable studio or venue texture", "eyes and mouth sharing the same gentle emotion"],
-        "avoid": ["passport-like frontal pose", "strong detached profile", "hands near face", "over-beautified generic face", "flat phone-photo lighting"],
+        "pose_family": "soft shoulder angle, chin natural, camera-readable near-frontal or three-quarter gaze, both eyes or both eye corners visible, bouquet or veil touch below chest",
+        "must_show": ["face identity", "upper dress structure", "hands simplified or partly covered", "recognizable studio or venue texture", "eyes and mouth sharing the same gentle emotion", "warm wedding presence"],
+        "avoid": ["passport-like frontal pose", "strong detached profile", "one-eye-hidden profile", "hands near face", "over-beautified generic face", "flat phone-photo lighting"],
     },
     "bridal_environmental_wide": {
         "label": "environmental wedding portrait",
@@ -45,9 +45,9 @@ SHOT_SPECS: dict[str, dict[str, Any]] = {
         "face_height_range": [0.08, 0.12],
         "headroom_range": [0.04, 0.08],
         "bottom_room_range": [0.05, 0.09],
-        "pose_family": "walking pause or gentle turn with scene depth behind the subject and face still emotionally readable",
-        "must_show": ["subject remains dominant", "face readable", "background supports but does not overpower", "venue detail remains identifiable"],
-        "avoid": ["tourist landscape photo", "cold fashion stare", "background brighter than face", "subject lost in scenery", "over-blurred location"],
+        "pose_family": "walking pause or gentle turn with scene depth behind the subject and a camera-readable face that remains emotionally warm",
+        "must_show": ["subject remains dominant", "face readable", "background supports but does not overpower", "venue detail remains identifiable", "both eyes or both eye corners visible enough to read expression"],
+        "avoid": ["tourist landscape photo", "cold fashion stare", "full side profile hiding one eye", "background brighter than face", "subject lost in scenery", "over-blurred location"],
     },
     "couple_interaction_full_length": {
         "label": "full-length couple interaction",
@@ -55,9 +55,9 @@ SHOT_SPECS: dict[str, dict[str, Any]] = {
         "group_height_range": [0.70, 0.82],
         "group_width_range": [0.54, 0.76],
         "face_height_range": [0.07, 0.12],
-        "pose_family": "slight stagger, one partner half-step forward, subtle eye-line or shoulder interaction, natural relaxed smiles",
-        "must_show": ["both faces", "both full outfits", "separate shoulders", "separate arms", "clear role order", "readable set or venue detail", "eyes smiling with the mouth"],
-        "avoid": ["flat side-by-side tourist pose", "stiff catalog smile", "mouth-only smile", "merged shoulders", "shared torso", "role swap", "background smeared into color blocks"],
+        "pose_family": "slight stagger, one partner half-step forward, subtle eye-line or shoulder interaction, both faces camera-readable, natural relaxed smiles",
+        "must_show": ["both faces", "both full outfits", "separate shoulders", "separate arms", "clear role order", "readable set or venue detail", "eyes smiling with the mouth", "both partners sharing the same wedding emotion"],
+        "avoid": ["flat side-by-side tourist pose", "stiff catalog smile", "mouth-only smile", "one partner emotionally detached", "full side profile hiding one subject's expression", "merged shoulders", "shared torso", "role swap", "background smeared into color blocks"],
     },
     "couple_close_connection": {
         "label": "close couple connection",
@@ -65,9 +65,9 @@ SHOT_SPECS: dict[str, dict[str, Any]] = {
         "group_height_range": [0.74, 0.88],
         "group_width_range": [0.58, 0.82],
         "face_height_range": [0.09, 0.15],
-        "pose_family": "faces readable with gentle proximity, shoulders offset, hands simple and below chest, soft shared happiness",
-        "must_show": ["both identities readable", "natural relationship", "no face overlap", "controlled dimensional lighting", "synchronized eye and mouth emotion"],
-        "avoid": ["faces touching or fused", "one face hidden", "same AI face for both people", "dead flat lighting", "advertising grin"],
+        "pose_family": "faces readable with gentle proximity, shoulders offset, hands simple and below chest, soft shared happiness, both expressions emotionally synchronized",
+        "must_show": ["both identities readable", "natural relationship", "no face overlap", "controlled dimensional lighting", "synchronized eye and mouth emotion", "both faces angled enough toward camera to read expression"],
+        "avoid": ["faces touching or fused", "one face hidden", "one-eye-hidden profile", "same AI face for both people", "dead flat lighting", "advertising grin"],
     },
     "couple_environmental_wide": {
         "label": "environmental couple portrait",
@@ -216,6 +216,8 @@ def build_shot_library_prompt(template: Any, *, is_couple: bool) -> str:
         "the face unreadable, crops gown hem/train/feet/hands at awkward boundaries, or collapses into a flat "
         "centered sample pose. Background gate: preserve readable premium venue or studio-set detail with natural "
         "optical falloff; do not accept phone portrait-mode blur, melted bokeh, or color-block backgrounds. "
-        "Expression gate: reject or repair detached fashion-profile expressions, mouth-only smiles, cold blank "
-        "eyes, stiff catalog smiles, or any face where the eyes and mouth do not share the same wedding emotion."
+        "Expression gate and face-angle gate: reject or repair detached fashion-profile expressions, full side profiles "
+        "that hide one eye or make identity/emotion unreadable, mouth-only smiles, cold blank eyes, stiff catalog "
+        "smiles, emotionally disconnected partners, or any face where the eyes and mouth do not share the same "
+        "wedding emotion."
     )

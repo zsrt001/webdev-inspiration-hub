@@ -104,7 +104,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("natural human skin with visible pores", prompt)
         self.assertIn("EYES AND EXPRESSION:", prompt)
         self.assertIn("eyes must be alive", prompt)
-        self.assertIn("three-quarter or near-frontal", prompt)
+        self.assertIn("near-frontal or soft three-quarter", prompt)
+        self.assertIn("both eyes, or both eye corners", prompt)
         self.assertIn("eyes and mouth must agree emotionally", prompt)
         self.assertIn("PHOTO REALISM:", prompt)
         self.assertIn("Hasselblad", prompt)
@@ -141,8 +142,10 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("FORBIDDEN CONSTRAINTS:", prompt)
         self.assertIn("Identity lock is mandatory", prompt)
         self.assertIn("preserve the same face shape", prompt)
-        self.assertIn("castle-inspired indoor bridal studio set", prompt)
+        self.assertIn("strictly indoor castle-inspired bridal studio set", prompt)
         self.assertIn("no mountain vista", prompt)
+        self.assertIn("no terrace overlook", prompt)
+        self.assertIn("full side profile is not acceptable", prompt)
         self.assertNotIn("painted mountain backdrop", prompt)
 
     def test_couple_guardrails_require_studio_lighting_for_both_subjects(self) -> None:
@@ -420,7 +423,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_commercial_wedding_standard_records_canvas_ranges(self) -> None:
         standard = commercial_wedding_standard()
 
-        self.assertEqual(standard["version"], "commercial_wedding_v5")
+        self.assertEqual(standard["version"], "commercial_wedding_v6")
         self.assertEqual(standard["single"]["subject_height_range"], [0.74, 0.84])
         self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.62)
         self.assertEqual(standard["couple"]["group_height_range"], [0.70, 0.82])
@@ -432,6 +435,9 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertTrue(standard["face_expression"]["requires_emotionally_believable_expression"])
         self.assertTrue(standard["face_expression"]["requires_eye_mouth_emotion_sync"])
         self.assertTrue(standard["face_expression"]["forbid_detached_fashion_profile_as_primary"])
+        self.assertTrue(standard["face_expression"]["requires_camera_readable_face_angle"])
+        self.assertTrue(standard["face_expression"]["forbid_full_side_profile_hiding_one_eye"])
+        self.assertTrue(standard["face_expression"]["requires_couple_expression_sync"])
         self.assertIn("background_dominates", standard["blocking_reasons"])
         self.assertIn("unnatural_gaze", standard["blocking_reasons"])
         self.assertTrue(standard["delivery_gate"]["identity_required"])
@@ -462,6 +468,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("subtle eye-line or shoulder interaction", couple_prompt)
         self.assertIn("Expression gate", couple_prompt)
         self.assertIn("mouth-only smiles", couple_prompt)
+        self.assertIn("full side profiles", single_prompt)
+        self.assertIn("emotionally disconnected partners", couple_prompt)
 
     def test_golden_anniversary_uses_respectful_shot_suite(self) -> None:
         template = get_template_by_id("golden_vintage_studio_8090")

@@ -147,9 +147,18 @@ _QA_REASON_MAP: dict[str, str] = {
     "detached_expression": "unnatural_expression",
     "cold_fashion_profile": "unnatural_expression",
     "detached_side_profile": "unnatural_expression",
+    "strong_side_profile": "unnatural_expression",
+    "pure_side_profile": "unnatural_expression",
+    "full_side_profile": "unnatural_expression",
+    "profile_hides_one_eye": "unnatural_expression",
+    "one_eye_hidden_profile": "unnatural_expression",
+    "runway_profile_stare": "unnatural_expression",
     "expression_not_wedding": "unnatural_expression",
     "no_wedding_warmth": "unnatural_expression",
     "emotionless_face": "unnatural_expression",
+    "emotionally_detached_partner": "unnatural_expression",
+    "disconnected_couple_expression": "weak_couple_interaction",
+    "expression_mismatch_between_partners": "weak_couple_interaction",
     "unnatural_gaze": "unnatural_gaze",
     "dead_eyes": "unnatural_gaze",
     "blank_stare": "unnatural_gaze",
@@ -662,7 +671,7 @@ async def verify_generated_image_quality(
         "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use background_brighter_than_face when the background, sky, window, or architecture is brighter than the face and steals exposure priority. Use background_over_blurred when the venue, garden, architecture, drapery, floor, floral styling, or studio backdrop is smeared into unrecognizable blur instead of natural optical falloff. Also use background_over_blurred for phone portrait-mode blur, melted bokeh, color-block backgrounds, mushy flowers, erased floor lines, unreadable arches/windows/columns, or any premium location that cannot be identified at print-viewing size.\n"
         "- Commercial background clarity v3: faces remain priority and must stay sharper than the setting, but architecture, drapery, garden texture, floral styling, floor lines, windows, arches, columns, masonry joints, carved edges, and painted studio-set detail should remain readable enough to prove a premium wedding location. Do not reward a beautiful face if the location is erased into mush; do not require tack-sharp landscape detail when the subject hierarchy is correct.\n"
         "- Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
-        "- Use unnatural_gaze when eyes look dead, blank, cross-eyed, painted, misaligned, or the eye-line does not match the head pose or couple interaction. Use unnatural_expression when the face looks frozen, waxy, mannequin-like, emotionless, forced-smiling, mouth-only smiling, catalog-ad smiling, cold/detached, too fashion-profile for a wedding deliverable, or uncanny even if identity is roughly preserved. Fail when the mouth smiles but the eyes do not, when a single bride feels emotionally absent, or when a couple looks like stiff advertising models instead of relaxed wedding subjects. These are paid-product blockers because wedding users judge the image by eyes and expression first.\n"
+        "- Use unnatural_gaze when eyes look dead, blank, cross-eyed, painted, misaligned, or the eye-line does not match the head pose or couple interaction. Use unnatural_expression when the face looks frozen, waxy, mannequin-like, emotionless, forced-smiling, mouth-only smiling, catalog-ad smiling, cold/detached, too fashion-profile for a wedding deliverable, or uncanny even if identity is roughly preserved. For the main commercial deliverable, also fail a full side-profile face that hides one eye or makes identity/emotion unreadable unless the user explicitly requested a profile portrait. Fail when the mouth smiles but the eyes do not, when a single bride feels emotionally absent, or when a couple looks like stiff advertising models instead of relaxed wedding subjects. Use weak_couple_interaction when partners' expressions are emotionally disconnected, such as one partner warmly engaging while the other looks cold, absent, or runway-stiff. These are paid-product blockers because wedding users judge the image by eyes and expression first.\n"
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"

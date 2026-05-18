@@ -24,11 +24,14 @@ EYE_EXPRESSION_PROTOCOL = (
     "that match the key or fill light, relaxed eyelids, realistic iris detail, and a calm confident bridal expression "
     "or gentle authentic smile. For profile or three-quarter poses, the eye-line must point coherently into the pose "
     "or toward the partner; never let the face read as a mannequin, beauty-filter mask, pasted-on smile, or dead-eyed "
-    "AI portrait. Commercial expression hierarchy: prefer a three-quarter or near-frontal face with gentle wedding "
-    "warmth over a detached fashion-profile pose. The eyes and mouth must agree emotionally: no mouth-only smile, "
-    "no cold distant stare with a bridal gown, no standardized advertising grin, no rigid pageant smile. Single "
-    "bridal outputs should feel serene, warm, and present; couple outputs should feel relaxed and connected, with "
-    "subtle shared happiness rather than stiff catalog modeling"
+    "AI portrait. Commercial expression hierarchy: use a camera-readable near-frontal or soft three-quarter face "
+    "with gentle wedding warmth as the default paid deliverable; both eyes, or both eye corners, should remain "
+    "visible enough to judge identity and emotion. A full side profile that hides one eye, a detached runway "
+    "profile, or a cold fashion-beauty stare is a quality failure unless explicitly requested by the user. The "
+    "eyes and mouth must agree emotionally: no mouth-only smile, no cold distant stare with a bridal gown, no "
+    "standardized advertising grin, no rigid pageant smile. Single bridal outputs should feel serene, warm, and "
+    "present; couple outputs should feel relaxed and connected, with both partners sharing a coherent emotional "
+    "moment rather than one person looking detached while the other smiles"
 )
 
 PHOTO_REALISM_PROTOCOL = (
@@ -163,7 +166,10 @@ STUDIO_QUALITY_PROTOCOL = (
 
 INDOOR_SCENE_BOUNDARY_PROTOCOL = (
     "Indoor/studio template boundary: for indoor or studio templates, keep the scene indoors and do not add "
-    "mountain vistas, open sky, outdoor balconies, beach backgrounds, forest backgrounds, or unrelated travel scenery"
+    "mountain vistas, open sky, outdoor balconies, terrace overlooks, exterior castle walls, beach backgrounds, "
+    "forest backgrounds, or unrelated travel scenery. If a castle style is requested for an indoor studio template, "
+    "render it as a controlled bridal-studio set with carved arches, painted architectural backdrop, polished floor, "
+    "and studio lighting, not an outdoor travel balcony"
 )
 
 STUDIO_LIGHTING_GUARDRAILS = (
@@ -253,8 +259,9 @@ NEGATIVE_PROMPT = (
     "over-smoothed bridal ad; "
     "Eye and expression failures: dead eyes, blank stare, cross-eyed gaze, mismatched eye-line, unnatural gaze, "
     "mouth-only smile, eyes not smiling, cold fashion profile, detached side profile, uncanny smile, waxy smile, "
-    "forced advertising grin, frozen expression, mannequin expression, doll-like expression, asymmetrical eyelids, "
-    "painted eyes, over-sharpened eyes, emotionless face; "
+    "full side profile as primary face, one eye hidden by profile, detached runway stare, forced advertising grin, "
+    "frozen expression, mannequin expression, doll-like expression, asymmetrical eyelids, painted eyes, "
+    "over-sharpened eyes, emotionless face, disconnected couple expressions; "
     "Anatomy failures: headless, cropped head, phantom limbs, fused bodies, merged limbs, duplicate person, "
     "duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, bad hands, extra fingers; "
     "Lighting failures: bright flat lighting, harsh backlight, sun as primary face light, missing frontal fill, "
@@ -268,7 +275,7 @@ NEGATIVE_PROMPT = (
     "mushy flowers, erased floor lines, low-end snapshot, "
     "tourist snapshot, phone photo, outdoor travel snapshot; "
     "Scene failures: fantasy game costume, cheap composite, unrequested mountain vista, unrequested open sky, "
-    "unrequested beach, unrequested forest, unrelated travel background"
+    "unrequested outdoor balcony, unrequested terrace overlook, unrequested beach, unrequested forest, unrelated travel background"
 )
 
 

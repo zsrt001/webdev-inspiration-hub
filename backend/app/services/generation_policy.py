@@ -10,7 +10,7 @@ from app.services.shot_library_service import build_shot_library_prompt, commerc
 
 DEFAULT_ASPECT_RATIO = "3:4"
 LEGACY_RATIO_UPGRADES = {"4:5", "3:2"}
-COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v5"
+COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v6"
 
 COMMERCIAL_WEDDING_STANDARD = {
     "version": COMMERCIAL_STANDARD_VERSION,
@@ -53,6 +53,9 @@ COMMERCIAL_WEDDING_STANDARD = {
         "requires_eye_mouth_emotion_sync": True,
         "prefer_near_frontal_or_three_quarter_wedding_warmth": True,
         "forbid_detached_fashion_profile_as_primary": True,
+        "requires_camera_readable_face_angle": True,
+        "forbid_full_side_profile_hiding_one_eye": True,
+        "requires_couple_expression_sync": True,
     },
     "blocking_reasons": [
         "identity_mismatch",

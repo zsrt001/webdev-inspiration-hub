@@ -1352,7 +1352,11 @@ class GenerationProviderWorkflow:
             )
         if "unnatural_expression" in normalized:
             focus.append(
-                "restore a natural emotionally believable wedding expression while preserving identity, mouth shape, brow rhythm, and expression family; prefer near-frontal or three-quarter wedding warmth, make eyes and mouth agree, and remove waxy smile, frozen face, cold fashion profile, mannequin look, catalog grin, or beauty-filter mask"
+                "restore a natural emotionally believable wedding expression while preserving identity, mouth shape, brow rhythm, and expression family; use a camera-readable near-frontal or soft three-quarter wedding face with both eyes or eye corners visible, make eyes and mouth agree, and remove full side profile, waxy smile, frozen face, cold fashion profile, mannequin look, catalog grin, or beauty-filter mask"
+            )
+        if "weak_couple_interaction" in normalized:
+            focus.append(
+                "make both partners emotionally present in the same wedding moment; align their eye-lines, relaxed smiles, and body language so neither subject looks detached, cold, or runway-stiff"
             )
         if normalized & {"body_fusion", "extra_limbs"}:
             focus.append("repair body separation and natural anatomy without changing the locked faces")
@@ -1403,7 +1407,7 @@ class GenerationProviderWorkflow:
         if "flat_centered_pose" in normalized:
             focus.append("replace stiff centered tourist-photo blocking with directed editorial wedding posing")
         if "weak_couple_interaction" in normalized:
-            focus.append("add subtle couple interaction and staggered blocking while keeping both faces unobstructed")
+            focus.append("add subtle couple interaction, staggered blocking, and synchronized warm expressions while keeping both faces unobstructed and emotionally readable")
         if "harsh_backlight" in normalized:
             focus.append("replace harsh backlight with balanced outdoor fill, correct facial exposure, and preserved highlights")
         if normalized & {"black_or_blank", "severe_artifacts", "watermark_or_text"}:
