@@ -1390,7 +1390,7 @@ class GenerationProviderWorkflow:
             focus.append("darken the background slightly and make the face the clear exposure priority")
         if "background_over_blurred" in normalized:
             focus.append(
-                "restore recognizable premium venue or studio-set detail with natural optical falloff; recover readable arches, columns, drapery, floral styling, floor lines, and painted backdrop texture; keep the background secondary but not smeared into color blocks"
+                "restore commercially readable premium venue or studio-set detail with natural optical falloff; recover arches, columns, masonry joints, window mullions, drapery folds, floral clusters, garden layers, floor seams, and painted backdrop texture; keep faces and wardrobe sharper than the background, but do not let the setting smear into color blocks"
             )
         if "flat_centered_pose" in normalized:
             focus.append("replace stiff centered tourist-photo blocking with directed editorial wedding posing")

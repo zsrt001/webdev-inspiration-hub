@@ -162,6 +162,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("BACKGROUND DETAIL:", guardrails)
         self.assertIn("recognizable", guardrails)
         self.assertIn("phone portrait-mode blur", guardrails)
+        self.assertIn("Background clarity v3", guardrails)
+        self.assertIn("commercially readable", guardrails)
         self.assertIn("DELIVERY GATE:", guardrails)
         self.assertIn("CANDIDATE SELECTION:", guardrails)
 
@@ -184,6 +186,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("background dominates the subject", negative)
         self.assertIn("over-blurred background", negative)
         self.assertIn("unrecognizable venue", negative)
+        self.assertIn("unreadable architecture", negative)
+        self.assertIn("erased floor lines", negative)
         self.assertIn("weak couple interaction", negative)
         self.assertIn("unrequested mountain vista", negative)
 
@@ -398,11 +402,13 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_commercial_wedding_standard_records_canvas_ranges(self) -> None:
         standard = commercial_wedding_standard()
 
-        self.assertEqual(standard["version"], "commercial_wedding_v2")
+        self.assertEqual(standard["version"], "commercial_wedding_v3")
         self.assertEqual(standard["single"]["subject_height_range"], [0.74, 0.84])
         self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.62)
         self.assertEqual(standard["couple"]["group_height_range"], [0.70, 0.82])
         self.assertTrue(standard["background"]["requires_print_readable_venue_detail"])
+        self.assertEqual(standard["background"]["clarity_profile"], "commercially_readable_not_tack_sharp")
+        self.assertTrue(standard["background"]["requires_readable_material_texture"])
         self.assertEqual(standard["lighting"]["fill_under_key_stops"], [1.0, 2.0])
         self.assertIn("background_dominates", standard["blocking_reasons"])
         self.assertTrue(standard["delivery_gate"]["identity_required"])
@@ -1119,7 +1125,9 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("recover white dress", focus)
         self.assertIn("unify color temperature", focus)
         self.assertIn("face the clear exposure priority", focus)
-        self.assertIn("recognizable premium venue", focus)
+        self.assertIn("commercially readable premium venue", focus)
+        self.assertIn("masonry joints", focus)
+        self.assertIn("faces and wardrobe sharper than the background", focus)
 
     async def test_identity_qa_hard_fails_when_vision_provider_is_unavailable(self) -> None:
         original = qa_service.llm_service.is_vision_provider_configured
@@ -1215,6 +1223,8 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Prefer these specific lighting reasons", prompt_text)
             self.assertIn("74-84% of canvas height", prompt_text)
             self.assertIn("premium background clarity", prompt_text)
+            self.assertIn("Commercial background clarity v3", prompt_text)
+            self.assertIn("masonry joints", prompt_text)
             self.assertIn("phone portrait-mode blur", prompt_text)
             self.assertIn("key/fill/rim structure", prompt_text)
             return {

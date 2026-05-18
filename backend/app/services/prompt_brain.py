@@ -32,7 +32,11 @@ BACKGROUND_DETAIL_PROTOCOL = (
     "should be secondary to the faces while still proving this is a premium wedding location. Keep mid-frequency "
     "venue texture readable at print size: stone, fabric, flowers, window frames, floor edges, and set decoration "
     "should remain identifiable. Use a commercial editorial depth of field, closer to f/4-f/5.6 background "
-    "readability than phone portrait-mode blur; avoid shallow fake-bokeh that erases the location"
+    "readability than phone portrait-mode blur; avoid shallow fake-bokeh that erases the location. Background "
+    "clarity v3: preserve enough micro-detail to recognize premium venue materials and styling, including masonry "
+    "joints, carved edges, window mullions, flower clusters, garden layers, drapery folds, and floor seams, while "
+    "keeping faces, eyes, hair, and couture fabric visibly sharper than the background. Do not make the background "
+    "tack-sharp or busy; make it commercially readable, gently lower contrast, and naturally behind the subject"
 )
 
 GEMINI_FLASH_EDIT_PROTOCOL = (
@@ -138,7 +142,7 @@ STUDIO_QUALITY_PROTOCOL = (
     "clean but realistic retouching, couture-level fabric detail, readable premium venue detail, polished "
     "composition, and premium wedding album color grading. The finished image should read like a paid commercial "
     "bridal sample: dimensional face light, fill that opens shadows without flattening features, controlled background "
-    "brightness, clean rim separation, and print-readable scene texture"
+    "brightness, clean rim separation, and print-readable scene texture without phone portrait-mode smear"
 )
 
 INDOOR_SCENE_BOUNDARY_PROTOCOL = (
@@ -154,7 +158,7 @@ STUDIO_LIGHTING_GUARDRAILS = (
     "blow out sky, windows, or dress highlights; use large softbox-style key light plus gentle fill light on every "
     "face; keep facial exposure natural and slightly brighter than the background without wet or greasy shine; "
     "use subtle rim or hair light to separate veil, hair, shoulders, and dark suit edges; keep background detail "
-    "readable but lower priority than the face; "
+    "commercially readable but lower priority than the face, with real venue texture rather than smooth blur; "
     "avoid tourist-photo lighting, AI-glossy skin, oily skin, waxy specular highlights, fantasy-game styling, "
     "phone-flash lighting, direct on-camera flash, uncontrolled mixed color temperature, and cheap composited "
     "background"
@@ -197,7 +201,7 @@ DELIVERY_GATE_PROTOCOL = (
     "Delivery gate: a candidate is deliverable only if identity remains recognizable, face geometry is natural, "
     "commercial canvas proportion is correct, the face is large and sharp enough to read, the gown/suit/veil/train "
     "are complete, the crop avoids joints and hems, lighting looks professionally controlled, the premium background "
-    "is recognizable instead of smeared, and the image reads as a paid bridal-studio wedding photograph. If identity, "
+    "is recognizable and commercially readable instead of smeared, and the image reads as a paid bridal-studio wedding photograph. If identity, "
     "face readability, subject scale, crop, background clarity, or lighting conflicts with style, delivery quality wins"
 )
 
@@ -240,7 +244,8 @@ NEGATIVE_PROMPT = (
     "Composition failures: subject too small, face too small, background dominates the subject, excessive headroom, "
     "awkward crop, cropped dress, dress cutoff, cut-off gown train, missing full outfit, flat centered pose, "
     "weak couple interaction, poor subject separation, over-blurred background, shallow fake bokeh, phone portrait-mode "
-    "blur, background smeared into color blocks, melted bokeh background, unrecognizable venue, low-end snapshot, "
+    "blur, background smeared into color blocks, melted bokeh background, unrecognizable venue, unreadable architecture, "
+    "mushy flowers, erased floor lines, low-end snapshot, "
     "tourist snapshot, phone photo, outdoor travel snapshot; "
     "Scene failures: fantasy game costume, cheap composite, unrequested mountain vista, unrequested open sky, "
     "unrequested beach, unrequested forest, unrelated travel background"

@@ -39,7 +39,7 @@ class OrderPublicContractTest(unittest.TestCase):
             generation_params={
                 "credits_cost": 4,
                 "refunded_credits": 0,
-                "commercial_standard_version": "commercial_wedding_v2",
+                "commercial_standard_version": "commercial_wedding_v3",
                 "director_mode": True,
                 "subject_count": 1,
                 "generation_stage": "completed",
@@ -88,7 +88,7 @@ class OrderPublicContractTest(unittest.TestCase):
             {
                 "credits_cost": 4,
                 "refunded_credits": 0,
-                "commercial_standard_version": "commercial_wedding_v2",
+                "commercial_standard_version": "commercial_wedding_v3",
                 "director_mode": True,
                 "subject_count": 1,
                 "generation_stage": "completed",

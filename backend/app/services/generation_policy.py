@@ -10,7 +10,7 @@ from app.services.shot_library_service import build_shot_library_prompt, commerc
 
 DEFAULT_ASPECT_RATIO = "3:4"
 LEGACY_RATIO_UPGRADES = {"4:5", "3:2"}
-COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v2"
+COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v3"
 
 COMMERCIAL_WEDDING_STANDARD = {
     "version": COMMERCIAL_STANDARD_VERSION,
@@ -33,6 +33,9 @@ COMMERCIAL_WEDDING_STANDARD = {
         "requires_print_readable_venue_detail": True,
         "requires_natural_optical_falloff": True,
         "forbid_phone_portrait_mode_blur": True,
+        "clarity_profile": "commercially_readable_not_tack_sharp",
+        "requires_readable_material_texture": True,
+        "requires_readable_floral_and_floor_detail": True,
     },
     "lighting": {
         "face_exposure_priority_stops": [0.3, 0.7],

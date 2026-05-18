@@ -328,15 +328,18 @@ def _denoise_shadows(image, *, strength: float = 0.34):
 
 
 def _apply_subtle_background_falloff(image):
-    from PIL import Image, ImageFilter
+    from PIL import Image, ImageFilter, ImageOps
 
-    blur_radius = max(0.35, min(image.size) / 1200)
+    blur_radius = max(0.24, min(image.size) / 1800)
     softened_edges = Image.composite(
         image,
         image.filter(ImageFilter.GaussianBlur(radius=blur_radius)),
         _foreground_mask(image.size),
     )
-    return Image.blend(image, softened_edges, 0.30)
+    background_mask = ImageOps.invert(_foreground_mask(image.size))
+    background_detail = softened_edges.filter(ImageFilter.UnsharpMask(radius=0.55, percent=18, threshold=6))
+    balanced = Image.composite(background_detail, softened_edges, background_mask)
+    return Image.blend(image, balanced, 0.18)
 
 
 def _inject_subtle_film_grain(image, *, amount: float = 0.028):
