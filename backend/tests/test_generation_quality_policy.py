@@ -109,6 +109,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("eyes and mouth must agree emotionally", prompt)
         self.assertIn("TEMPLATE STYLE LOCK:", prompt)
         self.assertIn("template wardrobe and scene are hard style anchors", prompt)
+        self.assertIn("User-written scene, outfit, or overall style direction is a higher-priority creative brief", prompt)
         self.assertIn("PHOTO REALISM:", prompt)
         self.assertIn("Hasselblad", prompt)
         self.assertIn("GEMINI FLASH EDIT PROTOCOL:", prompt)
@@ -1490,6 +1491,7 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Selected-template style contract", captured_prompt["text"])
         self.assertIn("strictly indoor castle-inspired bridal studio set", captured_prompt["text"])
         self.assertIn("wrong wardrobe family", captured_prompt["text"])
+        self.assertIn("explicit user text as the creative brief", captured_prompt["text"])
 
     def test_vision_qa_falls_back_to_secondary_provider_on_timeout(self) -> None:
         calls: list[tuple[str | None, str]] = []

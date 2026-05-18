@@ -105,11 +105,13 @@ EDIT_SCOPE_PROTOCOL = (
 TEMPLATE_STYLE_LOCK_PROTOCOL = (
     "Selected-template style lock: the template wardrobe and scene are hard style anchors for generation and QA. "
     "Use the exact template clothing family, background family, lighting environment, and prompt-block style unless "
-    "the user explicitly provides director-mode overrides. Do not switch style families, do not turn an indoor studio "
-    "template into an outdoor garden, balcony, terrace, travel, or landscape scene, and do not replace a requested "
-    "bridal gown, groom suit, couple wardrobe, cultural attire, or royal embroidered styling with an unrelated outfit. "
-    "Identity preservation may refine face and body realism, but it must not erase the selected template's clothing "
-    "and background concept"
+    "the user explicitly provides director-mode text or reference overrides. User-written scene, outfit, or overall "
+    "style direction is a higher-priority creative brief than template defaults; the template fills only unspecified "
+    "details. Do not switch style families, do not turn an indoor studio template into an outdoor garden, balcony, "
+    "terrace, travel, or landscape scene unless the user explicitly asked for that scene, and do not replace a "
+    "requested bridal gown, groom suit, couple wardrobe, cultural attire, or royal embroidered styling with an "
+    "unrelated outfit. Identity preservation may refine face and body realism, but it must not erase the selected "
+    "template's clothing and background concept or the user's explicit text direction"
 )
 
 COUPLE_IDENTITY_LOCK_PROTOCOL = (

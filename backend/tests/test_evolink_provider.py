@@ -84,6 +84,7 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertIn("lighting", compacted.lower())
         self.assertIn("composition", compacted.lower())
         self.assertIn("Template style lock", compacted)
+        self.assertIn("follow that user text", compacted)
 
     def test_evolink_real_wedding_round_prompt_stays_within_provider_limit(self) -> None:
         service = EvolinkService()

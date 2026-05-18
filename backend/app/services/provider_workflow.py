@@ -737,6 +737,7 @@ class GenerationProviderWorkflow:
         if not template:
             return ""
         params = params if isinstance(params, dict) else {}
+        user_direction = str(params.get("global_style_text") or params.get("legacy_prompt_override") or "").strip()
         scene = str(params.get("scene_text") or getattr(template, "default_background_prompt", "") or "").strip()
         wardrobe = str(params.get("outfit_text") or getattr(template, "clothing_prompt", "") or "").strip()
         blocks = getattr(template, "prompt_blocks", None)
@@ -751,6 +752,7 @@ class GenerationProviderWorkflow:
             f"Template id: {getattr(template, 'id', '')}",
             f"Template category: {getattr(template, 'category', '')}",
             f"Template style family: {getattr(template, 'style_family', '')}",
+            f"User creative direction: {user_direction}",
             f"Required wardrobe: {wardrobe}",
             f"Required scene/background: {scene}",
         ]

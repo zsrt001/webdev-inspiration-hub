@@ -531,15 +531,8 @@ def _resolve_director_decision(
     legacy_text_mode = bool(legacy_prompt_override and not any([global_style_text, scene_text, outfit_text]))
     scene_text_present = bool(scene_text or legacy_text_mode)
     outfit_text_present = bool(outfit_text or legacy_text_mode)
-    apply_director_cascade = bool(
-        request.director_mode
-        or request.scene_preset_id
-        or request.clothing_preset_id
-        or request.scene_image_url
-        or request.clothing_image_url
-        or scene_text_present
-        or outfit_text_present
-    )
+    apply_scene_cascade = bool(request.scene_preset_id or request.scene_image_url or scene_text_present)
+    apply_outfit_cascade = bool(request.clothing_preset_id or request.clothing_image_url or outfit_text_present)
     ignored_inputs: list[str] = []
 
     effective_scene_source: str | None = "upload" if request.scene_image_url else None
@@ -553,19 +546,19 @@ def _resolve_director_decision(
     effective_scene_preset_title: str | None = None
     effective_outfit_preset_title: str | None = None
 
-    if apply_director_cascade:
-        if request.scene_image_url:
-            effective_scene_source = "upload"
-            effective_scene_image_url = request.scene_image_url
-            effective_scene_ip_weight = request.scene_ip_weight if request.scene_ip_weight is not None else 0.6
-            if scene_text_present:
-                ignored_inputs.append("scene_text")
-            if request.scene_preset_id:
-                ignored_inputs.append("scene_preset_id")
-        elif scene_text_present:
+    if apply_scene_cascade:
+        if scene_text_present:
             effective_scene_source = "text"
             effective_scene_image_url = None
             effective_scene_ip_weight = None
+            if request.scene_image_url:
+                ignored_inputs.append("scene_image_url")
+            if request.scene_preset_id:
+                ignored_inputs.append("scene_preset_id")
+        elif request.scene_image_url:
+            effective_scene_source = "upload"
+            effective_scene_image_url = request.scene_image_url
+            effective_scene_ip_weight = request.scene_ip_weight if request.scene_ip_weight is not None else 0.6
             if request.scene_preset_id:
                 ignored_inputs.append("scene_preset_id")
         else:
@@ -580,18 +573,19 @@ def _resolve_director_decision(
             effective_scene_image_url = to_public_url(preset["image_url"])
             effective_scene_ip_weight = request.scene_ip_weight if request.scene_ip_weight is not None else 0.5
 
-        if request.clothing_image_url:
-            effective_outfit_source = "upload"
-            effective_clothing_image_url = request.clothing_image_url
-            effective_clothing_ip_weight = request.clothing_ip_weight if request.clothing_ip_weight is not None else 0.6
-            if outfit_text_present:
-                ignored_inputs.append("outfit_text")
-            if request.clothing_preset_id:
-                ignored_inputs.append("clothing_preset_id")
-        elif outfit_text_present:
+    if apply_outfit_cascade:
+        if outfit_text_present:
             effective_outfit_source = "text"
             effective_clothing_image_url = None
             effective_clothing_ip_weight = None
+            if request.clothing_image_url:
+                ignored_inputs.append("clothing_image_url")
+            if request.clothing_preset_id:
+                ignored_inputs.append("clothing_preset_id")
+        elif request.clothing_image_url:
+            effective_outfit_source = "upload"
+            effective_clothing_image_url = request.clothing_image_url
+            effective_clothing_ip_weight = request.clothing_ip_weight if request.clothing_ip_weight is not None else 0.6
             if request.clothing_preset_id:
                 ignored_inputs.append("clothing_preset_id")
         else:

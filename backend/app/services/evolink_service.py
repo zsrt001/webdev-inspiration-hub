@@ -142,6 +142,7 @@ class EvolinkService(GenerationProviderWorkflow):
             "Do not do text-only generation. Preserve exact face shape, eyes, nose, mouth, jawline, age impression, skin undertone, and natural expression. "
             f"{subject_count_hint}"
             "Template style lock: obey the selected template's WARDROBE, SCENE, and TEMPLATE STYLE NOTES clauses exactly unless the user provided explicit director overrides. "
+            "When USER DIRECTION, scene text, outfit text, or prompt_override is present, follow that user text as the creative brief and use the template only for unspecified details. "
             "Do not switch style family, wedding role, outfit concept, indoor/outdoor setting, or background concept. If the template says indoor studio, never generate an outdoor garden, terrace, balcony, travel, mountain, or landscape scene. "
             "Commercial wedding deliverable: professional studio/on-location lighting, natural skin texture, catchlights, face correctly exposed, complete wedding wardrobe, readable face, 3:4 vertical composition, no awkward crop. "
             "Use the shot-library direction: primary shot, commercial subject scale, readable face, intentional headroom, complete gown/suit boundaries, and professional pose family. "
