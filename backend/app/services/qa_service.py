@@ -82,11 +82,13 @@ async def verify_with_vision(
     *,
     is_couple: bool = False,
     source_image_urls: list[str] | None = None,
+    template_style_context: str | None = None,
 ) -> tuple[bool, list[str]]:
     verdict = await verify_with_vision_verdict(
         image_url,
         is_couple=is_couple,
         source_image_urls=source_image_urls,
+        template_style_context=template_style_context,
     )
     return bool(verdict["passed"]), list(verdict["reasons"])
 
@@ -96,6 +98,7 @@ async def verify_with_vision_verdict(
     *,
     is_couple: bool = False,
     source_image_urls: list[str] | None = None,
+    template_style_context: str | None = None,
 ) -> dict:
     source_images = [str(url).strip() for url in (source_image_urls or []) if str(url).strip()]
     identity_vision_required = bool(source_images) and bool(settings.qa_require_identity_vision)
@@ -117,6 +120,7 @@ async def verify_with_vision_verdict(
         image_url,
         is_couple=is_couple,
         source_image_urls=source_image_urls,
+        template_style_context=template_style_context,
     )
     if verdict.get("passed") is True:
         return attach_identity_grade(
@@ -155,11 +159,13 @@ async def output_passes(
     *,
     is_couple: bool = False,
     source_image_urls: list[str] | None = None,
+    template_style_context: str | None = None,
 ) -> tuple[bool, list[str]]:
     verdict = await output_verdict(
         image_url,
         is_couple=is_couple,
         source_image_urls=source_image_urls,
+        template_style_context=template_style_context,
     )
     return bool(verdict["passed"]), list(verdict["reasons"])
 
@@ -169,6 +175,7 @@ async def output_verdict(
     *,
     is_couple: bool = False,
     source_image_urls: list[str] | None = None,
+    template_style_context: str | None = None,
 ) -> dict:
     source_images = [str(url).strip() for url in (source_image_urls or []) if str(url).strip()]
     identity_vision_required = bool(source_images) and bool(settings.qa_require_identity_vision)
@@ -231,6 +238,7 @@ async def output_verdict(
         image_url,
         is_couple=is_couple,
         source_image_urls=source_image_urls,
+        template_style_context=template_style_context,
     )
     vision_ok = bool(vision_verdict["passed"])
     vision_reasons = list(vision_verdict["reasons"])

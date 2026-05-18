@@ -141,6 +141,8 @@ class EvolinkService(GenerationProviderWorkflow):
             "Identity-preserving image edit using image_urls as source references. "
             "Do not do text-only generation. Preserve exact face shape, eyes, nose, mouth, jawline, age impression, skin undertone, and natural expression. "
             f"{subject_count_hint}"
+            "Template style lock: obey the selected template's WARDROBE, SCENE, and TEMPLATE STYLE NOTES clauses exactly unless the user provided explicit director overrides. "
+            "Do not switch style family, wedding role, outfit concept, indoor/outdoor setting, or background concept. If the template says indoor studio, never generate an outdoor garden, terrace, balcony, travel, mountain, or landscape scene. "
             "Commercial wedding deliverable: professional studio/on-location lighting, natural skin texture, catchlights, face correctly exposed, complete wedding wardrobe, readable face, 3:4 vertical composition, no awkward crop. "
             "Use the shot-library direction: primary shot, commercial subject scale, readable face, intentional headroom, complete gown/suit boundaries, and professional pose family. "
             "Use simple professional hand posing with bouquet, veil, sleeve, or gown fabric covering difficult fingers; preserve full gown hem, shoes, veil/train, and bottom breathing room. "
@@ -153,6 +155,7 @@ class EvolinkService(GenerationProviderWorkflow):
 
         priority_groups = (
             ("round", "qa reasons", "qa notes", "targeted repair", "relight", "polish"),
+            ("template style lock", "wardrobe:", "scene:", "template style notes"),
             ("scene", "outdoor", "garden", "castle", "studio", "window", "architecture", "background"),
             ("shot library", "primary shot", "candidate shot", "pose family", "must show"),
             ("lighting", "soft key", "fill light", "rim light", "catchlight", "exposure", "backlight"),

@@ -102,6 +102,16 @@ EDIT_SCOPE_PROTOCOL = (
     "to the source references. If style, scene, clothing, or beauty conflicts with identity preservation, identity wins"
 )
 
+TEMPLATE_STYLE_LOCK_PROTOCOL = (
+    "Selected-template style lock: the template wardrobe and scene are hard style anchors for generation and QA. "
+    "Use the exact template clothing family, background family, lighting environment, and prompt-block style unless "
+    "the user explicitly provides director-mode overrides. Do not switch style families, do not turn an indoor studio "
+    "template into an outdoor garden, balcony, terrace, travel, or landscape scene, and do not replace a requested "
+    "bridal gown, groom suit, couple wardrobe, cultural attire, or royal embroidered styling with an unrelated outfit. "
+    "Identity preservation may refine face and body realism, but it must not erase the selected template's clothing "
+    "and background concept"
+)
+
 COUPLE_IDENTITY_LOCK_PROTOCOL = (
     "For couples, reference image 1 must remain subject A/bride and reference image 2 must remain subject B/groom; "
     "the output must contain exactly two primary wedding subjects in the same frame. Preserve each person's separate "
@@ -355,6 +365,7 @@ def build_prompt(
     # Layer 1: Identity (highest priority — placed first)
     parts.append(_section("IDENTITY LOCK", IDENTITY_LOCK_PROTOCOL))
     parts.append(_section("ALLOWED EDIT SCOPE", EDIT_SCOPE_PROTOCOL))
+    parts.append(_section("TEMPLATE STYLE LOCK", TEMPLATE_STYLE_LOCK_PROTOCOL))
     if is_couple:
         parts.append(_section("COUPLE IDENTITY LOCK", COUPLE_IDENTITY_LOCK_PROTOCOL))
     else:

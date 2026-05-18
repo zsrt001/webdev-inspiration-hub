@@ -605,6 +605,7 @@ async def verify_generated_image_quality(
     *,
     is_couple: bool = False,
     source_image_urls: list[str] | None = None,
+    template_style_context: str | None = None,
 ) -> dict[str, Any]:
     """
     Strict QA check for generated images.
@@ -639,6 +640,15 @@ async def verify_generated_image_quality(
         "- If the generated face noticeably changes identity, becomes distorted, or clearly does not resemble the source identity, passed=false with reason identity_mismatch.\n"
         "- Allow makeup, lighting, hairstyle, and bridal styling changes only when the face identity is still recognizable.\n"
     ) if source_images else ""
+    style_context = str(template_style_context or "").strip()[:1400]
+    template_rules = (
+        "\nSelected-template style contract:\n"
+        f"{style_context}\n"
+        "- Treat the selected template's wardrobe and scene/background as hard style anchors unless the user explicitly overrode them.\n"
+        "- If an indoor studio template becomes an outdoor garden, balcony, terrace, travel, mountain, or landscape scene, passed=false with reason poor_studio_quality.\n"
+        "- If the requested template outfit family is replaced by an unrelated wardrobe or wrong wedding role, passed=false with reason poor_studio_quality.\n"
+        "- Allow minor pose, lighting, crop, and fabric-detail variation only when the selected clothing and background concept remain recognizable.\n"
+    ) if style_context else ""
 
     prompt = (
         "You are a strict QA inspector for AI-generated wedding photos.\n"
@@ -677,10 +687,12 @@ async def verify_generated_image_quality(
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
         "- Use face_underexposed when the face is darker than commercial portrait standard, hidden in shadow, or lacks soft frontal fill. Use flat_lighting when the lighting has no directional key/fill/rim structure, no visible modeling across the face, or the subject/background brightness feels like phone lighting. Use no_catchlights when the eyes look dead or have no visible key-light catchlights. Use oily_skin_highlight when forehead, nose, cheeks, or chin have wet, greasy, plastic, or over-shiny highlights. Use dress_highlights_blown when white dress, veil, lace, satin, sky, or window highlights lose detail. Use mixed_color_temperature when key/fill/rim/ambient lights have incoherent green/orange/blue casts or phone-flash color. Prefer these specific lighting reasons instead of poor_studio_quality when they apply.\n"
         "- Use poor_studio_quality only for broad commercial-finish failures that are not explained by a more specific lighting, composition, identity, anatomy, or wardrobe reason.\n"
+        "- When a selected-template style contract is provided, use poor_studio_quality for explicit template drift: wrong wardrobe family, wrong wedding role, or a background/scene that contradicts the selected template, such as an indoor studio/castle set turning into an outdoor garden, balcony, terrace, travel, mountain, or landscape photo.\n"
         "- If identity is wrong and the image is beautiful, still fail with identity_mismatch.\n"
         f"{single_rules}"
         f"{couple_rules}"
         f"{identity_rules}"
+        f"{template_rules}"
         "- notes: brief (<= 200 chars)."
     )
 

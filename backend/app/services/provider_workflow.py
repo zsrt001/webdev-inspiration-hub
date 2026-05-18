@@ -733,6 +733,42 @@ class GenerationProviderWorkflow:
         return []
 
     @staticmethod
+    def _template_style_context(template: Any, params: dict[str, Any] | None = None) -> str:
+        if not template:
+            return ""
+        params = params if isinstance(params, dict) else {}
+        scene = str(params.get("scene_text") or getattr(template, "default_background_prompt", "") or "").strip()
+        wardrobe = str(params.get("outfit_text") or getattr(template, "clothing_prompt", "") or "").strip()
+        blocks = getattr(template, "prompt_blocks", None)
+        block_text = ""
+        if isinstance(blocks, dict):
+            block_text = "; ".join(
+                f"{key}: {value}"
+                for key, value in blocks.items()
+                if str(value or "").strip()
+            )
+        parts = [
+            f"Template id: {getattr(template, 'id', '')}",
+            f"Template category: {getattr(template, 'category', '')}",
+            f"Template style family: {getattr(template, 'style_family', '')}",
+            f"Required wardrobe: {wardrobe}",
+            f"Required scene/background: {scene}",
+        ]
+        if block_text:
+            parts.append(f"Template prompt blocks: {block_text}")
+        return "\n".join(part for part in parts if str(part).strip())
+
+    async def _template_style_context_for_order(self, order_uuid: uuid.UUID) -> str:
+        async with async_session_maker() as db:
+            result = await db.execute(select(Order).where(Order.id == order_uuid))
+            order = result.scalar_one_or_none()
+            if not order:
+                return ""
+            template = get_template_by_id(str(order.template_id or ""))
+            params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
+        return self._template_style_context(template, params)
+
+    @staticmethod
     def _utc_now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
@@ -788,6 +824,7 @@ class GenerationProviderWorkflow:
             primary_image_url,
             is_couple=is_couple,
             source_image_urls=[str(url) for url in user_images if url],
+            template_style_context=await self._template_style_context_for_order(order_uuid),
         )
         qa_ok = bool(qa_verdict.get("passed"))
         qa_reasons = list(qa_verdict.get("reasons") or [])
@@ -1725,6 +1762,7 @@ class GenerationProviderWorkflow:
             candidate_url,
             is_couple=is_couple,
             source_image_urls=[str(url) for url in user_images if str(url or "").strip()],
+            template_style_context=await self._template_style_context_for_order(order_uuid),
         )
         qa_ok = bool(qa_verdict.get("passed"))
         qa_reasons = [str(reason) for reason in (qa_verdict.get("reasons") or []) if str(reason or "").strip()]
@@ -2055,12 +2093,14 @@ class GenerationProviderWorkflow:
     ) -> dict[str, Any]:
         candidate_results: list[dict[str, Any]] = []
         source_images = [str(url) for url in user_images if str(url or "").strip()]
+        template_style_context = await self._template_style_context_for_order(order_uuid)
         await self._update_generation_stage(order_uuid, "qa_checking", detail=f"round_{round_number}")
         for index, candidate_url in enumerate(delivered_urls):
             qa_verdict = await output_verdict(
                 candidate_url,
                 is_couple=is_couple,
                 source_image_urls=source_images,
+                template_style_context=template_style_context,
             )
             selection = self._score_candidate_verdict(
                 qa_verdict,
@@ -3415,6 +3455,7 @@ class GenerationProviderWorkflow:
                         primary_image_url,
                         is_couple=is_couple,
                         source_image_urls=[str(url) for url in user_images if url],
+                        template_style_context=await self._template_style_context_for_order(order_uuid),
                     )
                     qa_ok = bool(qa_verdict.get("passed"))
                     qa_reasons = list(qa_verdict.get("reasons") or [])

@@ -83,6 +83,7 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertIn("Negative", compacted)
         self.assertIn("lighting", compacted.lower())
         self.assertIn("composition", compacted.lower())
+        self.assertIn("Template style lock", compacted)
 
     def test_evolink_real_wedding_round_prompt_stays_within_provider_limit(self) -> None:
         service = EvolinkService()
@@ -116,6 +117,9 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertIn("image_urls", compacted)
         self.assertIn("Couple rule", compacted)
         self.assertIn("exactly two primary wedding subjects", compacted)
+        self.assertIn("Template style lock", compacted)
+        self.assertIn("WARDROBE", compacted)
+        self.assertIn("SCENE", compacted)
         self.assertIn("Negative", compacted)
 
     def test_evolink_single_prompt_compaction_does_not_infer_couple_from_negative_words(self) -> None:
@@ -146,6 +150,8 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertLessEqual(len(compacted), EvolinkService.PROMPT_CHAR_LIMIT)
         self.assertIn("Single rule", compacted)
         self.assertIn("exactly one primary human subject", compacted)
+        self.assertIn("Template style lock", compacted)
+        self.assertIn("indoor studio", compacted.lower())
         self.assertNotIn("Couple rule", compacted)
         self.assertNotIn("exactly two primary wedding subjects", compacted)
 

@@ -107,6 +107,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("near-frontal or soft three-quarter", prompt)
         self.assertIn("both eyes, or both eye corners", prompt)
         self.assertIn("eyes and mouth must agree emotionally", prompt)
+        self.assertIn("TEMPLATE STYLE LOCK:", prompt)
+        self.assertIn("template wardrobe and scene are hard style anchors", prompt)
         self.assertIn("PHOTO REALISM:", prompt)
         self.assertIn("Hasselblad", prompt)
         self.assertIn("GEMINI FLASH EDIT PROTOCOL:", prompt)
@@ -1438,6 +1440,56 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verdict["reasons"], ["unnatural_gaze", "unnatural_expression"])
         self.assertEqual(verdict["issues"][0]["repair_action"], "repair_eye_gaze_and_catchlights")
         self.assertEqual(verdict["issues"][1]["repair_action"], "restore_natural_wedding_expression")
+
+    def test_vision_qa_receives_template_style_contract(self) -> None:
+        captured_prompt: dict[str, str] = {}
+
+        async def fake_chat(payload, *, title, timeout, provider):
+            prompt_text = str(payload["messages"][0]["content"][0]["text"])
+            captured_prompt["text"] = prompt_text
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"passed": false, "reasons": ["poor_studio_quality"], "issues": [], "notes": "template drift"}'
+                        }
+                    }
+                ]
+            }
+
+        original_configured = llm_service.is_vision_provider_configured
+        original_chat = llm_service._llm_chat_for_provider
+        original_provider = llm_service.settings.llm_provider
+        original_jiekou_key = llm_service.settings.jiekou_api_key
+        original_wenwen_vision_key = llm_service.settings.wenwen_vision_api_key
+        llm_service.is_vision_provider_configured = lambda: True
+        llm_service._llm_chat_for_provider = fake_chat
+        llm_service.settings.llm_provider = "jiekou"
+        llm_service.settings.jiekou_api_key = "test-jiekou-key"
+        llm_service.settings.wenwen_vision_api_key = ""
+        try:
+            verdict = asyncio.run(
+                llm_service.verify_generated_image_quality(
+                    "https://cdn.example.com/generated.jpg",
+                    template_style_context=(
+                        "Template id: solo_royal_castle\n"
+                        "Required wardrobe: regal embroidered wedding attire\n"
+                        "Required scene/background: strictly indoor castle-inspired bridal studio set"
+                    ),
+                )
+            )
+        finally:
+            llm_service.is_vision_provider_configured = original_configured
+            llm_service._llm_chat_for_provider = original_chat
+            llm_service.settings.llm_provider = original_provider
+            llm_service.settings.jiekou_api_key = original_jiekou_key
+            llm_service.settings.wenwen_vision_api_key = original_wenwen_vision_key
+
+        self.assertFalse(verdict["passed"])
+        self.assertEqual(verdict["reasons"], ["poor_studio_quality"])
+        self.assertIn("Selected-template style contract", captured_prompt["text"])
+        self.assertIn("strictly indoor castle-inspired bridal studio set", captured_prompt["text"])
+        self.assertIn("wrong wardrobe family", captured_prompt["text"])
 
     def test_vision_qa_falls_back_to_secondary_provider_on_timeout(self) -> None:
         calls: list[tuple[str | None, str]] = []
