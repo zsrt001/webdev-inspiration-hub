@@ -166,6 +166,7 @@ def _enhance_master(image, *, profile: PostprocessProfile | None = None):
     img = ImageOps.autocontrast(Image.composite(img, blurred, mask), cutoff=0.35)
     img = _protect_white_gown_highlights(img, strength=profile.highlight_protection)
     img = _apply_studio_tone_balance(img, profile=profile)
+    img = _unify_mixed_color_temperature(img)
     img = _unify_skin_tone(img, strength=profile.skin_tone_unify)
     img = _reduce_oily_skin_highlights(img)
     img = _apply_face_micro_retouch(img, strength=profile.face_sharpen)
@@ -227,6 +228,24 @@ def _apply_studio_tone_balance(image, *, profile: PostprocessProfile | None = No
     filled = ImageEnhance.Brightness(balanced).enhance(1.045)
     filled = ImageEnhance.Contrast(filled).enhance(0.985)
     return Image.composite(filled, balanced, fill_mask)
+
+
+def _unify_mixed_color_temperature(image, *, strength: float = 0.32):
+    from PIL import Image, ImageStat
+
+    strength = max(0.0, min(0.6, float(strength)))
+    img = image.convert("RGB")
+    means = ImageStat.Stat(img).mean[:3]
+    if len(means) != 3 or min(means) <= 1:
+        return img
+    target = sum(means) / 3.0
+    channels = img.split()
+    balanced = []
+    for channel, mean in zip(channels, means):
+        scale = 1.0 + ((target / max(1.0, mean)) - 1.0) * strength
+        scale = max(0.82, min(1.18, scale))
+        balanced.append(channel.point(lambda value, s=scale: max(0, min(255, round(value * s)))))
+    return Image.merge("RGB", balanced)
 
 
 def _unify_skin_tone(image, *, strength: float = 0.42):

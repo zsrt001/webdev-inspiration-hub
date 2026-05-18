@@ -142,8 +142,9 @@ IMAGE_EDIT_REPAIR_SKIP_PREVIOUS_REASONS = {
     "vision_error",
 }
 
-FINAL_ROUND_LOCAL_DEOIL_REASONS = {
+FINAL_ROUND_LOCAL_PHOTOMETRIC_REPAIR_REASONS = {
     "oily_skin_highlight",
+    "mixed_color_temperature",
 }
 
 
@@ -210,11 +211,24 @@ def score_candidate_verdict(
             "identity_swap" if identity_grade == "role_swap" else "identity_mismatch",
         })
     remaining_reasons = {str(reason or "").strip() for reason in reasons if str(reason or "").strip()}
-    final_round_deoil_delivery = (
+    final_round_photometric_delivery = (
         int(round_number or 0) >= 3
         and bool(remaining_reasons)
-        and remaining_reasons <= FINAL_ROUND_LOCAL_DEOIL_REASONS
+        and remaining_reasons <= FINAL_ROUND_LOCAL_PHOTOMETRIC_REPAIR_REASONS
     )
+    if final_round_photometric_delivery and hard_gate_reasons:
+        hard_gate_reasons = [
+            reason
+            for reason in hard_gate_reasons
+            if reason not in FINAL_ROUND_LOCAL_PHOTOMETRIC_REPAIR_REASONS
+        ]
+    delivery_repair = None
+    if final_round_photometric_delivery:
+        delivery_repair = (
+            "local_oily_skin_highlight_reduction"
+            if remaining_reasons == {"oily_skin_highlight"}
+            else "local_photometric_finish"
+        )
 
     score = 100.0
     if not bool(verdict.get("passed")):
@@ -241,11 +255,11 @@ def score_candidate_verdict(
     return {
         "policy": CANDIDATE_SELECTION_POLICY,
         "score": round(max(0.0, min(100.0, score)), 2),
-        "passed": (bool(verdict.get("passed")) or final_round_deoil_delivery) and not hard_gate_reasons,
+        "passed": (bool(verdict.get("passed")) or final_round_photometric_delivery) and not hard_gate_reasons,
         "identity_grade": identity_grade,
         "identity_blocking": identity_qa_requires_forced_repair(identity_grade),
         "hard_gate_reasons": hard_gate_reasons,
         "reasons": reasons,
         "issue_count": len(issues),
-        "delivery_repair": "local_oily_skin_highlight_reduction" if final_round_deoil_delivery else None,
+        "delivery_repair": delivery_repair,
     }

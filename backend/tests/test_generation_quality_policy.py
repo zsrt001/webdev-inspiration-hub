@@ -37,6 +37,7 @@ from app.services.postprocess_service import (  # noqa: E402
     _crop_to_variant,
     _enhance_master,
     _smart_crop_centering,
+    _unify_mixed_color_temperature,
 )
 from app.services import qa_service  # noqa: E402
 from app.services import llm_service  # noqa: E402
@@ -196,6 +197,15 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertLessEqual(max(enhanced.size), 2400)
         self.assertEqual(crop_4x5.size[0] / crop_4x5.size[1], 0.8)
         self.assertEqual(crop_square.size[0], crop_square.size[1])
+
+    def test_postprocess_unifies_mixed_color_temperature(self) -> None:
+        image = Image.new("RGB", (120, 120), (220, 150, 100))
+        before = max(image.getpixel((0, 0))) - min(image.getpixel((0, 0)))
+        corrected = _unify_mixed_color_temperature(image, strength=0.5)
+        after_pixel = corrected.getpixel((0, 0))
+        after = max(after_pixel) - min(after_pixel)
+
+        self.assertLess(after, before)
 
     def test_legacy_prompt_override_cannot_bypass_studio_guardrails(self) -> None:
         template = get_template_by_id("solo_royal_castle")
@@ -918,6 +928,23 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("oily_skin_highlight", selection["hard_gate_reasons"])
         self.assertIn("oily_skin_highlight", selection["reasons"])
         self.assertEqual(selection["delivery_repair"], "local_oily_skin_highlight_reduction")
+
+    def test_final_round_oily_skin_and_mixed_color_temperature_use_local_photometric_finish(self) -> None:
+        reasons = ["oily_skin_highlight", "mixed_color_temperature"]
+
+        selection = WenwenService._score_candidate_verdict(
+            {
+                "passed": False,
+                "reasons": reasons,
+                "issues": build_structured_qa_issues(reasons, source="vision"),
+            },
+            round_number=3,
+            candidate_index=0,
+        )
+
+        self.assertTrue(selection["passed"])
+        self.assertNotIn("mixed_color_temperature", selection["hard_gate_reasons"])
+        self.assertEqual(selection["delivery_repair"], "local_photometric_finish")
 
     def test_mixed_round_two_failures_do_not_use_relight_only_mode(self) -> None:
         reasons = ["face_underexposed", "identity_mismatch"]
