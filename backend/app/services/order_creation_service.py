@@ -532,8 +532,8 @@ def _resolve_director_decision(
     legacy_prompt_override = (request.prompt_override or "").strip() or None
 
     legacy_text_mode = bool(legacy_prompt_override and not any([global_style_text, scene_text, outfit_text]))
-    scene_text_present = bool(scene_text or legacy_text_mode)
-    outfit_text_present = bool(outfit_text or legacy_text_mode)
+    scene_text_present = bool(scene_text or legacy_text_mode or global_style_text)
+    outfit_text_present = bool(outfit_text or legacy_text_mode or global_style_text)
     apply_scene_cascade = bool(request.scene_preset_id or request.scene_image_url or scene_text_present)
     apply_outfit_cascade = bool(request.clothing_preset_id or request.clothing_image_url or outfit_text_present)
     ignored_inputs: list[str] = []
@@ -862,6 +862,7 @@ def _build_generation_params(
                 "preset_title": director_decision.effective_scene_preset_title,
                 "text_applied": bool(
                     director_decision.effective_scene_text
+                    or (director_decision.effective_scene_source == "text" and director_decision.global_style_text)
                     or (director_decision.effective_scene_source == "upload" and director_decision.scene_text)
                 ),
                 "upload_applied": bool(request.scene_image_url),
@@ -873,6 +874,7 @@ def _build_generation_params(
                 "preset_title": director_decision.effective_outfit_preset_title,
                 "text_applied": bool(
                     director_decision.effective_outfit_text
+                    or (director_decision.effective_outfit_source == "text" and director_decision.global_style_text)
                     or (director_decision.effective_outfit_source == "upload" and director_decision.outfit_text)
                 ),
                 "upload_applied": bool(request.clothing_image_url),

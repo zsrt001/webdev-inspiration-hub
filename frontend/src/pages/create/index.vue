@@ -386,13 +386,13 @@ const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('�
 const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式', 'Free Mode'));
 const sceneControlLabel = computed(() => {
   if (sceneReferencePath.value) return tr('参考图强控', 'Reference control');
-  if (sceneText.value.trim()) return tr('文字主控', 'Text control');
+  if (sceneText.value.trim() || globalStyleText.value.trim()) return tr('文字主控', 'Text control');
   if (selectedStyleFamily.value) return tr('模板兜底', 'Template fallback');
   return tr('随机兜底', 'Random fallback');
 });
 const outfitControlLabel = computed(() => {
   if (outfitReferencePath.value) return tr('参考图强控', 'Reference control');
-  if (outfitText.value.trim()) return tr('文字主控', 'Text control');
+  if (outfitText.value.trim() || globalStyleText.value.trim()) return tr('文字主控', 'Text control');
   if (selectedStyleFamily.value) return tr('模板兜底', 'Template fallback');
   return tr('随机兜底', 'Random fallback');
 });

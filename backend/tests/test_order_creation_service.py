@@ -151,7 +151,7 @@ class OrderCreationServiceTest(unittest.TestCase):
         self.assertIn("clothing_preset_id", decision.ignored_inputs)
         self.assertIn("outfit:upload:w=0.60", decision.director_decision_hints)
 
-    def test_global_style_text_does_not_trigger_random_scene_or_outfit(self) -> None:
+    def test_global_style_text_controls_scene_and_outfit_when_no_upload_reference(self) -> None:
         request = OrderCreate(
             template_id="custom",
             user_images=["https://cdn.example.com/person-a.jpg"],
@@ -167,12 +167,38 @@ class OrderCreationServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(decision.global_style_text, "editorial black-and-white wedding portrait in a quiet museum mood")
-        self.assertIsNone(decision.effective_scene_source)
-        self.assertIsNone(decision.effective_outfit_source)
+        self.assertEqual(decision.effective_scene_source, "text")
+        self.assertEqual(decision.effective_outfit_source, "text")
+        self.assertIsNone(decision.effective_scene_text)
+        self.assertIsNone(decision.effective_outfit_text)
         self.assertIsNone(decision.effective_scene_image_url)
         self.assertIsNone(decision.effective_clothing_image_url)
         self.assertEqual(decision.ignored_inputs, [])
-        self.assertEqual(decision.director_decision_hints, ["director_mode_enabled"])
+        self.assertEqual(decision.director_decision_hints, ["director_mode_enabled", "scene:text", "outfit:text"])
+
+    def test_global_style_text_outranks_scene_and_outfit_presets_when_no_upload_reference(self) -> None:
+        request = OrderCreate(
+            template_id="classic",
+            user_images=["https://cdn.example.com/person-a.jpg"],
+            legal_accepted=True,
+            director_mode=True,
+            global_style_text="French manor, afternoon backlight, low saturation film, satin wedding gown",
+            scene_preset_id="studio",
+            clothing_preset_id="couture",
+        )
+
+        decision = service._resolve_director_decision(
+            request,
+            is_couple_request=False,
+            couple_flow=None,
+        )
+
+        self.assertEqual(decision.effective_scene_source, "text")
+        self.assertEqual(decision.effective_outfit_source, "text")
+        self.assertIsNone(decision.effective_scene_image_url)
+        self.assertIsNone(decision.effective_clothing_image_url)
+        self.assertIn("scene_preset_id", decision.ignored_inputs)
+        self.assertIn("clothing_preset_id", decision.ignored_inputs)
 
     def test_director_hints_include_remote_couple_flow_and_sorted_ignored_inputs(self) -> None:
         hints = service.build_director_decision_hints(
