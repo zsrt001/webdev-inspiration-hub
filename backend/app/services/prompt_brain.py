@@ -24,7 +24,11 @@ EYE_EXPRESSION_PROTOCOL = (
     "that match the key or fill light, relaxed eyelids, realistic iris detail, and a calm confident bridal expression "
     "or gentle authentic smile. For profile or three-quarter poses, the eye-line must point coherently into the pose "
     "or toward the partner; never let the face read as a mannequin, beauty-filter mask, pasted-on smile, or dead-eyed "
-    "AI portrait"
+    "AI portrait. Commercial expression hierarchy: prefer a three-quarter or near-frontal face with gentle wedding "
+    "warmth over a detached fashion-profile pose. The eyes and mouth must agree emotionally: no mouth-only smile, "
+    "no cold distant stare with a bridal gown, no standardized advertising grin, no rigid pageant smile. Single "
+    "bridal outputs should feel serene, warm, and present; couple outputs should feel relaxed and connected, with "
+    "subtle shared happiness rather than stiff catalog modeling"
 )
 
 PHOTO_REALISM_PROTOCOL = (
@@ -248,7 +252,8 @@ NEGATIVE_PROMPT = (
     "wet glossy skin, over-shiny forehead, over-shiny nose, over-shiny cheeks, 3d render, cgi, "
     "over-smoothed bridal ad; "
     "Eye and expression failures: dead eyes, blank stare, cross-eyed gaze, mismatched eye-line, unnatural gaze, "
-    "uncanny smile, waxy smile, frozen expression, mannequin expression, doll-like expression, asymmetrical eyelids, "
+    "mouth-only smile, eyes not smiling, cold fashion profile, detached side profile, uncanny smile, waxy smile, "
+    "forced advertising grin, frozen expression, mannequin expression, doll-like expression, asymmetrical eyelids, "
     "painted eyes, over-sharpened eyes, emotionless face; "
     "Anatomy failures: headless, cropped head, phantom limbs, fused bodies, merged limbs, duplicate person, "
     "duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, bad hands, extra fingers; "

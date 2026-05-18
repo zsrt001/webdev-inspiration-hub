@@ -133,16 +133,16 @@ def _build_templates() -> list[Template]:
             couple_clothing_prompt="couple in royal-style embroidered wedding attire with heirloom styling",
             couple_background_prompt="castle-inspired indoor bridal studio set with carved stone arches, painted warm architectural backdrop, polished floor, controlled studio lighting, no mountain vista, no open sky, no outdoor balcony",
             single_prompt_blocks={
-                "composition": "full-length bridal portrait with complete couture gown and train visible, upright 3:4 framing, refined headroom, no overfilled crop",
+                "composition": "full-length bridal portrait with complete couture gown and train visible, upright 3:4 framing, refined headroom, no overfilled crop, near-frontal or three-quarter face preferred over detached side profile",
                 "lighting": "bridal studio lighting inside a castle-inspired set: large soft key light on the face, gentle fill light, subtle rim light, controlled highlights, no silhouette",
                 "texture": "luxury embroidered fabric detail, natural skin texture, clean retouch without plastic smoothing",
-                "style": "high-end bridal studio portrait rather than outdoor snapshot",
+                "style": "high-end bridal studio portrait rather than outdoor snapshot; serene warm bridal expression with eyes emotionally engaged",
             },
             couple_prompt_blocks={
-                "composition": "full-length couple portrait with both outfits complete and readable, upright 3:4 framing, balanced spacing, no overfilled crop",
+                "composition": "full-length couple portrait with both outfits complete and readable, upright 3:4 framing, balanced spacing, no overfilled crop, both faces near-frontal or three-quarter and emotionally readable",
                 "lighting": "bridal studio lighting inside a castle-inspired set: large soft key light on both faces, gentle fill light, subtle rim light, controlled highlights, no silhouette",
                 "texture": "luxury embroidered fabric detail, natural skin texture, clean retouch without plastic smoothing",
-                "style": "high-end bridal studio portrait rather than outdoor snapshot",
+                "style": "high-end bridal studio portrait rather than outdoor snapshot; relaxed connected couple expression, eyes and mouths smiling together",
             },
         )
     )

@@ -104,6 +104,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("natural human skin with visible pores", prompt)
         self.assertIn("EYES AND EXPRESSION:", prompt)
         self.assertIn("eyes must be alive", prompt)
+        self.assertIn("three-quarter or near-frontal", prompt)
+        self.assertIn("eyes and mouth must agree emotionally", prompt)
         self.assertIn("PHOTO REALISM:", prompt)
         self.assertIn("Hasselblad", prompt)
         self.assertIn("GEMINI FLASH EDIT PROTOCOL:", prompt)
@@ -149,6 +151,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         # Skin & photorealism (v2 additions)
         self.assertIn("SKIN REALISM:", guardrails)
         self.assertIn("EYES AND EXPRESSION:", guardrails)
+        self.assertIn("mouth-only smile", guardrails)
         self.assertIn("ANTI AI ARTIFACTS:", guardrails)
         # Couple-specific quality
         self.assertIn("two-person full-length couple portrait", guardrails)
@@ -178,6 +181,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("dead eyes", negative)
         self.assertIn("unnatural gaze", negative)
         self.assertIn("waxy smile", negative)
+        self.assertIn("mouth-only smile", negative)
+        self.assertIn("cold fashion profile", negative)
         self.assertIn("changed face shape", negative)
         self.assertIn("face in shadow", negative)
         self.assertIn("underexposed face", negative)
@@ -415,7 +420,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_commercial_wedding_standard_records_canvas_ranges(self) -> None:
         standard = commercial_wedding_standard()
 
-        self.assertEqual(standard["version"], "commercial_wedding_v4")
+        self.assertEqual(standard["version"], "commercial_wedding_v5")
         self.assertEqual(standard["single"]["subject_height_range"], [0.74, 0.84])
         self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.62)
         self.assertEqual(standard["couple"]["group_height_range"], [0.70, 0.82])
@@ -425,6 +430,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(standard["lighting"]["fill_under_key_stops"], [1.0, 2.0])
         self.assertTrue(standard["face_expression"]["requires_natural_gaze"])
         self.assertTrue(standard["face_expression"]["requires_emotionally_believable_expression"])
+        self.assertTrue(standard["face_expression"]["requires_eye_mouth_emotion_sync"])
+        self.assertTrue(standard["face_expression"]["forbid_detached_fashion_profile_as_primary"])
         self.assertIn("background_dominates", standard["blocking_reasons"])
         self.assertIn("unnatural_gaze", standard["blocking_reasons"])
         self.assertTrue(standard["delivery_gate"]["identity_required"])
@@ -453,6 +460,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("PRIMARY SHOT full-length couple interaction", couple_prompt)
         self.assertIn("group height 0.70-0.82", couple_prompt)
         self.assertIn("subtle eye-line or shoulder interaction", couple_prompt)
+        self.assertIn("Expression gate", couple_prompt)
+        self.assertIn("mouth-only smiles", couple_prompt)
 
     def test_golden_anniversary_uses_respectful_shot_suite(self) -> None:
         template = get_template_by_id("golden_vintage_studio_8090")
@@ -1154,6 +1163,8 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("eye alignment", focus)
         self.assertIn("coherent eye-line", focus)
         self.assertIn("emotionally believable wedding expression", focus)
+        self.assertIn("eyes and mouth agree", focus)
+        self.assertIn("cold fashion profile", focus)
         self.assertIn("preserving identity", focus)
         self.assertTrue(WenwenService._should_include_previous_edit_result(["unnatural_expression"]))
         self.assertFalse(WenwenService._should_include_previous_edit_result(["unnatural_gaze"]))
@@ -1382,10 +1393,10 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
                         "message": {
                             "content": (
                                 '{"passed": false, '
-                                '"reasons": ["dead_eyes", "waxy_smile"], '
+                                '"reasons": ["dead_eyes", "mouth_only_smile"], '
                                 '"issues": ['
                                 '{"code": "dead_eyes", "evidence": "eyes look blank and painted"}, '
-                                '{"code": "waxy_smile", "evidence": "smile looks frozen and mannequin-like"}'
+                                '{"code": "mouth_only_smile", "evidence": "mouth smiles but the eyes do not"}'
                                 '], '
                                 '"notes": "expression issue"}'
                             )

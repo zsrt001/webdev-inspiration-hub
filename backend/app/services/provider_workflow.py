@@ -1352,7 +1352,7 @@ class GenerationProviderWorkflow:
             )
         if "unnatural_expression" in normalized:
             focus.append(
-                "restore a natural emotionally believable wedding expression while preserving identity, mouth shape, brow rhythm, and expression family; remove waxy smile, frozen face, mannequin look, or beauty-filter mask"
+                "restore a natural emotionally believable wedding expression while preserving identity, mouth shape, brow rhythm, and expression family; prefer near-frontal or three-quarter wedding warmth, make eyes and mouth agree, and remove waxy smile, frozen face, cold fashion profile, mannequin look, catalog grin, or beauty-filter mask"
             )
         if normalized & {"body_fusion", "extra_limbs"}:
             focus.append("repair body separation and natural anatomy without changing the locked faces")
