@@ -60,12 +60,24 @@ BACKGROUND_DETAIL_PROTOCOL = (
 GEMINI_FLASH_EDIT_PROTOCOL = (
     "Gemini 3.1 Flash image-edit protocol: treat every uploaded image as visual evidence, not optional style "
     "inspiration. The first identity face crop is the primary facial-geometry anchor, the original portrait is the "
-    "full-body and skin-undertone anchor, and style references may influence only scene, wardrobe, lighting, and "
-    "color. Keep edits local and photographic: preserve source face geometry, skin undertone, age impression, "
-    "expression family, and asymmetry while changing only the wedding styling. Prefer realistic camera optics, "
-    "subtle analog film grain, Kodak Portra-like color response, natural lens falloff, and coherent softbox lighting. "
-    "Avoid the Gemini failure modes of invented beauty-model faces, smeared pores, glossy AI skin, over-clean hair, "
-    "plastic white dresses, text artifacts, and decorative background hallucinations"
+    "body scale and skin-undertone anchor, not a style lock. When user text specifies scene or outfit, the uploaded "
+    "source photo's original background, location, clothing, bouquet, veil, and color palette must be ignored as "
+    "style evidence and replaced by the requested text. Style references may influence only scene, wardrobe, "
+    "lighting, and color. Keep edits local and photographic: preserve source face geometry, skin undertone, age "
+    "impression, expression family, and asymmetry while changing only the requested wedding styling. Prefer realistic "
+    "camera optics, subtle analog film grain, Kodak Portra-like color response, natural lens falloff, and coherent "
+    "softbox lighting. Avoid the Gemini failure modes of invented beauty-model faces, smeared pores, glossy AI skin, "
+    "over-clean hair, plastic white dresses, text artifacts, and decorative background hallucinations"
+)
+
+USER_TEXT_PRIORITY_PROTOCOL = (
+    "User text override lock: when the user supplies overall direction, scene text, outfit text, or prompt override, "
+    "that text is the binding creative brief after identity and safety. The uploaded identity image is only a face, "
+    "body-scale, age, skin-tone, and expression-family reference; it is not permission to copy the source photo's "
+    "background, venue, clothing, bouquet, veil, color palette, or existing wedding concept when those conflict with "
+    "the user's words. If the user writes black gown, indoor gallery, beach sunset, Chinese courtyard, or any other "
+    "specific clothing or scene, the generated result must visibly follow that text instead of drifting back to the "
+    "uploaded source image or default template"
 )
 
 PHOTO_PROTOCOL = (
@@ -90,10 +102,12 @@ IDENTITY_LOCK_PROTOCOL = (
     "Identity lock is mandatory and highest priority: this is an image edit of the uploaded real person, not "
     "text-to-image character creation. Preserve the exact identity: preserve the same face shape, eye shape "
     "and spacing, brow structure, nose bridge and tip, mouth shape, jawline, chin, age impression, skin undertone, "
-    "facial proportions, and "
-    "natural expression from the identity reference. Makeup and hairstyle styling are allowed only if the person "
-    "still reads as the same individual. Do not beautify the subject into a different person, do not replace the "
-    "face with a generic model face, and do not reshape facial structure"
+    "facial proportions, side-profile silhouette, nose-to-mouth distance, philtrum length, lip volume, cheek contour, "
+    "and natural expression from the identity reference. Nose size is identity-critical: do not enlarge, sharpen, "
+    "lengthen, westernize, stylize, or reshape the nose bridge, nose tip, nostrils, or side-profile projection. "
+    "Makeup and hairstyle styling are allowed only if the person still reads as the same individual. Do not beautify "
+    "the subject into a different person, do not replace the face with a generic model face, and do not reshape "
+    "facial structure"
 )
 
 EDIT_SCOPE_PROTOCOL = (
@@ -262,7 +276,8 @@ COUPLE_STUDIO_GUARDRAILS = (
 
 NEGATIVE_PROMPT = (
     "Identity failures: generic model face, different person, changed face shape, altered eyes, altered nose, "
-    "altered mouth, altered jawline, identity drift, face replacement, face swap, over-beautified face, uncanny face, "
+    "enlarged nose, long nose, oversized nose, sharpened nose bridge, altered side-profile silhouette, altered "
+    "mouth, altered jawline, identity drift, face replacement, face swap, over-beautified face, uncanny face, "
     "same AI face for both people, role swap; "
     "Subject-count failures: extra person, unexpected second person, second face, added partner, added spouse, "
     "couple in a single-subject order, duplicate body, duplicate subject, background person; "
@@ -368,6 +383,9 @@ def build_prompt(
     parts.append(_section("IDENTITY LOCK", IDENTITY_LOCK_PROTOCOL))
     parts.append(_section("ALLOWED EDIT SCOPE", EDIT_SCOPE_PROTOCOL))
     parts.append(_section("TEMPLATE STYLE LOCK", TEMPLATE_STYLE_LOCK_PROTOCOL))
+    has_user_text_override = bool(user_text or scene_text or clothing_text)
+    if has_user_text_override:
+        parts.append(_section("USER TEXT PRIORITY", USER_TEXT_PRIORITY_PROTOCOL))
     if is_couple:
         parts.append(_section("COUPLE IDENTITY LOCK", COUPLE_IDENTITY_LOCK_PROTOCOL))
     else:

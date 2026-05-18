@@ -70,6 +70,8 @@ _QA_REASON_MAP: dict[str, str] = {
     "no_head": "headless",
     "face_distortion": "face_distortion",
     "distorted_face": "face_distortion",
+    "nose_distortion": "face_distortion",
+    "distorted_nose": "face_distortion",
     "fused_faces": "fused_faces",
     "merged_faces": "fused_faces",
     "merged_bodies": "body_fusion",
@@ -103,6 +105,13 @@ _QA_REASON_MAP: dict[str, str] = {
     "face_not_like_source": "identity_mismatch",
     "face_mismatch": "identity_mismatch",
     "identity_not_preserved": "identity_mismatch",
+    "altered_nose": "identity_mismatch",
+    "enlarged_nose": "identity_mismatch",
+    "oversized_nose": "identity_mismatch",
+    "long_nose": "identity_mismatch",
+    "nose_too_large": "identity_mismatch",
+    "nose_shape_changed": "identity_mismatch",
+    "side_profile_changed": "identity_mismatch",
     "identity_similarity_low": "identity_similarity_low",
     "low_identity_similarity": "identity_similarity_low",
     "face_similarity_low": "identity_similarity_low",
@@ -636,7 +645,8 @@ async def verify_generated_image_quality(
         "\nIdentity rules:\n"
         "- Compare the generated face(s) against the provided source portrait(s).\n"
         "- The generated subject must still read as the same person, not a generic bride/groom or a beautified replacement.\n"
-        "- Preserve face shape, eye shape and spacing, nose shape, mouth shape, jawline, chin, skin undertone, and age impression.\n"
+        "- Preserve face shape, eye shape and spacing, brow rhythm, nose bridge, nose tip, nostrils, nose size, side-profile silhouette, mouth shape, jawline, chin, skin undertone, and age impression.\n"
+        "- Nose and side-profile proportions are identity-critical. If the nose is noticeably enlarged, lengthened, sharpened, westernized, stylized, or projected differently than the source, passed=false with reason identity_mismatch; use face_distortion when the nose geometry looks warped or anatomically implausible.\n"
         "- If the generated face noticeably changes identity, becomes distorted, or clearly does not resemble the source identity, passed=false with reason identity_mismatch.\n"
         "- Allow makeup, lighting, hairstyle, and bridal styling changes only when the face identity is still recognizable.\n"
     ) if source_images else ""
@@ -646,6 +656,7 @@ async def verify_generated_image_quality(
         f"{style_context}\n"
         "- Treat explicit user text as the creative brief; template defaults fill only unspecified clothing, scene, and mood details.\n"
         "- Treat the effective wardrobe and scene/background in this contract as hard anchors after applying user text overrides.\n"
+        "- Do not excuse a candidate because it matches the uploaded source photo's original background or outfit. Source images are identity references; if the source castle balcony or white gown conflicts with effective text such as indoor gallery or black gown, the candidate fails.\n"
         "- If the effective scene is indoor studio and the result becomes an outdoor garden, balcony, terrace, travel, mountain, or landscape scene, passed=false with reason poor_studio_quality.\n"
         "- If the effective outfit family is replaced by an unrelated wardrobe or wrong wedding role, passed=false with reason poor_studio_quality.\n"
         "- Allow minor pose, lighting, crop, and fabric-detail variation only when the selected clothing and background concept remain recognizable.\n"
@@ -688,7 +699,7 @@ async def verify_generated_image_quality(
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
         "- Use face_underexposed when the face is darker than commercial portrait standard, hidden in shadow, or lacks soft frontal fill. Use flat_lighting when the lighting has no directional key/fill/rim structure, no visible modeling across the face, or the subject/background brightness feels like phone lighting. Use no_catchlights when the eyes look dead or have no visible key-light catchlights. Use oily_skin_highlight when forehead, nose, cheeks, or chin have wet, greasy, plastic, or over-shiny highlights. Use dress_highlights_blown when white dress, veil, lace, satin, sky, or window highlights lose detail. Use mixed_color_temperature when key/fill/rim/ambient lights have incoherent green/orange/blue casts or phone-flash color. Prefer these specific lighting reasons instead of poor_studio_quality when they apply.\n"
         "- Use poor_studio_quality only for broad commercial-finish failures that are not explained by a more specific lighting, composition, identity, anatomy, or wardrobe reason.\n"
-        "- When a selected-template style contract is provided, use poor_studio_quality for explicit style drift after user text overrides are applied: wrong wardrobe family, wrong wedding role, or a background/scene that contradicts the effective scene, such as an indoor studio/castle set turning into an outdoor garden, balcony, terrace, travel, mountain, or landscape photo.\n"
+        "- When a selected-template style contract is provided, use poor_studio_quality for explicit style drift after user text overrides are applied: wrong wardrobe family, wrong wedding role, or a background/scene that contradicts the effective scene, such as an indoor studio/castle set turning into an outdoor garden, balcony, terrace, travel, mountain, or landscape photo. If the candidate simply copies the source photo's old outfit or background instead of the user's effective text, fail it with poor_studio_quality.\n"
         "- If identity is wrong and the image is beautiful, still fail with identity_mismatch.\n"
         f"{single_rules}"
         f"{couple_rules}"

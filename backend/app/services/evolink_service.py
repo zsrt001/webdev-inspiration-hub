@@ -139,16 +139,17 @@ class EvolinkService(GenerationProviderWorkflow):
         )
         hard_header = (
             "Identity-preserving image edit using image_urls as source references. "
-            "Do not do text-only generation. Preserve exact face shape, eyes, nose, mouth, jawline, age impression, skin undertone, and natural expression. "
+            "Do not do text-only generation. Preserve exact face shape, eyes, nose bridge and tip, nostrils, mouth, jawline, side-profile silhouette, age impression, skin undertone, and natural expression. Never enlarge or stylize the nose. "
             f"{subject_count_hint}"
+            "Negative: generic face, identity change, enlarged nose, altered nose, altered side-profile silhouette, copied source outfit/background against user text, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, blown white dress, mixed color temperature, background brighter than face, watermark, text. "
             "Template style lock: obey the selected template's WARDROBE, SCENE, and TEMPLATE STYLE NOTES clauses exactly unless the user provided explicit director overrides. "
             "When USER DIRECTION, scene text, outfit text, or prompt_override is present, follow that user text as the creative brief and use the template only for unspecified details. "
+            "In user-text mode, image_urls are identity references only: do not copy the source photo's original background, location, dress, suit, bouquet, veil, or color palette when they conflict with user text. "
             "Do not switch style family, wedding role, outfit concept, indoor/outdoor setting, or background concept. If the template says indoor studio, never generate an outdoor garden, terrace, balcony, travel, mountain, or landscape scene. "
             "Commercial wedding deliverable: professional studio/on-location lighting, natural skin texture, catchlights, face correctly exposed, complete wedding wardrobe, readable face, 3:4 vertical composition, no awkward crop. "
             "Use the shot-library direction: primary shot, commercial subject scale, readable face, intentional headroom, complete gown/suit boundaries, and professional pose family. "
             "Use simple professional hand posing with bouquet, veil, sleeve, or gown fabric covering difficult fingers; preserve full gown hem, shoes, veil/train, and bottom breathing room. "
-            "Use sun only as rim/ambient light outdoors; keep soft frontal fill. "
-            "Negative: generic face, identity change, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, blown white dress, mixed color temperature, background brighter than face, watermark, text."
+            "Use sun only as rim/ambient light outdoors; keep soft frontal fill."
         ).strip()
 
         selected: list[str] = [hard_header]
@@ -156,6 +157,7 @@ class EvolinkService(GenerationProviderWorkflow):
 
         priority_groups = (
             ("round", "qa reasons", "qa notes", "targeted repair", "relight", "polish"),
+            ("user text priority", "user direction", "creative brief", "prompt override"),
             ("template style lock", "wardrobe:", "scene:", "template style notes"),
             ("scene", "outdoor", "garden", "castle", "studio", "window", "architecture", "background"),
             ("shot library", "primary shot", "candidate shot", "pose family", "must show"),

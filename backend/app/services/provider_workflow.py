@@ -1375,7 +1375,7 @@ class GenerationProviderWorkflow:
         focus: list[str] = []
         if normalized & {"identity_mismatch", "identity_swap"}:
             focus.append(
-                "restore facial identity from the original identity references; do not keep the wrong generated face"
+                "restore facial identity from the original identity references; do not keep the wrong generated face; preserve the source face shape, nose size, nose bridge and tip, nostrils, mouth shape, jawline, chin, and side-profile silhouette"
             )
         if "subject_missing" in normalized:
             focus.append("restore the missing person and preserve the requested subject count")
@@ -1384,7 +1384,7 @@ class GenerationProviderWorkflow:
                 "remove every unrequested extra person, partner, guest, second face, or duplicate body; preserve exactly the uploaded single subject"
             )
         if normalized & {"face_distortion", "cropped_face", "headless", "fused_faces"}:
-            focus.append("repair face geometry and keep every face complete, natural, and readable")
+            focus.append("repair face geometry and keep every face complete, natural, and readable; restore original nose proportions and side-profile contour")
         if "unnatural_gaze" in normalized:
             focus.append(
                 "repair eye alignment, eyelid shape, iris detail, coherent eye-line, and natural catchlights from the identity references; remove dead eyes, blank stare, painted eyes, or mismatched gaze"

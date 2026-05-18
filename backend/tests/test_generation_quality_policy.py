@@ -110,6 +110,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("TEMPLATE STYLE LOCK:", prompt)
         self.assertIn("template wardrobe and scene are hard style anchors", prompt)
         self.assertIn("User-written scene, outfit, or overall style direction is a higher-priority creative brief", prompt)
+        self.assertIn("body scale and skin-undertone anchor, not a style lock", prompt)
         self.assertIn("PHOTO REALISM:", prompt)
         self.assertIn("Hasselblad", prompt)
         self.assertIn("GEMINI FLASH EDIT PROTOCOL:", prompt)
@@ -145,6 +146,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("FORBIDDEN CONSTRAINTS:", prompt)
         self.assertIn("Identity lock is mandatory", prompt)
         self.assertIn("preserve the same face shape", prompt)
+        self.assertIn("Nose size is identity-critical", prompt)
+        self.assertIn("side-profile silhouette", prompt)
         self.assertIn("strictly indoor castle-inspired bridal studio set", prompt)
         self.assertIn("no mountain vista", prompt)
         self.assertIn("no terrace overlook", prompt)
@@ -190,6 +193,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("mouth-only smile", negative)
         self.assertIn("cold fashion profile", negative)
         self.assertIn("changed face shape", negative)
+        self.assertIn("enlarged nose", negative)
+        self.assertIn("altered side-profile silhouette", negative)
         self.assertIn("face in shadow", negative)
         self.assertIn("underexposed face", negative)
         self.assertIn("background brighter than face", negative)
@@ -280,6 +285,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("SHOT LIBRARY:", prompt)
         self.assertIn("PRIMARY SHOT full gown editorial", prompt)
         self.assertIn("CANDIDATE SHOT SEQUENCE:", prompt)
+        self.assertIn("USER TEXT PRIORITY:", prompt)
+        self.assertIn("uploaded identity image is only a face", prompt)
 
     def test_couple_generation_policy_adds_dedicated_negative_terms(self) -> None:
         negative = build_generation_negative_prompt(is_couple=True)
@@ -1180,6 +1187,17 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(WenwenService._should_include_previous_edit_result(["unnatural_expression"]))
         self.assertFalse(WenwenService._should_include_previous_edit_result(["unnatural_gaze"]))
 
+    def test_identity_repair_focus_restores_nose_and_profile(self) -> None:
+        focus = WenwenService._repair_focus_from_reasons(
+            ["identity_mismatch", "face_distortion"],
+            is_couple=False,
+        )
+
+        self.assertIn("nose size", focus)
+        self.assertIn("nose bridge and tip", focus)
+        self.assertIn("side-profile silhouette", focus)
+        self.assertIn("original nose proportions", focus)
+
     async def test_identity_qa_hard_fails_when_vision_provider_is_unavailable(self) -> None:
         original = qa_service.llm_service.is_vision_provider_configured
         original_require_vision = qa_service.settings.qa_require_vision
@@ -1441,6 +1459,53 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verdict["reasons"], ["unnatural_gaze", "unnatural_expression"])
         self.assertEqual(verdict["issues"][0]["repair_action"], "repair_eye_gaze_and_catchlights")
         self.assertEqual(verdict["issues"][1]["repair_action"], "restore_natural_wedding_expression")
+
+    def test_vision_qa_blocks_enlarged_nose_identity_drift(self) -> None:
+        async def fake_chat(payload, *, title, timeout, provider):
+            prompt_text = str(payload["messages"][0]["content"][0]["text"])
+            self.assertIn("nose bridge", prompt_text)
+            self.assertIn("Nose and side-profile proportions are identity-critical", prompt_text)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"passed": false, '
+                                '"reasons": ["enlarged_nose"], '
+                                '"issues": [{"code": "enlarged_nose", "evidence": "nose is much larger than source"}], '
+                                '"notes": "identity drift"}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        original_configured = llm_service.is_vision_provider_configured
+        original_chat = llm_service._llm_chat_for_provider
+        original_provider = llm_service.settings.llm_provider
+        original_jiekou_key = llm_service.settings.jiekou_api_key
+        original_wenwen_vision_key = llm_service.settings.wenwen_vision_api_key
+        llm_service.is_vision_provider_configured = lambda: True
+        llm_service._llm_chat_for_provider = fake_chat
+        llm_service.settings.llm_provider = "jiekou"
+        llm_service.settings.jiekou_api_key = "test-jiekou-key"
+        llm_service.settings.wenwen_vision_api_key = ""
+        try:
+            verdict = asyncio.run(
+                llm_service.verify_generated_image_quality(
+                    "https://cdn.example.com/generated.jpg",
+                    source_image_urls=["https://cdn.example.com/source.jpg"],
+                )
+            )
+        finally:
+            llm_service.is_vision_provider_configured = original_configured
+            llm_service._llm_chat_for_provider = original_chat
+            llm_service.settings.llm_provider = original_provider
+            llm_service.settings.jiekou_api_key = original_jiekou_key
+            llm_service.settings.wenwen_vision_api_key = original_wenwen_vision_key
+
+        self.assertFalse(verdict["passed"])
+        self.assertEqual(verdict["reasons"], ["identity_mismatch"])
 
     def test_vision_qa_receives_template_style_contract(self) -> None:
         captured_prompt: dict[str, str] = {}
