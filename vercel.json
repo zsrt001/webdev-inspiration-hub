@@ -4,11 +4,6 @@
     "buildCommand": "cd frontend && npm run build:web",
     "env": {
         "REMOTE_JOIN_ENABLED": "true",
-        "GENERATION_ENGINE": "evolink",
-        "EVOLINK_API_BASE_URL": "https://api.evolink.ai",
-        "EVOLINK_IMAGE_MODEL": "gemini-3.1-flash-image-preview",
-        "EVOLINK_IMAGE_SIZE": "3:4",
-        "EVOLINK_IMAGE_QUALITY": "2K",
         "QA_REQUIRE_IDENTITY_EMBEDDING": "false"
     },
     "outputDirectory": "frontend/dist/build/h5",
