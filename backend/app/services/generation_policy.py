@@ -10,7 +10,7 @@ from app.services.shot_library_service import build_shot_library_prompt, commerc
 
 DEFAULT_ASPECT_RATIO = "3:4"
 LEGACY_RATIO_UPGRADES = {"4:5", "3:2"}
-COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v3"
+COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v4"
 
 COMMERCIAL_WEDDING_STANDARD = {
     "version": COMMERCIAL_STANDARD_VERSION,
@@ -44,6 +44,13 @@ COMMERCIAL_WEDDING_STANDARD = {
         "requires_visible_catchlights": True,
         "requires_controlled_white_dress_highlights": True,
     },
+    "face_expression": {
+        "requires_natural_gaze": True,
+        "requires_emotionally_believable_expression": True,
+        "forbid_dead_eyes": True,
+        "forbid_waxy_or_frozen_smile": True,
+        "requires_pose_coherent_eyeline": True,
+    },
     "blocking_reasons": [
         "identity_mismatch",
         "identity_similarity_low",
@@ -64,6 +71,8 @@ COMMERCIAL_WEDDING_STANDARD = {
         "flat_centered_pose",
         "weak_couple_interaction",
         "harsh_backlight",
+        "unnatural_expression",
+        "unnatural_gaze",
         "face_underexposed",
         "flat_lighting",
         "no_catchlights",
@@ -103,6 +112,8 @@ QA_RETRY_REASONS = {
     "severe_artifacts",
     "dress_exposure_error",
     "poor_studio_quality",
+    "unnatural_expression",
+    "unnatural_gaze",
     "face_underexposed",
     "flat_lighting",
     "no_catchlights",

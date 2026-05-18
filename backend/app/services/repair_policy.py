@@ -37,6 +37,8 @@ COMMERCIAL_HARD_GATE_REASONS = {
     "weak_couple_interaction",
     "harsh_backlight",
     "poor_studio_quality",
+    "unnatural_expression",
+    "unnatural_gaze",
     "face_underexposed",
     "flat_lighting",
     "no_catchlights",
@@ -56,9 +58,10 @@ LIGHTING_ONLY_REPAIR_REASONS = {
     "background_brighter_than_face",
     "background_over_blurred",
     "harsh_backlight",
+    "unnatural_gaze",
 }
 
-FINAL_POLISH_ONLY_REASONS = LIGHTING_ONLY_REPAIR_REASONS | {"poor_studio_quality"}
+FINAL_POLISH_ONLY_REASONS = LIGHTING_ONLY_REPAIR_REASONS | {"poor_studio_quality", "unnatural_expression"}
 FINAL_DELIVERY_REPAIR_REASONS = FINAL_POLISH_ONLY_REASONS | {
     "identity_mismatch",
     "identity_similarity_low",
@@ -72,6 +75,7 @@ FINAL_DELIVERY_REPAIR_REASONS = FINAL_POLISH_ONLY_REASONS | {
     "extra_limbs",
     "body_fusion",
     "cropped_face",
+    "unnatural_gaze",
     "awkward_crop",
     "dress_cropped",
     "subject_too_small",
@@ -108,6 +112,8 @@ CANDIDATE_REASON_PENALTIES = {
     "weak_couple_interaction": 30,
     "harsh_backlight": 45,
     "poor_studio_quality": 45,
+    "unnatural_expression": 60,
+    "unnatural_gaze": 65,
     "face_underexposed": 50,
     "flat_lighting": 40,
     "no_catchlights": 35,
@@ -146,6 +152,7 @@ IMAGE_EDIT_REPAIR_SKIP_PREVIOUS_REASONS = {
     "dress_cropped",
     "flat_centered_pose",
     "weak_couple_interaction",
+    "unnatural_gaze",
     "vision_error",
 }
 

@@ -102,6 +102,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         # Skin & photorealism (new v2 high-priority sections)
         self.assertIn("SKIN REALISM:", prompt)
         self.assertIn("natural human skin with visible pores", prompt)
+        self.assertIn("EYES AND EXPRESSION:", prompt)
+        self.assertIn("eyes must be alive", prompt)
         self.assertIn("PHOTO REALISM:", prompt)
         self.assertIn("Hasselblad", prompt)
         self.assertIn("GEMINI FLASH EDIT PROTOCOL:", prompt)
@@ -146,6 +148,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
 
         # Skin & photorealism (v2 additions)
         self.assertIn("SKIN REALISM:", guardrails)
+        self.assertIn("EYES AND EXPRESSION:", guardrails)
         self.assertIn("ANTI AI ARTIFACTS:", guardrails)
         # Couple-specific quality
         self.assertIn("two-person full-length couple portrait", guardrails)
@@ -172,6 +175,9 @@ class GenerationQualityPolicyTest(unittest.TestCase):
 
         self.assertIn("harsh backlight", negative)
         self.assertIn("generic model face", negative)
+        self.assertIn("dead eyes", negative)
+        self.assertIn("unnatural gaze", negative)
+        self.assertIn("waxy smile", negative)
         self.assertIn("changed face shape", negative)
         self.assertIn("face in shadow", negative)
         self.assertIn("underexposed face", negative)
@@ -318,6 +324,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
                 "underexposed_face",
                 "flat_light",
                 "missing_catchlights",
+                "dead_eyes",
+                "waxy_smile",
                 "oily_skin",
                 "blown_out_dress",
                 "mixed_color_temp",
@@ -334,6 +342,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
                 "face_underexposed",
                 "flat_lighting",
                 "no_catchlights",
+                "unnatural_gaze",
+                "unnatural_expression",
                 "oily_skin_highlight",
                 "dress_highlights_blown",
                 "mixed_color_temperature",
@@ -342,11 +352,14 @@ class GenerationQualityPolicyTest(unittest.TestCase):
             ],
         )
         self.assertTrue(all(issue["blocking"] for issue in issues))
-        self.assertTrue(all(issue["category"] == "photography_quality" for issue in issues))
+        self.assertEqual(issues[3]["category"], "face")
+        self.assertEqual(issues[4]["category"], "face")
         self.assertEqual(issues[0]["repair_action"], "raise_face_exposure_with_soft_fill")
-        self.assertEqual(issues[3]["repair_action"], "reduce_specular_skin_highlights")
-        self.assertEqual(issues[6]["target"], "face_background_exposure_balance")
-        self.assertEqual(issues[7]["target"], "venue_detail_readability")
+        self.assertEqual(issues[3]["repair_action"], "repair_eye_gaze_and_catchlights")
+        self.assertEqual(issues[4]["repair_action"], "restore_natural_wedding_expression")
+        self.assertEqual(issues[5]["repair_action"], "reduce_specular_skin_highlights")
+        self.assertEqual(issues[8]["target"], "face_background_exposure_balance")
+        self.assertEqual(issues[9]["target"], "venue_detail_readability")
 
     def test_structured_qa_issues_classify_face_and_identity_failures(self) -> None:
         issues = build_structured_qa_issues(
@@ -402,7 +415,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_commercial_wedding_standard_records_canvas_ranges(self) -> None:
         standard = commercial_wedding_standard()
 
-        self.assertEqual(standard["version"], "commercial_wedding_v3")
+        self.assertEqual(standard["version"], "commercial_wedding_v4")
         self.assertEqual(standard["single"]["subject_height_range"], [0.74, 0.84])
         self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.62)
         self.assertEqual(standard["couple"]["group_height_range"], [0.70, 0.82])
@@ -410,7 +423,10 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(standard["background"]["clarity_profile"], "commercially_readable_not_tack_sharp")
         self.assertTrue(standard["background"]["requires_readable_material_texture"])
         self.assertEqual(standard["lighting"]["fill_under_key_stops"], [1.0, 2.0])
+        self.assertTrue(standard["face_expression"]["requires_natural_gaze"])
+        self.assertTrue(standard["face_expression"]["requires_emotionally_believable_expression"])
         self.assertIn("background_dominates", standard["blocking_reasons"])
+        self.assertIn("unnatural_gaze", standard["blocking_reasons"])
         self.assertTrue(standard["delivery_gate"]["identity_required"])
         self.assertTrue(standard["candidate_selection"]["enabled"])
         self.assertEqual(standard["shot_library"]["version"], SHOT_LIBRARY_VERSION)
@@ -1129,6 +1145,19 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("masonry joints", focus)
         self.assertIn("faces and wardrobe sharper than the background", focus)
 
+    def test_expression_repair_focus_is_identity_safe(self) -> None:
+        focus = WenwenService._repair_focus_from_reasons(
+            ["unnatural_gaze", "unnatural_expression"],
+            is_couple=False,
+        )
+
+        self.assertIn("eye alignment", focus)
+        self.assertIn("coherent eye-line", focus)
+        self.assertIn("emotionally believable wedding expression", focus)
+        self.assertIn("preserving identity", focus)
+        self.assertTrue(WenwenService._should_include_previous_edit_result(["unnatural_expression"]))
+        self.assertFalse(WenwenService._should_include_previous_edit_result(["unnatural_gaze"]))
+
     async def test_identity_qa_hard_fails_when_vision_provider_is_unavailable(self) -> None:
         original = qa_service.llm_service.is_vision_provider_configured
         original_require_vision = qa_service.settings.qa_require_vision
@@ -1220,6 +1249,9 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("oily_skin_highlight", prompt_text)
             self.assertIn("background_brighter_than_face", prompt_text)
             self.assertIn("background_over_blurred", prompt_text)
+            self.assertIn("unnatural_gaze", prompt_text)
+            self.assertIn("unnatural_expression", prompt_text)
+            self.assertIn("eyes look dead", prompt_text)
             self.assertIn("Prefer these specific lighting reasons", prompt_text)
             self.assertIn("74-84% of canvas height", prompt_text)
             self.assertIn("premium background clarity", prompt_text)
@@ -1338,6 +1370,55 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([issue["category"] for issue in verdict["issues"]], ["photography_quality"] * 9)
         self.assertEqual(verdict["issues"][0]["repair_action"], "raise_face_exposure_with_soft_fill")
         self.assertEqual(verdict["issues"][4]["repair_action"], "recover_white_dress_highlight_detail")
+
+    def test_vision_qa_blocks_unnatural_gaze_and_expression(self) -> None:
+        async def fake_chat(payload, *, title, timeout, provider):
+            prompt_text = str(payload["messages"][0]["content"][0]["text"])
+            self.assertIn("unnatural_gaze", prompt_text)
+            self.assertIn("unnatural_expression", prompt_text)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"passed": false, '
+                                '"reasons": ["dead_eyes", "waxy_smile"], '
+                                '"issues": ['
+                                '{"code": "dead_eyes", "evidence": "eyes look blank and painted"}, '
+                                '{"code": "waxy_smile", "evidence": "smile looks frozen and mannequin-like"}'
+                                '], '
+                                '"notes": "expression issue"}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        original_configured = llm_service.is_vision_provider_configured
+        original_chat = llm_service._llm_chat_for_provider
+        original_provider = llm_service.settings.llm_provider
+        original_jiekou_key = llm_service.settings.jiekou_api_key
+        original_wenwen_vision_key = llm_service.settings.wenwen_vision_api_key
+        llm_service.is_vision_provider_configured = lambda: True
+        llm_service._llm_chat_for_provider = fake_chat
+        llm_service.settings.llm_provider = "jiekou"
+        llm_service.settings.jiekou_api_key = "test-jiekou-key"
+        llm_service.settings.wenwen_vision_api_key = ""
+        try:
+            verdict = asyncio.run(
+                llm_service.verify_generated_image_quality("https://cdn.example.com/generated.jpg")
+            )
+        finally:
+            llm_service.is_vision_provider_configured = original_configured
+            llm_service._llm_chat_for_provider = original_chat
+            llm_service.settings.llm_provider = original_provider
+            llm_service.settings.jiekou_api_key = original_jiekou_key
+            llm_service.settings.wenwen_vision_api_key = original_wenwen_vision_key
+
+        self.assertFalse(verdict["passed"])
+        self.assertEqual(verdict["reasons"], ["unnatural_gaze", "unnatural_expression"])
+        self.assertEqual(verdict["issues"][0]["repair_action"], "repair_eye_gaze_and_catchlights")
+        self.assertEqual(verdict["issues"][1]["repair_action"], "restore_natural_wedding_expression")
 
     def test_vision_qa_falls_back_to_secondary_provider_on_timeout(self) -> None:
         calls: list[tuple[str | None, str]] = []

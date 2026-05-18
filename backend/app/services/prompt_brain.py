@@ -16,6 +16,17 @@ SKIN_REALISM_PROTOCOL = (
     "Aim for Hasselblad medium-format bridal-portrait skin rendering with subtle film-like micro-contrast"
 )
 
+EYE_EXPRESSION_PROTOCOL = (
+    "Commercial eye and expression requirement: eyes must be alive, naturally aligned, and emotionally believable "
+    "for a paid wedding portrait. Preserve the source person's eye shape, eyelid fold, pupil direction, brow rhythm, "
+    "mouth shape, and expression family, but polish the moment so the gaze feels intentional rather than blank, "
+    "cross-eyed, side-glancing by accident, startled, sleepy, waxy, doll-like, or over-posed. Use natural catchlights "
+    "that match the key or fill light, relaxed eyelids, realistic iris detail, and a calm confident bridal expression "
+    "or gentle authentic smile. For profile or three-quarter poses, the eye-line must point coherently into the pose "
+    "or toward the partner; never let the face read as a mannequin, beauty-filter mask, pasted-on smile, or dead-eyed "
+    "AI portrait"
+)
+
 PHOTO_REALISM_PROTOCOL = (
     "output a photorealistic editorial wedding photograph shot on a Hasselblad H6D with 100mm f/2.2 lens, "
     "Portra 400 film stock color science, natural film grain barely visible, Zeiss Otus-level micro-contrast, "
@@ -62,8 +73,9 @@ ANTI_AI_ARTIFACTS_PROTOCOL = (
     "Strictly avoid all AI-generated-image artifacts and tells: no overly symmetrical face, no generic AI face, "
     "no plastic skin, no waxy highlights, no beauty-filter texture, no CGI rendering, no 3D-render look, "
     "no game-engine lighting, no fantasy concept-art styling, no unnatural eye sharpness, no uncanny-valley "
-    "expression, no over-perfect symmetry in facial features, no identical couple faces, no AI-hallucinated "
-    "background details, no over-sharpened fabric, no chromatic aberration on edges. "
+    "expression, no dead eyes, no blank stare, no cross-eyed gaze, no mismatched eye-line, no forced waxy smile, "
+    "no over-perfect symmetry in facial features, no identical couple faces, no AI-hallucinated background details, "
+    "no over-sharpened fabric, no chromatic aberration on edges. "
     "The image must pass as a human-shot professional wedding photograph."
 )
 
@@ -235,6 +247,9 @@ NEGATIVE_PROMPT = (
     "Skin and realism failures: smooth skin, airbrushed, wax, plastic, makeup filter, oily skin, greasy shine, "
     "wet glossy skin, over-shiny forehead, over-shiny nose, over-shiny cheeks, 3d render, cgi, "
     "over-smoothed bridal ad; "
+    "Eye and expression failures: dead eyes, blank stare, cross-eyed gaze, mismatched eye-line, unnatural gaze, "
+    "uncanny smile, waxy smile, frozen expression, mannequin expression, doll-like expression, asymmetrical eyelids, "
+    "painted eyes, over-sharpened eyes, emotionless face; "
     "Anatomy failures: headless, cropped head, phantom limbs, fused bodies, merged limbs, duplicate person, "
     "duplicated face, shared torso, merged shoulders, fused arms, conjoined bodies, bad hands, extra fingers; "
     "Lighting failures: bright flat lighting, harsh backlight, sun as primary face light, missing frontal fill, "
@@ -262,6 +277,7 @@ def _section(title: str, body: str | None) -> str:
 def get_studio_guardrails(*, is_couple: bool = False) -> str:
     parts = [
         _section("SKIN REALISM", SKIN_REALISM_PROTOCOL),
+        _section("EYES AND EXPRESSION", EYE_EXPRESSION_PROTOCOL),
         _section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL),
         _section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL),
         _section("BACKGROUND DETAIL", BACKGROUND_DETAIL_PROTOCOL),
@@ -340,6 +356,7 @@ def build_prompt(
         )
     )
     parts.append(_section("SKIN REALISM", SKIN_REALISM_PROTOCOL))
+    parts.append(_section("EYES AND EXPRESSION", EYE_EXPRESSION_PROTOCOL))
     parts.append(_section("PHOTO REALISM", PHOTO_REALISM_PROTOCOL))
     parts.append(_section("BACKGROUND DETAIL", BACKGROUND_DETAIL_PROTOCOL))
     parts.append(_section("GEMINI FLASH EDIT PROTOCOL", GEMINI_FLASH_EDIT_PROTOCOL))

@@ -131,6 +131,22 @@ _QA_REASON_MAP: dict[str, str] = {
     "ai_look": "poor_studio_quality",
     "waxy_skin": "poor_studio_quality",
     "cheap_composite": "poor_studio_quality",
+    "unnatural_expression": "unnatural_expression",
+    "uncanny_expression": "unnatural_expression",
+    "frozen_expression": "unnatural_expression",
+    "mannequin_expression": "unnatural_expression",
+    "doll_like_expression": "unnatural_expression",
+    "waxy_smile": "unnatural_expression",
+    "forced_smile": "unnatural_expression",
+    "emotionless_face": "unnatural_expression",
+    "unnatural_gaze": "unnatural_gaze",
+    "dead_eyes": "unnatural_gaze",
+    "blank_stare": "unnatural_gaze",
+    "cross_eyed": "unnatural_gaze",
+    "mismatched_eyeline": "unnatural_gaze",
+    "mismatched_eye_line": "unnatural_gaze",
+    "bad_eyeline": "unnatural_gaze",
+    "painted_eyes": "unnatural_gaze",
     "face_underexposed": "face_underexposed",
     "underexposed_face": "face_underexposed",
     "face_in_shadow": "face_underexposed",
@@ -145,7 +161,6 @@ _QA_REASON_MAP: dict[str, str] = {
     "no_catchlights": "no_catchlights",
     "missing_catchlights": "no_catchlights",
     "no_catchlight": "no_catchlights",
-    "dead_eyes": "no_catchlights",
     "eyes_no_catchlight": "no_catchlights",
     "oily_skin_highlight": "oily_skin_highlight",
     "oily_skin": "oily_skin_highlight",
@@ -253,6 +268,8 @@ _ALLOWED_QA_REASONS = {
     "bad_hands",
     "dress_exposure_error",
     "poor_studio_quality",
+    "unnatural_expression",
+    "unnatural_gaze",
     "face_underexposed",
     "flat_lighting",
     "no_catchlights",
@@ -606,7 +623,7 @@ async def verify_generated_image_quality(
     prompt = (
         "You are a strict QA inspector for AI-generated wedding photos.\n"
         "Check for critical errors that make the result NOT acceptable for a paid product.\n"
-        "Focus especially on: identity mismatch, distorted faces, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, commercial subject scale, face readability, crop boundaries, gown/train completeness, professional lighting, premium background clarity, and whether the result looks like a paid bridal-studio deliverable.\n"
+        "Focus especially on: identity mismatch, distorted faces, unnatural eyes or expression, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, commercial subject scale, face readability, crop boundaries, gown/train completeness, professional lighting, premium background clarity, and whether the result looks like a paid bridal-studio deliverable.\n"
         "Return strictly valid JSON only with this schema:\n"
         "{\n"
         '  "passed": boolean,\n'
@@ -625,7 +642,7 @@ async def verify_generated_image_quality(
         "}\n"
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","unexpected_extra_subject","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","background_over_blurred","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","unexpected_extra_subject","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","unnatural_expression","unnatural_gaze","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","background_over_blurred","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
         "- issues must describe each failure with code, category, target, severity, short evidence, and a concrete repair_hint.\n"
         "- Commercial framing standard: single subject should occupy about 74-84% of canvas height, with face height about 9-14%, headroom about 3-6%, and bottom room for shoes/gown/train about 5-8%. Outdoor environmental portraits may be wider, but subject height must not fall below about 62% and the face must stay recognizable.\n"
         "- Commercial couple framing standard: the couple group should occupy about 70-82% of canvas height and 54-76% of canvas width; each face should be about 7-12% of canvas height, both faces readable, both bodies separated, outfits complete, and the pose should show subtle professional interaction rather than flat tourist-photo blocking.\n"
@@ -634,6 +651,7 @@ async def verify_generated_image_quality(
         "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use background_brighter_than_face when the background, sky, window, or architecture is brighter than the face and steals exposure priority. Use background_over_blurred when the venue, garden, architecture, drapery, floor, floral styling, or studio backdrop is smeared into unrecognizable blur instead of natural optical falloff. Also use background_over_blurred for phone portrait-mode blur, melted bokeh, color-block backgrounds, mushy flowers, erased floor lines, unreadable arches/windows/columns, or any premium location that cannot be identified at print-viewing size.\n"
         "- Commercial background clarity v3: faces remain priority and must stay sharper than the setting, but architecture, drapery, garden texture, floral styling, floor lines, windows, arches, columns, masonry joints, carved edges, and painted studio-set detail should remain readable enough to prove a premium wedding location. Do not reward a beautiful face if the location is erased into mush; do not require tack-sharp landscape detail when the subject hierarchy is correct.\n"
         "- Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
+        "- Use unnatural_gaze when eyes look dead, blank, cross-eyed, painted, misaligned, or the eye-line does not match the head pose or couple interaction. Use unnatural_expression when the face looks frozen, waxy, mannequin-like, emotionless, forced-smiling, or uncanny even if identity is roughly preserved. These are paid-product blockers because wedding users judge the image by eyes and expression first.\n"
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"

@@ -1346,6 +1346,14 @@ class GenerationProviderWorkflow:
             )
         if normalized & {"face_distortion", "cropped_face", "headless", "fused_faces"}:
             focus.append("repair face geometry and keep every face complete, natural, and readable")
+        if "unnatural_gaze" in normalized:
+            focus.append(
+                "repair eye alignment, eyelid shape, iris detail, coherent eye-line, and natural catchlights from the identity references; remove dead eyes, blank stare, painted eyes, or mismatched gaze"
+            )
+        if "unnatural_expression" in normalized:
+            focus.append(
+                "restore a natural emotionally believable wedding expression while preserving identity, mouth shape, brow rhythm, and expression family; remove waxy smile, frozen face, mannequin look, or beauty-filter mask"
+            )
         if normalized & {"body_fusion", "extra_limbs"}:
             focus.append("repair body separation and natural anatomy without changing the locked faces")
         if "bad_hands" in normalized:
@@ -1910,15 +1918,15 @@ class GenerationProviderWorkflow:
                 stage_instruction = (
                     "ROUND 3 FINAL POLISH ONLY: edit lighting and finish, not identity, anatomy, hands, crop, pose, "
                     f"wardrobe structure, or scene layout. Polish focus: {focus}. If any identity, face, hands, crop, "
-                    "subject-size, or role-order failure remains, reject the candidate instead of redrawing it. "
-                    "Allowed edits are facial exposure, catchlights, semi-matte realistic skin texture, controlled "
+                    "subject-size, eye-gaze, expression, or role-order failure remains, reject the candidate instead of redrawing it. "
+                    "Allowed edits are facial exposure, catchlights, subtle eye liveliness, semi-matte realistic skin texture, controlled "
                     "highlights, white gown highlight recovery, color temperature, shadow cleanup, background texture "
                     "clarity, film grain, and professional color grading."
                 )
             else:
                 stage_instruction = (
-                    "ROUND 3 FINAL POLISH: perform final professional retouching only. Improve catchlights, facial "
-                    "exposure, semi-matte natural skin texture, controlled facial highlights, dress fabric, color "
+                    "ROUND 3 FINAL POLISH: perform final professional retouching only. Improve catchlights, natural "
+                    "eye liveliness, facial exposure, semi-matte natural skin texture, controlled facial highlights, dress fabric, color "
                     "grading, background separation, and readable venue or studio-set texture. Remove oily shine and wet glossy skin. Do not "
                     "change facial identity, role order, pose, body shape, camera framing, or scene concept."
                 )
