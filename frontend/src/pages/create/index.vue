@@ -108,10 +108,10 @@
             </view>
 
             <view class="style-section-head">
-              <text>{{ generationMode === 'single' ? tr('参考风格（单人）', 'Reference Styles (solo)') : tr('参考风格（双人）', 'Reference Styles (couple)') }}</text>
-              <text>{{ tr('可选：不选模板时按文字自由生成', 'Optional: skip templates to follow text freely') }}</text>
+              <text>{{ stylePanelTitle }}</text>
+              <text>{{ stylePanelNote }}</text>
             </view>
-            <view class="free-mode-card compact" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">
+            <view v-if="generationMode !== 'golden_anniversary'" class="free-mode-card compact" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">
               <view class="free-mode-copy">
                 <text class="free-mode-label">{{ tr('默认', 'Default') }}</text>
                 <text class="free-mode-title heading-serif">{{ tr('不套模板，按文字自由生成', 'No template, follow text freely') }}</text>
@@ -220,6 +220,7 @@
 </template>
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { onLoad } from '@dcloudio/uni-app';
 import NavBar from '../../components/NavBar.vue';
 import PaymentModal from '../../components/PaymentModal.vue';
 import LegalConsentInline from '../../components/LegalConsentInline.vue';
@@ -233,7 +234,7 @@ import { isSupabaseLoggedIn } from '../../utils/auth';
 import { runLocalSmartInputCheck, type SmartInputVerdict } from '../../utils/local_smart_input';
 import { trackEvent } from '../../utils/analytics';
 
-type GenerationMode = 'single' | 'couple_local' | 'couple_remote';
+type GenerationMode = 'single' | 'couple_local' | 'couple_remote' | 'golden_anniversary';
 type UploadQuality = {
   quality_score: number;
   quality_level: 'good' | 'warning' | 'poor';
@@ -247,6 +248,7 @@ type RemoteSessionStatus = { exists: boolean; status: string; host_ready?: boole
 type RemoteSessionImages = { host_image_url: string; guest_image_url: string; template_id: string };
 
 const STYLE_ORDER = ['chn_xiuhe', 'korean_minimal', 'royal_castle', 'old_money', 'gothic_romance', 'beach_sunset', 'hk_retro', 'twilight_forest', 'japanese_shiromuku', 'cyberpunk_city', 'school_days', 'classic_bw', 'golden_vintage_studio_8090', 'golden_chinese_courtyard', 'golden_modern_remake'];
+const GOLDEN_STYLE_FAMILIES = ['golden_vintage_studio_8090', 'golden_chinese_courtyard', 'golden_modern_remake'];
 const STYLE_SUBTITLE: Record<string, { zh: string; en: string }> = {
   chn_xiuhe: { zh: '传统礼服与中式庭院的庄重仪式感', en: 'Ceremonial Chinese bridal styling with courtyard texture' },
   korean_minimal: { zh: '干净构图、柔和光线与极简高级感', en: 'Clean composition and soft editorial minimalism' },
@@ -275,6 +277,7 @@ const navBarRef = ref<InstanceType<typeof NavBar> | null>(null);
 const showPaymentModal = ref(false);
 const legalAccepted = ref(false);
 const submitting = ref(false);
+const routeQuery = ref<Record<string, string>>({});
 
 const generationMode = ref<GenerationMode>('single');
 const selectedStyleFamily = ref('');
@@ -289,11 +292,14 @@ const remoteSession = ref<RemoteSessionResponse | null>(null);
 const remoteStatus = ref<RemoteSessionStatus | null>(null);
 let remotePollTimer: ReturnType<typeof setInterval> | null = null;
 
-const portraitIndexes = computed(() => (generationMode.value === 'single' ? [0] : generationMode.value === 'couple_local' ? [0, 1] : [0]));
+const isGoldenAnniversaryMode = computed(() => generationMode.value === 'golden_anniversary');
+const portraitIndexes = computed(() => (generationMode.value === 'single' ? [0] : generationMode.value === 'couple_remote' ? [0] : [0, 1]));
 const portraitHint = computed(() => generationMode.value === 'single'
   ? tr('上传一张清晰正脸照片，建议光线自然、五官无遮挡。', 'Upload one clear portrait with natural light and an unobstructed face.')
   : generationMode.value === 'couple_local'
     ? tr('在同一设备上传两张照片，适合情侣、夫妻或纪念照双人生成。', 'Upload two portraits on one device for couple or anniversary portraits.')
+    : isGoldenAnniversaryMode.value
+      ? tr('上传两张父母或长辈的清晰照片，系统会使用金婚重塑模板生成纪念合照。', 'Upload two clear portraits of parents or elders for a Golden Anniversary remake.')
     : tr('你先上传自己的照片，再复制邀请链接给对方补充第二张照片。', 'Upload your portrait first, then send the invite link so your partner can add theirs.'));
 const primaryPhotoInstruction = computed(() => {
   if (generationMode.value === 'single') {
@@ -302,6 +308,9 @@ const primaryPhotoInstruction = computed(() => {
   if (generationMode.value === 'couple_local') {
     return tr('主流程需要 2 张人物照片。两张照片齐了即可生成；模板、文字和参考图只是帮助画面更精准。', 'The core flow needs 2 portraits. Once both are uploaded, generation is ready; templates, text, and references only improve precision.');
   }
+  if (isGoldenAnniversaryMode.value) {
+    return tr('金婚重塑需要 2 张人物照片。系统会默认选择纪念合照模板，你也可以在下方切换 80/90 影楼、中式庭院或现代翻拍。', 'Golden Anniversary remake needs 2 portraits. A legacy template is selected by default, and you can switch between studio, courtyard, or modern remake below.');
+  }
   return tr('主流程是：上传你的照片，创建邀请，等待对方补照片。双方照片齐了才能提交生成。', 'The core flow is: upload your portrait, create an invite, and wait for your partner. Generation starts only when both portraits are ready.');
 });
 const selectedTemplate = computed<Template | null>(() => {
@@ -309,7 +318,11 @@ const selectedTemplate = computed<Template | null>(() => {
   return styleCards.value.find((item) => item.familyKey === selectedStyleFamily.value)?.template || null;
 });
 const styleCards = computed(() => {
-  const desiredCategories = generationMode.value === 'single' ? ['single'] : ['couple', 'vintage'];
+  const desiredCategories = generationMode.value === 'single'
+    ? ['single']
+    : isGoldenAnniversaryMode.value
+      ? ['vintage']
+      : ['couple', 'vintage'];
   const ordered = templateStore.templates.slice().sort((a, b) => {
     const ar = STYLE_ORDER.indexOf(getTemplateFamilyKey(a));
     const br = STYLE_ORDER.indexOf(getTemplateFamilyKey(b));
@@ -341,25 +354,33 @@ const directionPanelDesc = computed(() => selectedStyleFamily.value
   ? tr('你已经选择了参考风格。这里负责补充细节，例如指定礼服、地点、光线或想避开的元素。', 'You already selected a reference style. Use this area only to refine details such as outfit, location, lighting, or what to avoid.')
   : tr('自由模式不强制选模板。想要更可控的结果时，优先写清楚服装、场景和整体氛围。', 'Free mode does not require a template. For more control, describe outfit, scene, and overall mood first.'));
 const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
-const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : tr('双人异地', 'Couple Remote'));
+const stylePanelTitle = computed(() => {
+  if (generationMode.value === 'single') return tr('参考风格（单人）', 'Reference Styles (solo)');
+  if (isGoldenAnniversaryMode.value) return tr('金婚重塑模板', 'Golden Anniversary Templates');
+  return tr('参考风格（双人）', 'Reference Styles (couple)');
+});
+const stylePanelNote = computed(() => isGoldenAnniversaryMode.value
+  ? tr('必选：用于父母/长辈纪念合照的专项模板', 'Required: legacy templates for parents and elders')
+  : tr('可选：不选模板时按文字自由生成', 'Optional: skip templates to follow text freely'));
+const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : isGoldenAnniversaryMode.value ? tr('金婚重塑', 'Golden Anniversary') : tr('双人异地', 'Couple Remote'));
 const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式优先', 'Free Direction First'));
 const generationCost = computed(() => {
   if (selectedTemplate.value?.category === 'vintage') return 5;
   if (generationMode.value === 'couple_remote') return 4;
-  if (generationMode.value === 'couple_local') return 3;
+  if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return 3;
   if (hasDirectionText.value || sceneReferencePath.value || outfitReferencePath.value) return 3;
   return 2;
 });
 const portraitRequirementMet = computed(() => {
   if (generationMode.value === 'single') return !!portraitSlots.value[0].localPath;
-  if (generationMode.value === 'couple_local') return !!portraitSlots.value[0].localPath && !!portraitSlots.value[1].localPath;
+  if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return !!portraitSlots.value[0].localPath && !!portraitSlots.value[1].localPath;
   return !!portraitSlots.value[0].localPath && !!remoteSession.value && remoteStatus.value?.status === 'ready';
 });
 const portraitRequirementText = computed(() => {
   if (generationMode.value === 'single') {
     return portraitRequirementMet.value ? tr('已上传 1 张人物照片', '1 portrait uploaded') : tr('需要上传 1 张人物照片', 'Upload 1 portrait');
   }
-  if (generationMode.value === 'couple_local') {
+  if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) {
     return portraitRequirementMet.value ? tr('已上传 2 张人物照片', '2 portraits uploaded') : tr('需要上传 2 张人物照片', 'Upload 2 portraits');
   }
   return portraitRequirementMet.value ? tr('双方照片已就绪', 'Both portraits ready') : tr('需要你的照片和对方上传完成', 'Your portrait and guest upload are required');
@@ -397,6 +418,7 @@ const canSubmit = computed(() => {
 const modeOptions = computed(() => [
   { value: 'single' as GenerationMode, title: tr('单人生成', 'Single'), desc: tr('一张照片，直接生成个人婚纱风格', 'One portrait, direct solo bridal output') },
   { value: 'couple_local' as GenerationMode, title: tr('双人同机', 'Couple Local'), desc: tr('同一设备上传两张照片，立即合成双人作品', 'Upload two portraits on one device') },
+  { value: 'golden_anniversary' as GenerationMode, title: tr('金婚重塑', 'Golden Anniversary'), desc: tr('父母/长辈纪念合照，默认使用年代感模板', 'Legacy portraits for parents and elders') },
   ...(remoteJoinEnabled.value
     ? [{ value: 'couple_remote' as GenerationMode, title: tr('双人异地', 'Couple Remote'), desc: tr('你先上传，再邀请对方远程补第二张', 'Upload yours first, then invite remotely') }]
     : []),
@@ -404,7 +426,13 @@ const modeOptions = computed(() => [
 
 function currentQuery(): Record<string, string> {
   const pages = getCurrentPages();
-  return ((pages[pages.length - 1] as any)?.options || {}) as Record<string, string>;
+  const pageOptions = ((pages[pages.length - 1] as any)?.options || {}) as Record<string, string>;
+  let urlOptions: Record<string, string> = {};
+  if (typeof window !== 'undefined') {
+    const queryText = window.location.search || (window.location.hash.includes('?') ? `?${window.location.hash.split('?')[1]}` : '');
+    urlOptions = Object.fromEntries(new URLSearchParams(queryText).entries());
+  }
+  return { ...pageOptions, ...urlOptions, ...routeQuery.value };
 }
 function setMode(mode: GenerationMode) {
   if (mode === 'couple_remote' && !remoteJoinEnabled.value) return;
@@ -414,14 +442,48 @@ function setMode(mode: GenerationMode) {
   if (selectedStyleFamily.value && !hasStyleForMode(selectedStyleFamily.value, mode)) {
     selectedStyleFamily.value = '';
   }
+  if (mode === 'golden_anniversary') selectDefaultGoldenStyle();
   if (mode !== 'couple_remote') resetRemote();
 }
 function hasStyleForMode(familyKey: string, mode: GenerationMode) {
-  const desiredCategories = mode === 'single' ? ['single'] : ['couple', 'vintage'];
+  const desiredCategories = mode === 'single' ? ['single'] : mode === 'golden_anniversary' ? ['vintage'] : ['couple', 'vintage'];
   return templateStore.templates.some((item) => {
     if (getTemplateFamilyKey(item) !== familyKey) return false;
     return desiredCategories.includes(String(item.category || '').toLowerCase());
   });
+}
+function selectDefaultGoldenStyle() {
+  const currentIsGolden = selectedStyleFamily.value && GOLDEN_STYLE_FAMILIES.includes(selectedStyleFamily.value);
+  if (currentIsGolden) return;
+  const matched = templateStore.templates.find((item) => {
+    const category = String(item.category || '').toLowerCase();
+    return category === 'vintage' && GOLDEN_STYLE_FAMILIES.includes(getTemplateFamilyKey(item));
+  });
+  selectedStyleFamily.value = matched ? getTemplateFamilyKey(matched) : GOLDEN_STYLE_FAMILIES[0];
+}
+function applyRouteQuery(query: Record<string, string>) {
+  const mode = String(query.mode || '').toLowerCase();
+  if (mode === 'couple' || mode === 'couple_local') generationMode.value = 'couple_local';
+  else if (mode === 'golden' || mode === 'golden_anniversary' || mode === 'vintage' || mode === 'legacy') generationMode.value = 'golden_anniversary';
+  else if ((mode === 'couple_remote' || mode === 'remote') && remoteJoinEnabled.value) generationMode.value = 'couple_remote';
+
+  const requestedId = String(query.id || '').trim();
+  if (requestedId) {
+    const matched = templateStore.templates.find((item) => item.id === requestedId);
+    if (matched) {
+      if (String(matched.category || '').toLowerCase() === 'vintage') generationMode.value = 'golden_anniversary';
+      selectedStyleFamily.value = getTemplateFamilyKey(matched);
+    }
+  }
+
+  if (generationMode.value === 'golden_anniversary') selectDefaultGoldenStyle();
+}
+function applyStoredTemplateIntent() {
+  if (selectedStyleFamily.value || !templateStore.selectedTemplate) return;
+  const stored = templateStore.selectedTemplate;
+  if (String(stored.category || '').toLowerCase() === 'vintage') generationMode.value = 'golden_anniversary';
+  selectedStyleFamily.value = getTemplateFamilyKey(stored);
+  if (generationMode.value === 'golden_anniversary') selectDefaultGoldenStyle();
 }
 function serializeUploadQuality(verdict: SmartInputVerdict): UploadQuality {
   return {
@@ -443,9 +505,11 @@ function buildOrderUploadQuality(images: string[]): Array<Record<string, any>> {
       if (!slot.uploadQuality) return null;
       const role = generationMode.value === 'single'
         ? 'subject'
-        : index === 0
-          ? 'host'
-          : 'guest';
+        : isGoldenAnniversaryMode.value
+          ? index === 0 ? 'elder_1' : 'elder_2'
+          : index === 0
+            ? 'host'
+            : 'guest';
       return {
         ...slot.uploadQuality,
         slot_index: index,
@@ -465,10 +529,10 @@ function resetRemote() {
   remoteStatus.value = null;
 }
 function portraitLabel(index: number) {
-  return generationMode.value === 'single' ? tr('主人像', 'Main Portrait') : generationMode.value === 'couple_local' ? (index === 0 ? tr('人物 1', 'Portrait 1') : tr('人物 2', 'Portrait 2')) : tr('你的照片', 'Your Portrait');
+  return generationMode.value === 'single' ? tr('主人像', 'Main Portrait') : isGoldenAnniversaryMode.value ? (index === 0 ? tr('长辈 1', 'Elder 1') : tr('长辈 2', 'Elder 2')) : generationMode.value === 'couple_local' ? (index === 0 ? tr('人物 1', 'Portrait 1') : tr('人物 2', 'Portrait 2')) : tr('你的照片', 'Your Portrait');
 }
 function portraitCta(index: number) {
-  return generationMode.value === 'single' ? tr('上传人物照片', 'Upload portrait') : generationMode.value === 'couple_local' ? (index === 0 ? tr('上传第一张照片', 'Upload first portrait') : tr('上传第二张照片', 'Upload second portrait')) : tr('上传你的照片', 'Upload your portrait');
+  return generationMode.value === 'single' ? tr('上传人物照片', 'Upload portrait') : isGoldenAnniversaryMode.value ? (index === 0 ? tr('上传第一位长辈照片', 'Upload first elder portrait') : tr('上传第二位长辈照片', 'Upload second elder portrait')) : generationMode.value === 'couple_local' ? (index === 0 ? tr('上传第一张照片', 'Upload first portrait') : tr('上传第二张照片', 'Upload second portrait')) : tr('上传你的照片', 'Upload your portrait');
 }
 async function pickLocalImage() {
   const res = await uni.chooseImage({ count: 1, sizeType: ['original'], sourceType: ['album', 'camera'] });
@@ -671,7 +735,7 @@ async function submitCreate() {
     const images: string[] = [];
     if (generationMode.value === 'single') {
       images.push(await ensurePortraitUploaded(0));
-    } else if (generationMode.value === 'couple_local') {
+    } else if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) {
       images.push(await ensurePortraitUploaded(0), await ensurePortraitUploaded(1));
     } else {
       if (!remoteSession.value) throw new Error(tr('请先创建异地邀请', 'Create the remote invite first'));
@@ -735,18 +799,18 @@ function onPurchaseComplete() {
   navBarRef.value?.refreshBalance();
 }
 
+onLoad((query = {}) => {
+  routeQuery.value = Object.fromEntries(
+    Object.entries(query as Record<string, unknown>).map(([key, value]) => [key, String(value || '')])
+  );
+});
+
 onMounted(async () => {
   if (!templateStore.templates.length) await templateStore.fetchTemplates();
   await opsStore.fetchPublicConfig();
-  const query = currentQuery();
-  const mode = String(query.mode || '').toLowerCase();
-  if (mode === 'couple' || mode === 'couple_local') generationMode.value = 'couple_local';
-  else if ((mode === 'couple_remote' || mode === 'remote') && remoteJoinEnabled.value) generationMode.value = 'couple_remote';
-  const requestedId = String(query.id || '').trim();
-  if (requestedId) {
-    const matched = templateStore.templates.find((item) => item.id === requestedId);
-    if (matched) selectedStyleFamily.value = getTemplateFamilyKey(matched);
-  }
+  applyRouteQuery(currentQuery());
+  applyStoredTemplateIntent();
+  setTimeout(() => applyRouteQuery(currentQuery()), 0);
   if (generationMode.value === 'couple_remote' && !remoteJoinEnabled.value) {
     generationMode.value = 'couple_local';
   }
@@ -757,7 +821,7 @@ onUnmounted(() => stopRemotePolling());
 <style lang="scss" scoped>
 .create-page {
   min-height: 100vh;
-  background: #f7f8fa;
+  background: #f5f7f6;
 }
 
 .create-shell {
@@ -769,19 +833,21 @@ onUnmounted(() => stopRemotePolling());
 .hero-card,
 .panel,
 .summary-card {
-  border: 1px solid #dde1e8;
+  border: 1px solid rgba(32, 43, 62, 0.1);
   border-radius: 8px;
   background: #ffffff;
-  box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
+  box-shadow: 0 16px 44px rgba(23, 25, 31, 0.055);
 }
 
 .hero-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 24px;
-  padding: 24px;
-  margin-bottom: 20px;
+  gap: 28px;
+  padding: 28px;
+  margin-bottom: 22px;
   align-items: start;
+  background:
+    linear-gradient(135deg, #ffffff 0%, #ffffff 58%, #f0f6f4 100%);
 }
 
 .hero-main {
@@ -790,10 +856,10 @@ onUnmounted(() => stopRemotePolling());
 
 .hero-aside {
   height: 100%;
-  padding: 18px;
+  padding: 20px;
   border-radius: 8px;
   border: 1px solid rgba(17, 106, 96, 0.18);
-  background: #f3faf8;
+  background: rgba(243, 250, 248, 0.9);
 }
 
 .aside-title,
@@ -826,7 +892,7 @@ onUnmounted(() => stopRemotePolling());
 }
 
 .flow-step {
-  min-height: 34px;
+  min-height: 38px;
   padding: 0 12px;
   border-radius: 8px;
   border: 1px solid rgba(17, 106, 96, 0.18);
@@ -865,8 +931,9 @@ onUnmounted(() => stopRemotePolling());
   max-width: 860px;
   margin-bottom: 12px;
   color: #17191f;
-  font-size: 42px;
+  font-size: 44px;
   line-height: 1.08;
+  text-wrap: balance;
 }
 
 .hero-subtitle,
@@ -893,19 +960,21 @@ onUnmounted(() => stopRemotePolling());
 
 .mode-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px;
 }
 
 .mode-card {
-  min-height: 92px;
-  padding: 14px 16px;
+  min-height: 104px;
+  padding: 16px;
   border-radius: 8px;
-  border: 1px solid #dde1e8;
-  background: #f7f8fa;
+  border: 1px solid rgba(32, 43, 62, 0.1);
+  background: #fbfcfd;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .mode-card.active,
@@ -930,7 +999,7 @@ onUnmounted(() => stopRemotePolling());
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 20px;
+  gap: 24px;
   align-items: start;
 }
 
@@ -946,12 +1015,12 @@ onUnmounted(() => stopRemotePolling());
 }
 
 .panel {
-  padding: 20px;
+  padding: 24px;
 }
 
 .primary-panel {
   border-color: rgba(17, 106, 96, 0.24);
-  background: linear-gradient(180deg, #ffffff 0%, #fbfefd 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%);
 }
 
 .enhancer-panel {
@@ -1053,7 +1122,7 @@ onUnmounted(() => stopRemotePolling());
 }
 
 .style-grid {
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
 }
 
 .free-mode-card {
@@ -1183,8 +1252,8 @@ onUnmounted(() => stopRemotePolling());
 .upload-card,
 .remote-card {
   border-radius: 8px;
-  border: 1px solid #dde1e8;
-  background: #fafbfc;
+  border: 1px solid rgba(32, 43, 62, 0.1);
+  background: #fbfcfd;
   padding: 16px;
 }
 
@@ -1207,7 +1276,8 @@ onUnmounted(() => stopRemotePolling());
 .primary-empty {
   min-height: 320px;
   border-color: rgba(17, 106, 96, 0.34);
-  background: #f8fcfb;
+  background:
+    linear-gradient(180deg, #fbfffd 0%, #f4faf8 100%);
 }
 
 .empty-box.short {
@@ -1264,7 +1334,7 @@ onUnmounted(() => stopRemotePolling());
 
 .style-image-frame {
   width: 100%;
-  aspect-ratio: 2 / 3;
+  aspect-ratio: 4 / 5;
   overflow: hidden;
   border-bottom: 1px solid #edf0f4;
   background: #eef1f4;
@@ -1274,8 +1344,8 @@ onUnmounted(() => stopRemotePolling());
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
-  object-position: center center;
+  object-fit: cover;
+  object-position: center top;
 }
 
 .preview-actions {
@@ -1332,9 +1402,10 @@ onUnmounted(() => stopRemotePolling());
 .style-card {
   overflow: hidden;
   border-radius: 8px;
-  border: 1px solid #dde1e8;
+  border: 1px solid rgba(32, 43, 62, 0.1);
   background: #ffffff;
-  box-shadow: 0 10px 28px rgba(23, 25, 31, 0.04);
+  box-shadow: 0 14px 34px rgba(23, 25, 31, 0.055);
+  cursor: pointer;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
@@ -1444,6 +1515,17 @@ onUnmounted(() => stopRemotePolling());
   width: 100%;
 }
 
+@media (min-width: 961px) {
+  .mode-card:hover,
+  .style-card:hover,
+  .upload-card:hover,
+  .free-mode-card:hover {
+    border-color: rgba(17, 106, 96, 0.34);
+    box-shadow: 0 20px 46px rgba(23, 25, 31, 0.07);
+    transform: translateY(-1px);
+  }
+}
+
 @media (max-width: 1180px) {
   .hero-card,
   .layout {
@@ -1461,7 +1543,8 @@ onUnmounted(() => stopRemotePolling());
 
 @media (max-width: 820px) {
   .create-shell {
-    width: min(100% - 28px, 1360px);
+    width: calc(100% - 28px);
+    max-width: 1360px;
     padding-top: 20px;
   }
 
@@ -1488,6 +1571,20 @@ onUnmounted(() => stopRemotePolling());
 
   .hero-card {
     padding: 20px;
+    gap: 18px;
+  }
+
+  .panel {
+    padding: 20px;
+  }
+
+  .flow-strip {
+    gap: 6px;
+  }
+
+  .flow-step {
+    flex: 1 1 44%;
+    justify-content: center;
   }
 }
 </style>
