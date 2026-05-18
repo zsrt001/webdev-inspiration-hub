@@ -12,82 +12,82 @@ from copy import deepcopy
 from typing import Any
 
 
-SHOT_LIBRARY_VERSION = "commercial_shot_library_v1"
+SHOT_LIBRARY_VERSION = "commercial_shot_library_v2"
 
 
 SHOT_SPECS: dict[str, dict[str, Any]] = {
     "bridal_full_gown_editorial": {
         "label": "full gown editorial",
         "camera_distance": "full-length vertical portrait",
-        "subject_height_range": [0.72, 0.84],
-        "face_height_range": [0.08, 0.13],
-        "headroom_range": [0.03, 0.07],
-        "bottom_room_range": [0.04, 0.10],
+        "subject_height_range": [0.74, 0.84],
+        "face_height_range": [0.09, 0.14],
+        "headroom_range": [0.03, 0.06],
+        "bottom_room_range": [0.05, 0.08],
         "pose_family": "three-quarter body turn with refined waist-level hand placement",
-        "must_show": ["complete gown", "hem", "train or veil", "feet or clean bottom hem"],
-        "avoid": ["flat centered ID-photo stance", "cropped hem", "cropped veil", "tiny unreadable face"],
+        "must_show": ["complete gown", "hem", "train or veil", "feet or clean bottom hem", "readable premium background detail"],
+        "avoid": ["flat centered ID-photo stance", "cropped hem", "cropped veil", "tiny unreadable face", "melted background blur"],
     },
     "bridal_three_quarter_beauty": {
         "label": "three-quarter beauty portrait",
         "camera_distance": "three-quarter or knee-up portrait",
-        "subject_height_range": [0.76, 0.90],
-        "face_height_range": [0.11, 0.17],
+        "subject_height_range": [0.78, 0.88],
+        "face_height_range": [0.12, 0.17],
         "headroom_range": [0.03, 0.06],
         "bottom_room_range": [0.03, 0.08],
         "pose_family": "soft shoulder angle, chin natural, bouquet or veil touch below chest",
-        "must_show": ["face identity", "upper dress structure", "hands simplified or partly covered"],
-        "avoid": ["passport-like frontal pose", "hands near face", "over-beautified generic face"],
+        "must_show": ["face identity", "upper dress structure", "hands simplified or partly covered", "recognizable studio or venue texture"],
+        "avoid": ["passport-like frontal pose", "hands near face", "over-beautified generic face", "flat phone-photo lighting"],
     },
     "bridal_environmental_wide": {
         "label": "environmental wedding portrait",
         "camera_distance": "wider on-location portrait",
-        "subject_height_range": [0.56, 0.72],
-        "face_height_range": [0.07, 0.11],
-        "headroom_range": [0.04, 0.10],
-        "bottom_room_range": [0.04, 0.10],
+        "subject_height_range": [0.62, 0.74],
+        "face_height_range": [0.08, 0.12],
+        "headroom_range": [0.04, 0.08],
+        "bottom_room_range": [0.05, 0.09],
         "pose_family": "walking pause or gentle turn with scene depth behind the subject",
-        "must_show": ["subject remains dominant", "face readable", "background supports but does not overpower"],
-        "avoid": ["tourist landscape photo", "background brighter than face", "subject lost in scenery"],
+        "must_show": ["subject remains dominant", "face readable", "background supports but does not overpower", "venue detail remains identifiable"],
+        "avoid": ["tourist landscape photo", "background brighter than face", "subject lost in scenery", "over-blurred location"],
     },
     "couple_interaction_full_length": {
         "label": "full-length couple interaction",
         "camera_distance": "full-length two-person vertical portrait",
-        "group_height_range": [0.68, 0.84],
-        "group_width_range": [0.52, 0.78],
-        "face_height_range": [0.06, 0.12],
+        "group_height_range": [0.70, 0.82],
+        "group_width_range": [0.54, 0.76],
+        "face_height_range": [0.07, 0.12],
         "pose_family": "slight stagger, one partner half-step forward, subtle eye-line or shoulder interaction",
-        "must_show": ["both faces", "both full outfits", "separate shoulders", "separate arms", "clear role order"],
-        "avoid": ["flat side-by-side tourist pose", "merged shoulders", "shared torso", "role swap"],
+        "must_show": ["both faces", "both full outfits", "separate shoulders", "separate arms", "clear role order", "readable set or venue detail"],
+        "avoid": ["flat side-by-side tourist pose", "merged shoulders", "shared torso", "role swap", "background smeared into color blocks"],
     },
     "couple_close_connection": {
         "label": "close couple connection",
         "camera_distance": "waist-up or three-quarter couple portrait",
-        "group_height_range": [0.72, 0.90],
-        "group_width_range": [0.58, 0.84],
+        "group_height_range": [0.74, 0.88],
+        "group_width_range": [0.58, 0.82],
         "face_height_range": [0.09, 0.15],
         "pose_family": "faces readable with gentle proximity, shoulders offset, hands simple and below chest",
-        "must_show": ["both identities readable", "natural relationship", "no face overlap"],
-        "avoid": ["faces touching or fused", "one face hidden", "same AI face for both people"],
+        "must_show": ["both identities readable", "natural relationship", "no face overlap", "controlled dimensional lighting"],
+        "avoid": ["faces touching or fused", "one face hidden", "same AI face for both people", "dead flat lighting"],
     },
     "couple_environmental_wide": {
         "label": "environmental couple portrait",
         "camera_distance": "wider full-body couple portrait",
-        "group_height_range": [0.56, 0.72],
-        "group_width_range": [0.48, 0.72],
-        "face_height_range": [0.055, 0.095],
+        "group_height_range": [0.62, 0.74],
+        "group_width_range": [0.50, 0.72],
+        "face_height_range": [0.065, 0.10],
         "pose_family": "walking pause or staggered editorial stance with scene layers",
-        "must_show": ["both faces readable", "couple remains visual priority", "scene depth"],
-        "avoid": ["travel snapshot", "tiny couple", "background dominates", "harsh backlit faces"],
+        "must_show": ["both faces readable", "couple remains visual priority", "scene depth", "recognizable premium location"],
+        "avoid": ["travel snapshot", "tiny couple", "background dominates", "harsh backlit faces", "fake portrait-mode blur"],
     },
     "golden_anniversary_respectful_three_quarter": {
         "label": "respectful anniversary portrait",
         "camera_distance": "three-quarter or full-length elder couple portrait",
-        "group_height_range": [0.66, 0.84],
-        "group_width_range": [0.50, 0.78],
-        "face_height_range": [0.075, 0.13],
+        "group_height_range": [0.68, 0.82],
+        "group_width_range": [0.52, 0.76],
+        "face_height_range": [0.08, 0.13],
         "pose_family": "stable dignified posture, slight inward turn, hands relaxed or gently clasped",
-        "must_show": ["authentic age impression", "both faces readable", "respectful posture", "complete formal styling"],
-        "avoid": ["over-young beautification", "stiff ID-photo pose", "plastic skin", "cropped hands"],
+        "must_show": ["authentic age impression", "both faces readable", "respectful posture", "complete formal styling", "readable studio setting"],
+        "avoid": ["over-young beautification", "stiff ID-photo pose", "plastic skin", "cropped hands", "over-blurred nostalgic backdrop"],
     },
 }
 
@@ -214,5 +214,6 @@ def build_shot_library_prompt(template: Any, *, is_couple: bool) -> str:
         f"CANDIDATE SHOT SEQUENCE: {candidate_text} "
         "Composition gate: reject or repair any output that falls outside the stated subject/group scale, makes "
         "the face unreadable, crops gown hem/train/feet/hands at awkward boundaries, or collapses into a flat "
-        "centered sample pose."
+        "centered sample pose. Background gate: preserve readable premium venue or studio-set detail with natural "
+        "optical falloff; do not accept phone portrait-mode blur, melted bokeh, or color-block backgrounds."
     )

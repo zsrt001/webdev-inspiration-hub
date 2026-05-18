@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
       subtitle: 'Premium wedding portraits in minutes',
       cta_label: 'Start Now',
       secondary_cta_label: 'Browse Collection',
-      image_url: '/style-previews/royal_castle.jpg',
+      image_url: '/style-previews/couple_old_money.jpg',
       legacy_enabled: true,
       portal_enabled: true,
     },
@@ -90,6 +90,10 @@ export const useOpsStore = defineStore('ops', {
           heroImage === '/static/style-previews/hero_banner.jpg' ||
           heroImage === '/hero_wedding_luxury_bg.jpg' ||
           heroImage === '/static/hero_wedding_luxury_bg.jpg' ||
+          heroImage === '/style-previews/royal_castle.jpg' ||
+          heroImage === '/static/style-previews/royal_castle.jpg' ||
+          heroImage === '/style-previews/solo_royal_castle.jpg' ||
+          heroImage === '/static/style-previews/solo_royal_castle.jpg' ||
           heroImage === '/style-previews/couple_royal_castle.jpg' ||
           heroImage === '/static/style-previews/couple_royal_castle.jpg'
         ) {

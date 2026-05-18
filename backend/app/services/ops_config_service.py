@@ -22,7 +22,7 @@ DEFAULT_OPS_CONFIG: dict[str, Any] = {
             "subtitle": "Premium wedding portraits in minutes",
             "cta_label": "Start Now",
             "secondary_cta_label": "Browse Collection",
-            "image_url": "/style-previews/royal_castle.jpg",
+            "image_url": "/style-previews/couple_old_money.jpg",
             "legacy_enabled": True,
             "portal_enabled": True,
         }

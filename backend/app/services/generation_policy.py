@@ -10,24 +10,36 @@ from app.services.shot_library_service import build_shot_library_prompt, commerc
 
 DEFAULT_ASPECT_RATIO = "3:4"
 LEGACY_RATIO_UPGRADES = {"4:5", "3:2"}
-COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v1"
+COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v2"
 
 COMMERCIAL_WEDDING_STANDARD = {
     "version": COMMERCIAL_STANDARD_VERSION,
     "single": {
-        "subject_height_range": [0.72, 0.86],
-        "minimum_outdoor_subject_height": 0.55,
-        "face_height_range": [0.08, 0.15],
-        "headroom_range": [0.03, 0.07],
-        "bottom_room_range": [0.04, 0.09],
+        "subject_height_range": [0.74, 0.84],
+        "minimum_outdoor_subject_height": 0.62,
+        "face_height_range": [0.09, 0.14],
+        "headroom_range": [0.03, 0.06],
+        "bottom_room_range": [0.05, 0.08],
     },
     "couple": {
-        "group_height_range": [0.68, 0.84],
-        "group_width_range": [0.52, 0.78],
-        "face_height_range": [0.06, 0.12],
+        "group_height_range": [0.70, 0.82],
+        "group_width_range": [0.54, 0.76],
+        "face_height_range": [0.07, 0.12],
         "requires_equal_scale": True,
         "requires_body_separation": True,
         "requires_subtle_interaction": True,
+    },
+    "background": {
+        "requires_print_readable_venue_detail": True,
+        "requires_natural_optical_falloff": True,
+        "forbid_phone_portrait_mode_blur": True,
+    },
+    "lighting": {
+        "face_exposure_priority_stops": [0.3, 0.7],
+        "fill_under_key_stops": [1.0, 2.0],
+        "requires_subtle_rim_separation": True,
+        "requires_visible_catchlights": True,
+        "requires_controlled_white_dress_highlights": True,
     },
     "blocking_reasons": [
         "identity_mismatch",
@@ -36,6 +48,7 @@ COMMERCIAL_WEDDING_STANDARD = {
         "identity_averaging",
         "identity_face_missing",
         "identity_embedding_unavailable",
+        "unexpected_extra_subject",
         "face_too_small",
         "subject_too_small",
         "background_dominates",
@@ -113,6 +126,7 @@ QA_RETRY_REASONS = {
     "identity_embedding_unavailable",
     "identity_swap",
     "subject_missing",
+    "unexpected_extra_subject",
     "headless",
     "other",
 }

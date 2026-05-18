@@ -126,8 +126,10 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertNotIn("NIGHT AND LOW-LIGHTING:", prompt)
         # Standard sections
         self.assertIn("CANVAS PROPORTION:", prompt)
-        self.assertIn("72-86% of the canvas height", prompt)
+        self.assertIn("74-84% of the canvas height", prompt)
         self.assertIn("face should remain large enough", prompt)
+        self.assertIn("print-readable scene texture", prompt)
+        self.assertIn("fill sits about 1 to 2 stops under the key", prompt)
         self.assertIn("HAND AND ANATOMY SAFETY:", prompt)
         self.assertIn("fingers mostly covered", prompt)
         self.assertIn("IDENTITY LOCK:", prompt)
@@ -150,8 +152,8 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("Both subjects must receive flattering studio fill light", guardrails)
         self.assertIn("both faces must be correctly exposed", guardrails)
         self.assertIn("COUPLE CANVAS PROPORTION:", guardrails)
-        self.assertIn("68-84% of the canvas height", guardrails)
-        self.assertIn("52-78% of the canvas width", guardrails)
+        self.assertIn("70-82% of the canvas height", guardrails)
+        self.assertIn("54-76% of the canvas width", guardrails)
         # Lighting negative guardrails (still present via LIGHTING NEGATIVE GUARDRAILS)
         self.assertIn("do not use harsh outdoor backlight", guardrails.lower())
         self.assertIn("frontal softbox-style fill", guardrails)
@@ -159,6 +161,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertIn("STUDIO QUALITY:", guardrails)
         self.assertIn("BACKGROUND DETAIL:", guardrails)
         self.assertIn("recognizable", guardrails)
+        self.assertIn("phone portrait-mode blur", guardrails)
         self.assertIn("DELIVERY GATE:", guardrails)
         self.assertIn("CANDIDATE SELECTION:", guardrails)
 
@@ -395,10 +398,12 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_commercial_wedding_standard_records_canvas_ranges(self) -> None:
         standard = commercial_wedding_standard()
 
-        self.assertEqual(standard["version"], "commercial_wedding_v1")
-        self.assertEqual(standard["single"]["subject_height_range"], [0.72, 0.86])
-        self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.55)
-        self.assertEqual(standard["couple"]["group_height_range"], [0.68, 0.84])
+        self.assertEqual(standard["version"], "commercial_wedding_v2")
+        self.assertEqual(standard["single"]["subject_height_range"], [0.74, 0.84])
+        self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.62)
+        self.assertEqual(standard["couple"]["group_height_range"], [0.70, 0.82])
+        self.assertTrue(standard["background"]["requires_print_readable_venue_detail"])
+        self.assertEqual(standard["lighting"]["fill_under_key_stops"], [1.0, 2.0])
         self.assertIn("background_dominates", standard["blocking_reasons"])
         self.assertTrue(standard["delivery_gate"]["identity_required"])
         self.assertTrue(standard["candidate_selection"]["enabled"])
@@ -420,10 +425,11 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(couple_suite["primary"], "couple_interaction_full_length")
         self.assertIn("SHOT LIBRARY:", single_prompt)
         self.assertIn("PRIMARY SHOT full gown editorial", single_prompt)
-        self.assertIn("subject height 0.72-0.84", single_prompt)
+        self.assertIn("subject height 0.74-0.84", single_prompt)
         self.assertIn("CANDIDATE SHOT SEQUENCE:", single_prompt)
+        self.assertIn("Background gate:", single_prompt)
         self.assertIn("PRIMARY SHOT full-length couple interaction", couple_prompt)
-        self.assertIn("group height 0.68-0.84", couple_prompt)
+        self.assertIn("group height 0.70-0.82", couple_prompt)
         self.assertIn("subtle eye-line or shoulder interaction", couple_prompt)
 
     def test_golden_anniversary_uses_respectful_shot_suite(self) -> None:
@@ -921,6 +927,8 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ROUND 2 RELIGHT/EDIT ONLY", prompt)
         self.assertIn("previous candidate is the current canvas", prompt)
         self.assertIn("Only edit lighting and finish", prompt)
+        self.assertIn("face-background exposure balance", prompt)
+        self.assertIn("background texture/detail", prompt)
         self.assertIn("Treat this as relight/edit", prompt)
         self.assertIn("Do not redraw", prompt)
         self.assertIn("Do not change facial geometry", prompt)
@@ -1205,6 +1213,10 @@ class WenwenGenerationPayloadPolicyTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("background_brighter_than_face", prompt_text)
             self.assertIn("background_over_blurred", prompt_text)
             self.assertIn("Prefer these specific lighting reasons", prompt_text)
+            self.assertIn("74-84% of canvas height", prompt_text)
+            self.assertIn("premium background clarity", prompt_text)
+            self.assertIn("phone portrait-mode blur", prompt_text)
+            self.assertIn("key/fill/rim structure", prompt_text)
             return {
                 "choices": [
                     {

@@ -29,7 +29,10 @@ BACKGROUND_DETAIL_PROTOCOL = (
     "architecture, garden texture, drapery, floor lines, arches, columns, windows, floral styling, or painted studio "
     "backdrop details where they exist. Use natural optical depth falloff and subject separation, but do not smear "
     "the background into creamy color blocks, melted bokeh, foggy mush, or an unidentifiable blur. The background "
-    "should be secondary to the faces while still proving this is a premium wedding location"
+    "should be secondary to the faces while still proving this is a premium wedding location. Keep mid-frequency "
+    "venue texture readable at print size: stone, fabric, flowers, window frames, floor edges, and set decoration "
+    "should remain identifiable. Use a commercial editorial depth of field, closer to f/4-f/5.6 background "
+    "readability than phone portrait-mode blur; avoid shallow fake-bokeh that erases the location"
 )
 
 GEMINI_FLASH_EDIT_PROTOCOL = (
@@ -83,11 +86,22 @@ COUPLE_IDENTITY_LOCK_PROTOCOL = (
     "subject, swap identities, merge faces, average faces, duplicate one subject, or make both subjects share the same AI face"
 )
 
+SINGLE_SUBJECT_LOCK_PROTOCOL = (
+    "For single-subject orders, the output must contain exactly one primary human subject: the uploaded person only. "
+    "Do not add a spouse, partner, groom, bride, bridesmaid, guest, duplicate body, second face, background person, "
+    "or any extra human figure. The source identity must be transformed into a solo bridal or groom portrait, never "
+    "a couple portrait"
+)
+
 INDOOR_STUDIO_LIGHTING_PROTOCOL = (
     "Indoor bridal-studio lighting: use a large soft key light at about 45 degrees from the subject, weak fill "
     "light on the shadow side, and a subtle rim or hair light for separation. Keep the face naturally exposed and "
     "slightly brighter than the scene, with the background about 0.3 to 0.8 stops darker than the face. Preserve "
-    "soft shadow rolloff, visible catchlights, semi-matte skin texture, and detailed white dress highlights"
+    "soft shadow rolloff, visible catchlights, semi-matte skin texture, and detailed white dress highlights. "
+    "Commercial ratio target: key light cleanly models the face, fill sits about 1 to 2 stops under the key, rim "
+    "light separates hair/veil/shoulders without outlining them unnaturally, and the background stays controlled "
+    "rather than flat or brighter than the face. Do not set key and fill to equal power unless a deliberately high-key "
+    "commercial look is requested; preserve gentle facial dimension"
 )
 
 OUTDOOR_PRO_LIGHTING_PROTOCOL = (
@@ -96,14 +110,17 @@ OUTDOOR_PRO_LIGHTING_PROTOCOL = (
     "primary light on the face. Use frontal softbox-style fill or bounced fill so every face is correctly exposed "
     "with visible catchlights. Do not use harsh outdoor backlight as the primary light. Preserve sky detail, window "
     "detail, and white gown highlights; do not allow the face to fall into shadow, and never let the sky or dress "
-    "blow out"
+    "blow out. Keep the face exposure about 0.3 to 0.7 stops brighter than the background while retaining readable "
+    "garden, architecture, water, or skyline detail. Match the fill color temperature to the ambient scene so skin, "
+    "dress, and background feel lit by one coherent photographer-controlled setup"
 )
 
 WINDOW_ARCHITECTURAL_LIGHTING_PROTOCOL = (
     "Window and architectural lighting: use window light as the directional key light, with the face turned toward "
     "the soft window source and gentle fill controlling shadow density. Darken the background slightly so the "
     "person separates from architecture, columns, curtains, arches, or walls. Preserve dimensional face modeling, "
-    "natural skin tone, and refined editorial wedding color; do not flatten the face into even phone-photo light"
+    "natural skin tone, and refined editorial wedding color; do not flatten the face into even phone-photo light. "
+    "Architectural detail must remain legible, not dissolved into a generic blurred backdrop"
 )
 
 NIGHT_LOW_LIGHTING_PROTOCOL = (
@@ -119,7 +136,9 @@ STUDIO_QUALITY_PROTOCOL = (
     "brighter than the background, preserved highlight detail in skin and dress fabric, natural shadow rolloff, "
     "balanced contrast, refined skin texture, soft powder-finish semi-matte skin, controlled specular highlights, "
     "clean but realistic retouching, couture-level fabric detail, readable premium venue detail, polished "
-    "composition, and premium wedding album color grading"
+    "composition, and premium wedding album color grading. The finished image should read like a paid commercial "
+    "bridal sample: dimensional face light, fill that opens shadows without flattening features, controlled background "
+    "brightness, clean rim separation, and print-readable scene texture"
 )
 
 INDOOR_SCENE_BOUNDARY_PROTOCOL = (
@@ -134,6 +153,8 @@ STUDIO_LIGHTING_GUARDRAILS = (
     "clearly; do not use harsh outdoor backlight as the primary light; do not leave the face in shadow; do not "
     "blow out sky, windows, or dress highlights; use large softbox-style key light plus gentle fill light on every "
     "face; keep facial exposure natural and slightly brighter than the background without wet or greasy shine; "
+    "use subtle rim or hair light to separate veil, hair, shoulders, and dark suit edges; keep background detail "
+    "readable but lower priority than the face; "
     "avoid tourist-photo lighting, AI-glossy skin, oily skin, waxy specular highlights, fantasy-game styling, "
     "phone-flash lighting, direct on-camera flash, uncontrolled mixed color temperature, and cheap composited "
     "background"
@@ -155,18 +176,18 @@ HAND_POSE_SAFETY_PROTOCOL = (
 )
 
 SINGLE_CANVAS_PROPORTION_PROTOCOL = (
-    "Commercial single-subject framing: the bride or groom should occupy about 72-86% of the canvas height "
+    "Commercial single-subject framing: the bride or groom should occupy about 74-84% of the canvas height "
     "for full-length or near full-length portraits; outdoor environmental portraits may be slightly wider but "
-    "the subject must never fall below 55% of canvas height. The face should remain large enough to read identity, "
-    "about 8-15% of canvas height. Keep headroom tight and intentional, about 3-7% above the head, and keep "
-    "4-9% breathing room below the shoes, gown hem, or dress train. Eyes should sit near the upper third. "
+    "the subject must never fall below 62% of canvas height. The face should remain large enough to read identity, "
+    "about 9-14% of canvas height. Keep headroom tight and intentional, about 3-6% above the head, and keep "
+    "5-8% breathing room below the shoes, gown hem, or dress train. Eyes should sit near the upper third. "
     "Do not crop at joints, fingertips, ankles, knees, wrists, gown hem, veil, or train"
 )
 
 COUPLE_CANVAS_PROPORTION_PROTOCOL = (
-    "Commercial couple framing: the couple group should occupy about 68-84% of the canvas height and about "
-    "52-78% of the canvas width. Both faces must be clearly visible and large enough to read identity, about "
-    "6-12% of canvas height per face. Keep both subjects at believable scale, with readable separation between "
+    "Commercial couple framing: the couple group should occupy about 70-82% of the canvas height and about "
+    "54-76% of the canvas width. Both faces must be clearly visible and large enough to read identity, about "
+    "7-12% of canvas height per face. Keep both subjects at believable scale, with readable separation between "
     "faces, shoulders, arms, outfits, and body silhouettes. Maintain intentional headroom and bottom room for "
     "shoes, suit hem, gown hem, veil, and dress train. Avoid flat side-by-side tourist-photo blocking; use slight "
     "staggering, gentle interaction, and professional wedding pose direction"
@@ -175,16 +196,16 @@ COUPLE_CANVAS_PROPORTION_PROTOCOL = (
 DELIVERY_GATE_PROTOCOL = (
     "Delivery gate: a candidate is deliverable only if identity remains recognizable, face geometry is natural, "
     "commercial canvas proportion is correct, the face is large and sharp enough to read, the gown/suit/veil/train "
-    "are complete, the crop avoids joints and hems, lighting looks professionally controlled, and the image reads "
-    "as a paid bridal-studio wedding photograph. If identity, face readability, subject scale, crop, or lighting "
-    "conflicts with style, delivery quality wins"
+    "are complete, the crop avoids joints and hems, lighting looks professionally controlled, the premium background "
+    "is recognizable instead of smeared, and the image reads as a paid bridal-studio wedding photograph. If identity, "
+    "face readability, subject scale, crop, background clarity, or lighting conflicts with style, delivery quality wins"
 )
 
 CANDIDATE_SELECTION_PROTOCOL = (
     "Candidate generation protocol: when multiple candidates are requested, vary only pose nuance, subject placement, "
-    "camera distance within the commercial framing range, lighting polish, and background depth. Do not vary identity, "
-    "role order, face structure, person count, or the requested wedding concept. Each candidate must be independently "
-    "deliverable and suitable for automated QA ranking"
+    "camera distance within the commercial framing range, lighting polish, and controlled background depth/detail. "
+    "Do not vary identity, role order, face structure, person count, or the requested wedding concept. Each candidate "
+    "must be independently deliverable and suitable for automated QA ranking"
 )
 
 COUPLE_COMPOSITION = (
@@ -197,13 +218,16 @@ COUPLE_COMPOSITION = (
 COUPLE_STUDIO_GUARDRAILS = (
     "Both subjects must receive flattering studio fill light, both faces must be correctly exposed, "
     "both full outfits must remain visible in the 3:4 frame, both identities must remain recognizable, "
-    "and the result must read as a paid bridal-studio portrait"
+    "the background must remain recognizable enough to support the wedding location, and the result must read as "
+    "a paid bridal-studio portrait"
 )
 
 NEGATIVE_PROMPT = (
     "Identity failures: generic model face, different person, changed face shape, altered eyes, altered nose, "
     "altered mouth, altered jawline, identity drift, face replacement, face swap, over-beautified face, uncanny face, "
     "same AI face for both people, role swap; "
+    "Subject-count failures: extra person, unexpected second person, second face, added partner, added spouse, "
+    "couple in a single-subject order, duplicate body, duplicate subject, background person; "
     "Skin and realism failures: smooth skin, airbrushed, wax, plastic, makeup filter, oily skin, greasy shine, "
     "wet glossy skin, over-shiny forehead, over-shiny nose, over-shiny cheeks, 3d render, cgi, "
     "over-smoothed bridal ad; "
@@ -215,9 +239,9 @@ NEGATIVE_PROMPT = (
     "flash, phone-flash lighting, muddy night lighting; "
     "Composition failures: subject too small, face too small, background dominates the subject, excessive headroom, "
     "awkward crop, cropped dress, dress cutoff, cut-off gown train, missing full outfit, flat centered pose, "
-    "weak couple interaction, poor subject separation, over-blurred background, background smeared into color blocks, "
-    "melted bokeh background, unrecognizable venue, low-end snapshot, tourist snapshot, phone photo, outdoor travel "
-    "snapshot; "
+    "weak couple interaction, poor subject separation, over-blurred background, shallow fake bokeh, phone portrait-mode "
+    "blur, background smeared into color blocks, melted bokeh background, unrecognizable venue, low-end snapshot, "
+    "tourist snapshot, phone photo, outdoor travel snapshot; "
     "Scene failures: fantasy game costume, cheap composite, unrequested mountain vista, unrequested open sky, "
     "unrequested beach, unrequested forest, unrelated travel background"
 )
@@ -236,6 +260,7 @@ def get_studio_guardrails(*, is_couple: bool = False) -> str:
         _section("ANTI AI ARTIFACTS", ANTI_AI_ARTIFACTS_PROTOCOL),
         _section("STUDIO QUALITY", STUDIO_QUALITY_PROTOCOL),
         _section("BACKGROUND DETAIL", BACKGROUND_DETAIL_PROTOCOL),
+        _section("SINGLE SUBJECT LOCK", SINGLE_SUBJECT_LOCK_PROTOCOL if not is_couple else None),
         _section("COMPOSITION", FULL_LENGTH_COMPOSITION),
         _section("HAND AND ANATOMY SAFETY", HAND_POSE_SAFETY_PROTOCOL),
         _section("CANVAS PROPORTION", SINGLE_CANVAS_PROPORTION_PROTOCOL),
@@ -299,6 +324,8 @@ def build_prompt(
     parts.append(_section("ALLOWED EDIT SCOPE", EDIT_SCOPE_PROTOCOL))
     if is_couple:
         parts.append(_section("COUPLE IDENTITY LOCK", COUPLE_IDENTITY_LOCK_PROTOCOL))
+    else:
+        parts.append(_section("SINGLE SUBJECT LOCK", SINGLE_SUBJECT_LOCK_PROTOCOL))
 
     # Layer 2: Skin & photorealism (critical for commercial quality — early placement)
     parts.append(

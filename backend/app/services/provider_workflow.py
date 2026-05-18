@@ -1340,6 +1340,10 @@ class GenerationProviderWorkflow:
             )
         if "subject_missing" in normalized:
             focus.append("restore the missing person and preserve the requested subject count")
+        if "unexpected_extra_subject" in normalized:
+            focus.append(
+                "remove every unrequested extra person, partner, guest, second face, or duplicate body; preserve exactly the uploaded single subject"
+            )
         if normalized & {"face_distortion", "cropped_face", "headless", "fused_faces"}:
             focus.append("repair face geometry and keep every face complete, natural, and readable")
         if normalized & {"body_fusion", "extra_limbs"}:
@@ -1357,9 +1361,13 @@ class GenerationProviderWorkflow:
                 "upgrade broad commercial studio finish with controlled key, fill, rim separation, realistic skin texture, dress fabric, and professional color grading"
             )
         if "face_underexposed" in normalized:
-            focus.append("raise facial exposure with soft frontal fill while preserving natural shadow shape and identity")
+            focus.append(
+                "raise facial exposure with soft frontal fill so the face becomes the exposure priority about 0.3-0.7 stops above the background while preserving natural shadow shape and identity"
+            )
         if "flat_lighting" in normalized:
-            focus.append("rebuild dimensional lighting with a directional key light, weak fill, and subtle rim separation")
+            focus.append(
+                "rebuild dimensional commercial lighting with a directional key light, fill 1-2 stops under key, and subtle rim separation on hair, veil, shoulders, and suit edges"
+            )
         if "no_catchlights" in normalized:
             focus.append("restore natural eye catchlights from the key or fill light without changing eye shape or identity")
         if "oily_skin_highlight" in normalized:
@@ -1370,7 +1378,7 @@ class GenerationProviderWorkflow:
             focus.append("unify color temperature across key, fill, rim, and ambient light; remove green-orange mixed-light cast")
         if normalized & {"subject_too_small", "face_too_small", "background_dominates", "excessive_headroom"}:
             focus.append(
-                "reframe to commercial wedding proportions: subject prominent, face readable, intentional headroom, and background secondary"
+                "reframe to strict commercial wedding proportions: single subject about 74-84% canvas height, couple group about 70-82%, faces readable, intentional headroom, and background secondary"
             )
         if normalized & {"awkward_crop", "dress_cropped"}:
             focus.append(
@@ -1382,7 +1390,7 @@ class GenerationProviderWorkflow:
             focus.append("darken the background slightly and make the face the clear exposure priority")
         if "background_over_blurred" in normalized:
             focus.append(
-                "restore recognizable premium venue or studio-set detail with natural optical falloff; keep the background secondary but readable, not smeared into color blocks"
+                "restore recognizable premium venue or studio-set detail with natural optical falloff; recover readable arches, columns, drapery, floral styling, floor lines, and painted backdrop texture; keep the background secondary but not smeared into color blocks"
             )
         if "flat_centered_pose" in normalized:
             focus.append("replace stiff centered tourist-photo blocking with directed editorial wedding posing")
@@ -1848,8 +1856,9 @@ class GenerationProviderWorkflow:
                     "Do not change facial geometry, eye shape, nose, mouth, jawline, chin, age impression, "
                     "hairline, expression, body shape, pose, crop, camera distance, outfit, role order, or scene layout. "
                     "Only edit lighting and finish: key light, fill light, rim separation, facial exposure, "
-                    "catchlights, skin specular highlights, dress highlight recovery, color temperature, and "
-                    "face-background exposure balance. Treat this as relight/edit, not character creation. "
+                    "catchlights, skin specular highlights, dress highlight recovery, color temperature, "
+                    "face-background exposure balance, and restoration of existing background texture/detail "
+                    "without changing the scene layout. Treat this as relight/edit, not character creation. "
                     f"Relight focus: {focus}."
                 )
             else:
@@ -1903,14 +1912,14 @@ class GenerationProviderWorkflow:
                     f"wardrobe structure, or scene layout. Polish focus: {focus}. If any identity, face, hands, crop, "
                     "subject-size, or role-order failure remains, reject the candidate instead of redrawing it. "
                     "Allowed edits are facial exposure, catchlights, semi-matte realistic skin texture, controlled "
-                    "highlights, white gown highlight recovery, color temperature, shadow cleanup, film grain, and "
-                    "professional color grading."
+                    "highlights, white gown highlight recovery, color temperature, shadow cleanup, background texture "
+                    "clarity, film grain, and professional color grading."
                 )
             else:
                 stage_instruction = (
                     "ROUND 3 FINAL POLISH: perform final professional retouching only. Improve catchlights, facial "
                     "exposure, semi-matte natural skin texture, controlled facial highlights, dress fabric, color "
-                    "grading, and background separation. Remove oily shine and wet glossy skin. Do not "
+                    "grading, background separation, and readable venue or studio-set texture. Remove oily shine and wet glossy skin. Do not "
                     "change facial identity, role order, pose, body shape, camera framing, or scene concept."
                 )
 

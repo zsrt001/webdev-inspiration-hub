@@ -47,6 +47,7 @@ QUALITY_REASON_GROUPS = {
     "composition": {
         "subject_too_small",
         "face_too_small",
+        "unexpected_extra_subject",
         "background_dominates",
         "excessive_headroom",
         "awkward_crop",

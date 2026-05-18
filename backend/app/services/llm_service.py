@@ -83,6 +83,19 @@ _QA_REASON_MAP: dict[str, str] = {
     "single_subject_only": "subject_missing",
     "one_subject_only": "subject_missing",
     "subject_missing": "subject_missing",
+    "unexpected_extra_subject": "unexpected_extra_subject",
+    "extra_subject": "unexpected_extra_subject",
+    "extra_person": "unexpected_extra_subject",
+    "additional_person": "unexpected_extra_subject",
+    "unexpected_second_person": "unexpected_extra_subject",
+    "second_person": "unexpected_extra_subject",
+    "second_face": "unexpected_extra_subject",
+    "added_partner": "unexpected_extra_subject",
+    "added_spouse": "unexpected_extra_subject",
+    "wrong_subject_count": "unexpected_extra_subject",
+    "couple_in_single": "unexpected_extra_subject",
+    "duplicate_subject": "unexpected_extra_subject",
+    "duplicate_body": "unexpected_extra_subject",
     "identity_swapped": "identity_swap",
     "swapped_identity": "identity_swap",
     "identity_swap": "identity_swap",
@@ -228,6 +241,7 @@ _ALLOWED_QA_REASONS = {
     "fused_faces",
     "body_fusion",
     "subject_missing",
+    "unexpected_extra_subject",
     "identity_swap",
     "identity_mismatch",
     "identity_similarity_low",
@@ -574,6 +588,12 @@ async def verify_generated_image_quality(
         "- If bodies, torsos, shoulders, or limbs are fused/overlapping unnaturally, passed=false with reason body_fusion.\n"
         "- If identities are swapped or subject roles are clearly confused, passed=false with reason identity_swap.\n"
     ) if is_couple else ""
+    single_rules = (
+        "\nSingle-specific rules:\n"
+        "- The image must contain exactly one primary human subject: the uploaded person only.\n"
+        "- If there is an added spouse, partner, groom, bride, guest, duplicate body, second face, or any extra human figure, passed=false with reason unexpected_extra_subject.\n"
+        "- A single-subject order must never become a couple portrait even if the style looks like a wedding scene.\n"
+    ) if not is_couple else ""
     identity_rules = (
         "\nIdentity rules:\n"
         "- Compare the generated face(s) against the provided source portrait(s).\n"
@@ -586,7 +606,7 @@ async def verify_generated_image_quality(
     prompt = (
         "You are a strict QA inspector for AI-generated wedding photos.\n"
         "Check for critical errors that make the result NOT acceptable for a paid product.\n"
-        "Focus especially on: identity mismatch, distorted faces, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, commercial subject scale, face readability, crop boundaries, gown/train completeness, professional lighting, and whether the result looks like a paid bridal-studio deliverable.\n"
+        "Focus especially on: identity mismatch, distorted faces, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, commercial subject scale, face readability, crop boundaries, gown/train completeness, professional lighting, premium background clarity, and whether the result looks like a paid bridal-studio deliverable.\n"
         "Return strictly valid JSON only with this schema:\n"
         "{\n"
         '  "passed": boolean,\n'
@@ -605,18 +625,22 @@ async def verify_generated_image_quality(
         "}\n"
         "Rules:\n"
         "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","background_over_blurred","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
+        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","unexpected_extra_subject","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","background_over_blurred","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
         "- issues must describe each failure with code, category, target, severity, short evidence, and a concrete repair_hint.\n"
-        "- Commercial framing standard: single subject should occupy about 72-86% of canvas height, with face height about 8-15%, headroom about 3-7%, and bottom room for shoes/gown/train about 4-9%. Outdoor environmental portraits may be wider, but subject height must not fall below about 55% and the face must stay recognizable.\n"
-        "- Commercial couple framing standard: the couple group should occupy about 68-84% of canvas height and 52-78% of canvas width; each face should be about 6-12% of canvas height, both faces readable, both bodies separated, outfits complete, and the pose should show subtle professional interaction rather than flat tourist-photo blocking.\n"
+        "- Commercial framing standard: single subject should occupy about 74-84% of canvas height, with face height about 9-14%, headroom about 3-6%, and bottom room for shoes/gown/train about 5-8%. Outdoor environmental portraits may be wider, but subject height must not fall below about 62% and the face must stay recognizable.\n"
+        "- Commercial couple framing standard: the couple group should occupy about 70-82% of canvas height and 54-76% of canvas width; each face should be about 7-12% of canvas height, both faces readable, both bodies separated, outfits complete, and the pose should show subtle professional interaction rather than flat tourist-photo blocking.\n"
         "- Use subject_too_small when the person or couple is too small for a paid wedding portrait. Use face_too_small when identity cannot be read because the face is too small. Use background_dominates when the scene overwhelms the subjects. Use excessive_headroom for wasted sky/ceiling/head space. Use awkward_crop or dress_cropped for bad body, limb, gown, veil, hem, or train cropping.\n"
-        "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use background_brighter_than_face when the background, sky, window, or architecture is brighter than the face and steals exposure priority. Use background_over_blurred when the venue, garden, architecture, drapery, floor, or studio backdrop is smeared into unrecognizable blur instead of natural optical falloff. Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
+        "- Use unexpected_extra_subject when a single-subject output contains a second person, partner, duplicate body, extra face, guest, or other unrequested human figure.\n"
+        "- Use poor_subject_separation when lighting/depth/background do not separate the subjects. Use background_brighter_than_face when the background, sky, window, or architecture is brighter than the face and steals exposure priority. Use background_over_blurred when the venue, garden, architecture, drapery, floor, floral styling, or studio backdrop is smeared into unrecognizable blur instead of natural optical falloff. Also use background_over_blurred for phone portrait-mode blur, melted bokeh, color-block backgrounds, or any premium location that cannot be identified at print-viewing size.\n"
+        "- Commercial background standard: faces remain priority, but architecture, drapery, garden texture, floral styling, floor lines, windows, arches, columns, and painted studio-set detail should remain readable enough to prove a premium wedding location. Do not reward a beautiful face if the location is erased into mush.\n"
+        "- Use flat_centered_pose for stiff centered tourist-photo posing. Use weak_couple_interaction when a couple lacks believable relationship, stagger, or interaction. Use harsh_backlight when outdoor backlight controls the image and faces are not properly filled.\n"
         "- Use bad_hands ONLY for severe, clearly visible hand failures: impossible finger geometry, extra fingers, missing fingers, broken wrists, or distorted hands that noticeably ruin the paid result.\n"
         "- Do NOT fail for minor or ambiguous hand detail, small/background hands, hands partially covered by bouquet/dress/sleeves, or natural pose blur when the face, dress, and overall wedding portrait are acceptable.\n"
         "- Use dress_exposure_error when the wedding dress exposes private areas, creates unintended nudity, or has impossible cutouts.\n"
-        "- Use face_underexposed when the face is darker than commercial portrait standard, hidden in shadow, or lacks soft frontal fill. Use flat_lighting when the lighting has no directional key/fill/rim structure. Use no_catchlights when the eyes look dead or have no visible key-light catchlights. Use oily_skin_highlight when forehead, nose, cheeks, or chin have wet, greasy, plastic, or over-shiny highlights. Use dress_highlights_blown when white dress, veil, lace, satin, sky, or window highlights lose detail. Use mixed_color_temperature when key/fill/rim/ambient lights have incoherent green/orange/blue casts or phone-flash color. Prefer these specific lighting reasons instead of poor_studio_quality when they apply.\n"
+        "- Use face_underexposed when the face is darker than commercial portrait standard, hidden in shadow, or lacks soft frontal fill. Use flat_lighting when the lighting has no directional key/fill/rim structure, no visible modeling across the face, or the subject/background brightness feels like phone lighting. Use no_catchlights when the eyes look dead or have no visible key-light catchlights. Use oily_skin_highlight when forehead, nose, cheeks, or chin have wet, greasy, plastic, or over-shiny highlights. Use dress_highlights_blown when white dress, veil, lace, satin, sky, or window highlights lose detail. Use mixed_color_temperature when key/fill/rim/ambient lights have incoherent green/orange/blue casts or phone-flash color. Prefer these specific lighting reasons instead of poor_studio_quality when they apply.\n"
         "- Use poor_studio_quality only for broad commercial-finish failures that are not explained by a more specific lighting, composition, identity, anatomy, or wardrobe reason.\n"
         "- If identity is wrong and the image is beautiful, still fail with identity_mismatch.\n"
+        f"{single_rules}"
         f"{couple_rules}"
         f"{identity_rules}"
         "- notes: brief (<= 200 chars)."

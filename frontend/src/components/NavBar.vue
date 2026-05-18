@@ -344,7 +344,14 @@ defineExpose({ refreshBalance });
 }
 
 @media (max-width: 560px) {
+  .navbar {
+    overflow: hidden;
+  }
+
   .navbar-inner {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     padding: 0 16px;
     gap: 12px;
   }
@@ -361,6 +368,7 @@ defineExpose({ refreshBalance });
   .nav-actions {
     flex: 0 0 auto;
     gap: 8px;
+    margin-right: 8px;
   }
 
   .auth-chip {

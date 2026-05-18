@@ -194,6 +194,14 @@ class IdentityEmbeddingService:
         metrics["identity_similarity"] = round(best, 4)
         metrics["identity_similarity_threshold"] = threshold
         reasons = ["identity_similarity_low"] if best < threshold else []
+        if len(generated_faces) >= 2:
+            primary_area = max(1.0, float(generated_faces[0].area))
+            secondary_area = float(generated_faces[1].area)
+            secondary_ratio = secondary_area / primary_area
+            metrics["generated_secondary_face_area_ratio"] = round(secondary_ratio, 4)
+            metrics["generated_secondary_face_score"] = round(float(generated_faces[1].det_score), 4)
+            if secondary_ratio >= 0.18 and float(generated_faces[1].det_score) >= 0.45:
+                reasons.append("unexpected_extra_subject")
         return self._verdict(reasons, metrics, f"single_similarity={best:.3f}")
 
     def _couple_verdict(
