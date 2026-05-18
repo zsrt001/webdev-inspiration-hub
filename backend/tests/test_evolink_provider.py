@@ -110,13 +110,44 @@ class EvolinkProviderTest(unittest.TestCase):
             is_couple=True,
         )
 
-        compacted = service._compact_prompt_for_evolink(round_prompt)
+        compacted = service._compact_prompt_for_evolink(round_prompt, is_couple=True)
 
         self.assertLessEqual(len(compacted), EvolinkService.PROMPT_CHAR_LIMIT)
         self.assertIn("image_urls", compacted)
         self.assertIn("Couple rule", compacted)
         self.assertIn("exactly two primary wedding subjects", compacted)
         self.assertIn("Negative", compacted)
+
+    def test_evolink_single_prompt_compaction_does_not_infer_couple_from_negative_words(self) -> None:
+        service = EvolinkService()
+        template = get_template_by_id("solo_royal_castle")
+        self.assertIsNotNone(template)
+        base_prompt = build_studio_generation_prompt(
+            template=template,
+            prompt_override=None,
+            global_style_text="premium solo bridal portrait, do not add groom or partner",
+            scene_text=None,
+            outfit_text=None,
+            is_couple=False,
+        )
+        round_prompt = service._build_image_edit_round_prompt(
+            base_prompt=base_prompt,
+            negative_prompt=build_generation_negative_prompt(is_couple=False),
+            round_number=1,
+            qa_reasons=[],
+            qa_issues=[],
+            identity_pack_note="Identity reference pack role order: person_a=bride.",
+            include_previous_result=False,
+            is_couple=False,
+        )
+
+        compacted = service._compact_prompt_for_evolink(round_prompt, is_couple=False)
+
+        self.assertLessEqual(len(compacted), EvolinkService.PROMPT_CHAR_LIMIT)
+        self.assertIn("Single rule", compacted)
+        self.assertIn("exactly one primary human subject", compacted)
+        self.assertNotIn("Couple rule", compacted)
+        self.assertNotIn("exactly two primary wedding subjects", compacted)
 
     def test_evolink_reference_entries_keep_identity_first_and_limited(self) -> None:
         service = EvolinkService()

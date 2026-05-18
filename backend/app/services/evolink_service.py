@@ -115,7 +115,7 @@ class EvolinkService(GenerationProviderWorkflow):
         return str(settings.evolink_image_quality or "2K").strip() or "2K"
 
     @classmethod
-    def _compact_prompt_for_evolink(cls, prompt: str) -> str:
+    def _compact_prompt_for_evolink(cls, prompt: str, *, is_couple: bool = False) -> str:
         """Keep Evolink prompts under provider limits without dropping hard gates."""
         cleaned = "\n".join(line.strip() for line in str(prompt or "").splitlines() if line.strip())
         if len(cleaned) <= cls.PROMPT_CHAR_LIMIT:
@@ -131,16 +131,16 @@ class EvolinkService(GenerationProviderWorkflow):
             seen.add(normalized)
             deduped.append(sentence)
 
-        couple_hint = (
+        subject_count_hint = (
             "Couple rule: output exactly two primary wedding subjects in the same frame, bride/person A and groom/person B. "
             "Never create a solo portrait, never omit either subject, and preserve each identity separately with no role swap, face merge, duplicate identity, or body fusion. "
-            if re.search(r"\b(couple|bride|groom|person a|person b)\b", cleaned, flags=re.IGNORECASE)
-            else ""
+            if is_couple
+            else "Single rule: output exactly one primary human subject, the uploaded source person only. Never add a spouse, partner, groom, bride, guest, duplicate body, second face, or background person. "
         )
         hard_header = (
             "Identity-preserving image edit using image_urls as source references. "
             "Do not do text-only generation. Preserve exact face shape, eyes, nose, mouth, jawline, age impression, skin undertone, and natural expression. "
-            f"{couple_hint}"
+            f"{subject_count_hint}"
             "Commercial wedding deliverable: professional studio/on-location lighting, natural skin texture, catchlights, face correctly exposed, complete wedding wardrobe, readable face, 3:4 vertical composition, no awkward crop. "
             "Use the shot-library direction: primary shot, commercial subject scale, readable face, intentional headroom, complete gown/suit boundaries, and professional pose family. "
             "Use simple professional hand posing with bouquet, veil, sleeve, or gown fabric covering difficult fingers; preserve full gown hem, shoes, veil/train, and bottom breathing room. "
@@ -309,7 +309,7 @@ class EvolinkService(GenerationProviderWorkflow):
             include_previous_result=include_previous,
             is_couple=is_couple,
         )
-        edit_prompt = self._compact_prompt_for_evolink(edit_prompt)
+        edit_prompt = self._compact_prompt_for_evolink(edit_prompt, is_couple=is_couple)
         reference_entries = self._evolink_reference_entries(
             identity_refs=identity_refs,
             style_refs=style_refs,
