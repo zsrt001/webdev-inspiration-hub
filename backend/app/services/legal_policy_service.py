@@ -35,6 +35,7 @@ def get_legal_policies() -> dict:
             "director": 3,
             "couple_local": 3,
             "couple_remote": 4,
+            "golden_anniversary": 3,
             "premium_scene": 5,
             "live_portrait_5s": 6,
             "live_portrait_extra_5s": 4,

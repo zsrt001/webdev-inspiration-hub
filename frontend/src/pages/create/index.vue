@@ -365,7 +365,6 @@ const stylePanelNote = computed(() => isGoldenAnniversaryMode.value
 const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : isGoldenAnniversaryMode.value ? tr('金婚重塑', 'Golden Anniversary') : tr('双人异地', 'Couple Remote'));
 const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式优先', 'Free Direction First'));
 const generationCost = computed(() => {
-  if (selectedTemplate.value?.category === 'vintage') return 5;
   if (generationMode.value === 'couple_remote') return 4;
   if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return 3;
   if (hasDirectionText.value || sceneReferencePath.value || outfitReferencePath.value) return 3;

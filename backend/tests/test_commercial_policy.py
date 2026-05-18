@@ -21,7 +21,8 @@ class CommercialPolicyTest(unittest.TestCase):
         self.assertEqual(get_generation_cost(None, image_count=1, director_mode=True), 3)
         self.assertEqual(get_generation_cost(None, image_count=2), 3)
         self.assertEqual(get_generation_cost(None, image_count=2, is_remote_join=True), 4)
-        self.assertEqual(get_generation_cost("vintage", image_count=1), 5)
+        self.assertEqual(get_generation_cost("vintage", image_count=1), 2)
+        self.assertEqual(get_generation_cost("vintage", image_count=2), 3)
         self.assertEqual(get_live_portrait_cost(seconds=5), 6)
         self.assertEqual(get_live_portrait_cost(seconds=10), 10)
 

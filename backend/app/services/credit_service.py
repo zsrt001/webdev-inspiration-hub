@@ -28,7 +28,6 @@ COST_SINGLE_GENERATION = 2
 COST_DIRECTOR_GENERATION = 3
 COST_COUPLE_LOCAL_GENERATION = 3
 COST_COUPLE_REMOTE_GENERATION = 4
-COST_VINTAGE_GENERATION = 5
 COST_LIVE_PORTRAIT = 6
 COST_LIVE_PORTRAIT_EXTRA_BLOCK = 4
 COST_PER_GENERATION = COST_SINGLE_GENERATION
@@ -102,8 +101,6 @@ def get_generation_cost(
     image_count: int = 1,
     director_mode: bool = False,
 ) -> int:
-    if template_category == "vintage":
-        return COST_VINTAGE_GENERATION
     is_couple = image_count >= 2
     if is_couple and is_remote_join:
         return COST_COUPLE_REMOTE_GENERATION
