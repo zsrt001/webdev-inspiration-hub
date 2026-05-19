@@ -33,11 +33,11 @@
               v-else
               class="masterpiece-img"
               :src="afterImageUrl"
-              mode="aspectFill"
+              mode="aspectFit"
             />
           </template>
           <template v-else>
-            <image class="masterpiece-img reveal-blur" :src="afterImageUrl" mode="aspectFill" />
+            <image class="masterpiece-img reveal-blur" :src="afterImageUrl" mode="aspectFit" />
             <view class="reveal-curtain" :class="{ opening: curtainOpening }" @tap="reveal">
               <view class="curtain-panel left"></view>
               <view class="curtain-panel right"></view>
@@ -97,6 +97,10 @@
         <view class="preview-side-col">
           <!-- Exhibition Actions -->
           <view v-if="orderStore.isCompleted" class="exhibition-actions">
+            <view class="delivery-note">
+              <text class="delivery-note-title">{{ tr('最终主成片：3:4 竖版', 'Final master: 3:4 portrait') }}</text>
+              <text class="delivery-note-copy">{{ tr('下方比例为下载裁切版本，不作为最终成片验收。', 'Other ratios below are download crops, not final master outputs.') }}</text>
+            </view>
             <button v-if="canDownload" class="btn btn-primary e-action-btn primary shadow-glow" @tap="downloadHD">
               {{ tr('下载高清图', 'DEVELOP HD PRINT') }}
             </button>
@@ -429,38 +433,68 @@ const userUploadUrl = computed(() => {
   return null;
 });
 
+const deliveryVariantSuffixes = ['portrait_2x3', 'print_3x2', 'xhs_3x4', 'portrait_4x5', 'wallpaper_9x16', 'square_1x1'];
+function pickPrimaryDeliveryImage(urls?: Record<string, string> | null): string | null {
+  if (!urls) return null;
+  if (urls.image_1) return urls.image_1;
+  const master = Object.entries(urls).find(([key]) => !deliveryVariantSuffixes.some((suffix) => key.includes(suffix)));
+  if (master?.[1]) return master[1];
+  return Object.values(urls)[0] || null;
+}
+
 const previewImageUrl = computed(() => {
+  const master = orderStore.currentOrder?.preview_master_image_url;
+  if (master) return master;
   const urls = orderStore.currentOrder?.preview_image_urls;
-  if (urls) return Object.values(urls)[0];
+  const primary = pickPrimaryDeliveryImage(urls);
+  if (primary) return primary;
   return 'https://placehold.co/600x800/F7F8FA/17191F?text=Developing';
 });
 
 const hdImageUrl = computed(() => {
+  const master = orderStore.currentOrder?.final_master_image_url;
+  if (master) return master;
   const urls = orderStore.currentOrder?.final_image_urls;
-  if (urls) return Object.values(urls)[0];
+  const primary = pickPrimaryDeliveryImage(urls);
+  if (primary) return primary;
   return previewImageUrl.value;
 });
 
 const afterImageUrl = computed(() => (orderStore.isCompleted ? hdImageUrl.value : previewImageUrl.value));
 const canDownload = computed(() => orderStore.currentOrder?.can_download === true);
 const downloadLocked = computed(() => orderStore.currentOrder?.download_locked !== false || !canDownload.value);
+const downloadVariantLabels: Record<string, string> = {
+  portrait_2x3: tr('2:3 下载裁切', '2:3 Download crop'),
+  print_3x2: tr('3:2 冲印裁切', '3:2 Print crop'),
+  xhs_3x4: tr('3:4 下载版本', '3:4 Download version'),
+  portrait_4x5: tr('4:5 下载裁切', '4:5 Download crop'),
+  wallpaper_9x16: tr('9:16 下载裁切', '9:16 Download crop'),
+  square_1x1: tr('1:1 下载裁切', '1:1 Download crop'),
+};
+const localizedVariantLabel = (key: string, fallback?: string) => {
+  const matched = Object.keys(downloadVariantLabels).find((suffix) => key.includes(suffix));
+  return matched ? downloadVariantLabels[matched] : fallback || tr('下载裁切版', 'Download crop');
+};
 const downloadVariants = computed(() => {
   if (!canDownload.value) return [];
+  const explicit = orderStore.currentOrder?.download_variants;
+  if (Array.isArray(explicit) && explicit.length) {
+    return explicit
+      .map((item: any) => ({
+        key: String(item.key || item.url || ''),
+        url: String(item.url || ''),
+        label: localizedVariantLabel(String(item.key || ''), String(item.label || '')),
+        filename: `ai-wedding-${String(item.key || 'crop')}.jpg`,
+      }))
+      .filter((item) => item.key && item.url);
+  }
   const urls = orderStore.currentOrder?.final_image_urls || {};
-  const labels: Record<string, string> = {
-    portrait_2x3: tr('2:3 竖图', '2:3 Portrait'),
-    print_3x2: tr('3:2 冲印', '3:2 Print'),
-    xhs_3x4: tr('3:4 小红书', '3:4 Social'),
-    portrait_4x5: tr('4:5 竖图', '4:5 Portrait'),
-    wallpaper_9x16: tr('9:16 壁纸', '9:16 Wallpaper'),
-    square_1x1: tr('1:1 方图', '1:1 Square'),
-  };
   return Object.entries(urls)
     .filter(([key]) => key !== 'image_1')
     .map(([key, url]) => {
-      const matched = Object.keys(labels).find((suffix) => key.includes(suffix));
+      const matched = Object.keys(downloadVariantLabels).find((suffix) => key.includes(suffix));
       return matched
-        ? { key, url: String(url), label: labels[matched], filename: `ai-wedding-${matched}.jpg` }
+        ? { key, url: String(url), label: downloadVariantLabels[matched], filename: `ai-wedding-${matched}.jpg` }
         : null;
     })
     .filter(Boolean) as { key: string; url: string; label: string; filename: string }[];
@@ -1621,7 +1655,14 @@ onUnmounted(() => {
 
 /* Exhibition Content */
 .exhibition-content { padding: 32px 24px; max-width: 1320px; margin: 0 auto; }
-.masterpiece-folio { background: white; border-radius: $uni-border-radius-lg; overflow: hidden; box-shadow: $uni-shadow-xl; margin-bottom: 32px; }
+.masterpiece-folio {
+  max-width: 720px;
+  margin: 0 auto 32px;
+  background: white;
+  border-radius: $uni-border-radius-lg;
+  overflow: hidden;
+  box-shadow: $uni-shadow-xl;
+}
 .folio-frame {
   aspect-ratio: 3/4;
   position: relative;
@@ -1732,6 +1773,33 @@ onUnmounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 32px;
+
+  .delivery-note {
+    grid-column: 1 / -1;
+    padding: 14px 16px;
+    border-radius: 8px;
+    border: 1px solid rgba($uni-color-primary, 0.14);
+    background: #ffffff;
+  }
+
+  .delivery-note-title,
+  .delivery-note-copy {
+    display: block;
+  }
+
+  .delivery-note-title {
+    color: $uni-text-color;
+    font-size: 13px;
+    font-weight: 900;
+  }
+
+  .delivery-note-copy {
+    margin-top: 6px;
+    color: $uni-text-color-muted;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
   .e-action-btn {
     height: 56px;
     border-radius: 100px;

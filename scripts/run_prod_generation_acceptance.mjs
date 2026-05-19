@@ -136,6 +136,16 @@ function collectImageUrls(value, urls = []) {
   return urls;
 }
 
+function pickMasterImageUrl(urls) {
+  if (!urls || typeof urls !== 'object') return null;
+  if (urls.image_1) return String(urls.image_1);
+  const variantSuffixes = ['portrait_2x3', 'print_3x2', 'xhs_3x4', 'portrait_4x5', 'wallpaper_9x16', 'square_1x1'];
+  const master = Object.entries(urls).find(([key]) => !variantSuffixes.some((suffix) => String(key).includes(suffix)));
+  if (master?.[1]) return String(master[1]);
+  const first = Object.values(urls).find(Boolean);
+  return first ? String(first) : null;
+}
+
 async function startProbe(test) {
   const startedAt = new Date();
   const payload = {
@@ -433,6 +443,9 @@ function publicContractEvidence(publicOrderResult) {
     leaked,
     source_image_count: Array.isArray(source.images) ? source.images.length : 0,
     final_visible: Boolean(payload.final_image_urls),
+    preview_master_visible: Boolean(payload.preview_master_image_url),
+    final_master_visible: Boolean(payload.final_master_image_url),
+    download_variant_count: Array.isArray(payload.download_variants) ? payload.download_variants.length : 0,
   };
 }
 
@@ -502,11 +515,13 @@ for (const test of tests) {
   }
 
   const order = await pollOrder(orderId);
-  const imageUrls = [
+  const finalMaster = order.final_master_image_url || pickMasterImageUrl(order.final_image_urls);
+  const previewMaster = order.preview_master_image_url || pickMasterImageUrl(order.preview_image_urls);
+  const uniqueUrls = [...new Set([previewMaster, finalMaster].filter(Boolean))];
+  const allGeneratedUrls = [
     ...collectImageUrls(order.preview_image_urls),
     ...collectImageUrls(order.final_image_urls),
   ];
-  const uniqueUrls = [...new Set(imageUrls)];
   const downloadedFiles = uniqueUrls.length ? await downloadImages(test.name, uniqueUrls) : [];
   const publicOrderResult = await requestPublicJson(`/api/v1/orders/${orderId}`);
   const public_contract = publicContractEvidence(publicOrderResult);
@@ -521,7 +536,8 @@ for (const test of tests) {
     gates,
     error_message: order.error_message || null,
     source_urls: [test.image_url, test.second_image_url].filter(Boolean),
-    generated_urls: uniqueUrls,
+    master_urls: { preview: previewMaster, final: finalMaster },
+    generated_urls: [...new Set(allGeneratedUrls)],
     downloaded_files: downloadedFiles,
     qa_summary: qaSummary(order),
     billing_summary: billingSummary(order),

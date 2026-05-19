@@ -34,8 +34,14 @@ class OrderPublicContractTest(unittest.TestCase):
                     ]
                 },
             },
-            preview_image_urls={"image_1": "https://cdn.example.com/preview.jpg"},
-            final_image_urls={"image_1": "https://cdn.example.com/final.jpg"},
+            preview_image_urls={
+                "image_1": "https://cdn.example.com/preview.jpg",
+                "image_1_square_1x1": "https://cdn.example.com/preview-square.jpg",
+            },
+            final_image_urls={
+                "image_1": "https://cdn.example.com/final.jpg",
+                "image_1_square_1x1": "https://cdn.example.com/final-square.jpg",
+            },
             generation_params={
                 "credits_cost": 4,
                 "refunded_credits": 0,
@@ -70,6 +76,19 @@ class OrderPublicContractTest(unittest.TestCase):
         dumped = payload.model_dump()
 
         self.assertEqual(payload.source_image_urls, {"images": ["https://cdn.example.com/source.jpg"]})
+        self.assertEqual(payload.preview_master_image_url, "https://cdn.example.com/preview.jpg")
+        self.assertEqual(payload.final_master_image_url, "https://cdn.example.com/final.jpg")
+        self.assertEqual(
+            payload.download_variants,
+            [
+                {
+                    "key": "image_1_square_1x1",
+                    "url": "https://cdn.example.com/final-square.jpg",
+                    "label": "1:1 square crop",
+                    "type": "download_crop",
+                }
+            ],
+        )
         self.assertEqual(payload.credits_cost, 4)
         self.assertEqual(payload.refunded_credits, 0)
         self.assertEqual(payload.generation_stage, "completed")

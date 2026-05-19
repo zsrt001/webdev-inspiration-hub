@@ -1559,6 +1559,8 @@ class GenerationProviderWorkflow:
         normalized = {str(reason or "").strip() for reason in (reasons or []) if str(reason or "").strip()}
         if not normalized:
             return False
+        if not normalized.issubset({"vision_error"}):
+            return False
         fatal_reasons = {
             "identity_mismatch",
             "identity_similarity_low",
@@ -1581,6 +1583,25 @@ class GenerationProviderWorkflow:
             "watermark_or_text",
             "nsfw",
             "severe_artifacts",
+            "poor_studio_quality",
+            "subject_too_small",
+            "face_too_small",
+            "background_dominates",
+            "excessive_headroom",
+            "awkward_crop",
+            "dress_cropped",
+            "poor_subject_separation",
+            "background_brighter_than_face",
+            "background_over_blurred",
+            "flat_centered_pose",
+            "weak_couple_interaction",
+            "harsh_backlight",
+            "face_underexposed",
+            "flat_lighting",
+            "no_catchlights",
+            "oily_skin_highlight",
+            "dress_highlights_blown",
+            "mixed_color_temperature",
         }
         if normalized & fatal_reasons:
             return False

@@ -11,6 +11,7 @@ from app.core.user_auth import get_request_user
 from app.models.order import Order, OrderStatus
 from app.models.user import User
 from app.schemas.order import OrderCreate, OrderRead
+from app.services.delivery_asset_service import build_download_variants, pick_master_image_url
 from app.services.generation_service import generation_service
 from app.services.order_creation_service import create_order_for_user
 from app.services.retention_service import delete_storage_urls, order_asset_urls, user_has_paid_credit_history
@@ -63,8 +64,14 @@ async def _serialize_order_for_user(db: AsyncSession, order: Order, user_id: uui
     payload = OrderRead.model_validate(order)
     payload.can_download = can_download
     payload.download_locked = not can_download
+    payload.preview_master_image_url = pick_master_image_url(order.preview_image_urls)
     if not can_download:
         payload.final_image_urls = None
+        payload.final_master_image_url = None
+        payload.download_variants = []
+    else:
+        payload.final_master_image_url = pick_master_image_url(order.final_image_urls)
+        payload.download_variants = build_download_variants(order.final_image_urls)
     return payload
 
 

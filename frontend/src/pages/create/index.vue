@@ -110,6 +110,10 @@
                 <text>{{ tr('服装', 'Outfit') }}：{{ outfitControlLabel }}</text>
               </view>
             </view>
+            <view class="ratio-guide">
+              <text class="ratio-title">{{ tr('成片比例：3:4 竖版主图', 'Output: 3:4 portrait master') }}</text>
+              <text class="ratio-copy">{{ tr('系统会按 3:4 重新规划人物、礼服和背景；下载裁切版不会被当作最终成片展示。', 'The system composes the subject, wardrobe, and scene for a 3:4 master; download crops are not shown as the final result.') }}</text>
+            </view>
             <view class="direction-card">
               <view class="direction-head">
                 <view>
@@ -196,6 +200,7 @@
               <text class="summary-subtitle">{{ readinessSubtitle }}</text>
               <view class="tag-row">
                 <view class="tag">{{ outputModeLabel }}</view>
+                <view class="tag subtle">{{ tr('3:4 竖版主成片', '3:4 portrait master') }}</view>
                 <view class="tag subtle">{{ templateStateLabel }}</view>
               </view>
               <view class="summary-block">
@@ -1352,6 +1357,32 @@ onUnmounted(() => stopRemotePolling());
   color: #38414d;
   font-size: 12px;
   font-weight: 800;
+}
+
+.ratio-guide {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 106, 96, 0.18);
+  background: #ffffff;
+}
+
+.ratio-title,
+.ratio-copy {
+  display: block;
+}
+
+.ratio-title {
+  color: #17191f;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.ratio-copy {
+  margin-top: 6px;
+  color: #4c5360;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .direction-head {

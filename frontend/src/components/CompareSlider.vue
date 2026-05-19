@@ -1,22 +1,18 @@
 <template>
   <view class="compare-slider-container" @touchstart="handleTouchStart" @touchmove="handleTouchMove">
-    <!-- Right Image (AI Result) -->
-    <image :src="afterImage" mode="aspectFill" class="slider-image after" />
-    
-    <!-- Left Image (User Upload) - Clipped -->
+    <image :src="afterImage" mode="aspectFit" class="slider-image after" />
+
     <view class="before-wrap" :style="{ width: sliderPos + '%' }">
-      <image :src="beforeImage" mode="aspectFill" class="slider-image before" :style="{ width: containerWidth + 'px' }" />
+      <image :src="beforeImage" mode="aspectFit" class="slider-image before" :style="{ width: containerWidth + 'px' }" />
     </view>
 
-    <!-- Handle Bar -->
     <view class="handle-bar" :style="{ left: sliderPos + '%' }">
       <view class="handle-line"></view>
       <view class="handle-orb">
-        <text class="orb-arr">↔</text>
+        <text class="orb-arr">&lt;&gt;</text>
       </view>
     </view>
 
-    <!-- Labels -->
     <view class="label label-before">ORIGINAL</view>
     <view class="label label-after">STUDIO 3.0</view>
   </view>
@@ -25,7 +21,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 
-const props = defineProps<{
+defineProps<{
   beforeImage: string;
   afterImage: string;
 }>();
@@ -68,7 +64,7 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #eee;
+  background: #eef1f4;
 }
 
 .slider-image {
@@ -93,7 +89,6 @@ onMounted(() => {
 }
 
 .before {
-  // width: 100% of container, but wrap is clipped
   height: 100%;
 }
 
@@ -120,10 +115,10 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 0 15px rgba(0,0,0,0.3);
-  
+  box-shadow: 0 0 15px rgba(0, 0, 0, 0.3);
+
   .orb-arr {
-    font-size: 20px;
+    font-size: 12px;
     color: #333;
     font-weight: bold;
   }
@@ -133,7 +128,7 @@ onMounted(() => {
   position: absolute;
   bottom: 20px;
   padding: 4px 10px;
-  background: rgba(0,0,0,0.4);
+  background: rgba(0, 0, 0, 0.4);
   color: white;
   font-size: 10px;
   font-weight: 800;

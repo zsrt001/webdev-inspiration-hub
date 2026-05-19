@@ -7,6 +7,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.models.order import OrderStatus
+from app.services.delivery_asset_service import (
+    DEFAULT_OUTPUT_ASPECT_RATIO,
+    build_download_variants,
+    pick_master_image_url,
+)
 
 
 PUBLIC_GENERATION_PARAM_KEYS = {
@@ -38,6 +43,10 @@ PUBLIC_GENERATION_PARAM_KEYS = {
     "generation_stage",
     "generation_stage_history",
     "upload_quality_summary",
+    "output_aspect_ratio",
+    "output_aspect_ratio_label",
+    "delivery_layout",
+    "final_master_image_key",
 }
 
 
@@ -244,6 +253,10 @@ class OrderRead(OrderBase):
     source_image_urls: dict | None = None
     preview_image_urls: dict | None = None
     final_image_urls: dict | None = None
+    preview_master_image_url: str | None = None
+    final_master_image_url: str | None = None
+    download_variants: list[dict] | None = None
+    output_aspect_ratio: str | None = None
     can_download: bool = False
     access_tier: str | None = None
     download_locked: bool = True
@@ -361,6 +374,11 @@ class OrderRead(OrderBase):
                 ][-12:]
             access_tier = params.get("access_tier")
             self.access_tier = str(access_tier) if access_tier else None
+            output_aspect_ratio = params.get("output_aspect_ratio")
+            self.output_aspect_ratio = str(output_aspect_ratio) if output_aspect_ratio else DEFAULT_OUTPUT_ASPECT_RATIO
+        self.preview_master_image_url = pick_master_image_url(self.preview_image_urls)
+        self.final_master_image_url = pick_master_image_url(self.final_image_urls)
+        self.download_variants = build_download_variants(self.final_image_urls)
         self.source_image_urls = public_source_image_urls(self.source_image_urls)
         public_params = public_generation_params(params)
         if is_completed and isinstance(public_params, dict):

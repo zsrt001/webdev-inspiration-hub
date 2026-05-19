@@ -33,6 +33,11 @@ from app.services.credit_service import (
 )
 from app.services.generation_credit_policy import build_generation_credit_policy
 from app.services.generation_policy import COMMERCIAL_STANDARD_VERSION, commercial_wedding_standard
+from app.services.delivery_asset_service import (
+    DEFAULT_OUTPUT_ASPECT_RATIO,
+    DEFAULT_OUTPUT_ASPECT_RATIO_LABEL,
+    MASTER_IMAGE_KEY,
+)
 from app.services.generation_service import generation_service
 from app.services.generation_stage_service import merge_generation_stage
 from app.services.identity_reference_service import build_identity_reference_pack
@@ -750,6 +755,10 @@ def _build_generation_params(
     params = {
         "credits_cost": credit_context.credits_cost,
         "commercial_standard_version": COMMERCIAL_STANDARD_VERSION,
+        "output_aspect_ratio": DEFAULT_OUTPUT_ASPECT_RATIO,
+        "output_aspect_ratio_label": DEFAULT_OUTPUT_ASPECT_RATIO_LABEL,
+        "delivery_layout": "single_3_4_master_with_download_crops",
+        "final_master_image_key": MASTER_IMAGE_KEY,
         "request_fingerprint": _request_fingerprint(request),
         "access_tier": credit_context.access_tier,
         "download_locked": not credit_context.has_paid_credits,

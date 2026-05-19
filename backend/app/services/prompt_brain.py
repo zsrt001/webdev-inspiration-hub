@@ -217,6 +217,8 @@ STUDIO_LIGHTING_GUARDRAILS = (
 FULL_LENGTH_COMPOSITION = (
     "full-length 3:4 vertical editorial composition, complete gown and dress train visible, "
     "no cropped hem, elegant headroom, subject not overfilled, enough breathing room around the body, "
+    "main delivery must not be a headshot, bust portrait, waist-up portrait, half-body crop, square crop, "
+    "horizontal banner, or a portrait dominated by empty sky/ceiling above the subject. "
     "luxury bridal studio posing with refined posture. For outdoor bridal portraits, keep the same full-gown "
     "delivery standard: no cropped shoes, gown hem, veil, or train, and use simple waist-level bouquet/veil/gown "
     "hand posing so difficult fingers are naturally covered"
@@ -235,7 +237,8 @@ SINGLE_CANVAS_PROPORTION_PROTOCOL = (
     "the subject must never fall below 62% of canvas height. The face should remain large enough to read identity, "
     "about 9-14% of canvas height. Keep headroom tight and intentional, about 3-6% above the head, and keep "
     "5-8% breathing room below the shoes, gown hem, or dress train. Eyes should sit near the upper third. "
-    "Do not crop at joints, fingertips, ankles, knees, wrists, gown hem, veil, or train"
+    "Do not crop at joints, fingertips, ankles, knees, wrists, gown hem, veil, or train. "
+    "A beautiful upper-body crop is still a failed main wedding deliverable when the full gown/hem/train are missing"
 )
 
 COUPLE_CANVAS_PROPORTION_PROTOCOL = (

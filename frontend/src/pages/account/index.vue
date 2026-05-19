@@ -155,7 +155,7 @@
             </view>
             <view v-else class="order-list">
               <view v-for="order in orders" :key="order.id" class="order-row" @tap="viewOrder(order.id)">
-                <image class="order-thumb" :src="orderPreview(order)" mode="aspectFill" />
+                <image class="order-thumb" :src="orderPreview(order)" mode="aspectFit" />
                 <view class="order-main">
                   <text class="row-title">#{{ shortId(order.id) }}</text>
                   <text class="row-subtitle">{{ formatDate(order.created_at) }}</text>
@@ -224,6 +224,8 @@ interface Order {
   template_id: string | null;
   preview_image_urls: Record<string, string> | null;
   final_image_urls: Record<string, string> | null;
+  preview_master_image_url?: string | null;
+  final_master_image_url?: string | null;
   created_at: string;
   expires_at?: string | null;
   storage_cleanup_status?: string | null;
@@ -315,11 +317,22 @@ function transactionTitle(item: CreditTransaction): string {
   return map[key] || key || tr('积分变化', 'Credit activity');
 }
 
+const deliveryVariantSuffixes = ['portrait_2x3', 'print_3x2', 'xhs_3x4', 'portrait_4x5', 'wallpaper_9x16', 'square_1x1'];
+function pickPrimaryFromMap(urls: Record<string, string> | null): string | null {
+  if (!urls) return null;
+  if (urls.image_1) return urls.image_1;
+  const master = Object.entries(urls).find(([key]) => !deliveryVariantSuffixes.some((suffix) => key.includes(suffix)));
+  if (master?.[1]) return master[1];
+  return Object.values(urls)[0] || null;
+}
+
 function orderPreview(order: Order): string {
-  const final = order.final_image_urls ? Object.values(order.final_image_urls) : [];
-  if (final.length && final[0]) return resolvePublicUrl(final[0]);
-  const preview = order.preview_image_urls ? Object.values(order.preview_image_urls) : [];
-  if (preview.length && preview[0]) return resolvePublicUrl(preview[0]);
+  if (order.final_master_image_url) return resolvePublicUrl(order.final_master_image_url);
+  if (order.preview_master_image_url) return resolvePublicUrl(order.preview_master_image_url);
+  const final = pickPrimaryFromMap(order.final_image_urls);
+  if (final) return resolvePublicUrl(final);
+  const preview = pickPrimaryFromMap(order.preview_image_urls);
+  if (preview) return resolvePublicUrl(preview);
   return resolvePublicUrl('/style-previews/royal_castle.jpg');
 }
 

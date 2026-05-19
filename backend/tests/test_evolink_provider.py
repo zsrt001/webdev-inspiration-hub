@@ -69,6 +69,26 @@ class EvolinkProviderTest(unittest.TestCase):
     def test_delivery_helper_accepts_template_id_for_provider_completion(self) -> None:
         self.assertIn("template_id", signature(prepare_delivered_image_urls).parameters)
 
+    def test_warning_delivery_only_allows_vision_system_errors(self) -> None:
+        self.assertTrue(
+            GenerationProviderWorkflow._qa_warning_delivery_allowed(
+                ["vision_error"],
+                [{"code": "vision_error", "blocking": False}],
+            )
+        )
+        self.assertFalse(
+            GenerationProviderWorkflow._qa_warning_delivery_allowed(
+                ["dress_cropped"],
+                [{"code": "dress_cropped", "severity": "critical"}],
+            )
+        )
+        self.assertFalse(
+            GenerationProviderWorkflow._qa_warning_delivery_allowed(
+                ["vision_error", "subject_too_small"],
+                [{"code": "subject_too_small", "severity": "major"}],
+            )
+        )
+
     def test_evolink_compacts_long_prompts_under_provider_limit(self) -> None:
         prompt = (
             "IDENTITY LOCK: preserve face shape, eyes, nose, mouth, jawline, and skin undertone. "

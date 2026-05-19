@@ -8,6 +8,7 @@ from typing import Iterable
 import httpx
 
 from app.core.config import get_settings
+from app.services.delivery_asset_service import MASTER_IMAGE_KEY, pick_master_image_url
 from app.services.postprocess_service import postprocess_delivery_assets
 from app.services.storage import storage_service
 
@@ -80,8 +81,18 @@ async def prepare_delivered_image_urls(
 ) -> tuple[dict, dict, dict]:
     """Return preview/final URL dicts plus metadata for generated assets."""
     final_urls, postprocess_meta = await postprocess_delivery_assets(delivered_urls, template_id=template_id)
+    master_url = pick_master_image_url(final_urls)
+    delivery_meta = {
+        **postprocess_meta,
+        "final_master_image_key": MASTER_IMAGE_KEY,
+        "final_master_image_url": master_url,
+    }
     if not trial_preview:
-        return final_urls, final_urls, {"preview_policy": "paid_original", **postprocess_meta}
+        return final_urls, final_urls, {
+            "preview_policy": "paid_original",
+            "preview_master_image_url": master_url,
+            **delivery_meta,
+        }
 
     preview_urls: dict[str, str] = {}
     failures: list[str] = []
@@ -96,7 +107,8 @@ async def prepare_delivered_image_urls(
         "preview_policy": "trial_watermarked_lowres",
         "preview_watermark": _trial_watermark_text(),
         "preview_failures": failures,
-        **postprocess_meta,
+        "preview_master_image_url": pick_master_image_url(preview_urls),
+        **delivery_meta,
     }
 
 

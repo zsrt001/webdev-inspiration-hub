@@ -93,6 +93,13 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(resolve_generation_aspect_ratio("3:2", is_couple=False), "3:4")
         self.assertEqual(resolve_generation_aspect_ratio("3:2", is_couple=True), "3:4")
 
+    def test_delivery_gate_uses_single_three_by_four_master(self) -> None:
+        standard = commercial_wedding_standard()
+
+        self.assertEqual(standard["delivery_gate"]["master_output_aspect_ratio"], "3:4")
+        self.assertEqual(standard["delivery_gate"]["master_output_key"], "image_1")
+        self.assertTrue(standard["delivery_gate"]["download_crops_not_customer_master"])
+
     def test_royal_castle_prompt_requires_studio_lighting_and_full_gown(self) -> None:
         template = get_template_by_id("solo_royal_castle")
         self.assertIsNotNone(template)
@@ -433,7 +440,7 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_commercial_wedding_standard_records_canvas_ranges(self) -> None:
         standard = commercial_wedding_standard()
 
-        self.assertEqual(standard["version"], "commercial_wedding_v6")
+        self.assertEqual(standard["version"], "commercial_wedding_v7")
         self.assertEqual(standard["single"]["subject_height_range"], [0.74, 0.84])
         self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.62)
         self.assertEqual(standard["couple"]["group_height_range"], [0.70, 0.82])
