@@ -207,11 +207,116 @@ def _opencv_face_box(image: Any) -> tuple[int, int, int, int] | None:
         return None
 
 
+def _skin_tone_face_box(image: Any) -> tuple[int, int, int, int] | None:
+    """Lightweight face-region fallback for serverless bundles without cv2.
+
+    This intentionally favors an upper-frame skin cluster over a broad portrait
+    crop. It is not identity recognition; it just keeps face crops from carrying
+    venue, clothing, or bouquet style into text-controlled generation.
+    """
+    try:
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        sample_width = 180
+        sample_height = max(1, round(height * (sample_width / max(1, width))))
+        sample = rgb.resize((sample_width, sample_height))
+        max_y = int(sample_height * 0.66)
+        min_y = int(sample_height * 0.06)
+        mask: set[tuple[int, int]] = set()
+        pixels = sample.load()
+        for y in range(min_y, max_y):
+            for x in range(sample_width):
+                r, g, b = pixels[x, y]
+                if (
+                    r > 92
+                    and g > 48
+                    and b > 34
+                    and r > g * 1.11
+                    and r > b * 1.24
+                    and g > b * 1.04
+                    and max(r, g, b) - min(r, g, b) > 24
+                    and not (r > 238 and g > 224 and b > 210)
+                ):
+                    mask.add((x, y))
+        if len(mask) < 12:
+            return None
+
+        visited: set[tuple[int, int]] = set()
+        best: tuple[float, tuple[int, int, int, int]] | None = None
+        for start in list(mask):
+            if start in visited:
+                continue
+            stack = [start]
+            visited.add(start)
+            xs: list[int] = []
+            ys: list[int] = []
+            while stack:
+                x, y = stack.pop()
+                xs.append(x)
+                ys.append(y)
+                for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    point = (nx, ny)
+                    if point in mask and point not in visited:
+                        visited.add(point)
+                        stack.append(point)
+            area = len(xs)
+            if area < 10:
+                continue
+            left, right = min(xs), max(xs)
+            top, bottom = min(ys), max(ys)
+            box_w = right - left + 1
+            box_h = bottom - top + 1
+            if box_w < 4 or box_h < 4:
+                continue
+            cx = (left + right) / 2 / sample_width
+            cy = (top + bottom) / 2 / sample_height
+            edge_penalty = 0.35 if cx < 0.08 or cx > 0.92 else 0.0
+            lower_penalty = 0.55 if cy > 0.58 else 0.0
+            shape_penalty = 0.25 if box_w / max(1, box_h) > 2.2 else 0.0
+            extent_penalty = 0.65 if (bottom / sample_height) > 0.56 else 0.0
+            oversized_penalty = 0.55 if (box_h / sample_height) > 0.22 or (box_w / sample_width) > 0.24 else 0.0
+            score = area * max(
+                0.1,
+                1.0 - edge_penalty - lower_penalty - shape_penalty - extent_penalty - oversized_penalty,
+            )
+            if best is None or score > best[0]:
+                best = (score, (left, top, right + 1, bottom + 1))
+
+        if best is None:
+            return None
+        left, top, right, bottom = best[1]
+        scale_x = width / sample_width
+        scale_y = height / sample_height
+        raw_left = left * scale_x
+        raw_top = top * scale_y
+        raw_right = right * scale_x
+        raw_bottom = bottom * scale_y
+        raw_w = max(1.0, raw_right - raw_left)
+        raw_h = max(1.0, raw_bottom - raw_top)
+        center_x = (raw_left + raw_right) / 2
+        center_y = (raw_top + raw_bottom) / 2
+        face_w = max(raw_w * 2.25, raw_h * 1.25, width * 0.12)
+        face_h = max(face_w * 1.18, raw_h * 2.0, height * 0.12)
+        face_w = min(face_w, width * 0.46)
+        face_h = min(face_h, height * 0.36)
+        return _clamp_box(
+            width=width,
+            height=height,
+            left=center_x - face_w / 2,
+            top=center_y - face_h * 0.52,
+            right=center_x + face_w / 2,
+            bottom=center_y + face_h * 0.48,
+        )
+    except Exception as exc:
+        logger.debug("identity_reference: skin-tone face fallback error: %s", exc)
+        return None
+
+
 def _detect_face_box(image: Any) -> tuple[int, int, int, int] | None:
     """Return (left, top, right, bottom) pixel box for the primary face, or None."""
     detector = _get_face_detector()
     if not detector:
-        return _opencv_face_box(image)
+        return _opencv_face_box(image) or _skin_tone_face_box(image)
 
     try:
         import numpy as np
@@ -241,7 +346,7 @@ def _detect_face_box(image: Any) -> tuple[int, int, int, int] | None:
         return keypoint_box or _shrink_oversized_face_box(fallback_box, width=w, height=h)
     except Exception as exc:
         logger.debug("identity_reference: face detection error: %s", exc)
-        return _opencv_face_box(image)
+        return _opencv_face_box(image) or _skin_tone_face_box(image)
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +424,7 @@ def _clamp_box(
 def _crop_box_for_kind_fallback(width: int, height: int, kind: str) -> tuple[int, int, int, int]:
     if height >= width:
         if kind == "face":
-            return _clamp_box(width=width, height=height, left=width*0.24, top=height*0.04, right=width*0.76, bottom=height*0.44)
+            return _clamp_box(width=width, height=height, left=width*0.32, top=height*0.12, right=width*0.76, bottom=height*0.50)
         return _clamp_box(width=width, height=height, left=width*0.05, top=height*0.00, right=width*0.95, bottom=height*0.74)
     if width >= height * 1.35:
         if kind == "face":
