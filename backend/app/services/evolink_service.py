@@ -143,12 +143,12 @@ class EvolinkService(GenerationProviderWorkflow):
             f"{subject_count_hint}"
             "Director source priority: identity upload and subject mode are immutable; uploaded scene/outfit references bind their domains; follow that user text only when no uploaded reference exists, otherwise use it as compatible mood/lens/lighting/color/texture refinement. "
             "Template style lock: preserve WARDROBE and SCENE, including indoor studio boundaries; template fills only unspecified details and cannot override active identity, subject mode, uploaded reference, or user text control. "
-            "Negative: generic face, identity change, altered or enlarged nose, copied source outfit/background against the active control source, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, blown white dress, mixed color temperature, background brighter than face, watermark, text. "
+            "Negative: generic face, identity change, altered or enlarged nose, copied source outfit/background against the active control source, plastic or oily skin, bad hands, extra limbs, fused bodies, harsh backlight, window glare as key light, blown white dress, mixed color temperature, background brighter than face, overfilled subject, bouquet-dominant crop, watermark, text. "
             "Commercial wedding deliverable: main output must be an upright 3:4 full-length or near full-length wedding portrait, not a headshot, bust, half-body, waist-up crop, square crop, landscape banner, or empty-sky composition. "
             "Show complete wedding wardrobe with gown hem, veil/train, shoes or bottom room, readable face, professional studio/on-location lighting, natural skin texture, catchlights, and no awkward crop. "
-            "Shot library and composition: primary shot, commercial subject scale, readable face, intentional headroom, complete gown/suit boundaries, professional pose family. "
+            "Shot library and composition: primary shot with restrained commercial subject scale: single subject about 66-78% canvas height, couple group about 64-76% height and 46-68% width, readable faces, intentional headroom, complete gown/suit boundaries, floor and scene breathing room, professional pose family. "
             "Simple professional hand posing with bouquet, veil, sleeve, or gown fabric covering difficult fingers; preserve full gown hem, shoes, veil/train, and bottom breathing room. "
-            "Use sun only as rim/ambient light outdoors; keep soft frontal fill."
+            "Use sun or window brightness only as rim/ambient light; keep soft frontal fill as the face key, preserve dress/window highlights, and keep background detail readable without phone portrait blur."
         ).strip()
 
         selected: list[str] = [hard_header]

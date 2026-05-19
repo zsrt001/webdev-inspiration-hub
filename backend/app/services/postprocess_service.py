@@ -199,10 +199,10 @@ def _protect_white_gown_highlights(image, *, strength: float = 0.52):
             lum = src_y[px, py]
             blue = src_cb[px, py]
             red = src_cr[px, py]
-            if lum >= 214 and 116 <= blue <= 142 and 116 <= red <= 146:
-                dst[px, py] = min(210, round((lum - 204) * 4 * strength))
-    protected = ImageEnhance.Brightness(image).enhance(1.0 - 0.065 * strength)
-    protected = ImageEnhance.Contrast(protected).enhance(1.0 - 0.035 * strength)
+            if lum >= 204 and 112 <= blue <= 146 and 112 <= red <= 150:
+                dst[px, py] = min(225, round((lum - 194) * 4.6 * strength))
+    protected = ImageEnhance.Brightness(image).enhance(1.0 - 0.10 * strength)
+    protected = ImageEnhance.Contrast(protected).enhance(1.0 - 0.05 * strength)
     return Image.composite(protected, image, mask)
 
 
@@ -215,8 +215,8 @@ def _apply_studio_tone_balance(image, *, profile: PostprocessProfile | None = No
     for value in range(256):
         if value < 72:
             mapped = value * (1.04 + 0.08 * profile.shadow_denoise) + 4
-        elif value > 218:
-            mapped = 218 + (value - 218) * (0.88 - 0.18 * profile.highlight_protection)
+        elif value > 206:
+            mapped = 206 + (value - 206) * (0.82 - 0.20 * profile.highlight_protection)
         else:
             mapped = value
         lut.append(max(0, min(255, round(mapped))))
@@ -273,7 +273,7 @@ def _unify_skin_tone(image, *, strength: float = 0.42):
 
 
 def _reduce_oily_skin_highlights(image):
-    from PIL import Image, ImageEnhance
+    from PIL import Image, ImageEnhance, ImageFilter
 
     ycbcr = image.convert("YCbCr")
     y, cb, cr = ycbcr.split()
@@ -288,12 +288,14 @@ def _reduce_oily_skin_highlights(image):
             lum = src_y[px, py]
             blue = src_cb[px, py]
             red = src_cr[px, py]
-            if 86 <= blue <= 132 and 132 <= red <= 178 and lum >= 166:
-                dst[px, py] = min(155, max(0, (lum - 150) * 2))
+            if 84 <= blue <= 136 and 128 <= red <= 184 and lum >= 154:
+                dst[px, py] = int(min(205, max(0, round((lum - 140) * 2.4))))
     face_window = _face_detail_mask(image.size, opacity=180)
     skin_mask = Image.composite(skin_mask, Image.new("L", image.size, 0), face_window)
-    softened = ImageEnhance.Brightness(image).enhance(0.975)
-    softened = ImageEnhance.Contrast(softened).enhance(0.985)
+    skin_mask = skin_mask.filter(ImageFilter.GaussianBlur(radius=max(3, int(min(image.size) * 0.01))))
+    softened = ImageEnhance.Brightness(image).enhance(0.955)
+    softened = ImageEnhance.Contrast(softened).enhance(0.972)
+    softened = ImageEnhance.Color(softened).enhance(0.985)
     return Image.composite(softened, image, skin_mask)
 
 

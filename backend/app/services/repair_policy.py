@@ -158,6 +158,7 @@ IMAGE_EDIT_REPAIR_SKIP_PREVIOUS_REASONS = {
 
 FINAL_ROUND_LOCAL_PHOTOMETRIC_REPAIR_REASONS = {
     "oily_skin_highlight",
+    "dress_highlights_blown",
     "mixed_color_temperature",
 }
 

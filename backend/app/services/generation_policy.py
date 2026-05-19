@@ -10,21 +10,21 @@ from app.services.shot_library_service import build_shot_library_prompt, commerc
 
 DEFAULT_ASPECT_RATIO = "3:4"
 LEGACY_RATIO_UPGRADES = {"4:5", "3:2"}
-COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v7"
+COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v8"
 
 COMMERCIAL_WEDDING_STANDARD = {
     "version": COMMERCIAL_STANDARD_VERSION,
     "single": {
-        "subject_height_range": [0.74, 0.84],
-        "minimum_outdoor_subject_height": 0.62,
-        "face_height_range": [0.09, 0.14],
-        "headroom_range": [0.03, 0.06],
-        "bottom_room_range": [0.05, 0.08],
+        "subject_height_range": [0.66, 0.78],
+        "minimum_outdoor_subject_height": 0.58,
+        "face_height_range": [0.075, 0.11],
+        "headroom_range": [0.04, 0.075],
+        "bottom_room_range": [0.07, 0.11],
     },
     "couple": {
-        "group_height_range": [0.70, 0.82],
-        "group_width_range": [0.54, 0.76],
-        "face_height_range": [0.07, 0.12],
+        "group_height_range": [0.64, 0.76],
+        "group_width_range": [0.46, 0.68],
+        "face_height_range": [0.06, 0.10],
         "requires_equal_scale": True,
         "requires_body_separation": True,
         "requires_subtle_interaction": True,

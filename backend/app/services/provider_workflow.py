@@ -1434,11 +1434,11 @@ class GenerationProviderWorkflow:
             focus.append("unify color temperature across key, fill, rim, and ambient light; remove green-orange mixed-light cast")
         if normalized & {"subject_too_small", "face_too_small", "background_dominates", "excessive_headroom"}:
             focus.append(
-                "reframe to strict commercial wedding proportions: single subject about 74-84% canvas height, couple group about 70-82%, faces readable, intentional headroom, and background secondary"
+                "reframe to strict commercial wedding proportions with a farther camera: single subject about 66-78% canvas height, couple group about 64-76% height and 46-68% width, faces readable but not oversized, intentional headroom, clean bottom room, and background secondary"
             )
         if normalized & {"awkward_crop", "dress_cropped"}:
             focus.append(
-                "restore full wedding crop boundaries with complete gown, train, shoes, limbs, and no joint cutoffs"
+                "restore full wedding crop boundaries with complete gown, train, shoes, limbs, no joint cutoffs, and enough side/floor breathing room so the subject is not overfilled"
             )
         if "poor_subject_separation" in normalized:
             focus.append("improve subject-background separation with controlled depth, rim light, and clean visual hierarchy")
@@ -1453,7 +1453,7 @@ class GenerationProviderWorkflow:
         if "weak_couple_interaction" in normalized:
             focus.append("add subtle couple interaction, staggered blocking, and synchronized warm expressions while keeping both faces unobstructed and emotionally readable")
         if "harsh_backlight" in normalized:
-            focus.append("replace harsh backlight with balanced outdoor fill, correct facial exposure, and preserved highlights")
+            focus.append("turn harsh sun/window flare into a subtle rim light, make soft frontal fill the face key, correct facial exposure, preserve dress/window detail, and keep color temperature coherent")
         if normalized & {"black_or_blank", "severe_artifacts", "watermark_or_text"}:
             focus.append("regenerate a clean usable wedding portrait without artifacts, text, or blank regions")
         if is_couple:
