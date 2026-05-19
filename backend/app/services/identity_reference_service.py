@@ -5,7 +5,7 @@ each subject keeps the original portrait, a face-focused crop, an upper-body
 crop, and explicit role labels. Generation providers can then use the pack as
 identity anchors instead of guessing from the raw upload list.
 
-V2: ML face detection (mediapipe) replaces deterministic percentage-based cropping.
+V3: ML/keypoint face detection and OpenCV fallback keep identity crops face-only.
 """
 
 from __future__ import annotations
@@ -13,6 +13,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
@@ -29,8 +32,8 @@ from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 
-IDENTITY_REFERENCE_PACK_VERSION = 2
-IDENTITY_CROP_STRATEGY = "mediapipe_face_detection_v2"
+IDENTITY_REFERENCE_PACK_VERSION = 3
+IDENTITY_CROP_STRATEGY = "mediapipe_face_keypoint_v3"
 IDENTITY_REFERENCE_FOLDER = "identity-references"
 
 # ---------------------------------------------------------------------------
@@ -58,11 +61,157 @@ def _get_face_detector():
         return None
 
 
+def _face_box_from_keypoints(
+    detection: Any,
+    *,
+    width: int,
+    height: int,
+    fallback_box: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    """Build a tight face box from MediaPipe facial keypoints.
+
+    The detector's bounding box can become an upper-body box for small/profile
+    wedding portraits. Keypoints stay near the actual face, so use them as the
+    primary identity crop anchor and leave clothing/background out of the crop.
+    """
+    location = getattr(detection, "location_data", None)
+    keypoints = getattr(location, "relative_keypoints", None) or []
+    points: list[tuple[float, float]] = []
+    for point in keypoints:
+        try:
+            x = float(point.x) * width
+            y = float(point.y) * height
+        except Exception:
+            continue
+        if -0.05 * width <= x <= 1.05 * width and -0.05 * height <= y <= 1.05 * height:
+            points.append((x, y))
+
+    if len(points) < 3:
+        return None
+
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    spread_w = max(xs) - min(xs)
+    spread_h = max(ys) - min(ys)
+    if spread_w < 4 or spread_h < 4:
+        return None
+
+    x1, y1, x2, y2 = fallback_box
+    bbox_w = max(1, x2 - x1)
+    bbox_h = max(1, y2 - y1)
+    center_x = sum(xs) / len(xs)
+    center_y = sum(ys) / len(ys)
+
+    face_w = max(spread_w * 2.15, spread_h * 1.65, min(bbox_w, bbox_h) * 0.42, min(width, height) * 0.12)
+    face_h = max(face_w * 1.22, spread_h * 2.35)
+    face_w = min(face_w, width * 0.52, max(width * 0.18, bbox_w * 0.82))
+    face_h = min(face_h, height * 0.42, max(height * 0.18, bbox_h * 0.82))
+
+    return _clamp_box(
+        width=width,
+        height=height,
+        left=center_x - face_w / 2,
+        top=center_y - face_h * 0.54,
+        right=center_x + face_w / 2,
+        bottom=center_y + face_h * 0.46,
+    )
+
+
+def _shrink_oversized_face_box(
+    box: tuple[int, int, int, int],
+    *,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = box
+    box_w = max(1, x2 - x1)
+    box_h = max(1, y2 - y1)
+    if box_w <= width * 0.48 and box_h <= height * 0.34:
+        return box
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+    target_w = min(box_w, width * 0.40)
+    target_h = min(box_h, height * 0.32)
+    return _clamp_box(
+        width=width,
+        height=height,
+        left=center_x - target_w / 2,
+        top=center_y - target_h * 0.52,
+        right=center_x + target_w / 2,
+        bottom=center_y + target_h * 0.48,
+    )
+
+
+def _opencv_face_box(image: Any) -> tuple[int, int, int, int] | None:
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return None
+
+    def _load_cascade(name: str):
+        path = str(getattr(cv2.data, "haarcascades", "") or "") + name
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as temp_file:
+                temp_path = temp_file.name
+            shutil.copyfile(path, temp_path)
+            cascade = cv2.CascadeClassifier(temp_path)
+            return cascade if not cascade.empty() else None
+        except Exception:
+            cascade = cv2.CascadeClassifier(path)
+            return cascade if not cascade.empty() else None
+        finally:
+            try:
+                if "temp_path" in locals():
+                    os.unlink(temp_path)
+            except Exception:
+                pass
+
+    try:
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        gray = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2GRAY)
+        gray = cv2.equalizeHist(gray)
+        detections: list[tuple[int, int, int, int]] = []
+        for name in (
+            "haarcascade_frontalface_alt2.xml",
+            "haarcascade_frontalface_default.xml",
+            "haarcascade_profileface.xml",
+        ):
+            cascade = _load_cascade(name)
+            if not cascade:
+                continue
+            faces = cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(24, 24))
+            for x, y, w, h in faces:
+                detections.append((int(x), int(y), int(w), int(h)))
+        if not detections:
+            return None
+
+        def score(face: tuple[int, int, int, int]) -> float:
+            x, y, w, h = face
+            cx = (x + w / 2) / max(1, width)
+            cy = (y + h / 2) / max(1, height)
+            edge_penalty = 0.45 if cx < 0.12 or cx > 0.88 else 0.0
+            top_bottom_penalty = 0.35 if cy < 0.12 or cy > 0.82 else 0.0
+            lower_body_penalty = 0.75 if cy > 0.68 else 0.35 if cy > 0.58 else 0.0
+            shape_penalty = 0.25 if w / max(1, h) < 0.65 or w / max(1, h) > 1.45 else 0.0
+            return float(w * h) * max(
+                0.1,
+                1.0 - edge_penalty - top_bottom_penalty - lower_body_penalty - shape_penalty,
+            )
+
+        x, y, w, h = max(detections, key=score)
+        return x, y, x + w, y + h
+    except Exception as exc:
+        logger.debug("identity_reference: opencv face detection error: %s", exc)
+        return None
+
+
 def _detect_face_box(image: Any) -> tuple[int, int, int, int] | None:
     """Return (left, top, right, bottom) pixel box for the primary face, or None."""
     detector = _get_face_detector()
     if not detector:
-        return None
+        return _opencv_face_box(image)
 
     try:
         import numpy as np
@@ -82,10 +231,17 @@ def _detect_face_box(image: Any) -> tuple[int, int, int, int] | None:
 
         if x2 - x1 < 20 or y2 - y1 < 20:
             return None
-        return x1, y1, x2, y2
+        fallback_box = x1, y1, x2, y2
+        keypoint_box = _face_box_from_keypoints(
+            best,
+            width=w,
+            height=h,
+            fallback_box=fallback_box,
+        )
+        return keypoint_box or _shrink_oversized_face_box(fallback_box, width=w, height=h)
     except Exception as exc:
         logger.debug("identity_reference: face detection error: %s", exc)
-        return None
+        return _opencv_face_box(image)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,14 +319,14 @@ def _clamp_box(
 def _crop_box_for_kind_fallback(width: int, height: int, kind: str) -> tuple[int, int, int, int]:
     if height >= width:
         if kind == "face":
-            return _clamp_box(width=width, height=height, left=width*0.16, top=height*0.02, right=width*0.84, bottom=height*0.54)
+            return _clamp_box(width=width, height=height, left=width*0.24, top=height*0.04, right=width*0.76, bottom=height*0.44)
         return _clamp_box(width=width, height=height, left=width*0.05, top=height*0.00, right=width*0.95, bottom=height*0.74)
     if width >= height * 1.35:
         if kind == "face":
-            return _clamp_box(width=width, height=height, left=width*0.31, top=height*0.02, right=width*0.69, bottom=height*0.74)
+            return _clamp_box(width=width, height=height, left=width*0.36, top=height*0.06, right=width*0.64, bottom=height*0.62)
         return _clamp_box(width=width, height=height, left=width*0.20, top=height*0.00, right=width*0.80, bottom=height*0.96)
     if kind == "face":
-        return _clamp_box(width=width, height=height, left=width*0.22, top=height*0.03, right=width*0.78, bottom=height*0.66)
+        return _clamp_box(width=width, height=height, left=width*0.28, top=height*0.05, right=width*0.72, bottom=height*0.56)
     return _clamp_box(width=width, height=height, left=width*0.12, top=height*0.00, right=width*0.88, bottom=height*0.88)
 
 

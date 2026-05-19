@@ -29,6 +29,8 @@ PUBLIC_GENERATION_PARAM_KEYS = {
     "effective_outfit_ip_weight",
     "director_decision_hints",
     "qa_last_reasons",
+    "qa_warning_delivery",
+    "delivery_quality_warnings",
     "qa_attempt_count",
     "failure_code",
     "failure_provider",

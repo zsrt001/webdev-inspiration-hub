@@ -1555,6 +1555,69 @@ class GenerationProviderWorkflow:
         return max(passing_rounds, key=score)
 
     @classmethod
+    def _qa_warning_delivery_allowed(cls, reasons: list[str], issues: list[dict[str, Any]] | None) -> bool:
+        normalized = {str(reason or "").strip() for reason in (reasons or []) if str(reason or "").strip()}
+        if not normalized:
+            return False
+        fatal_reasons = {
+            "identity_mismatch",
+            "identity_similarity_low",
+            "identity_margin_low",
+            "identity_averaging",
+            "identity_face_missing",
+            "identity_embedding_unavailable",
+            "identity_swap",
+            "face_distortion",
+            "cropped_face",
+            "headless",
+            "fused_faces",
+            "body_fusion",
+            "subject_missing",
+            "unexpected_extra_subject",
+            "extra_limbs",
+            "bad_hands",
+            "dress_exposure_error",
+            "black_or_blank",
+            "watermark_or_text",
+            "nsfw",
+            "severe_artifacts",
+        }
+        if normalized & fatal_reasons:
+            return False
+        for issue in issues or []:
+            if not isinstance(issue, dict):
+                continue
+            if str(issue.get("severity") or "").strip().lower() in {"critical", "fatal", "unsafe"}:
+                return False
+            if str(issue.get("category") or "").strip().lower() in {"identity", "safety", "output_integrity"}:
+                return False
+        return True
+
+    @classmethod
+    def _best_warning_deliverable_image_edit_round(cls, params: dict[str, Any]) -> dict[str, Any] | None:
+        debug = params.get("debug") if isinstance(params.get("debug"), dict) else {}
+        rounds = debug.get("image_edit_rounds") if isinstance(debug.get("image_edit_rounds"), list) else []
+        candidates: list[dict[str, Any]] = []
+        for round_item in rounds:
+            if not isinstance(round_item, dict):
+                continue
+            selected_url = str(round_item.get("selected_candidate_url") or round_item.get("candidate_url") or "").strip()
+            if not selected_url:
+                continue
+            reasons = [str(reason) for reason in (round_item.get("qa_reasons") or []) if str(reason or "").strip()]
+            issues = [issue for issue in (round_item.get("qa_issues") or []) if isinstance(issue, dict)]
+            if cls._qa_warning_delivery_allowed(reasons, issues):
+                candidates.append(round_item)
+        if not candidates:
+            return None
+
+        def score(round_item: dict[str, Any]) -> tuple[float, int]:
+            result = cls._round_result_from_debug(round_item)
+            return cls._result_selection_score(result), int(round_item.get("round") or 0)
+
+        return max(candidates, key=score)
+
+    @classmethod
     def _round_result_from_debug(cls, round_item: dict[str, Any]) -> dict[str, Any]:
         selected_url = str(round_item.get("selected_candidate_url") or round_item.get("candidate_url") or "").strip()
         delivered_urls = [selected_url] if selected_url else []
@@ -2662,6 +2725,41 @@ class GenerationProviderWorkflow:
 
         selected = best_passed
         if selected is None:
+            async with async_session_maker() as db:
+                result = await db.execute(select(Order).where(Order.id == order_uuid))
+                order = result.scalar_one_or_none()
+                params = dict(order.generation_params) if order and isinstance(order.generation_params, dict) else {}
+            warning_round = self._best_warning_deliverable_image_edit_round(params)
+            if warning_round:
+                selected = self._round_result_from_debug(warning_round)
+                reasons = list(selected.get("qa_reasons") or (last_result or {}).get("qa_reasons") or qa_reasons or ["unknown"])
+                logger.warning(
+                    "Image-edit QA exhausted; delivering best non-fatal candidate with warnings: %s",
+                    reasons,
+                )
+                await self._complete_order(
+                    order_uuid,
+                    delivered_urls=list(selected["delivered_urls"]),
+                    provider_urls=list(selected["provider_urls"]),
+                    qa_attempt_count=int((last_result or selected).get("round") or self.IMAGE_EDIT_MAX_ROUNDS),
+                    is_couple=is_couple,
+                    subject_count=subject_count,
+                    couple_flow=couple_flow,
+                    selected_round=int(selected["round"]),
+                    selected_stage=str(selected["stage"]),
+                    selection_summary={
+                        "policy": self.CANDIDATE_SELECTION_POLICY,
+                        "selected_round": int(selected["round"]),
+                        "selected_stage": str(selected["stage"]),
+                        "selected_candidate_index": int(selected.get("selected_candidate_index") or 0),
+                        "score": self._result_selection_score(selected),
+                        "candidate_scores": selected.get("candidate_scores") if isinstance(selected.get("candidate_scores"), list) else [],
+                        "qa_warning_delivery": True,
+                        "delivery_quality_warnings": reasons,
+                        "requires_admin_review": True,
+                    },
+                )
+                return True
             reasons = list((last_result or {}).get("qa_reasons") or qa_reasons or ["unknown"])
             raise ValueError(f"QA failed: {','.join(reasons)}")
 
@@ -2794,6 +2892,13 @@ class GenerationProviderWorkflow:
                 params["image_edit_selected_stage"] = str(selected_stage)
             if selection_summary:
                 params["candidate_selection"] = selection_summary
+                if selection_summary.get("qa_warning_delivery"):
+                    params["qa_warning_delivery"] = True
+                    params["delivery_quality_warnings"] = [
+                        str(reason)
+                        for reason in (selection_summary.get("delivery_quality_warnings") or [])
+                        if str(reason or "").strip()
+                    ]
             params["couple_guardrails"] = {
                 "is_couple": bool(is_couple),
                 "subject_count": subject_count,
