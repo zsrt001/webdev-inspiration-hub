@@ -1012,7 +1012,7 @@ class GenerationProviderWorkflow:
             outfit_text=outfit_text,
             is_couple=is_couple,
         )
-        negative_prompt = build_generation_negative_prompt(is_couple=is_couple)
+        negative_prompt = build_generation_negative_prompt(is_couple=is_couple, template=template)
 
         if prompt_enrichment:
             prompt_text = await llm_service.optimize_generation_prompt(prompt_text, is_couple=is_couple)
@@ -1022,7 +1022,7 @@ class GenerationProviderWorkflow:
         pack_note = self._identity_pack_prompt_note(identity_reference_pack)
         if pack_note:
             prompt_text = f"{prompt_text} {pack_note}"
-        prompt_text = f"{prompt_text} {get_studio_guardrails(is_couple=is_couple)}."
+        prompt_text = f"{prompt_text} {get_studio_guardrails(is_couple=is_couple, template=template)}."
 
         refs: list[str] = []
         for candidate in [*(user_images or []), scene_image_url or "", clothing_image_url or ""]:

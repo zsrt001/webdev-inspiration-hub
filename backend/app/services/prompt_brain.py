@@ -5,6 +5,24 @@ from typing import Optional
 from app.schemas.template import Template
 
 
+def is_golden_anniversary_template(template: object | None) -> bool:
+    if not template:
+        return False
+    tags = getattr(template, "tags", None) or []
+    tag_text = " ".join(str(tag) for tag in tags) if isinstance(tags, list) else str(tags)
+    haystack = " ".join(
+        str(value or "")
+        for value in [
+            getattr(template, "id", ""),
+            getattr(template, "style_family", ""),
+            getattr(template, "category", ""),
+            getattr(template, "recommended_for", ""),
+            tag_text,
+        ]
+    ).lower()
+    return any(token in haystack for token in ("golden", "anniversary", "parents_and_elders"))
+
+
 SKIN_REALISM_PROTOCOL = (
     "CRITICAL SKIN TEXTURE REQUIREMENT (highest priority after identity): "
     "render natural human skin with visible pores, micro-texture, subtle imperfections, and realistic subsurface "
@@ -135,6 +153,17 @@ COUPLE_IDENTITY_LOCK_PROTOCOL = (
     "the output must contain exactly two primary wedding subjects in the same frame. Preserve each person's separate "
     "facial identity, age impression, face geometry, expression, and role. Never create a solo portrait, omit either "
     "subject, swap identities, merge faces, average faces, duplicate one subject, or make both subjects share the same AI face"
+)
+
+GOLDEN_ANNIVERSARY_LOCK_PROTOCOL = (
+    "Golden anniversary mode is a parents-and-elders keepsake, not a newlywed fashion shoot. The output must "
+    "contain exactly two mature or elderly primary subjects with dignified anniversary styling. Preserve each "
+    "uploaded person's age impression, mature facial structure, skin texture, wrinkles, smile lines, under-eye "
+    "texture, hairline, and life-stage cues; do not de-age, glamour-model, beauty-filter, or turn either person "
+    "into a young bride or groom. If the uploaded portraits are already mature or elderly, visible age character "
+    "must remain. If the uploaded portraits are less mature than the intended product, still keep the tone as a "
+    "respectful milestone anniversary portrait rather than a youthful luxury wedding ad. Prioritize warm family "
+    "memory, stable posture, modest formal wardrobe, authentic expression, and restoration-grade realism"
 )
 
 SINGLE_SUBJECT_LOCK_PROTOCOL = (
@@ -322,7 +351,7 @@ def _section(title: str, body: str | None) -> str:
     return f"{title}: {cleaned}."
 
 
-def get_studio_guardrails(*, is_couple: bool = False) -> str:
+def get_studio_guardrails(*, is_couple: bool = False, template: object | None = None) -> str:
     parts = [
         _section("SKIN REALISM", SKIN_REALISM_PROTOCOL),
         _section("EYES AND EXPRESSION", EYE_EXPRESSION_PROTOCOL),
@@ -345,6 +374,8 @@ def get_studio_guardrails(*, is_couple: bool = False) -> str:
                 _section("COUPLE STUDIO QUALITY", COUPLE_STUDIO_GUARDRAILS),
             ]
         )
+        if is_golden_anniversary_template(template):
+            parts.append(_section("GOLDEN ANNIVERSARY AGE LOCK", GOLDEN_ANNIVERSARY_LOCK_PROTOCOL))
     return "\n".join(part for part in parts if part)
 
 
@@ -397,6 +428,8 @@ def build_prompt(
         parts.append(_section("DIRECTOR SOURCE PRIORITY", SOURCE_PRIORITY_PROTOCOL))
     if is_couple:
         parts.append(_section("COUPLE IDENTITY LOCK", COUPLE_IDENTITY_LOCK_PROTOCOL))
+        if is_golden_anniversary_template(template):
+            parts.append(_section("GOLDEN ANNIVERSARY AGE LOCK", GOLDEN_ANNIVERSARY_LOCK_PROTOCOL))
     else:
         parts.append(_section("SINGLE SUBJECT LOCK", SINGLE_SUBJECT_LOCK_PROTOCOL))
 

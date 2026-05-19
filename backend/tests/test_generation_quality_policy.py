@@ -440,10 +440,12 @@ class GenerationQualityPolicyTest(unittest.TestCase):
     def test_commercial_wedding_standard_records_canvas_ranges(self) -> None:
         standard = commercial_wedding_standard()
 
-        self.assertEqual(standard["version"], "commercial_wedding_v8")
+        self.assertEqual(standard["version"], "commercial_wedding_v9")
         self.assertEqual(standard["single"]["subject_height_range"], [0.66, 0.78])
         self.assertEqual(standard["single"]["minimum_outdoor_subject_height"], 0.58)
         self.assertEqual(standard["couple"]["group_height_range"], [0.64, 0.76])
+        self.assertEqual(standard["golden_anniversary"]["mode_lock"], "parents_and_elders_keepsake")
+        self.assertTrue(standard["golden_anniversary"]["preserve_mature_age_impression"])
         self.assertTrue(standard["background"]["requires_print_readable_venue_detail"])
         self.assertEqual(standard["background"]["clarity_profile"], "commercially_readable_not_tack_sharp")
         self.assertTrue(standard["background"]["requires_readable_material_texture"])
@@ -499,6 +501,24 @@ class GenerationQualityPolicyTest(unittest.TestCase):
         self.assertEqual(suite["primary"], "golden_anniversary_respectful_three_quarter")
         self.assertIn("authentic age impression", prompt)
         self.assertIn("avoid: over-young beautification", prompt)
+
+        studio_prompt = build_studio_generation_prompt(
+            template=template,
+            prompt_override=None,
+            global_style_text=None,
+            scene_text=None,
+            outfit_text=None,
+            is_couple=True,
+        )
+        guardrails = get_studio_guardrails(is_couple=True, template=template)
+        negative = build_generation_negative_prompt(is_couple=True, template=template)
+
+        self.assertIn("GOLDEN ANNIVERSARY AGE LOCK", studio_prompt)
+        self.assertIn("parents-and-elders keepsake", studio_prompt)
+        self.assertIn("do not de-age", studio_prompt)
+        self.assertIn("GOLDEN ANNIVERSARY AGE LOCK", guardrails)
+        self.assertIn("young newlywed couple", negative)
+        self.assertIn("erased wrinkles", negative)
 
     def test_generation_credit_policy_charges_once_and_refunds_failed_qa(self) -> None:
         policy = build_generation_credit_policy(credits_cost=4)

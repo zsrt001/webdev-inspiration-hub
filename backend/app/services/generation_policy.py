@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.prompt_brain import build_prompt, get_negative_prompt
+from app.services.prompt_brain import build_prompt, get_negative_prompt, is_golden_anniversary_template
 from app.services.shot_library_service import build_shot_library_prompt, commercial_shot_library_standard
 
 
 DEFAULT_ASPECT_RATIO = "3:4"
 LEGACY_RATIO_UPGRADES = {"4:5", "3:2"}
-COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v8"
+COMMERCIAL_STANDARD_VERSION = "commercial_wedding_v9"
 
 COMMERCIAL_WEDDING_STANDARD = {
     "version": COMMERCIAL_STANDARD_VERSION,
@@ -28,6 +28,14 @@ COMMERCIAL_WEDDING_STANDARD = {
         "requires_equal_scale": True,
         "requires_body_separation": True,
         "requires_subtle_interaction": True,
+    },
+    "golden_anniversary": {
+        "mode_lock": "parents_and_elders_keepsake",
+        "subject_count": 2,
+        "preserve_mature_age_impression": True,
+        "forbid_deaging_or_newlywed_fashion_reinterpretation": True,
+        "requires_respectful_anniversary_tone": True,
+        "requires_authentic_wrinkles_and_skin_texture": True,
     },
     "background": {
         "requires_print_readable_venue_detail": True,
@@ -222,8 +230,13 @@ def build_studio_generation_prompt(
     return prompt_text
 
 
-def build_generation_negative_prompt(*, is_couple: bool) -> str:
+def build_generation_negative_prompt(*, is_couple: bool, template: Any | None = None) -> str:
     negative = get_negative_prompt()
+    if is_golden_anniversary_template(template):
+        negative = (
+            f"{negative}, young newlywed couple, teenage bride, youthful fashion-model couple, de-aged faces, "
+            "erased wrinkles, plastic beauty-filter elders, over-smoothed senior skin, glamour-ad reinterpretation"
+        )
     if not is_couple:
         return negative
     return f"{negative}, {COUPLE_NEGATIVE_PROMPT}"

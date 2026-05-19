@@ -661,6 +661,15 @@ async def verify_generated_image_quality(
         "- If the effective outfit family is replaced by an unrelated wardrobe or wrong wedding role, passed=false with reason poor_studio_quality.\n"
         "- Allow minor pose, lighting, crop, and fabric-detail variation only when the selected clothing and background concept remain recognizable.\n"
     ) if style_context else ""
+    golden_rules = ""
+    if any(token in style_context.lower() for token in ("golden", "parents_and_elders", "anniversary")):
+        golden_rules = (
+            "\nGolden-anniversary rules:\n"
+            "- This mode is for parents/elders and milestone anniversary keepsakes, not a youthful newlywed fashion shoot.\n"
+            "- The generated couple must retain mature age impression from the source portraits: wrinkles, smile lines, mature skin texture, hairline, facial structure, and life-stage cues must not be erased.\n"
+            "- If mature or elderly source portraits are de-aged into young bride/groom faces, passed=false with reason identity_mismatch.\n"
+            "- If the whole image reads as a generic young luxury wedding advertisement instead of a respectful elder anniversary remake, passed=false with reason poor_studio_quality.\n"
+        )
 
     prompt = (
         "You are a strict QA inspector for AI-generated wedding photos.\n"
@@ -707,6 +716,7 @@ async def verify_generated_image_quality(
         f"{couple_rules}"
         f"{identity_rules}"
         f"{template_rules}"
+        f"{golden_rules}"
         "- notes: brief (<= 200 chars)."
     )
 
