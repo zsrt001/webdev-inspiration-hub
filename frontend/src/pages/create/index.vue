@@ -439,9 +439,7 @@ const priorityGuideItems = computed(() => [
   },
 ]);
 const generationCost = computed(() => {
-  if (generationMode.value === 'couple_remote') return 4;
-  if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return 3;
-  if (hasDirectionText.value || sceneReferencePath.value || outfitReferencePath.value) return 3;
+  if (generationMode.value === 'couple_remote' || generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return 3;
   return 2;
 });
 const portraitRequirementMet = computed(() => {

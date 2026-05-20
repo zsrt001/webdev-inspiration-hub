@@ -16,11 +16,11 @@ from app.services.credit_service import get_generation_cost, get_live_portrait_c
 
 
 class CommercialPolicyTest(unittest.TestCase):
-    def test_generation_pricing_is_differentiated_by_complexity(self) -> None:
+    def test_generation_pricing_follows_subject_count_not_director_mode(self) -> None:
         self.assertEqual(get_generation_cost(None, image_count=1), 2)
-        self.assertEqual(get_generation_cost(None, image_count=1, director_mode=True), 3)
+        self.assertEqual(get_generation_cost(None, image_count=1, director_mode=True), 2)
         self.assertEqual(get_generation_cost(None, image_count=2), 3)
-        self.assertEqual(get_generation_cost(None, image_count=2, is_remote_join=True), 4)
+        self.assertEqual(get_generation_cost(None, image_count=2, is_remote_join=True), 3)
         self.assertEqual(get_generation_cost("vintage", image_count=1), 2)
         self.assertEqual(get_generation_cost("vintage", image_count=2), 3)
         self.assertEqual(get_live_portrait_cost(seconds=5), 6)

@@ -32,9 +32,9 @@ def get_legal_policies() -> dict:
         },
         "pricing": {
             "single": 2,
-            "director": 3,
+            "director": 2,
             "couple_local": 3,
-            "couple_remote": 4,
+            "couple_remote": 3,
             "golden_anniversary": 3,
             "premium_scene": 5,
             "live_portrait_5s": 6,
