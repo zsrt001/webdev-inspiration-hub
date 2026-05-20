@@ -15,7 +15,11 @@ from app.models.order import Order, OrderStatus
 from app.services.generation_service import generation_service
 from app.services.ops_alert_service import get_ops_alerts, push_critical_alerts
 from app.services.ops_config_service import get_public_ops_config
-from app.services.retention_service import cleanup_expired_orders, cleanup_expired_source_images
+from app.services.retention_service import (
+    cleanup_expired_orders,
+    cleanup_expired_source_images,
+    cleanup_transient_generated_assets,
+)
 from app.worker_tasks import run_order_generation
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -74,7 +78,16 @@ async def cleanup_expired_assets(
     _require_cron_auth(authorization)
     source_images = await cleanup_expired_source_images(db)
     generated_assets = await cleanup_expired_orders(db)
-    return {"success": True, "source_images": source_images, "generated_assets": generated_assets}
+    transient_generated_assets = cleanup_transient_generated_assets(
+        older_than_hours=settings.transient_generated_cleanup_hours,
+        limit=settings.transient_generated_cleanup_limit,
+    )
+    return {
+        "success": True,
+        "source_images": source_images,
+        "generated_assets": generated_assets,
+        "transient_generated_assets": transient_generated_assets,
+    }
 
 
 @router.get("/check_alerts")

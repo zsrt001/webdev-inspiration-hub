@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import urlparse, unquote
@@ -194,6 +195,29 @@ class StorageService:
             return False
         return self._delete_s3(file_url)
 
+    def cleanup_generated_files_older_than(
+        self,
+        *,
+        cutoff: datetime,
+        limit: int = 200,
+    ) -> dict:
+        """Delete transient provider/intermediate outputs under generated/ only."""
+        provider = settings.effective_storage_provider
+        if provider != "vercel":
+            return {
+                "provider": provider,
+                "prefix": "generated/",
+                "checked": 0,
+                "matched": 0,
+                "deleted_files": 0,
+                "failed_files": 0,
+                "freed_bytes_estimate": 0,
+                "freed_mb_estimate": 0.0,
+                "skipped": True,
+                "reason": "unsupported_storage_provider",
+            }
+        return self._cleanup_vercel_generated_files(cutoff=cutoff, limit=limit)
+
     def _delete_local(self, file_url: str) -> bool:
         try:
             parsed = urlparse(file_url)
@@ -243,6 +267,140 @@ class StorageService:
                 return False
         except Exception:
             return False
+
+    @staticmethod
+    def _blob_value(blob: object, *names: str):
+        for name in names:
+            if isinstance(blob, dict) and name in blob:
+                return blob.get(name)
+            if hasattr(blob, name):
+                return getattr(blob, name)
+        return None
+
+    @classmethod
+    def _blob_uploaded_at(cls, blob: object) -> datetime | None:
+        value = cls._blob_value(blob, "uploaded_at", "uploadedAt")
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str) and value.strip():
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _cleanup_vercel_generated_files(self, *, cutoff: datetime, limit: int) -> dict:
+        token = settings.blob_token_effective
+        if not token:
+            return {
+                "provider": "vercel",
+                "prefix": "generated/",
+                "checked": 0,
+                "matched": 0,
+                "deleted_files": 0,
+                "failed_files": 0,
+                "freed_bytes_estimate": 0,
+                "freed_mb_estimate": 0.0,
+                "skipped": True,
+                "reason": "missing_blob_token",
+            }
+
+        try:
+            from vercel.blob import delete as vercel_delete
+            from vercel.blob import list_objects
+        except ImportError as exc:
+            return {
+                "provider": "vercel",
+                "prefix": "generated/",
+                "checked": 0,
+                "matched": 0,
+                "deleted_files": 0,
+                "failed_files": 0,
+                "freed_bytes_estimate": 0,
+                "freed_mb_estimate": 0.0,
+                "skipped": True,
+                "reason": f"vercel_blob_sdk_unavailable:{type(exc).__name__}",
+            }
+
+        clean_limit = max(1, min(1000, int(limit or 200)))
+        clean_cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=timezone.utc)
+        checked = 0
+        matched: list[tuple[str, int]] = []
+        cursor = None
+
+        try:
+            while len(matched) < clean_limit:
+                result = list_objects(prefix="generated/", limit=1000, cursor=cursor, token=token)
+                blobs = self._blob_value(result, "blobs") or []
+                for blob in blobs:
+                    checked += 1
+                    uploaded_at = self._blob_uploaded_at(blob)
+                    url = self._blob_value(blob, "url")
+                    pathname = str(self._blob_value(blob, "pathname") or "")
+                    if not isinstance(url, str) or not url.strip():
+                        continue
+                    if not pathname.startswith("generated/"):
+                        continue
+                    if uploaded_at is None or uploaded_at >= clean_cutoff:
+                        continue
+                    size = int(self._blob_value(blob, "size") or 0)
+                    matched.append((url.strip(), max(0, size)))
+                    if len(matched) >= clean_limit:
+                        break
+
+                cursor = self._blob_value(result, "cursor")
+                has_more = bool(self._blob_value(result, "has_more", "hasMore"))
+                if not cursor or not has_more:
+                    break
+        except Exception as exc:
+            return {
+                "provider": "vercel",
+                "prefix": "generated/",
+                "checked": checked,
+                "matched": len(matched),
+                "deleted_files": 0,
+                "failed_files": 0,
+                "freed_bytes_estimate": 0,
+                "freed_mb_estimate": 0.0,
+                "skipped": True,
+                "reason": f"list_failed:{type(exc).__name__}",
+            }
+
+        deleted = 0
+        failed = 0
+        freed_bytes = 0
+        for index in range(0, len(matched), 50):
+            batch_items = matched[index : index + 50]
+            batch = [url for url, _size in batch_items]
+            try:
+                vercel_delete(batch, token=token)
+                deleted += len(batch)
+                freed_bytes += sum(size for _url, size in batch_items)
+            except Exception:
+                for url, size in batch_items:
+                    try:
+                        vercel_delete(url, token=token)
+                        deleted += 1
+                        freed_bytes += size
+                    except Exception:
+                        failed += 1
+
+        return {
+            "provider": "vercel",
+            "prefix": "generated/",
+            "checked": checked,
+            "matched": len(matched),
+            "deleted_files": deleted,
+            "failed_files": failed,
+            "freed_bytes_estimate": freed_bytes,
+            "freed_mb_estimate": round(freed_bytes / 1024 / 1024, 2),
+            "skipped": False,
+            "cutoff": clean_cutoff.isoformat(),
+        }
 
 
 # Singleton instance

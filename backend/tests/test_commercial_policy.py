@@ -92,6 +92,44 @@ class RetentionCleanupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(orders[0].storage_cleanup_status, "cleanup_failed")
         self.assertEqual(orders[1].storage_cleanup_status, "source_deleted")
 
+    async def test_transient_generated_cleanup_targets_generated_prefix_only(self) -> None:
+        retention = importlib.import_module("app.services.retention_service")
+        now = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+
+        class FakeStorage:
+            called_with = None
+
+            def cleanup_generated_files_older_than(self, *, cutoff, limit):
+                self.called_with = {"cutoff": cutoff, "limit": limit}
+                return {
+                    "provider": "vercel",
+                    "prefix": "generated/",
+                    "checked": 3,
+                    "matched": 2,
+                    "deleted_files": 2,
+                    "failed_files": 0,
+                    "freed_bytes_estimate": 1024,
+                    "freed_mb_estimate": 0.0,
+                    "skipped": False,
+                }
+
+        fake_storage = FakeStorage()
+        original_storage = retention.storage_service
+        retention.storage_service = fake_storage
+        try:
+            summary = retention.cleanup_transient_generated_assets(
+                now=now,
+                older_than_hours=6,
+                limit=250,
+            )
+        finally:
+            retention.storage_service = original_storage
+
+        self.assertEqual(summary["prefix"], "generated/")
+        self.assertEqual(summary["deleted_files"], 2)
+        self.assertEqual(fake_storage.called_with["limit"], 250)
+        self.assertEqual(fake_storage.called_with["cutoff"].isoformat(), "2026-05-20T06:00:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

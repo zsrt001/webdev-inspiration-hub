@@ -174,3 +174,18 @@ async def cleanup_expired_orders(
         order.storage_cleanup_status = "deleted" if summary["failed"] == 0 else "cleanup_failed"
     await db.flush()
     return {"orders": len(orders), "deleted_files": deleted_files, "failed_files": failed_files}
+
+
+def cleanup_transient_generated_assets(
+    *,
+    now: datetime | None = None,
+    older_than_hours: int = 6,
+    limit: int = 200,
+) -> dict:
+    """Clean provider/intermediate generated/ files that are not customer delivery assets."""
+    clean_hours = max(1, int(older_than_hours or 6))
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=clean_hours)
+    return storage_service.cleanup_generated_files_older_than(
+        cutoff=cutoff,
+        limit=max(1, min(1000, int(limit or 200))),
+    )

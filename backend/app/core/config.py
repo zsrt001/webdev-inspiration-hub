@@ -206,6 +206,8 @@ class Settings(BaseSettings):
     cleanup_source_images_on_complete: bool = False
     cleanup_cron_token: str = ""
     cron_secret: str = ""
+    transient_generated_cleanup_hours: int = 6
+    transient_generated_cleanup_limit: int = 200
 
     # Observability
     sentry_dsn: str = ""
