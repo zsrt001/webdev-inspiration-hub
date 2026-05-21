@@ -16,7 +16,7 @@
           <button v-if="!accountAuthed && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
-          <button v-if="adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">Admin console</button>
+          <button v-if="adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">{{ tr('后台控制台', 'Admin console') }}</button>
           <button class="btn btn-outline hero-btn" @tap="refresh">{{ tr('刷新', 'Refresh') }}</button>
         </view>
       </view>

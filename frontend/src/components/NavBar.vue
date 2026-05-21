@@ -19,7 +19,7 @@
           {{ accountLabel }}
         </view>
         <view v-if="isAdmin" class="nav-link" :class="{ active: currentPath === '/admin' || currentPath.startsWith('/admin/') }" @tap="navigate('/admin')">
-          Admin
+          {{ adminLabel }}
         </view>
       </view>
 
@@ -48,7 +48,7 @@
         <view class="menu-item" @tap="navigate('/pages/index/index')">{{ t('nav.home') }}</view>
         <view class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
         <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
-        <view v-if="isAdmin" class="menu-item" @tap="navigate('/admin')">Admin</view>
+        <view v-if="isAdmin" class="menu-item" @tap="navigate('/admin')">{{ adminLabel }}</view>
         <view class="menu-item" @tap="handleAuthTap">{{ authLabel }}</view>
         <view class="menu-item" @tap="navigate('/pages/legal/refund')">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</view>
       </view>
@@ -71,6 +71,7 @@ const i18nStore = useI18nStore();
 const t = i18nStore.t;
 const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
 const accountLabel = computed(() => (i18nStore.locale === 'zh' ? '账户' : 'Account'));
+const adminLabel = computed(() => (i18nStore.locale === 'zh' ? '后台' : 'Admin'));
 
 const authLabel = computed(() => {
   if (accountAuthed.value) return username.value || accountLabel.value;

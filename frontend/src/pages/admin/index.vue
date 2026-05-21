@@ -1,51 +1,51 @@
 <template>
   <AdminLayout
     active="overview"
-    title="Operations overview"
-    subtitle="Verify admin access, email delivery, risk controls, remote join, and the real image generation path."
+    :title="tr('运营总览', 'Operations overview')"
+    :subtitle="tr('检查后台权限、邮件投递、风控、异地合拍和真实生图链路。', 'Verify admin access, email delivery, risk controls, remote join, and the real image generation path.')"
   >
     <view v-if="loading" class="admin-card admin-state">
-      <text class="state-title">Loading admin console</text>
-      <text class="state-copy">Checking admin permission and reading production signals.</text>
+      <text class="state-title">{{ tr('正在加载后台', 'Loading admin console') }}</text>
+      <text class="state-copy">{{ tr('正在校验管理员权限并读取生产信号。', 'Checking admin permission and reading production signals.') }}</text>
     </view>
 
     <view v-else-if="error" class="admin-card admin-state">
-      <text class="state-title">Admin access required</text>
+      <text class="state-title">{{ tr('需要后台权限', 'Admin access required') }}</text>
       <text class="state-copy">{{ error }}</text>
-      <button class="primary-action" @tap="goLogin">Sign in</button>
+      <button class="primary-action" @tap="goLogin">{{ tr('登录', 'Sign in') }}</button>
     </view>
 
     <template v-else>
       <view class="metrics-grid">
         <view class="metric-card admin-card">
-          <text class="metric-label">Users</text>
+          <text class="metric-label">{{ tr('用户', 'Users') }}</text>
           <text class="metric-value">{{ stats.total_users }}</text>
-          <text class="metric-sub">New in 7 days {{ stats.recent_users || 0 }}</text>
+          <text class="metric-sub">{{ tr('7 天新增', 'New in 7 days') }} {{ stats.recent_users || 0 }}</text>
         </view>
         <view class="metric-card admin-card">
-          <text class="metric-label">Orders</text>
+          <text class="metric-label">{{ tr('订单', 'Orders') }}</text>
           <text class="metric-value">{{ stats.total_orders }}</text>
-          <text class="metric-sub">New in 7 days {{ stats.recent_orders || 0 }}</text>
+          <text class="metric-sub">{{ tr('7 天新增', 'New in 7 days') }} {{ stats.recent_orders || 0 }}</text>
         </view>
         <view class="metric-card admin-card">
-          <text class="metric-label">Credit revenue</text>
+          <text class="metric-label">{{ tr('积分收入', 'Credit revenue') }}</text>
           <text class="metric-value">{{ stats.total_revenue_credits || 0 }}</text>
-          <text class="metric-sub">Credits in circulation {{ stats.total_credits_in_circulation || 0 }}</text>
+          <text class="metric-sub">{{ tr('流通积分', 'Credits in circulation') }} {{ stats.total_credits_in_circulation || 0 }}</text>
         </view>
         <view class="metric-card admin-card">
-          <text class="metric-label">Subscription MRR</text>
+          <text class="metric-label">{{ tr('订阅 MRR', 'Subscription MRR') }}</text>
           <text class="metric-value">{{ formatMoney(stats.subscription_mrr_cents || 0) }}</text>
-          <text class="metric-sub">Active subscriptions {{ stats.active_subscriptions || 0 }}</text>
+          <text class="metric-sub">{{ tr('活跃订阅', 'Active subscriptions') }} {{ stats.active_subscriptions || 0 }}</text>
         </view>
       </view>
 
       <view class="admin-card overview-section">
         <view class="section-head">
           <view>
-            <text class="section-title">Commercial funnel</text>
-            <text class="section-copy">7-day funnel with upload quality, identity grade, payment, and delivery signals.</text>
+            <text class="section-title">{{ tr('商业漏斗', 'Commercial funnel') }}</text>
+            <text class="section-copy">{{ tr('7 天漏斗，包含上传质量、身份一致性、支付和交付信号。', '7-day funnel with upload quality, identity grade, payment, and delivery signals.') }}</text>
           </view>
-          <button class="ghost-action" @tap="refreshOps">Refresh</button>
+          <button class="ghost-action" @tap="refreshOps">{{ tr('刷新', 'Refresh') }}</button>
         </view>
 
         <view class="funnel-grid">
@@ -59,13 +59,13 @@
         <view class="template-ranking">
           <view class="section-head compact-head">
             <view>
-              <text class="section-title small-title">Template conversion</text>
-              <text class="section-copy">A/B picks now feed template ranking together with clicks, orders, completions, downloads, and leads.</text>
+              <text class="section-title small-title">{{ tr('模板转化', 'Template conversion') }}</text>
+              <text class="section-copy">{{ tr('A/B 选择会和点击、订单、完成、下载、线索一起进入模板排序。', 'A/B picks now feed template ranking together with clicks, orders, completions, downloads, and leads.') }}</text>
             </view>
           </view>
           <view v-if="templateRanking.length === 0" class="admin-state compact-state">
-            <text class="state-title">No template data yet</text>
-            <text class="state-copy">Template activity will appear after users browse and generate.</text>
+            <text class="state-title">{{ tr('暂无模板数据', 'No template data yet') }}</text>
+            <text class="state-copy">{{ tr('用户浏览并生成后，模板活动会显示在这里。', 'Template activity will appear after users browse and generate.') }}</text>
           </view>
           <view v-else class="recent-list">
             <view v-for="item in templateRanking" :key="item.template_id" class="template-row">
@@ -73,11 +73,11 @@
                 <text class="strong">{{ item.template_title || item.template_id }}</text>
                 <text class="subtle mono">{{ item.template_id }}</text>
               </view>
-              <text class="td-muted">Clicks {{ item.clicks || 0 }}</text>
+              <text class="td-muted">{{ tr('点击', 'Clicks') }} {{ item.clicks || 0 }}</text>
               <text class="td-muted">A/B {{ item.ab_picks || 0 }}</text>
-              <text class="td-muted">Orders {{ item.orders || 0 }}</text>
-              <text class="td-muted">Done {{ formatPercent(item.completion_rate) }}</text>
-              <text class="td-muted">Score {{ formatNumber(item.ranking_score) }}</text>
+              <text class="td-muted">{{ tr('订单', 'Orders') }} {{ item.orders || 0 }}</text>
+              <text class="td-muted">{{ tr('完成', 'Done') }} {{ formatPercent(item.completion_rate) }}</text>
+              <text class="td-muted">{{ tr('得分', 'Score') }} {{ formatNumber(item.ranking_score) }}</text>
             </view>
           </view>
         </view>
@@ -86,10 +86,10 @@
       <view class="admin-card overview-section quality-dashboard">
         <view class="section-head">
           <view>
-            <text class="section-title">Order quality dashboard</text>
-            <text class="section-copy">30-day gate results by template, failure reason, and repair-round recovery.</text>
+            <text class="section-title">{{ tr('订单质量看板', 'Order quality dashboard') }}</text>
+            <text class="section-copy">{{ tr('按模板、失败原因和修复轮次查看 30 天质检结果。', '30-day gate results by template, failure reason, and repair-round recovery.') }}</text>
           </view>
-          <button class="ghost-action" @tap="refreshOps">Refresh</button>
+          <button class="ghost-action" @tap="refreshOps">{{ tr('刷新', 'Refresh') }}</button>
         </view>
 
         <view class="quality-kpi-grid">
@@ -104,27 +104,27 @@
           <view>
             <view class="section-head compact-head quality-table-head">
               <view>
-                <text class="section-title small-title">Template failure map</text>
-                <text class="section-copy">Top templates ranked by QA failures and order volume.</text>
+                <text class="section-title small-title">{{ tr('模板失败地图', 'Template failure map') }}</text>
+                <text class="section-copy">{{ tr('按 QA 失败和订单量排序的高风险模板。', 'Top templates ranked by QA failures and order volume.') }}</text>
               </view>
             </view>
             <view v-if="qualityTemplates.length === 0" class="admin-state compact-state">
-              <text class="state-title">No quality data yet</text>
-              <text class="state-copy">Template-level QA data will appear after orders complete or fail gates.</text>
+              <text class="state-title">{{ tr('暂无质量数据', 'No quality data yet') }}</text>
+              <text class="state-copy">{{ tr('订单完成或质检失败后，会出现模板级 QA 数据。', 'Template-level QA data will appear after orders complete or fail gates.') }}</text>
             </view>
             <view v-else class="quality-table">
               <view class="quality-row quality-head-row template-quality-row">
-                <text class="th">Template</text>
-                <text class="th">Orders</text>
+                <text class="th">{{ tr('模板', 'Template') }}</text>
+                <text class="th">{{ tr('订单', 'Orders') }}</text>
                 <text class="th">QA fail</text>
-                <text class="th">Identity</text>
-                <text class="th">Lighting</text>
-                <text class="th">Top reason</text>
+                <text class="th">{{ tr('身份', 'Identity') }}</text>
+                <text class="th">{{ tr('布光', 'Lighting') }}</text>
+                <text class="th">{{ tr('首要原因', 'Top reason') }}</text>
               </view>
               <view v-for="item in qualityTemplates" :key="item.template_id" class="quality-row template-quality-row">
                 <view>
                   <text class="strong">{{ item.template_id }}</text>
-                  <text class="subtle">Done {{ formatPercent(item.completion_rate) }} · repair {{ formatNumber(item.avg_repair_rounds) }}</text>
+                  <text class="subtle">{{ tr('完成', 'Done') }} {{ formatPercent(item.completion_rate) }} / {{ tr('修复', 'repair') }} {{ formatNumber(item.avg_repair_rounds) }}</text>
                 </view>
                 <text class="td">{{ item.orders || 0 }}</text>
                 <text class="td">{{ formatPercent(item.qa_failure_rate) }}</text>
@@ -138,21 +138,21 @@
           <view>
             <view class="section-head compact-head quality-table-head">
               <view>
-                <text class="section-title small-title">Failure reasons</text>
-                <text class="section-copy">Reason codes grouped into identity, lighting, composition, and technical buckets.</text>
+                <text class="section-title small-title">{{ tr('失败原因', 'Failure reasons') }}</text>
+                <text class="section-copy">{{ tr('按身份、布光、构图和技术问题归类失败代码。', 'Reason codes grouped into identity, lighting, composition, and technical buckets.') }}</text>
               </view>
             </view>
             <view v-if="qualityReasons.length === 0" class="admin-state compact-state">
-              <text class="state-title">No failure reasons</text>
-              <text class="state-copy">Hard-gate rejects and repair-round misses will be counted here.</text>
+              <text class="state-title">{{ tr('暂无失败原因', 'No failure reasons') }}</text>
+              <text class="state-copy">{{ tr('硬性拦截和修复轮次未通过会统计在这里。', 'Hard-gate rejects and repair-round misses will be counted here.') }}</text>
             </view>
             <view v-else class="quality-table">
               <view class="quality-row quality-head-row reason-quality-row">
-                <text class="th">Reason</text>
-                <text class="th">Group</text>
-                <text class="th">Count</text>
-                <text class="th">Rounds</text>
-                <text class="th">Top template</text>
+                <text class="th">{{ tr('原因', 'Reason') }}</text>
+                <text class="th">{{ tr('分组', 'Group') }}</text>
+                <text class="th">{{ tr('数量', 'Count') }}</text>
+                <text class="th">{{ tr('轮次', 'Rounds') }}</text>
+                <text class="th">{{ tr('高发模板', 'Top template') }}</text>
               </view>
               <view v-for="item in qualityReasons" :key="item.reason" class="quality-row reason-quality-row">
                 <text class="td mono">{{ item.reason }}</text>
@@ -169,20 +169,20 @@
           <view>
             <view class="section-head compact-head quality-table-head">
               <view>
-                <text class="section-title small-title">Repair rounds</text>
-                <text class="section-copy">Success rate by generation / repair pass.</text>
+                <text class="section-title small-title">{{ tr('修复轮次', 'Repair rounds') }}</text>
+                <text class="section-copy">{{ tr('按生成/修复轮次查看通过率。', 'Success rate by generation / repair pass.') }}</text>
               </view>
             </view>
             <view class="repair-strip">
               <view v-for="item in qualityRepairRounds" :key="item.round" class="repair-cell">
-                <text class="metric-label">Round {{ item.round }}</text>
+                <text class="metric-label">{{ tr('轮次', 'Round') }} {{ item.round }}</text>
                 <text class="metric-value small-value">{{ formatPercent(item.success_rate) }}</text>
-                <text class="metric-sub">{{ item.successes || 0 }}/{{ item.attempts || 0 }} passed · score {{ formatNumber(item.avg_selected_score) }}</text>
+                <text class="metric-sub">{{ item.successes || 0 }}/{{ item.attempts || 0 }} {{ tr('通过', 'passed') }} · {{ tr('得分', 'score') }} {{ formatNumber(item.avg_selected_score) }}</text>
                 <text class="subtle">{{ topReasonLabel(item.top_reasons) }}</text>
               </view>
               <view v-if="qualityRepairRounds.length === 0" class="admin-state compact-state">
-                <text class="state-title">No repair rounds</text>
-                <text class="state-copy">Repair pass rates will appear after QA attempts are recorded.</text>
+                <text class="state-title">{{ tr('暂无修复轮次', 'No repair rounds') }}</text>
+                <text class="state-copy">{{ tr('记录 QA 尝试后会显示修复通过率。', 'Repair pass rates will appear after QA attempts are recorded.') }}</text>
               </view>
             </view>
           </view>
@@ -190,23 +190,23 @@
           <view>
             <view class="section-head compact-head quality-table-head">
               <view>
-                <text class="section-title small-title">Repair modes</text>
-                <text class="section-copy">Shows whether relight-only and other repair policies are recovering usable images.</text>
+                <text class="section-title small-title">{{ tr('修复模式', 'Repair modes') }}</text>
+                <text class="section-copy">{{ tr('查看重打光等修复策略是否能恢复可交付图片。', 'Shows whether relight-only and other repair policies are recovering usable images.') }}</text>
               </view>
             </view>
             <view class="quality-table compact-quality-table">
               <view v-for="item in qualityRepairModes" :key="item.repair_mode" class="mode-row">
                 <view>
                   <text class="strong mono">{{ item.repair_mode }}</text>
-                  <text class="subtle">{{ item.successes || 0 }}/{{ item.attempts || 0 }} recovered</text>
+                  <text class="subtle">{{ item.successes || 0 }}/{{ item.attempts || 0 }} {{ tr('已恢复', 'recovered') }}</text>
                 </view>
                 <text class="status-pill" :class="{ active: Number(item.success_rate || 0) >= 0.8 }">
                   {{ formatPercent(item.success_rate) }}
                 </text>
               </view>
               <view v-if="qualityRepairModes.length === 0" class="admin-state compact-state">
-                <text class="state-title">No repair modes</text>
-                <text class="state-copy">Mode-level recovery stats will appear after repair attempts.</text>
+                <text class="state-title">{{ tr('暂无修复模式', 'No repair modes') }}</text>
+                <text class="state-copy">{{ tr('修复尝试后会出现模式级恢复数据。', 'Mode-level recovery stats will appear after repair attempts.') }}</text>
               </view>
             </view>
           </view>
@@ -217,62 +217,62 @@
         <view class="admin-card ops-card">
           <view class="section-head compact-head">
             <view>
-              <text class="section-title">Admin access</text>
-              <text class="section-copy">Use /admin after signing in with an authorized owner, admin, operator, ADMIN_EMAILS, or ADMIN_USER_IDS account.</text>
+              <text class="section-title">{{ tr('后台权限', 'Admin access') }}</text>
+              <text class="section-copy">{{ tr('使用授权的 owner、admin、operator、ADMIN_EMAILS 或 ADMIN_USER_IDS 账号登录后访问 /admin。', 'Use /admin after signing in with an authorized owner, admin, operator, ADMIN_EMAILS, or ADMIN_USER_IDS account.') }}</text>
             </view>
           </view>
           <view class="diagnostic-list">
             <view class="diag-row">
-              <text>Entry URL</text>
+              <text>{{ tr('入口 URL', 'Entry URL') }}</text>
               <text class="mono">{{ adminMe?.entry_url || '/admin' }}</text>
             </view>
             <view class="diag-row">
-              <text>Actor</text>
+              <text>{{ tr('操作者', 'Actor') }}</text>
               <text class="mono">{{ adminMe?.actor || '--' }}</text>
             </view>
             <view class="diag-row">
-              <text>Roles</text>
+              <text>{{ tr('角色', 'Roles') }}</text>
               <text class="mono">{{ adminRoleLabel }}</text>
             </view>
             <view class="diag-row">
-              <text>Remote join</text>
+              <text>{{ tr('异地合拍', 'Remote join') }}</text>
               <text class="status-pill" :class="{ active: adminMe?.remote_join_enabled }">
-                {{ adminMe?.remote_join_enabled ? 'Enabled' : 'Disabled' }}
+                {{ adminMe?.remote_join_enabled ? tr('已启用', 'Enabled') : tr('已关闭', 'Disabled') }}
               </text>
             </view>
             <view class="diag-row">
-              <text>Session store</text>
+              <text>{{ tr('会话存储', 'Session store') }}</text>
               <text class="mono">{{ adminMe?.remote_join_session_store || '--' }}</text>
             </view>
             <view class="diag-row">
-              <text>Generation mode</text>
+              <text>{{ tr('生成模式', 'Generation mode') }}</text>
               <text class="mono">{{ adminMe?.generation_execution_mode || '--' }}</text>
             </view>
           </view>
           <view class="admin-actions-row">
-            <button class="ghost-action" @tap="goUsers">Users & credits</button>
-            <button class="ghost-action" @tap="goOrders">Orders</button>
+            <button class="ghost-action" @tap="goUsers">{{ tr('用户与积分', 'Users & credits') }}</button>
+            <button class="ghost-action" @tap="goOrders">{{ tr('订单', 'Orders') }}</button>
           </view>
         </view>
 
         <view class="admin-card ops-card">
           <view class="section-head compact-head">
             <view>
-              <text class="section-title">Email delivery</text>
-              <text class="section-copy">Production sender config, DNS signals, and latest delivery attempts.</text>
+              <text class="section-title">{{ tr('邮件投递', 'Email delivery') }}</text>
+              <text class="section-copy">{{ tr('生产发件配置、DNS 信号和最近投递记录。', 'Production sender config, DNS signals, and latest delivery attempts.') }}</text>
             </view>
-            <button class="ghost-action" @tap="refreshOps">Refresh</button>
+            <button class="ghost-action" @tap="refreshOps">{{ tr('刷新', 'Refresh') }}</button>
           </view>
 
           <view class="diagnostic-list">
             <view class="diag-row">
               <text>Resend API key</text>
               <text class="status-pill" :class="{ active: emailDiagnostics?.resend_api_key_configured }">
-                {{ emailDiagnostics?.resend_api_key_configured ? 'Configured' : 'Missing' }}
+                {{ emailDiagnostics?.resend_api_key_configured ? tr('已配置', 'Configured') : tr('缺失', 'Missing') }}
               </text>
             </view>
             <view class="diag-row">
-              <text>From domain</text>
+              <text>{{ tr('发件域名', 'From domain') }}</text>
               <text class="mono">{{ emailDiagnostics?.from_domain || '--' }}</text>
             </view>
             <view class="diag-row">
@@ -284,7 +284,7 @@
           <view class="email-test-row">
             <input v-model="testEmailTo" class="filter-input" placeholder="recipient@example.com" />
             <button class="primary-action" :disabled="sendingTestEmail" @tap="sendAdminTestEmail">
-              {{ sendingTestEmail ? 'Sending...' : 'Send test' }}
+              {{ sendingTestEmail ? tr('发送中...', 'Sending...') : tr('发送测试', 'Send test') }}
             </button>
           </view>
           <text v-if="testEmailResult" class="section-copy">{{ testEmailResult }}</text>
@@ -305,27 +305,27 @@
         <view class="admin-card ops-card">
           <view class="section-head compact-head">
             <view>
-              <text class="section-title">Real generation probe</text>
-              <text class="section-copy">Creates a zero-cost admin probe order and runs the configured image provider.</text>
+              <text class="section-title">{{ tr('真实生图探针', 'Real generation probe') }}</text>
+              <text class="section-copy">{{ tr('创建零成本后台探针订单，并运行当前配置的图像服务商。', 'Creates a zero-cost admin probe order and runs the configured image provider.') }}</text>
             </view>
           </view>
 
           <view class="probe-form">
-            <input v-model="probeImageUrl" class="filter-input" placeholder="Primary public portrait image URL" />
-            <input v-model="probeSecondImageUrl" class="filter-input" placeholder="Second portrait URL for couple or remote test" />
-            <input v-model="probeTemplateId" class="filter-input" :placeholder="`Template ID, default ${defaultProbeTemplateId}`" />
+            <input v-model="probeImageUrl" class="filter-input" :placeholder="tr('主人物公开图片 URL', 'Primary public portrait image URL')" />
+            <input v-model="probeSecondImageUrl" class="filter-input" :placeholder="tr('双人或异地测试的第二人物 URL', 'Second portrait URL for couple or remote test')" />
+            <input v-model="probeTemplateId" class="filter-input" :placeholder="tr(`模板 ID，默认 ${defaultProbeTemplateId}`, `Template ID, default ${defaultProbeTemplateId}`)" />
             <view class="probe-options">
               <label class="check-row">
                 <checkbox :checked="probeRemoteJoin" @tap="probeRemoteJoin = !probeRemoteJoin" />
-                <text>Remote join couple probe</text>
+                <text>{{ tr('异地双人探针', 'Remote join couple probe') }}</text>
               </label>
               <label class="check-row">
                 <checkbox :checked="probeInline" @tap="probeInline = !probeInline" />
-                <text>Run inline now</text>
+                <text>{{ tr('立即同步运行', 'Run inline now') }}</text>
               </label>
             </view>
             <button class="primary-action" :disabled="runningProbe" @tap="runGenerationProbe">
-              {{ runningProbe ? 'Starting probe...' : 'Run real probe' }}
+              {{ runningProbe ? tr('探针启动中...', 'Starting probe...') : tr('运行真实探针', 'Run real probe') }}
             </button>
           </view>
 
@@ -338,11 +338,11 @@
 
           <view v-if="probeResult" class="probe-result">
             <view class="diag-row">
-              <text>Result</text>
+              <text>{{ tr('结果', 'Result') }}</text>
               <text class="status-pill" :class="{ active: probeResult.ok }">{{ probeResultLabel }}</text>
             </view>
             <view class="diag-row">
-              <text>Order</text>
+              <text>{{ tr('订单', 'Order') }}</text>
               <text class="mono">{{ probeResult.order_id || '--' }}</text>
             </view>
             <text v-if="probeResult.error_message" class="error-copy">{{ probeResult.error_message }}</text>
@@ -352,37 +352,37 @@
                 <image class="probe-image small" :src="item.url" mode="aspectFill" />
               </view>
               <view v-if="probePreviewUrl" class="probe-gallery-item generated">
-                <text class="probe-gallery-label">Generated wedding image</text>
+                <text class="probe-gallery-label">{{ tr('生成婚纱图', 'Generated wedding image') }}</text>
                 <image class="probe-image" :src="probePreviewUrl" mode="aspectFill" />
               </view>
             </view>
-            <button v-if="probeResult.order_id" class="ghost-action probe-order-action" @tap="goOrders">Open orders</button>
+            <button v-if="probeResult.order_id" class="ghost-action probe-order-action" @tap="goOrders">{{ tr('打开订单', 'Open orders') }}</button>
           </view>
         </view>
 
         <view class="admin-card ops-card">
           <view class="section-head compact-head">
             <view>
-              <text class="section-title">Signup risk</text>
-              <text class="section-copy">Starter-credit, verification, device, IP, and email-domain abuse signals.</text>
+              <text class="section-title">{{ tr('注册风控', 'Signup risk') }}</text>
+              <text class="section-copy">{{ tr('新手积分、验证、设备、IP 和邮箱域名滥用信号。', 'Starter-credit, verification, device, IP, and email-domain abuse signals.') }}</text>
             </view>
           </view>
 
           <view class="risk-summary">
             <view>
-              <text class="metric-label">Events</text>
+              <text class="metric-label">{{ tr('事件', 'Events') }}</text>
               <text class="metric-value small-value">{{ riskOverview?.total_events || 0 }}</text>
             </view>
             <view>
-              <text class="metric-label">Welcome credits</text>
+              <text class="metric-label">{{ tr('欢迎积分', 'Welcome credits') }}</text>
               <text class="metric-value small-value">{{ riskOverview?.welcome_bonus_count || 0 }}</text>
             </view>
             <view>
-              <text class="metric-label">Blocked</text>
+              <text class="metric-label">{{ tr('已拦截', 'Blocked') }}</text>
               <text class="metric-value small-value">{{ riskOverview?.blocked_events || 0 }}</text>
             </view>
             <view>
-              <text class="metric-label">High risk</text>
+              <text class="metric-label">{{ tr('高风险', 'High risk') }}</text>
               <text class="metric-value small-value">{{ riskOverview?.high_risk_events || 0 }}</text>
             </view>
           </view>
@@ -391,7 +391,7 @@
             <view v-for="event in recentRiskEvents" :key="event.id" class="mini-log-row">
               <view>
                 <text class="strong">{{ event.event_type }} / {{ event.provider || '--' }}</text>
-                <text class="subtle">{{ event.email_domain || 'no-domain' }} / score {{ event.risk_score }}</text>
+                <text class="subtle">{{ event.email_domain || 'no-domain' }} / {{ tr('分数', 'score') }} {{ event.risk_score }}</text>
               </view>
               <text class="td-muted">{{ formatDate(event.created_at) }}</text>
             </view>
@@ -402,21 +402,21 @@
       <view class="admin-card overview-section">
         <view class="section-head">
           <view>
-            <text class="section-title">Recent orders</text>
-            <text class="section-copy">A quick view of the generation pipeline status.</text>
+            <text class="section-title">{{ tr('最近订单', 'Recent orders') }}</text>
+            <text class="section-copy">{{ tr('快速查看生成链路状态。', 'A quick view of the generation pipeline status.') }}</text>
           </view>
-          <button class="ghost-action" @tap="goOrders">View all orders</button>
+          <button class="ghost-action" @tap="goOrders">{{ tr('查看全部订单', 'View all orders') }}</button>
         </view>
 
         <view v-if="recentOrders.length === 0" class="admin-state compact-state">
-          <text class="state-title">No orders yet</text>
-          <text class="state-copy">Created orders will appear here.</text>
+          <text class="state-title">{{ tr('暂无订单', 'No orders yet') }}</text>
+          <text class="state-copy">{{ tr('创建后的订单会显示在这里。', 'Created orders will appear here.') }}</text>
         </view>
         <view v-else class="recent-list">
           <view v-for="order in recentOrders" :key="order.id" class="recent-row">
             <view>
               <text class="strong mono">{{ shortId(order.id) }}</text>
-              <text class="subtle">{{ order.template_title || order.template_id || 'No template' }}</text>
+              <text class="subtle">{{ order.template_title || order.template_id || tr('无模板', 'No template') }}</text>
             </view>
             <text class="status-pill" :class="order.status">{{ order.status || 'UNKNOWN' }}</text>
             <text class="td-muted">{{ formatDate(order.created_at) }}</text>
@@ -431,6 +431,7 @@
 import { computed, onMounted, ref } from 'vue';
 import AdminLayout from './AdminLayout.vue';
 import { get, post, resolvePublicUrl } from '../../utils/api';
+import { useI18nStore } from '../../stores/i18n';
 
 interface AdminMe {
   actor: string;
@@ -532,6 +533,8 @@ interface ProbeResponse {
 
 const loading = ref(true);
 const error = ref('');
+const i18nStore = useI18nStore();
+const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 const adminMe = ref<AdminMe | null>(null);
 const stats = ref<DashboardStats>({
   total_orders: 0,
@@ -568,14 +571,16 @@ const adminRoleLabel = computed(() => (adminMe.value?.admin_roles || []).join(',
 const defaultProbeTemplateId = computed(() => (probeRemoteJoin.value ? 'royal_castle' : 'solo_royal_castle'));
 const dnsSummary = computed(() => {
   const dns = emailDiagnostics.value?.dns || {};
-  return `SPF ${dns.spf_found ? 'ok' : 'missing'} | DMARC ${dns.dmarc_found ? 'ok' : 'missing'} | MX ${dns.mx_found ? 'ok' : 'missing'}`;
+  const ok = tr('正常', 'ok');
+  const missing = tr('缺失', 'missing');
+  return `SPF ${dns.spf_found ? ok : missing} | DMARC ${dns.dmarc_found ? ok : missing} | MX ${dns.mx_found ? ok : missing}`;
 });
 
 const probeResultLabel = computed(() => {
   if (!probeResult.value) return '--';
-  if (probeResult.value.completed) return 'Completed';
-  if (probeResult.value.started && probeResult.value.ok) return `Started (${probeResult.value.execution_mode})`;
-  return 'Failed';
+  if (probeResult.value.completed) return tr('已完成', 'Completed');
+  if (probeResult.value.started && probeResult.value.ok) return `${tr('已启动', 'Started')} (${probeResult.value.execution_mode})`;
+  return tr('失败', 'Failed');
 });
 
 const probePreviewUrl = computed(() => {
@@ -593,16 +598,16 @@ const funnelCards = computed(() => {
   const grades = (totals.identity_grade_counts || {}) as Record<string, number>;
   const blockingIdentity = Number(grades.major_mismatch || 0) + Number(grades.role_swap || 0);
   return [
-    { label: 'Registered', value: fmtCount(totals.registered), sub: `Pay ${formatPercent(totals.payment_conversion_rate)}` },
-    { label: 'Upload start', value: fmtCount(totals.upload_started), sub: `Success ${formatPercent(totals.upload_success_rate)}` },
-    { label: 'Upload success', value: fmtCount(totals.upload_completed), sub: `Avg ${formatDuration(totals.avg_upload_duration_ms)}` },
-    { label: 'Upload quality', value: formatNumber(totals.avg_upload_quality_score), sub: `Warn ${fmtCount(totals.upload_quality_warning)} / Poor ${fmtCount(totals.upload_quality_poor)}` },
-    { label: 'Order created', value: fmtCount(totals.order_created), sub: `Done ${formatPercent(totals.generation_success_rate)}` },
-    { label: 'Completed', value: fmtCount(totals.order_completed), sub: `QA fail ${formatPercent(totals.qa_failure_rate)}` },
-    { label: 'Identity grade', value: fmtCount(blockingIdentity), sub: `Minor ${fmtCount(grades.minor_drift)} / Pass ${fmtCount(grades.identity_pass)}` },
-    { label: 'Result viewed', value: fmtCount(totals.result_viewed), sub: `Repair ${formatNumber(totals.avg_repair_rounds)}` },
-    { label: 'Paid', value: fmtCount(totals.payments_completed), sub: `Revenue $${formatNumber(totals.payment_revenue_usd)}` },
-    { label: 'Downloaded', value: fmtCount(totals.download_success), sub: `Lock ${fmtCount(totals.download_locked_clicked)}` },
+    { label: tr('已注册', 'Registered'), value: fmtCount(totals.registered), sub: `${tr('支付', 'Pay')} ${formatPercent(totals.payment_conversion_rate)}` },
+    { label: tr('开始上传', 'Upload start'), value: fmtCount(totals.upload_started), sub: `${tr('成功', 'Success')} ${formatPercent(totals.upload_success_rate)}` },
+    { label: tr('上传成功', 'Upload success'), value: fmtCount(totals.upload_completed), sub: `${tr('平均', 'Avg')} ${formatDuration(totals.avg_upload_duration_ms)}` },
+    { label: tr('上传质量', 'Upload quality'), value: formatNumber(totals.avg_upload_quality_score), sub: `${tr('警告', 'Warn')} ${fmtCount(totals.upload_quality_warning)} / ${tr('较差', 'Poor')} ${fmtCount(totals.upload_quality_poor)}` },
+    { label: tr('创建订单', 'Order created'), value: fmtCount(totals.order_created), sub: `${tr('完成', 'Done')} ${formatPercent(totals.generation_success_rate)}` },
+    { label: tr('已完成', 'Completed'), value: fmtCount(totals.order_completed), sub: `QA ${tr('失败', 'fail')} ${formatPercent(totals.qa_failure_rate)}` },
+    { label: tr('身份等级', 'Identity grade'), value: fmtCount(blockingIdentity), sub: `${tr('轻微漂移', 'Minor')} ${fmtCount(grades.minor_drift)} / ${tr('通过', 'Pass')} ${fmtCount(grades.identity_pass)}` },
+    { label: tr('查看结果', 'Result viewed'), value: fmtCount(totals.result_viewed), sub: `${tr('修复', 'Repair')} ${formatNumber(totals.avg_repair_rounds)}` },
+    { label: tr('已支付', 'Paid'), value: fmtCount(totals.payments_completed), sub: `${tr('收入', 'Revenue')} $${formatNumber(totals.payment_revenue_usd)}` },
+    { label: tr('已下载', 'Downloaded'), value: fmtCount(totals.download_success), sub: `${tr('下载锁点击', 'Lock')} ${fmtCount(totals.download_locked_clicked)}` },
   ];
 });
 
@@ -610,34 +615,34 @@ const qualityKpis = computed(() => {
   const totals = qualityTotals.value;
   return [
     {
-      label: 'Sampled orders',
+      label: tr('采样订单', 'Sampled orders'),
       value: fmtCount(qualityDashboard.value?.sampled_orders || totals.orders),
-      sub: `${qualityDashboard.value?.days || 30} days · done ${formatPercent(totals.completion_rate)}`,
+      sub: `${qualityDashboard.value?.days || 30} ${tr('天', 'days')} · ${tr('完成', 'done')} ${formatPercent(totals.completion_rate)}`,
     },
     {
-      label: 'QA failure',
+      label: 'QA ' + tr('失败', 'failure'),
       value: formatPercent(totals.qa_failure_rate),
-      sub: `${fmtCount(totals.qa_failed_orders)} blocked before delivery`,
+      sub: `${fmtCount(totals.qa_failed_orders)} ${tr('交付前被拦截', 'blocked before delivery')}`,
     },
     {
-      label: 'Identity failures',
+      label: tr('身份失败', 'Identity failures'),
       value: formatPercent(totals.identity_failure_rate),
-      sub: `${fmtCount(totals.identity_failed_orders)} face-consistency misses`,
+      sub: `${fmtCount(totals.identity_failed_orders)} ${tr('人脸一致性未达标', 'face-consistency misses')}`,
     },
     {
-      label: 'Lighting failures',
+      label: tr('布光失败', 'Lighting failures'),
       value: formatPercent(totals.lighting_failure_rate),
-      sub: `${fmtCount(totals.lighting_failed_orders)} photometric misses`,
+      sub: `${fmtCount(totals.lighting_failed_orders)} ${tr('光照未达标', 'photometric misses')}`,
     },
     {
-      label: 'Relight recovery',
+      label: tr('重打光恢复', 'Relight recovery'),
       value: formatPercent(totals.relight_success_rate),
-      sub: `${fmtCount(totals.relight_successes)}/${fmtCount(totals.relight_attempts)} relight-only passed`,
+      sub: `${fmtCount(totals.relight_successes)}/${fmtCount(totals.relight_attempts)} ${tr('仅重打光通过', 'relight-only passed')}`,
     },
     {
-      label: 'Avg repair rounds',
+      label: tr('平均修复轮次', 'Avg repair rounds'),
       value: formatNumber(totals.avg_repair_rounds),
-      sub: `${fmtCount(totals.completed_orders)} completed · ${fmtCount(totals.failed_orders)} failed`,
+      sub: `${fmtCount(totals.completed_orders)} ${tr('完成', 'completed')} · ${fmtCount(totals.failed_orders)} ${tr('失败', 'failed')}`,
     },
   ];
 });
@@ -653,8 +658,8 @@ function buildProbeInputImages(primary: string, second: string) {
   const items: Array<{ label: string; url: string }> = [];
   const first = String(primary || '').trim();
   const secondValue = String(second || '').trim();
-  if (isHttpImageUrl(first)) items.push({ label: 'Uploaded source image 1', url: first });
-  if (isHttpImageUrl(secondValue)) items.push({ label: 'Uploaded source image 2', url: secondValue });
+  if (isHttpImageUrl(first)) items.push({ label: tr('上传原图 1', 'Uploaded source image 1'), url: first });
+  if (isHttpImageUrl(secondValue)) items.push({ label: tr('上传原图 2', 'Uploaded source image 2'), url: secondValue });
   return items;
 }
 
@@ -666,7 +671,7 @@ function formatDate(value?: string): string {
   if (!value) return '--';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '--';
-  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleString(i18nStore.locale === 'zh' ? 'zh-CN' : 'en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function formatMoney(cents: number): string {
@@ -726,8 +731,8 @@ async function loadDashboard() {
     await Promise.all([loadAdminMe(), loadCoreDashboard(), refreshOps()]);
   } catch (err: any) {
     error.value = err?.statusCode === 401
-      ? 'This account is not authorized for admin access. Use an owner/admin/operator account or configure ADMIN_EMAILS / ADMIN_USER_IDS.'
-      : (err?.message || 'Admin data failed to load. Please retry.');
+      ? tr('当前账号没有后台权限。请使用 owner/admin/operator 账号，或配置 ADMIN_EMAILS / ADMIN_USER_IDS。', 'This account is not authorized for admin access. Use an owner/admin/operator account or configure ADMIN_EMAILS / ADMIN_USER_IDS.')
+      : (err?.message || tr('后台数据加载失败，请重试。', 'Admin data failed to load. Please retry.'));
   } finally {
     loading.value = false;
   }
@@ -761,17 +766,19 @@ async function refreshOps() {
 async function sendAdminTestEmail() {
   const to = testEmailTo.value.trim();
   if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
-    testEmailResult.value = 'Enter a valid recipient email.';
+    testEmailResult.value = tr('请输入有效的收件邮箱。', 'Enter a valid recipient email.');
     return;
   }
   sendingTestEmail.value = true;
   testEmailResult.value = '';
   try {
     const result: any = await post('/admin/email_test', { to }, { showLoading: false, showError: false });
-    testEmailResult.value = result?.sent ? 'Test email sent.' : `Send failed: ${result?.reason || result?.status || result?.error || 'unknown'}`;
+    testEmailResult.value = result?.sent
+      ? tr('测试邮件已发送。', 'Test email sent.')
+      : tr(`发送失败：${result?.reason || result?.status || result?.error || 'unknown'}`, `Send failed: ${result?.reason || result?.status || result?.error || 'unknown'}`);
     await refreshOps();
   } catch (err: any) {
-    testEmailResult.value = err?.message || 'Test email failed.';
+    testEmailResult.value = err?.message || tr('测试邮件失败。', 'Test email failed.');
   } finally {
     sendingTestEmail.value = false;
   }
@@ -786,7 +793,7 @@ async function runGenerationProbe() {
       started: false,
       completed: false,
       execution_mode: probeInline.value ? 'inline' : 'arq',
-      error_message: 'Enter a public http(s) portrait image URL.',
+      error_message: tr('请输入公开可访问的 http(s) 人像图片 URL。', 'Enter a public http(s) portrait image URL.'),
     };
     return;
   }
@@ -796,7 +803,7 @@ async function runGenerationProbe() {
       started: false,
       completed: false,
       execution_mode: probeInline.value ? 'inline' : 'arq',
-      error_message: 'Remote join probes require a second public http(s) portrait image URL.',
+      error_message: tr('异地合拍探针需要第二张公开可访问的 http(s) 人像图片 URL。', 'Remote join probes require a second public http(s) portrait image URL.'),
     };
     return;
   }
@@ -822,7 +829,7 @@ async function runGenerationProbe() {
       started: false,
       completed: false,
       execution_mode: probeInline.value ? 'inline' : 'arq',
-      error_message: err?.message || 'Generation probe failed.',
+      error_message: err?.message || tr('生图探针失败。', 'Generation probe failed.'),
     };
   } finally {
     runningProbe.value = false;
