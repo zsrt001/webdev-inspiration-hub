@@ -18,6 +18,7 @@ ENV/
 .claude/
 .codex-screenshots/
 .codex-tools/
+.worktrees/
 *.swp
 *.swo
 *~
