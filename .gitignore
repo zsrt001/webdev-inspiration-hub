@@ -19,6 +19,7 @@ ENV/
 .codex-screenshots/
 .codex-tools/
 .worktrees/
+.superpowers/
 *.swp
 *.swo
 *~

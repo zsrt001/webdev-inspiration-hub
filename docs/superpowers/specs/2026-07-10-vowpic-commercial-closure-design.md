@@ -149,9 +149,11 @@ Vercel 只承载 Web 静态产物和短时 API。生成、轮询、QA、修复�
 
 ### 4.4 发布证据边界
 
-权威身份分成两级。部署前先计算 role-discriminated `runtime_bundle_id`：SAFE_BASELINE 只绑定 Tasks 1-4 source/schema/all-OFF contract/tool；COMMERCIAL_7A 再绑定 payload/Provider/model/catalog/flag/activation contract 与 Worker digest；CONTRACT_7B 还绑定 `schema_before/schema_target`、contract migration checksum 和兼容版本。runtime ID 明确排除 Vercel deployment ID、API build output、resolved snapshots、实时状态、evidence 和最终 manifest hash，因此可在部署前注入 API/Worker/job/flag 运行时。
+权威身份分成两级。部署前先计算 role-discriminated `runtime_bundle_id`：`SAFE_BASELINE` 只绑定 Tasks 1-4 source/schema/all-OFF contract/tool；`PREVIEW_IDENTITY` 绑定 exact source、当前 schema/migration set、身份/会话/flag/Preview contract，不需要 Worker；`PREVIEW_COMMERCIAL` 绑定 exact source、当前 schema、payload/Provider/model/catalog/flag/gate/activation contract 与 CI 构建的 digest-pinned ephemeral Preview Worker；`COMMERCIAL_7A` 绑定同类 Production contracts 与获批 Worker digest；`CONTRACT_7B` 还绑定 `schema_before/schema_target`、contract migration checksum 和兼容版本。每个角色都进入不同 domain separator，Preview ID 不能冒充 Production ID。runtime ID 明确排除 Vercel deployment ID、API build output、resolved snapshots、实时状态、evidence 和最终 manifest hash，因此可在部署前注入对应 API/Worker/job/flag 运行时。
 
-部署后才封存不可回写的 final manifest：至少包含 runtime ID、final source SHA、可重复 prebuilt checksum、Preview evidence、真实 API/Worker deployment ID、7a 的不同 private-compatible baseline/staged target、schema contract、payload compatibility、Provider/model/catalog/flag contract、pre-activation OFF snapshot 和预期最终 snapshot。manifest 采用 canonical JSON、content-addressed create-once Private evidence object；`ReleaseActivation` 以 CAS 绑定 runtime ID、manifest SHA、角色/部署 ID 和阶段。未注册或不匹配部署只能暴露 liveness/version/运维 readiness，所有非 OFF 副作用 fail-closed。实时 flag、migration、验收、观察和 final decision 是绑定 manifest hash 的 append-only evidence entry，不冒充制品，也不回写 manifest。
+部署后才封存不可回写的 manifest/report。`PREVIEW_IDENTITY` 与 `PREVIEW_COMMERCIAL` 各自生成 role-tagged、create-once 的 Preview activation report，CAS 绑定 exact source/runtime/API deployment，commercial variant 还绑定 ephemeral Worker digest/run；它们只授权 `environment=preview` 的短期 cohort，cleanup 后进入不可逆 `CLEANED`，禁止被 Production resolver、Promote 或 release acceptance 接受。Production final manifest 至少包含 Production runtime ID、final source SHA、可重复 prebuilt checksum、对应 Preview evidence hash、真实 API/Worker deployment ID、7a 的不同 private-compatible baseline/staged target、schema contract、payload compatibility、Provider/model/catalog/flag contract、pre-activation OFF snapshot 和预期最终 snapshot。manifest 采用 canonical JSON、content-addressed create-once Private evidence object；`ReleaseActivation` 以 CAS 绑定 runtime ID、manifest/report SHA、角色/部署 ID 和阶段。未注册或不匹配部署只能暴露 liveness/version/运维 readiness，所有非 OFF 副作用 fail-closed。实时 flag、migration、验收、观察和 final decision 是绑定 manifest hash 的 append-only evidence entry，不冒充制品，也不回写 manifest。
+
+任何只应执行一次、成功后可能丢失响应且不能仅凭调用方 workspace 恢复的外部效果，都必须先持久化 create-once intent，再以稳定 intent ID 执行并由新 runner 查询/核对/清理。Production 的 Evolink one-shot response-drop 规则尤其必须在 arm 前绑定 exact correlation、deployment、runtime、Worker digest、成本上限、短 TTL 和 workflow run；cleanup 必须只凭 ReleaseActivation 与 Private evidence 即可 CAS-claim intent，并在 host control plane 以同一 intent ID 写入不可复用 tombstone 后查询/解除已 arm、已消费、正在并发 arm 或响应未知的规则，不能依赖 arm 命令的本地输出。tombstone 必须晚于规则 TTL 失效，确保 cleanup 之后的迟到 arm 无法复活故障规则。
 
 允许职责：构建、测试、Preview 集成、staged Production 验收、无重建 Promote、生产探针、人工成片复核和成套回滚。
 
@@ -165,12 +167,12 @@ Vercel 只承载 Web 静态产物和短时 API。生成、轮询、QA、修复�
 
 | 阶段 | 实施内容 | 退出门 | 回滚点 |
 | --- | --- | --- | --- |
-| 1 | 建立支持 kill switch 的安全基线；临时关闭高风险入口；固化权威规格；生产数据只读盘点；数据库备份与恢复演练 | 安全基线部署已验证；功能开关生效；盘点报告存在；恢复演练成功 | 只能回到已验证的安全基线，不能回到不支持 kill switch 的原始旧部署 |
+| 1 | 建立支持 kill switch 的安全基线；临时关闭高风险入口；固化权威规格；生产数据只读盘点；数据库备份与恢复演练；在首次安全基线构建前生成 Python 3.11 的 hash-locked API/测试依赖 | 安全基线部署已验证；功能开关生效；盘点报告存在；恢复演练成功；相同输入可重复解析出相同依赖锁 | 只能回到已验证的安全基线，不能回到不支持 kill switch 的原始旧部署 |
 | 2 | Web-only、PKCE Google Auth、本地会话、上传/SSRF/TLS、私有存储、严格 QA schema、水印 fail-closed | 冒充、跨用户、恶意图片、QA 异常和水印泄漏测试通过；私有存储真实探针通过 | 关闭上传/生成；回到只读浏览和登录 |
 | 3 | checkout 提交顺序、Creem 状态机、退款/争议/欠额、retention/deletion 重试 | 真实 PostgreSQL 并发、重复 webhook、退款/争议和删除重试通过 | 关闭 checkout；保留账本，只使用补偿交易 |
 | 4 | Outbox、job/attempt、ARQ Worker、lease/heartbeat/fencing、未知外部状态对账 | 崩溃窗口、重复投递、过期租约、Worker 重启和未知提交测试通过 | 停止 dispatcher/Worker；不删除 job/outbox 记录 |
-| 5 | 修复现有红灯；补齐后端集成、前端组件、契约、E2E 和发布流水线 | 所有 PR gate 为 PASS；Preview 能完整跑真实 sandbox 链路 | 不创建 staged Production deployment |
-| 6 | 前端主链路、响应式、无障碍、组件拆分、当前文档重写 | 375/768/1024/1440 浏览器、键盘和视觉回归通过 | 保持 API 可用，回滚前端部署 |
+| 5 | 修复现有红灯；补齐后端集成、OpenAPI/前端测试工具链、版本化 gate contract、受保护 Preview workflow 基础、共享 typed transport，以及 code-versioned Provider contract；在 Stage 6 前必须用官方合同与真实 Evolink sandbox 证明 lost-response 幂等/可查询 correlation，并建立只暴露 token grant path 的 exact Preview grant origin | 所有基础 PR gate 为 PASS；Google session/private media 的真实 Preview 子链可执行且失败清理可证明；`EVOLINK_SUBMISSION_RECONCILIATION=VERIFIED` 绑定签名 sandbox evidence；Preview grant origin/edge rule 可独立清理并恢复原快照；未实现的后续业务 case 明确 NOT_RUN，不能伪装 PASS | 不创建 staged Production deployment；关闭 Preview grant origin并恢复 flags/callback/origin 快照 |
+| 6 | 前端主链路、Partner Invite 双浏览器 E2E、响应式、无障碍、组件拆分、当前文档重写，并把对应 mandatory case 接入 Stage 5 已存在的 workflow | 375/768/1024/1440 浏览器、键盘和视觉回归通过；真实 Preview sandbox 主链必须完成 Creem test-mode checkout、Provider 签名 webhook、purchase/grant/reservation/order lineage、预览购买解锁和私密下载，Partner Invite case 必须由真实 paid grant 支付并完成双浏览器权限证明；不得 seed、直接加积分、伪造 webhook 或复用无关 grant | 保持 API 可用，回滚前端部署 |
 | 7a | 全部代码/迁移/验收/provider addendum 先提交并冻结 final SHA；同一 build 创建独立 private-compatible baseline 与 staged target；受保护地执行 `0014→0020`、排空旧 writer、backfill/私有对象切换、baseline 正式验证、staged cohort、target 无重建 Promote；旧公共 URL 双地域失效后才逐项 ON；短任务持续采样满 24 小时/cleanup 周期 | immutable bundle 与 append-only activation/evidence 一致；真实主链、观察阈值、全量核对和独立 rollback baseline 演练 PASS；旧公共 URL 失效；状态仅为 `7a release accepted`，满足 7b 前置条件 | 将正式域名回指 manifest 中独立的 private-compatible baseline deployment，并同步回退 Worker image/flags |
 | 7b | 在独立后续 release 中执行 destructive contract cleanup、post-contract 回归和最终验收 | Contract migration、post-contract mandatory gates、前向修复预案和最终 Production acceptance 全部 PASS | Contract 前可回滚兼容 bundle；contract 后只允许前向修复/补偿 |
 
@@ -191,6 +193,8 @@ Vercel 只承载 Web 静态产物和短时 API。生成、轮询、QA、修复�
 
 Uni-app 仅作为现有 Vue H5 构建工具保留。默认语言为英语，中文作为可选语言。
 
+旧业务实现可以删除，但本规格要求永久 retired 的公共路径必须由一个集中、无数据库查询、无序列化和无副作用的 tombstone router 明确返回 HTTP 410；删除旧 router 不能把明确的 retired 合同静默变成 404。该 router 只保存路径与统一错误合同，不得反向导入旧 auth/session/Live Portrait/recommendation/lead 服务。
+
 ### 6.2 Google OAuth 与本地会话
 
 认证流程固定为：
@@ -209,6 +213,8 @@ Uni-app 仅作为现有 Vue H5 构建工具保留。默认语言为英语，中�
 正式环境通常只接受精确正式 Web origin/callback。staged Production 首次 Google 登录只能临时增加一个由受信 Vercel system metadata 与已注册 ReleaseActivation 推导的精确 `https://<deployment>/auth/callback`；受保护最小权限角色先记录原 allowlist hash，再 add/read-back，验收成功、失败或取消都由独立 finally job remove/read-back。禁止 `*.vercel.app`、globstar、Host/Forwarded/caller 输入或项目自定义变量自授权；残留 staged callback 阻止后续 release。
 
 生产业务接口只能接受本地 JWT/session。Supabase token 只用于初次交换和重新认证，不能与本地 JWT 长期混用。
+
+本地 access/refresh Cookie 都是 HttpOnly；access 只发往 `/api/v1`，refresh 只发往 `/api/v1/auth/refresh`。double-submit CSRF Cookie 必须是 Secure/SameSite、非 HttpOnly 且 `Path=/`，让 `/create`、`/account` 等真实 H5 页面能读取并回送 `X-CSRF-Token`；服务端仍按 session 内 hash、精确 Origin 和 constant-time comparison 校验。refresh rotation 同时轮换 CSRF 值，旧值立即失效。禁止把 raw CSRF 放进 URL、localStorage 或持久业务状态。
 
 浏览器不得继续把 JWT 放进 local storage。`X-User-OpenID` 必须删除；`X-Visitor-Id` 仅可用于匿名统计、限流和风险分析，不能进入所有权判断。
 
@@ -338,6 +344,7 @@ Provider 需要读取源图时，后端创建 32-byte 高熵、单对象、不�
 - Provider 尚未接单即失败或排队前取消时 RELEASED，不写生成扣款。
 - Provider 已接单但最终没有合格交付物时追加唯一 `GENERATION_REFUND`。
 - reservation、capture、release、expiration 和 generation refund 都必须有数据库唯一幂等键。
+- commercial ledger 的 expand migration 先在 `credit_reservations` 增加 nullable `provider_attempt_id` 与索引，供 capture 记录不可变 attempt provenance；在 `generation_attempts` 尚不存在时禁止伪造外键。generation migration 创建 attempts 后再增加并验证该外键，新 capture 必须引用真实 INITIAL attempt。
 - 历史无法证明与订单关联的 debit 标记为 `legacy_unlinked`，禁止伪造关联。
 - 用户只能在 QUEUED 且 Provider 尚未接单时自行取消；接单后的取消只有在 Provider 明确确认撤销且未产生成本时才释放，否则按最终成功/失败退款规则结算。
 
@@ -435,7 +442,7 @@ purchase 不使用一个可被乱序事件覆盖的单一状态字段作为权�
 
 生产 Worker function list 只允许 durable v1 job/schedule；删除 inline generation、Admin probe/regenerate、legacy `generate_order`、Live Portrait task/session hook。生产图像 facade 只返回 Evolink adapter，任何其他 `GENERATION_ENGINE` 在 readiness 失败，不能静默回退 Wenwen/ComfyUI。
 
-Evolink 获取私有输入时，只得到 600 秒、最多 3 次读取、绑定 provider/purpose/asset/job/attempt/target deployment/runtime bundle 的 hash-only grant token。staged target 不公开 deployment-protection bypass；grant URL 固定使用已经 Promote、与 target 同 runtime bundle 的 private-compatible baseline 正式域名，并由 ReleaseActivation 验证 serving role/target mapping。maintenance 只对该 token-only read path 做最小例外；真实 sandbox 必须证明 Provider 可取、过期/撤销/第四次/错 bundle 全部拒绝，日志不出现原 token。
+Evolink 获取私有输入时，只得到 600 秒、最多 3 次读取、绑定 provider/purpose/asset/job/attempt/target deployment/runtime bundle 的 hash-only grant token。受保护 Stage 6 Preview 可以使用一个临时、exact HTTPS、deployment/runtime-bound 的 Provider sandbox grant origin，但该 origin 只允许 token-only read path，其他路径全部 edge deny，不使用 deployment-protection bypass，并由 cancel-safe cleanup 删除 origin/rule/binding/测试对象并恢复原快照；它不是 Production 旁证。Production staged target 仍不得公开 deployment-protection bypass：grant URL 固定使用已经 Promote、与 target 同 runtime bundle 的 private-compatible baseline 正式域名，并由 ReleaseActivation 验证 serving role/target mapping。maintenance 只对该 token-only read path 做最小例外；Preview 与 staged Production 的真实 sandbox 都必须证明 Provider 可取、过期/撤销/第四次/错 bundle 全部拒绝，日志不出现原 token。
 
 ### 9.3 未知外部状态
 
@@ -610,7 +617,7 @@ face embedding 只在任务处理范围内使用，不能写日志或长期保�
 - Home：Hero、How it works、Style gallery、Pricing、FAQ。
 - Admin：Customer UI 分离，route lazy-load；鉴权成功前不拉业务数据。
 
-页面只负责路由、组合和展示；auth、upload、order polling、payments、downloads 分别进入 typed service/composable。后端 OpenAPI 生成单一前端类型快照，CI 检查契约变化；不能继续手写漂移的 `openid`/小程序字段。
+页面只负责路由、组合和展示；auth、upload、order polling、payments、downloads 分别进入 typed service/composable。后端 OpenAPI 生成单一前端类型快照，CI 检查契约变化；不能继续手写漂移的 `openid`/小程序字段。该快照成为权威后，每一个新增、修改或删除 router/schema/response 的任务都必须在同一任务内重新导出 `openapi/openapi.json`、重新生成 `frontend/src/generated/api.d.ts`、连续生成两次验证 hash 稳定、审查并提交两者；只在最终 gate 运行 drift 检查而不更新生成物不合格。
 
 前端测试使用与当前 Vue/Vite/Node 20 兼容并锁定版本的组件测试和 Playwright 工具；依赖版本在实施时依据官方兼容矩阵验证后固定，不使用浮动 latest。
 
@@ -625,9 +632,9 @@ face embedding 只在任务处理范围内使用，不能写日志或长期保�
 - partner 只能上传自己在该 session 的 portrait，不能读取 host 源图、订单、积分或其他 partner asset。
 - host 是订单 owner、承担 active pricing 中的 couple credits，并拥有最终结果下载权；partner 不获得订单、积分或结果读取权，除非未来另立分享规格。
 - partner 在上传时明确同意仅将肖像用于该具体订单。订单进入 QUEUED 前 partner 可撤回并删除自己的 asset，host 无法继续。
-- QUEUED 后撤回创建唯一 `partner_consent_cases`，状态为 `OPEN -> CANCELLED_AND_DELETED`，并把订单投影为 `CONSENT_REVIEW_REQUIRED`；系统立即撤销 asset grant/未来下载并阻止新的 Provider submission。
+- QUEUED 后撤回创建唯一 `partner_consent_cases`，状态固定为 `OPEN -> SETTLED_DELETION_PENDING -> CANCELLED_AND_DELETED`，并把订单投影为 `CONSENT_REVIEW_REQUIRED`；系统立即撤销 asset grant/未来下载并阻止新的 Provider submission。只有 Provider 处理已停止、ledger 已唯一结算、grant/download 已撤销后才能进入 `SETTLED_DELETION_PENDING`；该中间状态只授权删除 Worker 处理属于该 case 的对象，其他资产继续 fail-closed。
 - PREPARED/未 capture 任务取消并释放 reservation；SUBMITTING/UNKNOWN/SUBMITTED 任务先对账和请求 Provider 取消，确认不会继续处理后转 FAILED，已 capture 且无合格交付时唯一退款。已经 FINISHED/READY 时撤销访问并删除结果；若审计记录中从未出现成功完成的 final download，则唯一退款，否则保持已 capture，不自动退款。
-- Provider 处理已终止、ledger 已按上一条结算、所有包含 partner 肖像的源图和派生 artifact 均确认 404/410 后，case 才能进入 `CANCELLED_AND_DELETED`。host 若仍需合拍必须新建 invite/order 并取得新同意，不能恢复旧任务。
+- 所有包含 partner 肖像的源图和派生 artifact 均确认 404/410 后，case 才能从 `SETTLED_DELETION_PENDING` 进入 `CANCELLED_AND_DELETED`。删除失败保留中间状态并按同一 leased/fenced deletion state machine 重试；host 若仍需合拍必须新建 invite/order 并取得新同意，不能恢复旧任务。
 - 过期、已完成、重复绑定和超限请求明确失败。
 - session 创建、接受、同意、上传、撤销和订单提交都需审计和速率限制。
 - 完整 E2E 使用两个独立浏览器 context，验证 host/partner 权限和最终 couple order。
@@ -673,6 +680,7 @@ Provider `/models` 200、URL 非空或配置字符串存在不能命名为“真
 - Branch protection 只接受一个最终聚合 gate；所有底层 gate 必须汇入它，不能通过遗漏某个 job 绕过。
 - safe-baseline、COMMERCIAL_7A 和 CONTRACT_7B Production workflow 都只能由受保护 `workflow_dispatch` 手工进入，禁止 push/PR/schedule/repository dispatch/可复用 caller；使用全局 concurrency group、`cancel-in-progress: false`，并在解析 Production secret 前确认 exact approved main SHA 与数据库 release lease。
 - Tasks 1–4 safe-baseline workflow 是一次性安装器：`0013` migration 与唯一 `SAFE_BASELINE_INSTALL/RESERVED` row 在同一 PostgreSQL transaction/advisory lock 中全部提交或全部回滚；`0013` 无 row 视为 orphaned schema，不自动领养。完成后任何 later HEAD 在 dump/build/deploy 前拒绝。后续应急先审计/传播 flags OFF，再对已记录 baseline deployment 执行 `vercel rollback`、rollback status 和正式域名核对；已 Promote deployment 禁止二次 Promote，也不能复用该 workflow 构建新代码。
+- 每个新的 Preview/Production/observation/finalizer runner 都必须独立调用同一个受版本控制、经过单元测试的 release-coordinate resolver，从 ReleaseActivation/observation rows 和 create-once Private evidence 解析 source/runtime/manifest/API/Worker/evidence 坐标并重新验证 freshness/hash。禁止把安全关键的 PowerShell/JSON parsing prologue 复制到多个 job；必须重复的是独立解析与验证动作，而不是实现代码。
 
 release 的原子单位不是单一 Vercel 页面，而是 immutable release bundle：
 
@@ -711,7 +719,7 @@ API `/version` 必须返回预注入 runtime ID 和平台可信 `VERCEL_DEPLOYME
 #### Staged Production 与正式生产门
 
 1. 所有运行时代码、迁移工具、验收工具、Worker-host addendum 和有真实 sandbox 证据的 provider activation addendum 全部先测试并 commit；最后一次提交后冻结 final SHA，任何后续代码/config/workflow 变化都创建新 bundle。
-2. protected Preview 先为 exact final SHA 写入并回读 signed create-once PASS report；Production 只能解析该报告，不能接受 caller 声明。随后从 final SHA 构建 Worker image 并解析 digest，以 source/config/schema/contract/Worker digest 计算 role-discriminated `runtime_bundle_id`，把同一 ID 注入 suspended Worker 和每个 `vercel deploy --env RUNTIME_BUNDLE_ID=...`。Vercel prebuilt 只 build 一次，并用 `vercel --prod --skip-domain` 创建互不相同的 private-compatible baseline 与 staged target。真实 API/Worker/deployment/build facts 齐全后才生成 create-once final manifest、回读 hash 并 CAS 注册 ReleaseActivation；不能把 Preview Promote 后声称同产物，也不能在部署后修改项目环境来补 runtime ID。
+2. protected Preview 先从 exact final SHA 构建并解析 ephemeral Worker image digest，用 `PREVIEW_COMMERCIAL` role 计算 Preview runtime ID，把该 ID 注入 exact Preview API 与临时 Worker，CAS 注册 role-tagged activation，再写入/回读 signed create-once PASS report；Production 只能解析该 exact source/contract/evidence hash，不能接受 caller 声明，也不能把 Preview ID/部署/Worker 当成 Production bundle。随后用同一 final source 和获批 Production Worker digest重新计算不同 domain 的 `COMMERCIAL_7A` runtime ID，把该 Production ID 注入 suspended Production Worker 和每个 `vercel deploy --env RUNTIME_BUNDLE_ID=...`。Vercel prebuilt 只 build 一次，并用 `vercel --prod --skip-domain` 创建互不相同的 private-compatible baseline 与 staged target。真实 Production API/Worker/deployment/build facts 齐全后才生成 create-once final manifest、回读 hash 并 CAS 注册 Production ReleaseActivation；不能把 Preview Promote 后声称同产物，也不能在部署后修改项目环境来补 runtime ID。
 3. 正式域名进入 maintenance/edge deny，高风险 flags 保持 OFF，停止旧 Worker/dispatcher，等待旧 Function 最大时长加余量并排空旧队列。Tasks 1–4 safe baseline 必须从一开始就零 runtime DDL；在 Production 前还要用临时数据库证明 exact safe-baseline SHA 能在 schema `0020` 安全处理 signed duplicate/out-of-order webhook、reconciliation 和 logout。运行新鲜签名 inventory、可销毁恢复演练，并在全局 workflow concurrency + PostgreSQL advisory/run lease 下执行 additive `0014→0020`；随后把迁移窗口内由 safe baseline 持久化的 raw events 以 final code 幂等 replay/normalize，再纳入 post-migration inventory/backfill。兼容测试失败则先提交 bridge 并重启 final SHA freeze，不能以窗口短为由继续。
 4. 在新 schema 上启动 exact Worker，分别核对两个 unbound deployment 的 SHA、prebuilt checksum、schema、Worker digest、payload、Provider/catalog config 和 flag contract。先将独立 private-compatible baseline 无重建 Promote 到正式域名，在 flags OFF 下验证并固化 rollback target；staged target 仍未绑定域名。
 5. 在一个 parent release lease/fence 下，以每脚本、每 mode 独立 child run 执行 signed dry-run、backfill、public-to-private copy/switch 和全量核对。identity 处置必须落为 `NORMALIZED | MERGED | SOFT_CLOSED_TOMBSTONED | QUARANTINED_BLOCKING`；未知 URL/store 进入 blocking quarantine，不删除旧公共 bytes。Production catalog import 必须绑定 final SHA 和 manifest mapping checksum。
