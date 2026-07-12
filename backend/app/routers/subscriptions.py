@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.feature_flags import Capability
 from app.core.user_auth import get_request_user
 from app.models.user import User
 from app.schemas.subscription import (
@@ -16,6 +17,7 @@ from app.schemas.subscription import (
     SubscriptionPlanRead,
 )
 from app.services.subscription_service import SubscriptionError, subscription_service
+from app.services.feature_flag_service import require_request_capability
 
 router = APIRouter()
 
@@ -82,6 +84,7 @@ async def create_subscription_checkout(
     current_user: User = Depends(get_request_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_request_capability(None, db, Capability.SUBSCRIPTION_BILLING)
     try:
         checkout = await subscription_service.create_checkout(
             db,
@@ -99,6 +102,7 @@ async def cancel_my_subscription(
     current_user: User = Depends(get_request_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_request_capability(None, db, Capability.SUBSCRIPTION_BILLING)
     try:
         subscription = await subscription_service.cancel_current_subscription(db, current_user.id)
     except SubscriptionError as exc:

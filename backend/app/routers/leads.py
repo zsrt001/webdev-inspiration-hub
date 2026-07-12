@@ -18,7 +18,19 @@ from app.core.database import get_db
 from app.core.phone_crypto import decrypt_phone, encrypt_phone
 from app.models.lead import Lead
 
-router = APIRouter(prefix="/leads", tags=["leads"])
+
+def _raise_leads_retired() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail={"code": "leads_retired", "message": "Lead capture is not part of this release."},
+    )
+
+
+router = APIRouter(
+    prefix="/leads",
+    tags=["leads"],
+    dependencies=[Depends(_raise_leads_retired)],
+)
 
 
 def _mask_phone(phone: str) -> str:
@@ -81,6 +93,7 @@ class LeadsListResponse(BaseModel):
 
 @router.post("/submit", response_model=LeadSubmitResponse)
 async def submit_lead(request: LeadSubmitRequest, db: AsyncSession = Depends(get_db)):
+    _raise_leads_retired()
     if not request.privacy_accepted:
         raise HTTPException(status_code=422, detail="Privacy Policy and Terms of Service must be accepted")
     notes_parts: list[str] = []
@@ -126,6 +139,7 @@ async def list_leads(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin_token),
 ):
+    _raise_leads_retired()
     limit = max(1, min(500, int(limit)))
     stmt = select(Lead)
     if city:
@@ -170,6 +184,7 @@ async def export_leads_csv(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_admin_token),
 ):
+    _raise_leads_retired()
     stmt = select(Lead)
     if city:
         stmt = stmt.where(Lead.city.ilike(f"%{city.strip()}%"))

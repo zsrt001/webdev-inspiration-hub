@@ -1,0 +1,916 @@
+name: Protected one-time safe baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact reviewed Tasks 1-4 commit on current main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vowpic-production-release
+  cancel-in-progress: false
+
+jobs:
+  safe-baseline:
+    name: Install the one-time Production safe baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: production
+    defaults:
+      run:
+        shell: bash
+    env:
+      EVIDENCE_DIR: artifacts/security-baseline
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Check out the exact reviewed commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Python and Node runtimes
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: 3.11.15
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.17.0"
+          cache: npm
+          cache-dependency-path: scripts/release-tools/package-lock.json
+
+      - name: Prove exact clean current main
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be one exact lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install the hash-locked release tooling
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          test -x "$VERCEL_CLI"
+          test "$("$VERCEL_CLI" --version)" = "55.0.0"
+          echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-client-16
+          test "$(pg_dump --version | sed -E 's/.* ([0-9]+)\..*/\1/')" = "16"
+          test "$(pg_restore --version | sed -E 's/.* ([0-9]+)\..*/\1/')" = "16"
+
+      - name: Read-only install preflight
+        id: preflight
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          python scripts/release/register_safe_baseline.py --action preflight \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$EVIDENCE_DIR/preflight.json"
+          PREFLIGHT_REPORT="$EVIDENCE_DIR/preflight.json" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          payload = json.loads(Path(os.environ["PREFLIGHT_REPORT"]).read_text(encoding="utf-8"))
+          state = str(payload.get("state") or "")
+          allowed = {
+              "FRESH_INSTALL",
+              "RETRY_RESERVED",
+              "RETRY_STAGED",
+              "RETRY_PROMOTION_ARMED",
+              "RETRY_PROMOTED",
+              "RETRY_FORMAL_VERIFIED",
+          }
+          if state not in allowed:
+              raise SystemExit(f"preflight returned an unsupported state: {state}")
+          activation = payload.get("activation") or {}
+          manifest = str(activation.get("manifest_sha256") or "")
+          activation_attempt = str(activation.get("workflow_attempt") or "")
+          activation_evidence_reference = str(
+              activation.get("private_evidence_prefix") or ""
+          )
+          activation_report_sha256 = str(activation.get("report_sha256") or "")
+          build_artifact_recovery_expired = payload.get(
+              "build_artifact_recovery_expired"
+          )
+          if not isinstance(build_artifact_recovery_expired, bool):
+              raise SystemExit("preflight build-artifact recovery deadline is missing")
+          if manifest and not re.fullmatch(r"[0-9a-f]{64}", manifest):
+              raise SystemExit("activation build manifest is invalid")
+          if activation_attempt and not re.fullmatch(r"[1-9][0-9]*", activation_attempt):
+              raise SystemExit("activation workflow attempt is invalid")
+          if state == "RETRY_FORMAL_VERIFIED":
+              if not activation_evidence_reference.startswith("gha:v1:"):
+                  raise SystemExit("FORMAL_VERIFIED is missing its immutable evidence reference")
+              if not re.fullmatch(r"[0-9a-f]{64}", activation_report_sha256):
+                  raise SystemExit("FORMAL_VERIFIED is missing its report SHA-256")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"state={state}\n")
+              handle.write(f"activation_manifest_sha256={manifest}\n")
+              handle.write(f"activation_workflow_attempt={activation_attempt}\n")
+              handle.write(
+                  f"activation_evidence_reference={activation_evidence_reference}\n"
+              )
+              handle.write(f"activation_report_sha256={activation_report_sha256}\n")
+              handle.write(
+                  "build_artifact_recovery_expired="
+                  f"{str(build_artifact_recovery_expired).lower()}\n"
+              )
+          PY
+
+      - name: Inventory Production through the read-only role
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          INVENTORY_HMAC_KEY: ${{ secrets.INVENTORY_HMAC_KEY }}
+        run: |
+          python scripts/release/inventory_production.py \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --hmac-key-env INVENTORY_HMAC_KEY \
+            --output "$EVIDENCE_DIR/production-inventory.json"
+
+      - name: Rehearse isolated backup and restore
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          RESTORE_TARGET_DATABASE_URL: ${{ secrets.RESTORE_TARGET_DATABASE_URL }}
+          RESTORE_TARGET_ADMIN_DATABASE_URL: ${{ secrets.RESTORE_TARGET_ADMIN_DATABASE_URL }}
+          RESTORE_TARGET_ROLE_NAME: ${{ secrets.RESTORE_TARGET_ROLE_NAME }}
+          RESTORE_TARGET_CREDENTIAL_EXPIRES_AT: ${{ secrets.RESTORE_TARGET_CREDENTIAL_EXPIRES_AT }}
+        run: |
+          python backend/scripts/backup_restore_rehearsal.py \
+            --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --target-url-env RESTORE_TARGET_DATABASE_URL \
+            --target-admin-url-env RESTORE_TARGET_ADMIN_DATABASE_URL \
+            --target-role-name-env RESTORE_TARGET_ROLE_NAME \
+            --target-credential-expires-at-env RESTORE_TARGET_CREDENTIAL_EXPIRES_AT \
+            --artifact-dir "$EVIDENCE_DIR/restore" \
+            --scratch-dir "$RUNNER_TEMP/restore"
+
+      - name: Verify authenticated external edge lockdown
+        id: edge
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        env:
+          EDGE_LOCKDOWN_REPORT_B64: ${{ secrets.EDGE_LOCKDOWN_REPORT_B64 }}
+          EDGE_EVIDENCE_HMAC_KEY: ${{ secrets.EDGE_EVIDENCE_HMAC_KEY }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+        run: |
+          if [[ -z "$EDGE_LOCKDOWN_REPORT_B64" || -z "$PRODUCTION_BASE_URL" ]]; then
+            echo "NOT_RUN: protected edge-lockdown evidence or formal domain is missing" >&2
+            exit 3
+          fi
+          printf '%s' "$EDGE_LOCKDOWN_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/edge-lockdown.json"
+          python scripts/release/verify_edge_lockdown.py \
+            --report "$RUNNER_TEMP/edge-lockdown.json" \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-project-id "$VERCEL_PROJECT_ID" \
+            --expected-formal-domain "$PRODUCTION_BASE_URL" \
+            --hmac-key-env EDGE_EVIDENCE_HMAC_KEY \
+            --output "$EVIDENCE_DIR/edge-lockdown-verified.json"
+          EDGE_VERIFIED="$EVIDENCE_DIR/edge-lockdown-verified.json" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["EDGE_VERIFIED"]).read_text(encoding="utf-8"))
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"after_config_sha256={payload['after_config_sha256']}\n")
+          PY
+
+      - name: Persist protected evidence before the first irreversible boundary
+        id: reservation_evidence
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-safe-baseline-${{ github.run_id }}-${{ github.run_attempt }}-reservation
+          path: artifacts/security-baseline
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Prove protected evidence is durable before mutation or deploy
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        run: |
+          test -n "${{ steps.reservation_evidence.outputs.artifact-id }}"
+          test -n "${{ steps.reservation_evidence.outputs.artifact-digest }}"
+          test -n "${{ steps.reservation_evidence.outputs.artifact-url }}"
+
+      - name: Recheck current main before migration and reservation
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-reservation.json"
+
+      - name: Atomically migrate and reserve the install
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
+          RESERVATION_EVIDENCE_URL: ${{ steps.reservation_evidence.outputs.artifact-url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --phase RESERVED \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --inventory-database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --approval-id-env SAFE_BASELINE_APPROVAL_ID \
+            --inventory-report "$EVIDENCE_DIR/production-inventory.json" \
+            --restore-report "$EVIDENCE_DIR/restore/restore-summary.json" \
+            --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
+            --output "$EVIDENCE_DIR/reservation.json"
+
+      - name: Compute the immutable safe-baseline runtime identity
+        id: runtime
+        run: |
+          python scripts/release/build_runtime_bundle_id.py \
+            --release-role SAFE_BASELINE \
+            --source-sha "$SOURCE_SHA" \
+            --schema 20260710_0013 \
+            --safe-baseline-contract release/safe-baseline-contract.json \
+            --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
+            --builder-contract-version safe-baseline.v1 \
+            --output "$RUNNER_TEMP/safe-runtime-bundle-id.txt"
+          RUNTIME_BUNDLE_ID="$(tr -d '\r\n' < "$RUNNER_TEMP/safe-runtime-bundle-id.txt")"
+          [[ "$RUNTIME_BUNDLE_ID" =~ ^rtb_[0-9a-f]{64}$ ]]
+          echo "runtime_bundle_id=$RUNTIME_BUNDLE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the RESERVED build-artifact attempt fence
+        id: build_attempt
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' }}
+        env:
+          PREFLIGHT_STATE: ${{ steps.preflight.outputs.state }}
+          ACTIVATION_WORKFLOW_ATTEMPT: ${{ steps.preflight.outputs.activation_workflow_attempt }}
+        run: |
+          if [[ "$PREFLIGHT_STATE" = "RETRY_RESERVED" && -z "$ACTIVATION_WORKFLOW_ATTEMPT" ]]; then
+            echo "RETRY_RESERVED is missing its build-artifact attempt fence" >&2
+            exit 1
+          fi
+          BUILD_ARTIFACT_ATTEMPT="${ACTIVATION_WORKFLOW_ATTEMPT:-$GITHUB_RUN_ATTEMPT}"
+          [[ "$BUILD_ARTIFACT_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          test "$BUILD_ARTIFACT_ATTEMPT" -le "$GITHUB_RUN_ATTEMPT"
+          echo "workflow_attempt=$BUILD_ARTIFACT_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the exact RESERVED build artifact through the GitHub API
+        id: build_lookup
+        if: ${{ steps.preflight.outputs.state == 'RETRY_RESERVED' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUILD_ARTIFACT_NAME: vowpic-safe-baseline-${{ github.run_id }}-${{ steps.build_attempt.outputs.workflow_attempt }}-build
+        run: |
+          python scripts/release/github_artifact_evidence.py lookup \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --name "$BUILD_ARTIFACT_NAME" \
+            --token-env GITHUB_TOKEN \
+            --job-output "$GITHUB_OUTPUT"
+
+      - name: Recover an existing RESERVED build artifact before rebuilding
+        id: build_download
+        if: ${{ steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.build_lookup.outputs.state == 'FOUND' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.build_lookup.outputs.artifact_id }}
+          path: ${{ runner.temp }}/build-artifact
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Fail closed when an already bound build artifact is unavailable
+        if: ${{ steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 != '' && steps.build_lookup.outputs.state == 'NOT_FOUND' }}
+        run: |
+          echo "the manifest-bound build artifact is confirmed absent" >&2
+          exit 1
+
+      - name: Fail closed when unbound build recovery exceeded artifact retention
+        if: ${{ steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 == '' && steps.build_lookup.outputs.state == 'NOT_FOUND' && steps.preflight.outputs.build_artifact_recovery_expired == 'true' }}
+        run: |
+          echo "unbound build recovery exceeded 90 days; manual forward disposition is required" >&2
+          exit 1
+
+      - name: Build the predeploy output when no build is bound
+        id: new_build
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || (steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 == '' && steps.build_lookup.outputs.state == 'NOT_FOUND' && steps.preflight.outputs.build_artifact_recovery_expired == 'false') }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          test -n "$VERCEL_TOKEN"
+          test -n "$VERCEL_PROJECT_ID"
+          test -n "$VERCEL_ORG_ID"
+          "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
+          MANIFEST_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
+          [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          tar --create --file "$RUNNER_TEMP/safe-baseline-build.tar" --directory .vercel output
+          test -s "$RUNNER_TEMP/safe-baseline-build.tar"
+          printf '%s\n' "$MANIFEST_SHA256" > "$RUNNER_TEMP/safe-baseline-build.manifest.sha256"
+          echo "manifest_sha256=$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Encrypt the predeploy output before artifact upload
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || (steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 == '' && steps.build_lookup.outputs.state == 'NOT_FOUND' && steps.preflight.outputs.build_artifact_recovery_expired == 'false') }}
+        env:
+          SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64: ${{ secrets.SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 }}
+          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v1:${{ inputs.source_sha }}:${{ github.run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
+        run: |
+          test -n "$SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64"
+          python scripts/release/build_artifact_crypto.py encrypt \
+            --input "$RUNNER_TEMP/safe-baseline-build.tar" \
+            --output "$RUNNER_TEMP/safe-baseline-build.tar.enc" \
+            --key-env SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 \
+            --associated-data "$BUILD_ARTIFACT_AAD_PREFIX:tar"
+          python scripts/release/build_artifact_crypto.py encrypt \
+            --input "$RUNNER_TEMP/safe-baseline-build.manifest.sha256" \
+            --output "$RUNNER_TEMP/safe-baseline-build.manifest.sha256.enc" \
+            --key-env SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 \
+            --associated-data "$BUILD_ARTIFACT_AAD_PREFIX:manifest"
+          test -s "$RUNNER_TEMP/safe-baseline-build.tar.enc"
+          test -s "$RUNNER_TEMP/safe-baseline-build.manifest.sha256.enc"
+
+      - name: Persist the exact predeploy output before binding or deploy
+        id: build_evidence
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || (steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 == '' && steps.build_lookup.outputs.state == 'NOT_FOUND' && steps.preflight.outputs.build_artifact_recovery_expired == 'false') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-safe-baseline-${{ github.run_id }}-${{ steps.build_attempt.outputs.workflow_attempt }}-build
+          path: |
+            ${{ runner.temp }}/safe-baseline-build.tar.enc
+            ${{ runner.temp }}/safe-baseline-build.manifest.sha256.enc
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Prove the new predeploy output is durable
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || (steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 == '' && steps.build_lookup.outputs.state == 'NOT_FOUND' && steps.preflight.outputs.build_artifact_recovery_expired == 'false') }}
+        run: |
+          test -n "${{ steps.build_evidence.outputs.artifact-id }}"
+          test -n "${{ steps.build_evidence.outputs.artifact-digest }}"
+
+      - name: Verify a recovered predeploy output against its database fence
+        id: recovered_build
+        if: ${{ steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.build_lookup.outputs.state == 'FOUND' }}
+        env:
+          EXPECTED_MANIFEST_SHA256: ${{ steps.preflight.outputs.activation_manifest_sha256 }}
+          SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64: ${{ secrets.SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 }}
+          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v1:${{ inputs.source_sha }}:${{ github.run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
+        run: |
+          test ! -e .vercel/output
+          test -n "$SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64"
+          test -s "$RUNNER_TEMP/build-artifact/safe-baseline-build.tar.enc"
+          test -s "$RUNNER_TEMP/build-artifact/safe-baseline-build.manifest.sha256.enc"
+          python scripts/release/build_artifact_crypto.py decrypt \
+            --input "$RUNNER_TEMP/build-artifact/safe-baseline-build.tar.enc" \
+            --output "$RUNNER_TEMP/build-artifact/safe-baseline-build.tar" \
+            --key-env SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 \
+            --associated-data "$BUILD_ARTIFACT_AAD_PREFIX:tar"
+          python scripts/release/build_artifact_crypto.py decrypt \
+            --input "$RUNNER_TEMP/build-artifact/safe-baseline-build.manifest.sha256.enc" \
+            --output "$RUNNER_TEMP/build-artifact/safe-baseline-build.manifest.sha256" \
+            --key-env SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 \
+            --associated-data "$BUILD_ARTIFACT_AAD_PREFIX:manifest"
+          ARTIFACT_MANIFEST_SHA256="$(BUILD_MANIFEST_SIDECAR="$RUNNER_TEMP/build-artifact/safe-baseline-build.manifest.sha256" python -c 'import os; from pathlib import Path; from scripts.release.register_safe_baseline import _read_manifest_sidecar; print(_read_manifest_sidecar(Path(os.environ["BUILD_MANIFEST_SIDECAR"])))')"
+          mkdir -p .vercel
+          tar --extract --file "$RUNNER_TEMP/build-artifact/safe-baseline-build.tar" --directory .vercel
+          test -d .vercel/output
+          MANIFEST_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
+          test "$MANIFEST_SHA256" = "$ARTIFACT_MANIFEST_SHA256"
+          if [[ -n "$EXPECTED_MANIFEST_SHA256" ]]; then
+            test "$MANIFEST_SHA256" = "$EXPECTED_MANIFEST_SHA256"
+          fi
+          echo "manifest_sha256=$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve and bind one durable build manifest while RESERVED
+        id: build
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          NEW_MANIFEST_SHA256: ${{ steps.new_build.outputs.manifest_sha256 }}
+          RECOVERED_MANIFEST_SHA256: ${{ steps.recovered_build.outputs.manifest_sha256 }}
+          BUILD_ARTIFACT_ATTEMPT: ${{ steps.build_attempt.outputs.workflow_attempt }}
+          NEW_BUILD_ARTIFACT_ID: ${{ steps.build_evidence.outputs.artifact-id }}
+          NEW_BUILD_ARTIFACT_DIGEST: ${{ steps.build_evidence.outputs.artifact-digest }}
+          RECOVERED_BUILD_ARTIFACT_ID: ${{ steps.build_lookup.outputs.artifact_id }}
+          RECOVERED_BUILD_ARTIFACT_DIGEST: ${{ steps.build_lookup.outputs.artifact_digest }}
+        run: |
+          MANIFEST_SHA256="${RECOVERED_MANIFEST_SHA256:-$NEW_MANIFEST_SHA256}"
+          BUILD_ARTIFACT_ID="${RECOVERED_BUILD_ARTIFACT_ID:-$NEW_BUILD_ARTIFACT_ID}"
+          BUILD_ARTIFACT_DIGEST="${RECOVERED_BUILD_ARTIFACT_DIGEST:-$NEW_BUILD_ARTIFACT_DIGEST}"
+          [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$BUILD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$BUILD_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          python scripts/release/register_safe_baseline.py --action bind-build \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --build-artifact-attempt "$BUILD_ARTIFACT_ATTEMPT" \
+            --build-artifact-id "$BUILD_ARTIFACT_ID" \
+            --build-artifact-digest "$BUILD_ARTIFACT_DIGEST" \
+            --manifest-sha256 "$MANIFEST_SHA256" \
+            --output "$EVIDENCE_DIR/build-bound.json"
+          echo "manifest_sha256=$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Recheck current main before staged deployment
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-deploy.json"
+
+      - name: Recover or create the one allowed staged deployment
+        id: deployment
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
+          MANIFEST_SHA256: ${{ steps.build.outputs.manifest_sha256 }}
+        run: |
+          [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          python scripts/release/register_safe_baseline.py --action recover-deployment \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --manifest-sha256 "$MANIFEST_SHA256" \
+            --vercel-token-env VERCEL_TOKEN \
+            --vercel-project-id-env VERCEL_PROJECT_ID \
+            --vercel-team-id-env VERCEL_ORG_ID \
+            --output "$RUNNER_TEMP/deployment-recovery-before.json"
+          CANDIDATE_COUNT="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["candidate_count"])' "$RUNNER_TEMP/deployment-recovery-before.json")"
+          RECOVERY_REPORT="$RUNNER_TEMP/deployment-recovery-before.json"
+          if [[ "$CANDIDATE_COUNT" = "0" ]]; then
+            DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
+              --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
+              --meta "vowpicSourceSha=$SOURCE_SHA" \
+              --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
+              --meta "vowpicBuildSha256=$MANIFEST_SHA256" \
+              --meta "vowpicReleaseRole=SAFE_BASELINE" \
+              --token="$VERCEL_TOKEN")"
+            [[ "$DEPLOYMENT_URL" =~ ^https://[^[:space:]]+$ ]]
+            python scripts/release/register_safe_baseline.py --action recover-deployment \
+              --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+              --source-sha "$SOURCE_SHA" \
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+              --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+              --manifest-sha256 "$MANIFEST_SHA256" \
+              --vercel-token-env VERCEL_TOKEN \
+              --vercel-project-id-env VERCEL_PROJECT_ID \
+              --vercel-team-id-env VERCEL_ORG_ID \
+              --output "$RUNNER_TEMP/deployment-recovery-after.json"
+            RECOVERY_REPORT="$RUNNER_TEMP/deployment-recovery-after.json"
+          elif [[ "$CANDIDATE_COUNT" != "1" ]]; then
+            echo "ambiguous staged deployment recovery" >&2
+            exit 1
+          fi
+          RECOVERY_REPORT="$RECOVERY_REPORT" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["RECOVERY_REPORT"]).read_text(encoding="utf-8"))
+          candidate = payload.get("candidate")
+          if payload.get("candidate_count") != 1 or not isinstance(candidate, dict):
+              raise SystemExit("exactly one ready staged deployment was not recovered")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"deployment_id={candidate['deployment_id']}\n")
+              handle.write(f"deployment_url={candidate['deployment_url']}\n")
+              handle.write(f"manifest_sha256={candidate['manifest_sha256']}\n")
+          PY
+
+      - name: Reuse the deployment already bound after STAGED
+        id: recorded
+        if: ${{ steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' || steps.preflight.outputs.state == 'RETRY_PROMOTED' || steps.preflight.outputs.state == 'RETRY_FORMAL_VERIFIED' }}
+        env:
+          EXPECTED_RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
+        run: |
+          PREFLIGHT_REPORT="$EVIDENCE_DIR/preflight.json" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["PREFLIGHT_REPORT"]).read_text(encoding="utf-8"))
+          activation = payload.get("activation") or {}
+          expected_runtime = os.environ["EXPECTED_RUNTIME_BUNDLE_ID"]
+          required = {
+              "deployment_id": activation.get("api_deployment_id"),
+              "deployment_url": activation.get("api_deployment_url"),
+              "manifest_sha256": activation.get("manifest_sha256"),
+          }
+          if activation.get("runtime_bundle_id") != expected_runtime or not all(required.values()):
+              raise SystemExit("recorded deployment coordinates do not match the immutable runtime")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              for key, value in required.items():
+                  handle.write(f"{key}={value}\n")
+          PY
+
+      - name: Resolve one immutable deployment coordinate set
+        id: coordinates
+        env:
+          NEW_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment_id }}
+          NEW_DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment_url }}
+          NEW_MANIFEST_SHA256: ${{ steps.deployment.outputs.manifest_sha256 }}
+          RECORDED_DEPLOYMENT_ID: ${{ steps.recorded.outputs.deployment_id }}
+          RECORDED_DEPLOYMENT_URL: ${{ steps.recorded.outputs.deployment_url }}
+          RECORDED_MANIFEST_SHA256: ${{ steps.recorded.outputs.manifest_sha256 }}
+        run: |
+          DEPLOYMENT_ID="${NEW_DEPLOYMENT_ID:-$RECORDED_DEPLOYMENT_ID}"
+          DEPLOYMENT_URL="${NEW_DEPLOYMENT_URL:-$RECORDED_DEPLOYMENT_URL}"
+          MANIFEST_SHA256="${NEW_MANIFEST_SHA256:-$RECORDED_MANIFEST_SHA256}"
+          [[ -n "$DEPLOYMENT_ID" && "$DEPLOYMENT_URL" =~ ^https://[^[:space:]]+$ && "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+          echo "deployment_url=$DEPLOYMENT_URL" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Bind the staged deployment without rebuilding
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+          MANIFEST_SHA256: ${{ steps.coordinates.outputs.manifest_sha256 }}
+        run: |
+          python scripts/release/register_safe_baseline.py --phase STAGED \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --deployment-url "$DEPLOYMENT_URL" \
+            --manifest-sha256 "$MANIFEST_SHA256" \
+            --output "$EVIDENCE_DIR/phase-staged.json"
+
+      - name: Verify the staged application and authenticated runtime DDL audit
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          SAFE_BASELINE_PROBE_USER_BEARER: ${{ secrets.SAFE_BASELINE_PROBE_USER_BEARER }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
+          RUNTIME_DDL_AUDIT_REPORT_B64: ${{ secrets.RUNTIME_DDL_AUDIT_REPORT_B64 }}
+          RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
+          RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+        run: |
+          if [[ -z "$RUNTIME_DDL_AUDIT_REPORT_B64" ]]; then
+            echo "NOT_RUN: authenticated runtime DDL audit report is missing" >&2
+            exit 3
+          fi
+          printf '%s' "$RUNTIME_DDL_AUDIT_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/runtime-ddl-audit.json"
+          python scripts/release/verify_safe_baseline.py \
+            --base-url "$DEPLOYMENT_URL" \
+            --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --runtime-ddl-audit-report "$RUNNER_TEMP/runtime-ddl-audit.json" \
+            --runtime-audit-hmac-key-env RUNTIME_AUDIT_HMAC_KEY \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-schema 20260710_0013 \
+            --expected-deployment-url "$DEPLOYMENT_URL" \
+            --expected-deployment-id "$DEPLOYMENT_ID" \
+            --require-platform-deployment-id \
+            --expected-layer app \
+            --output "$EVIDENCE_DIR/safe-baseline-staged.json"
+
+      - name: Persist staged verification before Promote
+        id: staged_evidence
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-safe-baseline-${{ github.run_id }}-${{ github.run_attempt }}-staged
+          path: artifacts/security-baseline
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Prove staged evidence is durable before Promote
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        run: |
+          test -n "${{ steps.staged_evidence.outputs.artifact-id }}"
+          test -n "${{ steps.staged_evidence.outputs.artifact-digest }}"
+
+      - name: Recheck current main immediately before Promote
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-promote.json"
+
+      - name: Arm exactly one Promote request after durable staged evidence
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --phase PROMOTION_ARMED \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --deployment-url "$DEPLOYMENT_URL" \
+            --output "$EVIDENCE_DIR/phase-promotion-armed.json"
+
+      - name: Promote once or reconcile a completed Promote
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+          PREFLIGHT_STATE: ${{ steps.preflight.outputs.state }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action recover-promotion \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --formal-domain "$PRODUCTION_BASE_URL" \
+            --vercel-token-env VERCEL_TOKEN \
+            --vercel-project-id-env VERCEL_PROJECT_ID \
+            --vercel-team-id-env VERCEL_ORG_ID \
+            --output "$RUNNER_TEMP/promotion-recovery-before.json"
+          DECISION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["decision"])' "$RUNNER_TEMP/promotion-recovery-before.json")"
+          if [[ "$DECISION" = "PROMOTE_ONCE" ]]; then
+            if [[ "$PREFLIGHT_STATE" = "RETRY_PROMOTION_ARMED" ]]; then
+              echo "an armed retry cannot prove whether Promote was already requested; manual forward disposition is required" >&2
+              exit 1
+            fi
+            "$VERCEL_CLI" promote "$DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
+            "$VERCEL_CLI" promote status --token="$VERCEL_TOKEN"
+          elif [[ "$DECISION" != "ADVANCE_PROMOTED_WITHOUT_PROMOTE" ]]; then
+            echo "unsafe promotion recovery decision: $DECISION" >&2
+            exit 1
+          fi
+          python scripts/release/register_safe_baseline.py --action recover-promotion \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --formal-domain "$PRODUCTION_BASE_URL" \
+            --vercel-token-env VERCEL_TOKEN \
+            --vercel-project-id-env VERCEL_PROJECT_ID \
+            --vercel-team-id-env VERCEL_ORG_ID \
+            --output "$RUNNER_TEMP/promotion-recovery-after.json"
+          test "$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["decision"])' "$RUNNER_TEMP/promotion-recovery-after.json")" = "ADVANCE_PROMOTED_WITHOUT_PROMOTE"
+          python scripts/release/register_safe_baseline.py --phase PROMOTED \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --deployment-url "$DEPLOYMENT_URL" \
+            --output "$EVIDENCE_DIR/phase-promoted.json"
+
+      - name: Recheck current main immediately after Promote
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-after-promote.json"
+
+      - name: Reconfirm an already recorded promotion
+        if: ${{ steps.preflight.outputs.state == 'RETRY_PROMOTED' || steps.preflight.outputs.state == 'RETRY_FORMAL_VERIFIED' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action recover-promotion \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --formal-domain "$PRODUCTION_BASE_URL" \
+            --vercel-token-env VERCEL_TOKEN \
+            --vercel-project-id-env VERCEL_PROJECT_ID \
+            --vercel-team-id-env VERCEL_ORG_ID \
+            --output "$RUNNER_TEMP/recorded-promotion.json"
+          DECISION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["decision"])' "$RUNNER_TEMP/recorded-promotion.json")"
+          [[ "$DECISION" = "ADVANCE_FORMAL_VERIFICATION" || "$DECISION" = "COMPLETE_WITHOUT_PROMOTE" ]]
+
+      - name: Verify formal-domain handoff without an edge bypass
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          SAFE_BASELINE_PROBE_USER_BEARER: ${{ secrets.SAFE_BASELINE_PROBE_USER_BEARER }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          RUNTIME_DDL_AUDIT_REPORT_B64: ${{ secrets.RUNTIME_DDL_AUDIT_REPORT_B64 }}
+          EDGE_HANDOFF_REPORT_B64: ${{ secrets.EDGE_HANDOFF_REPORT_B64 }}
+          RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
+          EDGE_EVIDENCE_HMAC_KEY: ${{ secrets.EDGE_EVIDENCE_HMAC_KEY }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          LOCKDOWN_AFTER_CONFIG_SHA256: ${{ steps.edge.outputs.after_config_sha256 }}
+          RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+        run: |
+          if [[ -z "$RUNTIME_DDL_AUDIT_REPORT_B64" || -z "$EDGE_HANDOFF_REPORT_B64" ]]; then
+            echo "NOT_RUN: authenticated runtime DDL or edge-handoff evidence is missing" >&2
+            exit 3
+          fi
+          printf '%s' "$RUNTIME_DDL_AUDIT_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/runtime-ddl-audit-formal.json"
+          printf '%s' "$EDGE_HANDOFF_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/edge-handoff.json"
+          python scripts/release/verify_safe_baseline.py \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --runtime-ddl-audit-report "$RUNNER_TEMP/runtime-ddl-audit-formal.json" \
+            --edge-handoff-report "$RUNNER_TEMP/edge-handoff.json" \
+            --runtime-audit-hmac-key-env RUNTIME_AUDIT_HMAC_KEY \
+            --edge-evidence-hmac-key-env EDGE_EVIDENCE_HMAC_KEY \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-project-id "$VERCEL_PROJECT_ID" \
+            --expected-formal-domain "$PRODUCTION_BASE_URL" \
+            --expected-lockdown-after-config-sha256 "${LOCKDOWN_AFTER_CONFIG_SHA256:-}" \
+            --expected-schema 20260710_0013 \
+            --expected-deployment-url "$DEPLOYMENT_URL" \
+            --expected-deployment-id "$DEPLOYMENT_ID" \
+            --require-platform-deployment-id \
+            --expected-layer app \
+            --output "$EVIDENCE_DIR/safe-baseline-formal.json"
+
+      - name: Persist formal handoff evidence before its phase CAS
+        id: formal_evidence
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-safe-baseline-${{ github.run_id }}-${{ github.run_attempt }}-formal
+          path: artifacts/security-baseline
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Prove formal evidence is durable before its phase CAS
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        run: |
+          test -n "${{ steps.formal_evidence.outputs.artifact-id }}"
+          test -n "${{ steps.formal_evidence.outputs.artifact-digest }}"
+
+      - name: Build the immutable formal evidence reference
+        id: formal_reference
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        run: |
+          python scripts/release/github_artifact_evidence.py build-reference \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --artifact-id "${{ steps.formal_evidence.outputs.artifact-id }}" \
+            --artifact-digest "${{ steps.formal_evidence.outputs.artifact-digest }}" \
+            --report-name safe-baseline-formal.json \
+            --output "$RUNNER_TEMP/formal-evidence-reference.txt"
+          FORMAL_EVIDENCE_REFERENCE="$(tr -d '\r\n' < "$RUNNER_TEMP/formal-evidence-reference.txt")"
+          [[ "$FORMAL_EVIDENCE_REFERENCE" = gha:v1:* ]]
+          echo "reference=$FORMAL_EVIDENCE_REFERENCE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify stored FORMAL_VERIFIED evidence before completion
+        if: ${{ steps.preflight.outputs.state == 'RETRY_FORMAL_VERIFIED' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ACTIVATION_EVIDENCE_REFERENCE: ${{ steps.preflight.outputs.activation_evidence_reference }}
+          ACTIVATION_REPORT_SHA256: ${{ steps.preflight.outputs.activation_report_sha256 }}
+        run: |
+          python scripts/release/github_artifact_evidence.py verify-reference \
+            --reference "$ACTIVATION_EVIDENCE_REFERENCE" \
+            --expected-report-sha256 "$ACTIVATION_REPORT_SHA256" \
+            --token-env GITHUB_TOKEN \
+            --output "$EVIDENCE_DIR/stored-formal-evidence-verified.json"
+
+      - name: Recheck current main before FORMAL_VERIFIED
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-formal-verified.json"
+
+      - name: Record the verified formal handoff
+        if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+          FORMAL_EVIDENCE_REFERENCE: ${{ steps.formal_reference.outputs.reference }}
+        run: |
+          python scripts/release/register_safe_baseline.py --phase FORMAL_VERIFIED \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --deployment-url "$DEPLOYMENT_URL" \
+            --formal-report "$EVIDENCE_DIR/safe-baseline-formal.json" \
+            --evidence-prefix "$FORMAL_EVIDENCE_REFERENCE" \
+            --output "$EVIDENCE_DIR/phase-formal-verified.json"
+
+      - name: Persist completion evidence before the terminal CAS
+        id: completion_evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-safe-baseline-${{ github.run_id }}-${{ github.run_attempt }}-completion
+          path: artifacts/security-baseline
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Prove completion evidence is durable before the terminal CAS
+        run: |
+          test -n "${{ steps.completion_evidence.outputs.artifact-id }}"
+          test -n "${{ steps.completion_evidence.outputs.artifact-digest }}"
+
+      - name: Recheck current main before COMPLETED
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-completed.json"
+
+      - name: Complete the immutable one-time install
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --phase COMPLETED --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --source-sha "$SOURCE_SHA" --workflow-run-id "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" --deployment-id "$DEPLOYMENT_ID" --deployment-url "$DEPLOYMENT_URL" --output "$EVIDENCE_DIR/phase-completed.json"
+
+      - name: Preserve sanitized failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-safe-baseline-${{ github.run_id }}-${{ github.run_attempt }}-failure
+          path: artifacts/security-baseline
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9

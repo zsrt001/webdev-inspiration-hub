@@ -1,6 +1,14 @@
 # FastAPI
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
+fastapi==0.128.0
+starlette==0.50.0
+uvicorn>=0.27.0
+httptools>=0.8.0
+python-dotenv>=0.13
+pyyaml>=5.1
+uvloop>=0.15.1 ; sys_platform != "win32" and sys_platform != "cygwin" and platform_python_implementation != "PyPy"
+colorama==0.4.6 ; sys_platform == "win32"
+watchfiles>=0.20
+websockets>=13.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 email-validator>=2.1.0

@@ -91,5 +91,5 @@ onMounted(async () => {
 </script>
 
 <style lang="scss" scoped>
-@import './auth.scss';
+@use './auth.scss';
 </style>

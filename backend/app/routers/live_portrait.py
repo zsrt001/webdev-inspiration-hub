@@ -27,7 +27,19 @@ from app.services import gatekeeper_service
 
 settings = get_settings()
 
-router = APIRouter(prefix="/live_portrait", tags=["live_portrait"])
+
+def _raise_live_portrait_retired() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail={"code": "live_portrait_retired", "message": "Live Portrait is not part of this release."},
+    )
+
+
+router = APIRouter(
+    prefix="/live_portrait",
+    tags=["live_portrait"],
+    dependencies=[Depends(_raise_live_portrait_retired)],
+)
 
 
 class LivePortraitRequest(BaseModel):
@@ -123,14 +135,7 @@ async def generate_live_portrait(
     - On queue failure: auto-refund.
     - On generation failure in worker: auto-refund.
     """
-    if not settings.live_portrait_enabled:
-        return LivePortraitResponse(
-            success=False,
-            job_id="",
-            status="DISABLED",
-            video_url=None,
-            message="Live Portrait is disabled.",
-        )
+    _raise_live_portrait_retired()
     if not generation_service.supports_live_portrait():
         raise HTTPException(
             status_code=503,
@@ -281,6 +286,7 @@ async def list_live_portrait_jobs(
     current_user: User = Depends(get_request_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[LivePortraitResponse]:
+    _raise_live_portrait_retired()
     result = await db.execute(
         select(LivePortraitJob)
         .where(LivePortraitJob.user_id == current_user.id)
@@ -298,6 +304,7 @@ async def get_live_portrait_job(
     db: AsyncSession = Depends(get_db),
 ) -> LivePortraitResponse:
     """Poll a Live Portrait job."""
+    _raise_live_portrait_retired()
     try:
         job_uuid = uuid.UUID(job_id)
     except ValueError:

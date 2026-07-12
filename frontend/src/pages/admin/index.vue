@@ -852,7 +852,7 @@ onMounted(loadDashboard);
 </script>
 
 <style lang="scss" scoped>
-@import './admin.scss';
+@use './admin.scss';
 
 .metrics-grid {
   display: grid;

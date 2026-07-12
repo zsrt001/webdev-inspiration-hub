@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +16,17 @@ from app.services.local_reco_service import recommend_local_studios
 from app.services.ops_config_service import get_recommendation_config
 
 
-router = APIRouter()
+def _raise_recommendations_retired() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "local_recommendations_retired",
+            "message": "Local vendor recommendations are not part of this release.",
+        },
+    )
+
+
+router = APIRouter(dependencies=[Depends(_raise_recommendations_retired)])
 
 
 class LocalStudioRecoResponse(BaseModel):
@@ -76,6 +86,7 @@ async def list_local_studios(
     - city: free-form city input (best-effort match)
     - wedding_date: ISO date string (optional, reserved for ranking)
     """
+    _raise_recommendations_retired()
     recommendation_config = get_recommendation_config()
     lead_counts = await _recent_reco_lead_counts(
         db,

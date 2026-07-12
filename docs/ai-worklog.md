@@ -171,3 +171,287 @@
 ### 下一执行门
 
 后续只从 Task 1 开始：先写并运行真实 red test，再实现 fail-closed bootstrap lockdown，并按 Task 1 的 green、暂存和阶段证据要求收口。未通过 Task 1 前不得提前执行 Task 2、部署高风险功能或宣称风险恶化遗留项已经被实际处理。
+
+## 2026-07-11 - Task 1 fail-closed bootstrap lockdown
+
+### Goal and scope
+
+- Execute only Task 1 of the approved VowPic commercial-closure plan.
+- Stop growth of auth, upload, generation, checkout, subscription, download, Partner Invite, retired-product, runtime-schema, and deletion risks.
+- Do not execute Task 2 migrations, deploy, alter production state, contact external services, commit, or push.
+
+### Evidence and baseline
+
+- Before Task 1 changes, the directly affected backend baseline passed 23/23 tests.
+- Before Task 1 changes, the full backend suite ran 193 tests: 192 passed and one pre-existing Provider test errored because it opened the real local PostgreSQL connection. The failing test was `test_evolink_provider.EvolinkProviderTest.test_vision_error_retry_exhaustion_delivers_candidate_when_non_blocking`.
+- After correcting test-fixture mistakes, the new lockdown test produced nine behavior failures against the old implementation. The runtime-schema test also enumerated 35 application DDL hits. These were target failures, not dependency or collection failures.
+- A read-only subagent audit independently found runtime schema writers in startup, user schema guard, Admin audit, account risk, email log, credit guardrails, and Remote Join session paths. The primary agent verified the reported call sites with repository searches and tests. The subagent did not write files or create another agent.
+
+### Changes
+
+- Added the seven false-default bootstrap capabilities and the stable `Capability` / `require_bootstrap_capability` contract.
+- Guarded Google OAuth, upload/Gatekeeper, order creation, checkout/manual payment, subscription mutation, generation Worker, Admin generation/probe/regeneration, and Admin credit actions before their first business or external side effect.
+- Kept signed Creem webhook handling and authenticated credit balance/history reads active; balance now reports `can_generate=false` while generation is locked.
+- Made legacy Remote Join, Live Portrait, local recommendations, leads/CRM, OpenID user routes, and direct credit mutations return permanent HTTP 410. Router-level tombstones run before auth/database dependencies on the retired public routers.
+- Made the temporary credit-package catalog return structured HTTP 503.
+- Removed all application startup/request DDL. Strict startup now performs read-only Alembic/table/index/column validation and fails traceably instead of repairing or swallowing schema problems. The legacy auto-create setting cannot enable schema mutation in any environment.
+- Hid source, preview, final, master, and download URLs from disabled order responses; disabled order polling does not refresh or restart Provider work.
+- Preserved every stored reference and `deleted_at` when any storage deletion fails, returned an explicit retryable failure, removed mutating cleanup GET, and paused both scheduled and Admin cleanup execution.
+- Made backend, frontend fallback, runtime JSON, environment examples, and Vercel configuration fail closed. Removed the cleanup cron and the identity-embedding override that weakened QA.
+
+### Verification
+
+- `python -m unittest backend.tests.test_risk_lockdown backend.tests.test_no_runtime_ddl backend.tests.test_remote_join_config backend.tests.test_runtime_config backend.tests.test_commercial_policy -v`: 56 tests passed.
+- Real in-process ASGI HTTP checks are included in the 56-test set: retired routes returned 410 before auth/database dependencies; public high-risk routes returned structured 503; no retired Live Portrait URL was serialized.
+- `python -m unittest discover -s tests -q`: 226 tests ran; 225 passed and the same pre-existing Provider/database-isolation test errored.
+- The same full discovery run with only that exact baseline test excluded: 225/225 passed.
+- `npm run build:web`: passed. Existing Browserslist age and Sass legacy/import deprecation warnings remain.
+- `python -m compileall -q backend/app backend/tests`: passed.
+- Runtime DDL scan across `api` and `backend/app`: zero hits.
+- Unsafe production-enabling configuration scan: zero hits.
+- `git diff --check`: passed before this worklog append and is rerun at final handoff.
+
+### Risks and remaining work
+
+- No real database, Preview, Vercel deployment, Worker host, storage provider, Supabase identity, or Creem sandbox/production flow was exercised. No external deployment occurred.
+- `ux_credit_transactions_order_refund_once` has no migration at current Alembic head `20260516_0012`. Strict production readiness therefore remains blocked on a database missing that index; approved Task 2 migration `20260710_0013` must reconcile it and legacy user columns/indexes. Task 1 intentionally did not add or run that migration.
+- The one full-suite Provider test isolation failure is unchanged from baseline and remains assigned to Task 4; it was not hidden or weakened.
+- Task 1 is a safe engineering baseline, not a usable commercial product, release candidate, or `Production accepted`. Web-only source removal, private storage, durable ledger/outbox/jobs, real Provider/QA evidence, UI cleanup, CI containment, deployment, and production acceptance remain in later approved tasks.
+
+### External effects and Git
+
+- External production containment remains NOT_RUN.
+- No commit, push, deploy, data mutation, payment, email, Provider generation, or production storage operation was performed.
+
+## 2026-07-11 - Task 2 audited PostgreSQL capability authority
+
+### Goal and scope
+
+- Replace Task 1 static route and Worker gates with PostgreSQL-authoritative, audited, deployment/runtime-bound decisions.
+- Add the `0013` release control-plane schema, acceptance identity bindings, runtime-bundle builder, and initial fresh-job coordinate resolver.
+- Preserve Task 1 tombstones, zero-runtime-DDL behavior, paused cleanup, and fail-closed user-visible behavior.
+
+### Evidence and baseline
+
+- The Task 1 risk/DDL/security baseline passed 38/38 before Task 2 production edits.
+- Eight Task 2 test modules were added first; the initial focused run failed because the typed flag interfaces, service, seven models, migration, bundle builder, and resolver did not exist, and because ten active static guard call sites remained.
+- One read-only subagent audited the existing migration chain, dirty overlap, Admin identity boundary, Worker stamp gap, and legacy refund index. The primary agent independently verified every adopted finding. The subagent did not write files or create a child agent.
+
+### Changes
+
+- Added typed `FeatureFlagState`, request/Worker contexts, deterministic decision snapshots, PostgreSQL authority reads, OFF-only Redis cache with a 30-second cap and network timeout, audited CAS mutations, and emergency OFF invalidation.
+- Removed every active `require_bootstrap_capability` / `bootstrap_capability_enabled` call from routers and Worker code. Retired compatibility functions are permanently false and cannot be enabled by environment variables.
+- Added exact runtime coordinates sourced from `RUNTIME_ENVIRONMENT`, pre-deploy `RUNTIME_BUNDLE_ID`, optional OCI digest, and Vercel's system-only `VERCEL_DEPLOYMENT_ID`; missing hosted coordinates fail readiness and flag evaluation closed.
+- Added strict Google-backed database-Admin flag endpoints. Backend admin tokens, local JWTs, non-Google Supabase providers, and debug fallback cannot mutate the flag control plane. Preview and Production non-OFF mutations remain blocked until their later protected gates exist.
+- Added hash-only, deployment-bound, expiring, single-consumption acceptance identity bindings and protected provisioning tooling. Raw provider subjects and emails are absent from the binding schema.
+- Added migration `20260710_0013` with 14 seeded OFF flags, immutable audits/checkpoints/observation samples, release activation CAS/fault fencing, migration leases/checkpoints, observation runs/samples, RLS, and the missing generation-refund partial unique index. Existing Admin audit/email/risk tables and welcome index are reused rather than recreated.
+- Added role-discriminated canonical runtime bundle identities and an initial resolver allowlist limited to `preview-identity` and `safe-baseline`; deployment IDs, live snapshots, manifests, evidence, and caller PASS claims are rejected as bundle/resolver authority.
+- Sanitized public capability output and kept signed webhook, logout, permanently retired routes, and reference-preserving deletion outside capability blocking.
+
+### Verification
+
+- Task 2 focused suite plus security regression: 38/38 passed; expanded flag/schema checks also passed after implementation.
+- Task 1 risk regression plus route adoption checks: 31/31 passed.
+- `alembic upgrade 20260516_0012:20260710_0013 --sql`: passed and rendered 29,764 bytes including all control tables, 14 OFF inserts, and RLS statements. A first attempt exposed and then fixed offline JSONB seed rendering.
+- Real local legacy database migration: full `0001 -> 0013` chain passed on a partially initialized `ai_wedding` schema with no Alembic version row. Post-migration checks found head `20260710_0013`, seven Preview OFF rows, seven Production OFF rows, all eight control-plane tables with RLS, required unique indexes, and no raw identity columns.
+- Database rejection probes passed: invalid `ON` without release coordinates failed its check constraint; updating an inserted audit row failed with `ops_feature_flag_audits is append-only` and was rolled back.
+- Real service transaction passed and was rolled back: PostgreSQL resolved Generation OFF, emergency OFF produced one audit row, and no verification audit remained committed.
+- Read-only runtime schema guard passed against the migrated local database.
+- Full backend discovery ran 263 tests: 262 passed and the unchanged Provider test-isolation error remained. It is assigned to Task 4 and was not skipped or relabeled.
+- Compileall passed. A clean temporary-database migration completed once, but its first post-query command used the wrong virtualenv path; a second fresh attempt was blocked before database creation when Docker/PostgreSQL became unavailable. Therefore the successful legacy-database migration is current live migration evidence; the clean-database post-query is not claimed complete.
+
+### Risks and remaining work
+
+- No Production or protected Preview database, Vercel deployment, formal domain, Supabase identity, Worker host, payment, Provider, or storage operation was changed or verified.
+- Worker execution intentionally remains closed: immutable server-stamped generation jobs do not exist until Task 16, so Task 2 rejects missing/spoofed stamps instead of trusting payload fields.
+- Docker Desktop was started for local verification but its API remained unstable; no project container teardown or destructive reset was performed.
+- The Provider test isolation error still prevents a truthful all-green baseline and must be repaired in Task 4 after Task 3.
+
+### External effects and Git
+
+- The local development `ai_wedding` database was migrated to `0013`; no Production credential or database was used.
+- No commit, stage, push, deploy, payment, email, Provider generation, or production storage action was performed.
+
+## 2026-07-11 - Tasks 3-4 inventory, restore, and protected release baseline
+
+### Goal and scope
+
+- Produce a read-only, redacted legacy inventory and a destructive-target-safe backup/restore rehearsal before any Production migration.
+- Replace automatic Production deployment with secret-free PR CI and one manual, Environment-protected, one-time safe-baseline installer.
+- Repair the known Provider test isolation and frontend typecheck blockers without changing their business assertions.
+- Do not execute the protected Production workflow, change Vercel project/firewall/domain state, or commit/push.
+
+### Changes
+
+- Added catalog-driven Production inventory for users, legacy entitlements, ledger, orders, and all known URL/object references. Pre-`0013` schemas do not query columns that are absent; the dedicated role must be default read-only, have zero table-write privileges, fail a no-op write with SQLSTATE `25006`, and use `BYPASSRLS` for complete coverage.
+- Added an isolated backup/restore rehearsal with redacted command arguments, source/target identity checks, exact revision/table/row/FK/ledger/URL comparison, mandatory target database/role destruction, and dump deletion on every path. URL checks are also catalog-driven for the legacy schema.
+- Reservation now validates the actual inventory and restore report contracts rather than hashing arbitrary files. It also compares PostgreSQL system identifier, database name, and database OID through the read-only and migration connections before any write.
+- Added same-transaction Alembic `0012 -> 0013` plus unique `SAFE_BASELINE_INSTALL/RESERVED`, bounded reservation expiry, exact deployment URL/ID persistence, CAS phases, deployment recovery by exact metadata, and formal-domain recovery that prevents a second Promote after a lost response.
+- Added authenticated edge-lockdown, runtime-DDL, and edge-handoff evidence. External reports require SHA-256 HMACs and exact project/source/run/runtime/deployment coverage; a short or expired edge lease is rejected.
+- Replaced PR deploy/smoke jobs with hash-lock reproduction, non-empty full backend tests, frontend locked install/typecheck/build, and a fail-closed aggregate quality gate. First-party Actions, the Python resolver image, framework versions, and Vercel CLI are pinned to immutable revisions/digests.
+- Added the manual `safe-baseline-release.yml`: exact dispatch SHA on `main`, global non-cancelling concurrency, Production Environment, preflight/inventory/restore/reservation before Vercel token use, build/deploy once with `--skip-domain`, staged verification, Promote reconciliation, unbypassed formal verification, immutable completion, and per-attempt private upload of sanitized evidence only. Missing protected evidence returns `NOT_RUN`; a rerun of the same run reuses the recorded deployment and never rebuilds after STAGED.
+- Generated separate root API and backend hash locks from exact inputs. `uvicorn[standard]` was decomposed into explicit standard dependencies so the Linux-only `uvloop` marker remains in both locks and Windows strict installation does not try to build uvloop.
+- Pinned Vue `3.4.21`, TypeScript `5.3.3`, Vite `5.2.8`, vue-tsc `1.8.27`, and compatible Pinia `2.1.7`. Fixed the quality-array null narrowing and wrapped callback-form `uni.uploadFile` so progress and Promise completion both match the installed Uni-app types.
+- Completed the Provider test's missing database-session isolation by replacing the unpatched template-style lookup with a deterministic async fixture; the existing non-blocking vision-error behavior assertion was not weakened.
+
+### Verification
+
+- Targeted Task 3/4 inventory, restore, release, and zero-runtime-DDL suite: 41/41 passed after the final evidence and legacy-schema changes.
+- Full backend discovery: 304/304 passed; the previously failing Provider isolation case is green without skip or expected-failure relabeling.
+- `verify_baseline.ps1`: backend, `pip check`, frontend `npm ci`, `vue-tsc --noEmit`, and H5 build passed; `frontend_unit=NOT_RUN` remains explicit because Task 22 has not added Vitest and a real unit suite.
+- Real local PostgreSQL 15 integration on a disposable container: migrated `0001 -> 0012`, removed `username/password/avatar_url` to model the legacy shape, and completed read-only inventory at `0012`.
+- Real local `pg_dump/pg_restore`: 17-table revision/table/row/FK/ledger/URL comparison passed; the disposable database and role were dropped and the dump deleted.
+- Real local reservation: exact `0012 -> 0013 + RESERVED` committed atomically, all Production capability rows remained OFF, and the three missing legacy user columns were reconciled. Injecting failure after migration but before reservation left revision `0012` and no activation table, proving transaction rollback.
+- Linux Python 3.11.15/Debian resolver preverification ran both `pip-tools==7.5.3` compiles twice with byte-identical outputs. Final SHA-256 values were `85e70b198a5eb700c4e92adf8ab9578a28ed55185cdd5cd077e53bcf720a9f79` for the root lock and `e6ab147c51ab4291e90becc37c36c946562e36554fb90e022d8c6581890a0a50` for the backend lock. A fresh Linux virtualenv installed the root lock with `--require-hashes`, and Windows installed the backend lock while correctly ignoring marked `uvloop`.
+- Safe-baseline YAML parsed as one job and all 17 shell blocks passed `bash -n`; `git diff --check` passed before this append and is rerun at handoff.
+
+### Risks and remaining work
+
+- The exact pinned `python:3.11.9-slim-bookworm` resolver container could not be pulled locally because Docker Desktop had no HTTPS proxy. The available Linux 3.11 image gave reproducible preverification, but the exact image's two-pass `git diff --exit-code` remains for CI and is not relabeled PASS.
+- Frontend build still emits existing Browserslist-age and Sass legacy/import deprecation warnings. They do not fail the pinned build but remain maintenance work outside this release-safety task.
+- The release scripts are intentionally long one-purpose audit/state-machine entrypoints with pure tested helpers. Their file sizes were reviewed; splitting them during the safety closeout would add packaging/import risk without changing behavior. Any later feature growth should first extract query/evidence/platform adapters under the existing contract tests.
+- Production project settings, deploy-hook removal, edge rules, runtime statement recorder, Production inventory/restore, staged deployment, Promote, and formal-domain probes remain `NOT_RUN`. Therefore risk containment is implemented and locally verified as an engineering baseline, but is not active in Production and is not `Production accepted`.
+
+### Subagent and external effects
+
+- One earlier read-only subagent audited migration/control-plane overlap and wrote no files; the primary agent independently verified adopted findings. No additional subagent was used for Tasks 3-4.
+- No Production credential, deploy, domain/firewall mutation, payment, email, Provider request, commit, stage, or push occurred. All disposable local PostgreSQL/container and temporary report resources were removed.
+
+## 2026-07-12 - Tasks 1-4 risk and residual hardening
+
+### Goal and scope
+
+- Close the locally actionable high-priority residuals in the Tasks 1-4 safe-baseline slice without crossing the protected Production boundary or starting Task 5.
+- Keep status evidence honest: local engineering verification is not Production containment, a dirty worktree is not a release SHA, and legacy WeChat/Mini Program code is not removed until Task 5 passes.
+
+### Corrections to earlier evidence
+
+- The 2026-07-11 statement that Windows installed the Linux-generated backend lock was incomplete. A fresh isolated Windows install exposed the omitted `colorama` dependency required by `click==8.4.2`; the old cross-platform-lock assumption is superseded by separate Linux and Windows backend/resolver locks.
+- Any earlier statement that the current checkout had no WeChat or Mini Program residue was incorrect. `dev:mp-weixin`, `build:mp-weixin`, `@dcloudio/uni-mp-weixin`, `manifest.json` Mini Program configuration, and `uni.login({ provider: 'weixin' })` still exist. Their removal belongs to Task 5 and is deliberately not claimed here.
+- The old `python:3.11.9-slim-bookworm` resolver image and Node 20 runtime are superseded. The workflow now pins the current verified Python 3.11.15 image digest and exact Node 24.17.0 LTS; the exact Docker image still has not been pulled and run locally.
+
+### Changes
+
+- Added hash-locked `pip-tools==7.5.3` resolver environments for Linux and Windows. Added a Windows backend lock and an explicit `colorama==0.4.6 ; sys_platform == "win32"` direct marker so platform-specific resolution is visible rather than accidental.
+- CI now uses exact runners/Python/Node, reproduces and installs Linux and Windows locks independently, and requires both platform jobs in the aggregate quality gate.
+- Added a committed `scripts/release-tools` npm lock for Vercel CLI `55.0.0`; the protected release installs that lock, verifies the CLI's stdout version, and invokes its direct executable instead of `npx`.
+- Moved authenticated signed edge-lockdown verification before the first Production database write. Missing or mismatched edge evidence now stops before reservation/migration.
+- Made reservation-expiry recovery explicit and fail-closed: expiry does not transfer ownership; only the exact source SHA and workflow run can resume, and workflow attempts cannot move backward.
+- Reworked `verify_baseline.ps1` to install the platform lock into a fresh temporary virtual environment, run `pip check` and all backend tests there, and fingerprint the actual working-tree bytes. A final evidence replay exposed that decoding `git diff` through different PowerShell console encodings changed the digest in the Chinese worktree. The fingerprint now runs in a dedicated Python helper over raw Git bytes with external diff/text conversion disabled and covers Unicode tracked/untracked paths; a dirty tree records `source_sha=null`, `UNCOMMITTED_WORKTREE`, a base SHA, a deterministic content digest, and `release_eligible=false`.
+- Replaced five local Sass `@import` directives with module `@use`, refreshed `caniuse-lite`, and pinned Sass `1.97.3`. The remaining legacy Sass JavaScript API warnings originate in the pinned Uni-app/Vite adapter chain and are retained visibly rather than suppressed.
+- Updated the authoritative plan, design specification, and operational runbook for the exact runtimes, dual-platform locks, locked release CLI, edge-before-write ordering, expired-owner recovery, truthful baseline identity, and the still-pending Task 5 Web-only cleanup.
+
+### Verification
+
+- Full local baseline gate exited 0 from a dirty checkout: 312 backend tests passed in a fresh hash-locked virtual environment; `pip check`, frontend `npm ci`, `vue-tsc --noEmit`, and H5 build passed. The report truthfully recorded `source_sha=null`, `code_identity=UNCOMMITTED_WORKTREE`, `release_eligible=false`, `frontend_unit=NOT_RUN`, and `TASKS_1_4_BASELINE_PASS_WITH_NOT_RUN`.
+- Final self-review added red/green regressions proving a stale workflow attempt is rejected by read-only preflight before any Vercel credential/build and cannot re-enter the idempotent `RESERVED` retry branch. It also proves the worktree identity is stable under UTF-8/CP1252 output settings and covers clean, dirty, and Unicode-path repositories. The Task 4 contract suite then passed 32/32 and full backend discovery passed 316/316. The earlier 312-test fresh locked-environment gate remains the dependency-install evidence at this checkpoint; one final locked replay of the raw-byte fingerprint implementation runs after this log entry.
+- Linux Python 3.11.15 resolver verification generated its resolver lock twice byte-identically and installed it with `--require-hashes`. Windows generated both its resolver and backend lock twice byte-identically, then a fresh Windows virtual environment installed the backend lock and passed `pip check`.
+- Current lock SHA-256 values: Linux resolver `fbe576d9c34667f223d81ceb9d4d51466417e146be0592a079027bfa3bb75380`; Windows resolver `3933f13555742a682336343d5e5d0b241061bc3175c075b863be481f7131cc80`; Linux backend `e6ab147c51ab4291e90becc37c36c946562e36554fb90e022d8c6581890a0a50`; Windows backend `6071f58d70b622c2eef4876c0d42386abb986b397cc56e592d9a516ac85161d2`.
+- Disposable PostgreSQL 15 integration migrated `0001 -> 0013`, inserted an expired `RESERVED` activation, allowed the exact run to resume with increasing attempts through `STAGED` and `PROMOTED`, and rejected a decreasing attempt. The container and temporary evidence were removed.
+- Frontend build warning checks now report zero local Sass import deprecations and zero Browserslist-age warnings. Twenty-three legacy Sass API warnings and eight `npm ci` transitive deprecation warnings remain visible.
+- The locked Vercel CLI installed from its committed npm lock and reported exactly `55.0.0`.
+- Amended planning-doc mechanics passed with 30 unique Tasks covering `1..30`, 360 balanced Markdown fences, no unbraced PowerShell environment-variable-plus-colon interpolation, and no stale Node 20/`npx vercel` instruction. Current SHA-256 values are `db19794e23909f2d6de80493366a0e98820ab8b16aae3e6950c1cf704c4dde58` for the implementation plan and `ae18993340b5787dd915229efed1c34fa2ded3ee60536762856db456eef7deb4` for the design specification.
+
+### Risks and remaining work
+
+- Production project settings, signed edge/firewall state, Production inventory/restore, migration, Vercel staged deploy, Promote, runtime statement audit, formal-domain verification, and final CAS remain `NOT_RUN`. Risk containment is not active in Production and Stage 1 has not exited.
+- The exact official pinned resolver container could not be pulled/run locally because registry access timed out. CI is the remaining exact-image execution boundary; cached Linux Python 3.11.15 evidence does not replace it.
+- `npm audit` is `NOT_RUN` for both frontend and release tools: the configured npm mirror returns 404 because it does not implement the advisory endpoint, and explicit requests to the official npm registry time out. The eight observed frontend deprecation warnings are tied to the current Uni-app Mini Program/Jest-era dependency chain and remain until the Task 5/Task 22 dependency transitions can be verified without weakening Stage 1; they are not treated as a vulnerability audit result.
+- Frontend unit tests remain `NOT_RUN` by the approved sequencing contract; Task 22 must install the exact Vitest harness and add real tests before this becomes a mandatory PASS gate.
+- WeChat/Mini Program cleanup remains Task 5 scope and cannot be called complete before the protected safe baseline is actually current on the formal domain and Stage 1 exits.
+
+### Subagent and external effects
+
+- One read-only subagent independently scanned warnings, workflow ordering, release recovery, baseline-report truthfulness, and legacy WeChat residue. It wrote no files and created no child agent. The primary agent re-opened the cited files and reproduced every adopted high-priority finding before changing code.
+- No Production credential, deployment, domain/firewall mutation, payment, email, Provider request, commit, stage, push, or real-data deletion occurred. Only disposable local dependency environments and PostgreSQL/container resources were used and cleaned.
+
+## 2026-07-12 - Tasks 1-4 release-recovery residual closure
+
+### Goal and scope
+
+- Close the remaining locally actionable release-recovery and evidence-integrity risks in Tasks 1-4 without executing the protected Production workflow or starting Task 5.
+- Make build reuse, deployment recovery, Promote reconciliation, and local-baseline reporting fail closed under lost responses, workflow retries, artifact expiry, and Windows PowerShell 5.1.
+
+### Changes
+
+- Archived `.vercel/output` as a tar payload and bound it to a strict sidecar plus a semantic manifest covering files, empty directories, Unix modes, and symlink targets. Recovery now verifies the sidecar and recovered semantic digest before reuse.
+- Bound the immutable build artifact to the original `RESERVED` attempt, kept it for 90 days, and allowed an unbound rebuild only within the reservation-to-artifact recovery window. A manifest-bound missing artifact and a retry after the recovery window require manual disposition.
+- Required exact Vercel project and organization coordinates before pull/build/deploy/recovery. Complete deployment pagination now verifies source SHA, runtime bundle, manifest, role, project, and state; an exact non-`READY` deployment blocks duplicate deployment instead of being ignored.
+- Added `PROMOTION_ARMED` between `STAGED` and `PROMOTED`. Only the attempt that wins the `STAGED -> PROMOTION_ARMED` CAS may send Promote once. A retry from `PROMOTION_ARMED` is read-only and must prove the exact target from formal-domain state plus the project's exact successful `lastAliasRequest`; ambiguous, pending, failed, skipped, rolling-release, or invalid responses require manual disposition.
+- Made a formal-domain 404 a controlled fail-closed result and isolated raw database dumps outside uploaded evidence artifacts.
+- Added durable evidence checkpoints before reservation/deploy, Promote, formal-domain CAS, and completion CAS so each irreversible boundary has recoverable prior evidence.
+- Replaced `[System.IO.Path]::GetRelativePath`, which is unavailable in Windows PowerShell 5.1, with a verified-root-prefix relative-path calculation in `verify_baseline.ps1`.
+- Updated the implementation plan, design specification, deployment runbook, workflow contract tests, and recovery tests to match these state and evidence contracts.
+
+### Verification
+
+- Red/green regression cases cover tar transport, directory/mode/symlink semantics, sidecar validation, attempt binding, the 90-day boundary, exact non-`READY` deployment recovery, project/organization binding, formal-domain 404 and malformed JSON, `PROMOTION_ARMED`, `lastAliasRequest`, and rolling-release rejection.
+- `.venv\Scripts\python.exe -m unittest backend.tests.test_ci_release_contract backend.tests.test_backup_restore_rehearsal -q`: final handoff rerun passed 57/57 in 12.903 seconds. An earlier correctly provisioned run passed in 14.044 seconds, and a read-only independent review reproduced the same 57/57 result. One intervening invocation with the unprovisioned system `python` was invalid and failed during collection/import because `httpx`, `pydantic`, and the real Alembic package were absent; no code conclusion is drawn from that environment error.
+- `python -m unittest discover -s backend/tests -q`: 332/332 passed in 30.727 seconds before the final PowerShell compatibility correction. The corrected isolated baseline then reran the same 332 tests in a fresh hash-locked environment and passed in 38.542 seconds.
+- Workflow parsing and shell validation passed for 15 CI `run` blocks and 30 safe-baseline release `run` blocks. `python -m compileall -q backend/app backend/scripts scripts/release api` passed.
+- Frontend `npm ci --ignore-scripts`, `npm run typecheck`, and `npm run build:web` passed. `@dcloudio/uni-automator`, Jest, and jsdom are absent from the installed dependency tree. Two `phin` deprecation warnings remain through the deferred Mini Program/Jimp chain, and 23 upstream Sass legacy-JavaScript-API warnings remain visible.
+- The locked release tools installed with `npm ci --ignore-scripts`, and the direct Vercel CLI executable reported exactly `55.0.0`.
+- The first full isolated baseline completed its installs, 332 tests, typecheck, and build but failed while writing the report because Windows PowerShell 5.1 lacks `Path.GetRelativePath`. A red regression captured that incompatibility; after the compatibility fix, the full gate exited 0 in 217.4 seconds.
+- The resulting temporary report had SHA-256 `60618fa7cb83d9b4c83089fadca40448bac7f5a2e75a2d72d2a4071e5c200ccf` and truthfully recorded `schema_version=safe-baseline.local.v3`, `source_sha=null`, `UNCOMMITTED_WORKTREE`, `working_tree_clean=false`, `release_eligible=false`, Python `3.11.9` versus expected `3.11.15`, Node `24.2.0` versus expected `24.17.0`, Windows versus expected Linux, `runtime_alignment=NOT_RUN`, all implemented engineering checks PASS, `frontend_unit=NOT_RUN`, and `TASKS_1_4_BASELINE_PASS_WITH_NOT_RUN`. The temporary report and generated build/install artifacts were removed after capture.
+
+### Risks and remaining work
+
+- The protected GitHub/Vercel workflow, Production inventory/restore/migration, edge and formal-domain checks, deploy, Promote, final CAS, and runtime statement audit remain `NOT_RUN`. No local result proves Production containment or acceptance.
+- Exact execution of the pinned Linux resolver container remains `NOT_RUN` because registry access timed out. `npm audit` also remains `NOT_RUN`: the configured mirror lacks the advisory endpoint and the official registry timed out.
+- The local dirty checkout and runtime mismatch make the successful local baseline non-release-bindable by design. A clean exact SHA on the pinned Linux/Node runtime is still required at the protected boundary.
+- Frontend unit coverage remains `NOT_RUN` until Task 22. The two Mini Program-chain deprecations and Web/WeChat source removal remain Task 5/Task 22 work and are deliberately not removed before Stage 1 exits.
+
+### Subagent and external effects
+
+- One read-only subagent independently audited the stable release-recovery snapshot for P0/P1 issues and reran the 57-test focused suite. It found no new P0/P1 finding, wrote no files, and created no child agent. The primary agent independently verified the adopted evidence and final diff.
+- No Production credential, deployment, domain/firewall mutation, database write, payment, email, Provider request, commit, stage, push, or data deletion occurred.
+
+## 2026-07-12 - Pre-sync second review and functional closure
+
+### Goal and scope
+
+- Re-review the complete Tasks 1-4 diff before synchronization, run functional and real-database tests, and permit only ordered feature-branch synchronization.
+- Keep `main`, the Vercel Production target, `vowpic.com`, and `www.vowpic.com` unchanged until external protection and CI gates are independently proven.
+- Close every locally actionable review finding without starting Task 5 or claiming Production containment.
+
+### Review-driven changes
+
+- Retired caller-selected `X-User-OpenID` / `X-Visitor-Id` authentication and debug fingerprints. Generic bearer authentication now resolves only an already provisioned exact Supabase subject; user creation/update remains inside the guarded, acceptance-bound Google exchange.
+- Moved order-create and paused-delete HTTP guards ahead of identity resolution. Guest login remains a database-free 410 tombstone, Partner Invite remains a PostgreSQL-authoritative 503 capability rather than a retired route, and order deletion preserves every reference until durable retries exist.
+- Forced control-plane RLS and split runtime/writer sessions were tightened further: the two login names must be distinct, target one database, and belong to exactly one fixed group. Readiness rejects owner, superuser, BYPASSRLS, wrong group, opposite-group membership, and cross-project Supabase pooler URLs.
+- Expanded formal verification from 31 paused plus 14 retired route/method pairs to 33 plus 17. Credit catalog and Admin cleanup now have explicit 503 probes; all three retired Admin CRM routes have explicit 410 probes and exact error-code assertions.
+- Removed the account-page deletion action and corrected account, privacy, legal-policy API, and inline-consent copy. The site now states that retention periods are scheduled targets and automated/in-account deletion is paused; it no longer claims that files are currently deleted automatically or immediately.
+- Added streaming AES-256-GCM envelopes for the exact `.vercel/output` tar and manifest sidecar. The public repository uploads only `.enc` files; wrong key/AAD and truncated/corrupt envelopes fail closed without partial plaintext. The protected key must remain unchanged for the ninety-day recovery window.
+- Replaced unauthenticated `git ls-remote` checks with an authenticated GitHub ref guard at six boundaries: before reservation, before deploy, immediately before and after Promote, before `FORMAL_VERIFIED`, and before `COMPLETED`. Every nonterminal retry must still match the approved `main` SHA.
+- A `RETRY_FORMAL_VERIFIED` run now receives the stored opaque reference/hash from read-only preflight, re-downloads and validates that exact artifact, and cannot silently replace it. Expired, deleted, malformed, or hash-mismatched evidence requires manual forward disposition.
+- Fixed the isolated local-baseline discoverer to use the repository root as unittest's top-level directory, matching CI and allowing the integration package to import the real application.
+
+### Red/green and review evidence
+
+- The initial targeted review tests produced the intended failures for build-artifact plaintext upload, opposite-group RLS membership, same-login/cross-project database URLs, retired identity headers, generic Supabase auto-provisioning, five missing formal probes, false deletion copy, current-main retry drift, stored formal artifact replacement, and missing preflight evidence coordinates.
+- Each finding received a focused green rerun. The combined affected suite passed 143/143 after the final changes.
+- One read-only subagent performed two review passes, wrote no files, and created no child agent. The primary agent reopened every cited path and reproduced each adopted finding. The final subagent pass reported no open Critical or Important finding and reproduced its focused suite green.
+
+### Functional and integration verification
+
+- `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q`: 363/363 passed with four PostgreSQL integration cases skipped by their explicit opt-in switch.
+- A random disposable PostgreSQL 15 database then migrated the complete `0001 -> 0013` chain and ran all four RLS integration cases: forced RLS/group-role facts, runtime read/no-write, writer constrained transition, and accidental dual-group readiness rejection all passed. The database, two login roles, and two fixed group roles were removed; readback found zero matching temporary databases and roles.
+- `.venv\Scripts\python.exe -m compileall -q backend/app backend/scripts scripts/release`: passed.
+- `npm run typecheck` and `npm run build:web`: passed. The build still emits the known upstream Uni-app Sass legacy-JavaScript-API warnings; no warning was suppressed or relabeled.
+- Both workflow YAML files parsed. All 53 Linux Bash blocks passed `/bin/bash -n` in the existing backend container, and all three Windows PowerShell blocks passed `ScriptBlock.Create` parsing.
+- Mechanical scope audit found 119 changed files, all covered by the Tasks 1-4 file lists, with zero extras and zero missing exact entries. Tasks 1-30 are unique and complete; 360 Markdown fences are balanced; first-party Actions are fixed to 40-character SHAs; `git diff --check` and the unsafe PowerShell environment-variable-colon scan passed.
+- Secret-pattern scanning found no private key, GitHub token, OpenAI key, Slack token, or AWS access-key pattern. Database-URL matches were reviewed as explicit local/example/test credentials only.
+- The first fresh isolated baseline correctly failed because its unittest discovery omitted the repository top level. After adding the regression and correction, a new temporary environment installed `backend/requirements.windows.lock.txt` with hashes, passed dependency checking, backend tests, frontend `npm ci`, typecheck, and build. Report SHA-256: `5afc1b8454498e32418598b2b09b2bc7d613f7da847c9f984968b3633cd5d25d`.
+- The isolated report truthfully recorded `TASKS_1_4_BASELINE_PASS_WITH_NOT_RUN`, `UNCOMMITTED_WORKTREE`, and `release_eligible=false`: local Windows/Python 3.11.9/Node 24.2.0 differs from protected Linux/Python 3.11.15/Node 24.17.0, and frontend unit tests remain `NOT_RUN` until Task 22.
+
+### Risks and synchronization boundary
+
+- `npm audit` remains `NOT_RUN`: the configured mirror does not implement the advisory endpoint and the official registry previously timed out. No new npm dependency was added in this review loop.
+- Production project settings, Vercel automatic Production assignment, deploy hooks, signed edge/firewall evidence, GitHub `production` Environment protection, Production inventory/restore/migration, staged deploy, Promote, runtime statement audit, and formal-domain verification remain `NOT_RUN`.
+- The observed GitHub `production` Environment has no protection rule, and Vercel auto-assignment has not been read back as disabled. These are hard blockers to merging `main` or touching the formal domain.
+- Ordered synchronization may therefore stop only at an atomic feature-branch commit/push and PR/CI. It must not merge, dispatch the protected release, or change `vowpic.com` / `www.vowpic.com` until both external protections and every required check are green.
+
+### Local external effects
+
+- One HTTP regression initially created one legacy `wx_*` user in the local development database; the exact test row was identified and deleted immediately, with one-row cleanup readback.
+- Disposable PostgreSQL databases/roles and the failed diagnostic container were removed. No Production credential, business database, formal domain, payment, email, Provider request, storage object, or real customer record was touched.

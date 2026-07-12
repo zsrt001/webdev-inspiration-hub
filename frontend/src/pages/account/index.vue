@@ -162,7 +162,7 @@
                   <text class="row-subtitle">{{ tr('图片保留至', 'Images kept until') }} {{ formatDate(order.expires_at) }}</text>
                 </view>
                 <view class="order-status" :class="statusClass(order.status)">{{ statusText(order.status) }}</view>
-                <button class="mini-link danger-link" @tap.stop="deleteOrder(order.id)">{{ tr('删除', 'Delete') }}</button>
+                <text class="paused-delete">{{ tr('删除暂不可用', 'Deletion temporarily paused') }}</text>
               </view>
             </view>
           </view>
@@ -179,7 +179,7 @@ import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { useSubscriptionStore } from '../../stores/subscription';
-import { del, get, resolvePublicUrl } from '../../utils/api';
+import { get, resolvePublicUrl } from '../../utils/api';
 import { getAuthProvider, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
 import { refreshSupabaseConfig } from '../../utils/supabase';
 
@@ -267,8 +267,8 @@ const activePlanName = computed(() => subscriptionStore.activePlan?.name || tr('
 const retentionNotice = computed(() => {
   const retention = legalPolicies.value?.retention || {};
   return tr(
-    `原图 ${retention.source_images_days || 7} 天后删除；免费作品 ${retention.free_generated_days || 30} 天，付费积分包 ${retention.paid_generated_days || 90} 天，订阅用户 ${retention.subscription_generated_days || 180} 天。`,
-    `Source images are deleted after ${retention.source_images_days || 7} days. Generated images: free ${retention.free_generated_days || 30} days, paid packs ${retention.paid_generated_days || 90} days, subscriptions ${retention.subscription_generated_days || 180} days.`,
+    `计划保留期：原图 ${retention.source_images_days || 7} 天，免费作品 ${retention.free_generated_days || 30} 天，付费积分包 ${retention.paid_generated_days || 90} 天，订阅用户 ${retention.subscription_generated_days || 180} 天。可审计删除流程上线前，自动删除和账户内删除均已暂停。`,
+    `Scheduled retention: source images ${retention.source_images_days || 7} days, free images ${retention.free_generated_days || 30} days, paid packs ${retention.paid_generated_days || 90} days, subscriptions ${retention.subscription_generated_days || 180} days. Automated and in-account deletion are temporarily paused until the audited cleanup flow is available.`,
   );
 });
 
@@ -431,23 +431,6 @@ async function cancelSubscription(): Promise<void> {
   } catch (err: any) {
     uni.showToast({ title: err?.message || tr('取消失败', 'Cancel failed'), icon: 'none' });
   }
-}
-
-async function deleteOrder(orderId: string): Promise<void> {
-  uni.showModal({
-    title: tr('删除作品', 'Delete image'),
-    content: tr('删除后图片文件会被移除，订单记录不再展示。', 'Image files will be removed and this order will no longer be shown.'),
-    success: async (res) => {
-      if (!res.confirm) return;
-      try {
-        await del(`/orders/${orderId}`, { showLoading: true, showError: false });
-        orders.value = orders.value.filter((order) => order.id !== orderId);
-        uni.showToast({ title: tr('已删除', 'Deleted'), icon: 'success' });
-      } catch (err: any) {
-        uni.showToast({ title: err?.message || tr('删除失败', 'Delete failed'), icon: 'none' });
-      }
-    },
-  });
 }
 
 function goCreate(): void {
@@ -806,8 +789,10 @@ onMounted(async () => {
   font-weight: 900;
 }
 
-.danger-link {
-  color: #b42318;
+.paused-delete {
+  color: #8a5b12;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 @media (max-width: 980px) {

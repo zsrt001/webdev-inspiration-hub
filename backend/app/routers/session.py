@@ -1,17 +1,16 @@
 """Session API routes for cross-device Remote Join."""
 
-from fastapi import APIRouter, HTTPException, File, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
+from app.core.database import get_db
+from app.core.feature_flags import Capability
+from app.services.feature_flag_service import require_request_capability
 from app.services.session_service import session_service, SessionStatus
 
-from app.core.config import get_settings
 from app.core.rate_limit import InMemoryRateLimiter
-
-settings = get_settings()
-
-router = APIRouter()
 
 SESSION_CREATE_IP_LIMITER = InMemoryRateLimiter(limit=10, window_seconds=900)  # 10 per 15 min per IP
 SESSION_CREATE_GLOBAL_LIMITER = InMemoryRateLimiter(limit=60, window_seconds=900)  # 60 total per 15 min
@@ -21,16 +20,15 @@ def _session_store_error(exc: RuntimeError) -> HTTPException:
     return HTTPException(status_code=503, detail=str(exc))
 
 
-def _ensure_remote_join_enabled() -> None:
-    if settings.remote_join_enabled:
-        return
-    raise HTTPException(
-        status_code=503,
-        detail={
-            "error": "remote_join_disabled",
-            "message": "Remote join is disabled in the current commercial deployment.",
-        },
-    )
+async def require_partner_invite_capability(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Fail closed through the PostgreSQL authority before any session access."""
+    await require_request_capability(request, db, Capability.PARTNER_INVITE)
+
+
+router = APIRouter(dependencies=[Depends(require_partner_invite_capability)])
 
 
 class CreateSessionRequest(BaseModel):
@@ -94,8 +92,6 @@ async def create_session(request: CreateSessionRequest, http_request: Request) -
     Create a new session for couple photo upload.
     Returns a QR code URL that the partner can scan to join.
     """
-    _ensure_remote_join_enabled()
-
     client_ip = http_request.headers.get("x-forwarded-for", "").split(",")[0].strip() or http_request.client.host or "unknown"
     if SESSION_CREATE_IP_LIMITER.is_limited(client_ip) or SESSION_CREATE_GLOBAL_LIMITER.is_limited("global"):
         raise HTTPException(status_code=429, detail="Too many session requests. Please try again later.")
@@ -116,7 +112,6 @@ async def get_session_status(session_id: str) -> SessionStatusResponse:
     Get current session status.
     PC frontend polls this to know when guest has uploaded.
     """
-    _ensure_remote_join_enabled()
     try:
         result = await session_service.get_status(session_id)
     except RuntimeError as e:
@@ -129,7 +124,6 @@ async def upload_host_image(session_id: str, image_url: str) -> UploadResponse:
     """
     Upload host (PC user) image to session.
     """
-    _ensure_remote_join_enabled()
     try:
         success = await session_service.upload_host_image(session_id, image_url)
     except RuntimeError as e:
@@ -154,7 +148,6 @@ async def upload_guest_image(session_id: str, image_url: str) -> UploadResponse:
     Upload guest (mobile user) image to session.
     Called when partner scans QR and uploads their selfie.
     """
-    _ensure_remote_join_enabled()
     try:
         success = await session_service.upload_guest_image(session_id, image_url)
     except RuntimeError as e:
@@ -179,7 +172,6 @@ async def get_session_images(session_id: str) -> SessionImagesResponse:
     Get both images once session is ready.
     Used to start AI generation.
     """
-    _ensure_remote_join_enabled()
     try:
         images = await session_service.get_images(session_id)
     except RuntimeError as e:
@@ -196,7 +188,6 @@ async def get_session_images(session_id: str) -> SessionImagesResponse:
 @router.get("/{session_id}/share_meta", response_model=SessionShareMetaResponse)
 async def get_session_share_meta(session_id: str) -> SessionShareMetaResponse:
     """Get share card metadata for inviting a partner."""
-    _ensure_remote_join_enabled()
     try:
         meta = await session_service.get_share_meta(session_id)
     except RuntimeError as e:
@@ -209,7 +200,6 @@ async def get_session_share_meta(session_id: str) -> SessionShareMetaResponse:
 @router.post("/{session_id}/processing")
 async def mark_processing(session_id: str):
     """Mark session as processing (AI generation started)."""
-    _ensure_remote_join_enabled()
     try:
         await session_service.mark_processing(session_id)
     except RuntimeError as e:
@@ -220,7 +210,6 @@ async def mark_processing(session_id: str):
 @router.post("/{session_id}/complete")
 async def mark_complete(session_id: str):
     """Mark session as completed."""
-    _ensure_remote_join_enabled()
     try:
         await session_service.mark_completed(session_id)
     except RuntimeError as e:
@@ -231,7 +220,6 @@ async def mark_complete(session_id: str):
 @router.post("/{session_id}/bind_order")
 async def bind_order(session_id: str, request: BindOrderRequest):
     """Bind order_id so the guest can jump to the same result."""
-    _ensure_remote_join_enabled()
     try:
         ok = await session_service.bind_order(session_id, request.order_id)
     except RuntimeError as e:

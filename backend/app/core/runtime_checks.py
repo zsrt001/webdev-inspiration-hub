@@ -13,7 +13,7 @@ import httpx
 from sqlalchemy import text
 
 from app.core.config import get_settings
-from app.core.database import async_session_maker
+from app.core.database import async_session_maker, control_plane_async_session_maker
 from app.core.redis_client import get_redis
 from app.core.task_queue import get_pool
 from app.services.generation_service import generation_service
@@ -65,6 +65,12 @@ def validate_commercial_config_values() -> list[str]:
     provider = settings.effective_storage_provider
     llm_provider = (settings.llm_provider or "").strip().lower()
     raw_payment_provider = (settings.payment_provider or "").strip().lower()
+
+    if settings.runtime_environment == "development":
+        errors.append("RUNTIME_ENVIRONMENT must be preview or production when DEBUG=false")
+    else:
+        errors.extend(settings.runtime_coordinate_errors)
+        errors.extend(settings.control_plane_database_config_errors)
 
     if settings.using_evolink_generation:
         if not settings.evolink_api_key:
@@ -179,6 +185,65 @@ async def _check_database() -> tuple[bool, str]:
     async with async_session_maker() as db:
         await db.execute(text("SELECT 1"))
     return True, "ok"
+
+
+def validate_database_role_proof(
+    proof: dict[str, Any],
+    *,
+    required_group: str,
+    forbidden_group: str,
+) -> str:
+    current_user = str(proof.get("current_user") or "").strip()
+    owner = str(proof.get("control_table_owner") or "").strip()
+    if not current_user or not owner:
+        raise RuntimeError("database role proof is incomplete")
+    if bool(proof.get("role_superuser")):
+        raise RuntimeError("database runtime role must not be a superuser")
+    if bool(proof.get("role_bypass_rls")):
+        raise RuntimeError("database runtime role must be NOBYPASSRLS")
+    if current_user == owner:
+        raise RuntimeError("database runtime role must not own control-plane tables")
+    if not bool(proof.get("required_group_member")):
+        raise RuntimeError(f"database role must be a member of {required_group}")
+    if bool(proof.get("forbidden_group_member")):
+        raise RuntimeError(f"database role must not be a member of {forbidden_group}")
+    return f"{current_user}:{required_group}"
+
+
+async def _check_database_role(
+    session_maker,
+    required_group: str,
+    forbidden_group: str,
+) -> tuple[bool, str]:
+    async with session_maker() as db:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT current_user AS current_user,
+                           role.rolsuper AS role_superuser,
+                           role.rolbypassrls AS role_bypass_rls,
+                           pg_get_userbyid(control.relowner) AS control_table_owner,
+                           pg_has_role(current_user, :required_group, 'MEMBER') AS required_group_member,
+                           pg_has_role(current_user, :forbidden_group, 'MEMBER') AS forbidden_group_member
+                    FROM pg_roles AS role
+                    JOIN pg_class AS control
+                      ON control.oid = 'public.ops_feature_flags'::regclass
+                    WHERE role.rolname = current_user
+                    """
+                ),
+                {
+                    "required_group": required_group,
+                    "forbidden_group": forbidden_group,
+                },
+            )
+        ).mappings().one()
+    detail = validate_database_role_proof(
+        dict(row),
+        required_group=required_group,
+        forbidden_group=forbidden_group,
+    )
+    return True, detail
 
 
 async def _check_redis() -> tuple[bool, str]:
@@ -316,6 +381,27 @@ async def run_readiness_checks(
 
     name, result = await _run_check("database", _check_database, timeout_s=15.0)
     checks[name] = result
+    if strict:
+        name, result = await _run_check(
+            "database_role",
+            lambda: _check_database_role(
+                async_session_maker,
+                "vowpic_runtime",
+                "vowpic_control_writer",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
+        name, result = await _run_check(
+            "control_plane_database",
+            lambda: _check_database_role(
+                control_plane_async_session_maker,
+                "vowpic_control_writer",
+                "vowpic_runtime",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
     name, result = await _run_check("redis", _check_redis)
     checks[name] = result
     name, result = await _run_check("task_queue", _check_task_queue)
@@ -360,6 +446,7 @@ async def run_readiness_checks(
     if strict:
         required.insert(0, "payments_config")
         required.insert(0, "commercial_config")
+        required.extend(["database_role", "control_plane_database"])
     if probe_storage:
         required.append("storage_rw_probe")
     if probe_generation_queue:
@@ -384,12 +471,35 @@ async def run_core_readiness_checks(*, strict_mode: bool | None = None) -> dict[
 
     name, result = await _run_check("database", _check_database, timeout_s=15.0)
     checks[name] = result
+    if strict:
+        name, result = await _run_check(
+            "database_role",
+            lambda: _check_database_role(
+                async_session_maker,
+                "vowpic_runtime",
+                "vowpic_control_writer",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
+        name, result = await _run_check(
+            "control_plane_database",
+            lambda: _check_database_role(
+                control_plane_async_session_maker,
+                "vowpic_control_writer",
+                "vowpic_runtime",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
     name, result = await _run_check("redis", _check_redis)
     checks[name] = result
     name, result = await _run_check("task_queue", _check_task_queue)
     checks[name] = result
 
     required = ["database"]
+    if strict:
+        required.extend(["database_role", "control_plane_database"])
     if _redis_required():
         required.append("redis")
     if _task_queue_required():

@@ -11,9 +11,9 @@ This project is deployed as a PC/mobile web SaaS on Vercel:
 Use the repository root as the Vercel project root.
 
 ```text
-Build Command: cd frontend && npm ci && npm run build:web
+Install Command: cd frontend && npm ci --ignore-scripts
+Build Command: cd frontend && npm run build:web
 Output Directory: frontend/dist/build/h5
-Install Command: default
 ```
 
 The same settings are encoded in `vercel.json`.

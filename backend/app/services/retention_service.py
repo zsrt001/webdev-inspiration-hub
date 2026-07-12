@@ -137,8 +137,11 @@ async def cleanup_expired_source_images(
         summary = delete_storage_urls(order_asset_urls(order, include_source=True, include_generated=False))
         deleted_files += summary["deleted"]
         failed_files += summary["failed"]
-        order.source_image_urls = None
-        order.storage_cleanup_status = "source_deleted" if summary["failed"] == 0 else "cleanup_failed"
+        if summary["failed"] == 0:
+            order.source_image_urls = None
+            order.storage_cleanup_status = "source_deleted"
+        else:
+            order.storage_cleanup_status = "cleanup_failed"
     await db.flush()
     return {"orders": len(orders), "deleted_files": deleted_files, "failed_files": failed_files}
 
@@ -167,11 +170,14 @@ async def cleanup_expired_orders(
         summary = delete_storage_urls(order_asset_urls(order))
         deleted_files += summary["deleted"]
         failed_files += summary["failed"]
-        order.source_image_urls = None
-        order.preview_image_urls = None
-        order.final_image_urls = None
-        order.deleted_at = cutoff
-        order.storage_cleanup_status = "deleted" if summary["failed"] == 0 else "cleanup_failed"
+        if summary["failed"] == 0:
+            order.source_image_urls = None
+            order.preview_image_urls = None
+            order.final_image_urls = None
+            order.deleted_at = cutoff
+            order.storage_cleanup_status = "deleted"
+        else:
+            order.storage_cleanup_status = "cleanup_failed"
     await db.flush()
     return {"orders": len(orders), "deleted_files": deleted_files, "failed_files": failed_files}
 

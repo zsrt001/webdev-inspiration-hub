@@ -44,7 +44,6 @@ class SessionData(BaseModel):
 
 class SessionService:
     SESSION_TTL_MINUTES = 30
-    _db_table_ready = False
 
     @staticmethod
     def _allow_memory_fallback() -> bool:
@@ -68,37 +67,7 @@ class SessionService:
         except Exception:
             return self.SESSION_TTL_MINUTES * 60
 
-    async def _ensure_db_table(self) -> None:
-        if self.__class__._db_table_ready:
-            return
-
-        async with async_session_maker() as db:
-            await db.execute(
-                text(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {DB_TABLE_NAME} (
-                        session_id VARCHAR(16) PRIMARY KEY,
-                        payload TEXT NOT NULL,
-                        order_id VARCHAR(64),
-                        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
-                    )
-                    """
-                )
-            )
-            await db.execute(
-                text(f"CREATE INDEX IF NOT EXISTS ix_{DB_TABLE_NAME}_order_id ON {DB_TABLE_NAME} (order_id)")
-            )
-            await db.execute(
-                text(f"CREATE INDEX IF NOT EXISTS ix_{DB_TABLE_NAME}_expires_at ON {DB_TABLE_NAME} (expires_at)")
-            )
-            await db.commit()
-
-        self.__class__._db_table_ready = True
-
     async def _save_session_db(self, session_id: str, session: dict) -> None:
-        await self._ensure_db_table()
         payload = json.dumps(session, ensure_ascii=False)
         expires_at = datetime.fromisoformat(session["expires_at"])
 
@@ -125,7 +94,6 @@ class SessionService:
             await db.commit()
 
     async def _get_session_db(self, session_id: str) -> Optional[dict]:
-        await self._ensure_db_table()
         async with async_session_maker() as db:
             result = await db.execute(
                 text(f"SELECT payload FROM {DB_TABLE_NAME} WHERE session_id = :session_id LIMIT 1"),
@@ -137,7 +105,6 @@ class SessionService:
         return json.loads(raw)
 
     async def _get_session_id_for_order_db(self, order_id: str) -> str | None:
-        await self._ensure_db_table()
         async with async_session_maker() as db:
             result = await db.execute(
                 text(
