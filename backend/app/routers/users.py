@@ -13,6 +13,13 @@ from app.schemas.user import UserCreate, UserRead, UserUpdate
 router = APIRouter()
 
 
+def _raise_legacy_user_route_retired() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail={"code": "legacy_user_route_retired", "message": "Legacy OpenID user routes are retired."},
+    )
+
+
 @router.get("/me", response_model=UserRead)
 async def get_current_user_profile(
     current_user: User = Depends(get_request_user),
@@ -21,12 +28,18 @@ async def get_current_user_profile(
     return current_user
 
 
-@router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=UserRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_raise_legacy_user_route_retired)],
+)
 async def create_user(
     user_in: UserCreate,
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Create or get user from WeChat login."""
+    _raise_legacy_user_route_retired()
     # Check if user exists
     result = await db.execute(
         select(User).where(User.openid == user_in.openid)
@@ -44,12 +57,17 @@ async def create_user(
     return user
 
 
-@router.get("/{user_id}", response_model=UserRead)
+@router.get(
+    "/{user_id}",
+    response_model=UserRead,
+    dependencies=[Depends(_raise_legacy_user_route_retired)],
+)
 async def get_user(
     user_id: UUID,
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Get user by ID."""
+    _raise_legacy_user_route_retired()
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
@@ -61,13 +79,18 @@ async def get_user(
     return user
 
 
-@router.patch("/{user_id}", response_model=UserRead)
+@router.patch(
+    "/{user_id}",
+    response_model=UserRead,
+    dependencies=[Depends(_raise_legacy_user_route_retired)],
+)
 async def update_user(
     user_id: UUID,
     user_in: UserUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Update user profile."""
+    _raise_legacy_user_route_retired()
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 

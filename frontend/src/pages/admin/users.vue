@@ -284,7 +284,7 @@ onMounted(fetchUsers);
 </script>
 
 <style lang="scss" scoped>
-@import './admin.scss';
+@use './admin.scss';
 
 .user-table-grid {
   grid-template-columns: 170px minmax(180px, 1.2fr) minmax(220px, 1.3fr) 150px 130px 150px;

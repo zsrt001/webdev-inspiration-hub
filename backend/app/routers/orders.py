@@ -2,11 +2,12 @@
 
 import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.feature_flags import Capability
 from app.core.user_auth import get_request_user
 from app.models.order import Order, OrderStatus
 from app.models.user import User
@@ -14,7 +15,8 @@ from app.schemas.order import OrderCreate, OrderRead
 from app.services.delivery_asset_service import build_download_variants, pick_master_image_url
 from app.services.generation_service import generation_service
 from app.services.order_creation_service import create_order_for_user
-from app.services.retention_service import delete_storage_urls, order_asset_urls, user_has_paid_credit_history
+from app.services.feature_flag_service import require_request_capability, resolve_request_capability
+from app.services.retention_service import user_has_paid_credit_history
 from app.services.trial_access_service import (
     can_download_order,
 )
@@ -58,10 +60,36 @@ async def _restart_stale_inline_background(
     return True
 
 
-async def _serialize_order_for_user(db: AsyncSession, order: Order, user_id: uuid.UUID) -> OrderRead:
+async def _read_capabilities(db: AsyncSession) -> tuple[bool, bool]:
+    generation = await resolve_request_capability(db, Capability.GENERATION)
+    private_download = await resolve_request_capability(db, Capability.PRIVATE_DOWNLOAD)
+    return generation.allowed, private_download.allowed
+
+
+async def _serialize_order_for_user(
+    db: AsyncSession,
+    order: Order,
+    user_id: uuid.UUID,
+    *,
+    generation_allowed: bool | None = None,
+    private_download_allowed: bool | None = None,
+) -> OrderRead:
+    payload = OrderRead.model_validate(order)
+    if generation_allowed is None or private_download_allowed is None:
+        generation_allowed, private_download_allowed = await _read_capabilities(db)
+    if not (generation_allowed and private_download_allowed):
+        payload.source_image_urls = None
+        payload.preview_image_urls = None
+        payload.final_image_urls = None
+        payload.preview_master_image_url = None
+        payload.final_master_image_url = None
+        payload.download_variants = []
+        payload.can_download = False
+        payload.download_locked = True
+        return payload
+
     has_paid_credits = await user_has_paid_credit_history(db, user_id)
     can_download = can_download_order(order.generation_params, has_paid_credits=has_paid_credits)
-    payload = OrderRead.model_validate(order)
     payload.can_download = can_download
     payload.download_locked = not can_download
     payload.preview_master_image_url = pick_master_image_url(order.preview_image_urls)
@@ -88,11 +116,21 @@ async def list_orders(
         .order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
+    generation_allowed, private_download_allowed = await _read_capabilities(db)
     for order in orders:
-        if order.status == OrderStatus.GENERATING:
+        if generation_allowed and order.status == OrderStatus.GENERATING:
             await generation_service.refresh_order(str(order.id))
             await db.refresh(order)
-    return [await _serialize_order_for_user(db, o, current_user.id) for o in orders]
+    return [
+        await _serialize_order_for_user(
+            db,
+            order,
+            current_user.id,
+            generation_allowed=generation_allowed,
+            private_download_allowed=private_download_allowed,
+        )
+        for order in orders
+    ]
 
 
 @router.get("/{order_id}", response_model=OrderRead)
@@ -113,15 +151,51 @@ async def get_order(
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Order not found")
-    if order.status == OrderStatus.GENERATING:
+    generation_allowed, private_download_allowed = await _read_capabilities(db)
+    if generation_allowed and order.status == OrderStatus.GENERATING:
         restarted = await _restart_stale_inline_background(db, order, background_tasks)
         if not restarted:
             await generation_service.refresh_order(str(order.id))
             await db.refresh(order)
-    return await _serialize_order_for_user(db, order, current_user.id)
+    return await _serialize_order_for_user(
+        db,
+        order,
+        current_user.id,
+        generation_allowed=generation_allowed,
+        private_download_allowed=private_download_allowed,
+    )
 
 
-@router.post("/create", response_model=OrderRead)
+async def require_generation_before_order_identity(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Fail closed before an order route resolves any user identity."""
+    await require_request_capability(request, db, Capability.GENERATION)
+
+
+def raise_order_cleanup_paused() -> None:
+    """Keep all order references until durable deletion retries exist."""
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "cleanup_paused",
+            "message": "Order deletion is paused until durable cleanup retries are available.",
+            "retryable": True,
+        },
+    )
+
+
+def require_order_cleanup_paused() -> None:
+    """Stop HTTP dependency resolution before legacy identity dependencies run."""
+    raise_order_cleanup_paused()
+
+
+@router.post(
+    "/create",
+    response_model=OrderRead,
+    dependencies=[Depends(require_generation_before_order_identity)],
+)
 async def create_order(
     request: OrderCreate,
     background_tasks: BackgroundTasks,
@@ -131,31 +205,27 @@ async def create_order(
     """
     Create order and enqueue generation.
     """
+    await require_request_capability(None, db, Capability.GENERATION)
     order = await create_order_for_user(request, current_user, db, background_tasks=background_tasks)
-    return await _serialize_order_for_user(db, order, current_user.id)
+    private_download = await resolve_request_capability(db, Capability.PRIVATE_DOWNLOAD)
+    return await _serialize_order_for_user(
+        db,
+        order,
+        current_user.id,
+        generation_allowed=True,
+        private_download_allowed=private_download.allowed,
+    )
 
 
-@router.delete("/{order_id}")
+@router.delete(
+    "/{order_id}",
+    dependencies=[Depends(require_order_cleanup_paused)],
+)
 async def delete_my_order(
     order_id: str,
     current_user: User = Depends(get_request_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete an order and remove associated stored image assets."""
-    try:
-        order_uuid = uuid.UUID(order_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid order ID")
-    result = await db.execute(select(Order).where(Order.id == order_uuid))
-    order = result.scalar_one_or_none()
-    if not order or order.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Order not found")
-    if order.deleted_at is None:
-        summary = delete_storage_urls(order_asset_urls(order))
-        order.source_image_urls = None
-        order.preview_image_urls = None
-        order.final_image_urls = None
-        order.deleted_at = datetime.now(timezone.utc)
-        order.storage_cleanup_status = "deleted" if summary["failed"] == 0 else "cleanup_failed"
-        await db.flush()
-    return {"success": True, "order_id": str(order.id), "storage_cleanup_status": order.storage_cleanup_status}
+    """Keep all references until Task 11 installs durable deletion retries."""
+    _ = order_id, current_user, db
+    raise_order_cleanup_paused()

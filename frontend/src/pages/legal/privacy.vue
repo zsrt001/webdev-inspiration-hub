@@ -63,17 +63,17 @@ const sections = computed(() => [
   {
     anchor: 'retention',
     index: '03',
-    titleZh: '图片保留与自动删除',
-    titleEn: 'Image Retention and Deletion',
+    titleZh: '图片保留与删除状态',
+    titleEn: 'Image Retention and Deletion Status',
     zh: [
-      '上传原图属于临时处理材料，默认 7 天后自动删除。',
-      '生成结果按账户权益保留：免费用户 30 天，积分包付费用户 90 天，订阅用户 180 天，Studio 订阅用户 365 天。',
-      '用户可在账户中心主动删除作品。删除后图片文件会被移除，订单元数据仅用于审计、对账和客服支持。',
+      '计划保留期为：上传原图 7 天；免费生成结果 30 天；积分包付费结果 90 天；订阅结果 180 天；Studio 订阅结果 365 天。',
+      '自动删除和账户中心删除目前均已暂停，直到可审计、可重试的删除流程完成验证；当前页面不会声称文件已经自动移除。',
+      '安全基线阶段不开放新的上传和生成。需要立即删除的数据不应通过本阶段网站提交；删除入口恢复后，本政策会同步更新。',
     ],
     en: [
-      'Uploaded source photos are temporary processing inputs and are deleted after 7 days by default.',
-      'Generated images are retained by entitlement: free users 30 days, paid credit-pack users 90 days, subscription users 180 days, and Studio subscribers 365 days.',
-      'Users can delete images from the account center. Image files are removed, while order metadata may remain for audit, reconciliation, and support.',
+      'Scheduled retention is 7 days for source uploads, 30 days for free results, 90 days for paid credit-pack results, 180 days for subscription results, and 365 days for Studio subscription results.',
+      'Automated and in-account deletion are temporarily paused until the auditable, retryable cleanup flow is verified. This page does not claim that files have already been automatically removed.',
+      'New uploads and generation remain closed during the safe-baseline stage. Data requiring immediate deletion should not be submitted through this stage of the site; this policy will be updated when deletion is restored.',
     ],
   },
   {
@@ -82,12 +82,12 @@ const sections = computed(() => [
     titleZh: '你的权利',
     titleEn: 'Your Rights',
     zh: [
-      '你可以查看账户、订单、生成历史和积分流水，也可以请求删除图片、停止使用账号或联系客服处理隐私问题。',
-      '如需处理隐私、退款或侵权投诉，请通过网站页脚、支付页或账户中心提供的官方客服入口联系我们。',
+      '你可以查看账户、订单、生成历史和积分流水。站内图片删除和账户关闭请求目前暂停，恢复时间以本页状态为准。',
+      '目前尚未发布经过验证的隐私客服渠道；请勿向未经验证的地址发送身份证件、支付凭证或其他敏感信息。',
     ],
     en: [
-      'You can view account data, orders, generated history, and credit ledger entries, and request image deletion, account closure, or privacy support.',
-      'For privacy, refund, or infringement requests, contact us through the official support channel shown in the footer, checkout page, or account center.',
+      'You can view account data, orders, generated history, and credit ledger entries. In-product image deletion and account-closure requests are currently paused; this page is the current status notice.',
+      'A verified privacy-support channel has not yet been published. Do not send identity documents, payment evidence, or other sensitive information to an unverified address.',
     ],
   },
 ]);

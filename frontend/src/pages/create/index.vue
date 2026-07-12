@@ -572,8 +572,8 @@ function serializeUploadQuality(verdict: SmartInputVerdict): UploadQuality {
 }
 function buildOrderUploadQuality(images: string[]): Array<Record<string, any>> {
   return portraitSlots.value
-    .map((slot, index) => {
-      if (!slot.uploadQuality) return null;
+    .flatMap((slot, index): Array<Record<string, any>> => {
+      if (!slot.uploadQuality) return [];
       const role = generationMode.value === 'single'
         ? 'subject'
         : isGoldenAnniversaryMode.value
@@ -581,14 +581,13 @@ function buildOrderUploadQuality(images: string[]): Array<Record<string, any>> {
           : index === 0
             ? 'host'
             : 'guest';
-      return {
+      return [{
         ...slot.uploadQuality,
         slot_index: index,
         role,
         image_url: images[index] || slot.uploadedUrl || null,
-      };
-    })
-    .filter((item): item is Record<string, any> => !!item);
+      }];
+    });
 }
 function stopRemotePolling() {
   if (remotePollTimer) clearInterval(remotePollTimer);

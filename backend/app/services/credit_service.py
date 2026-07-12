@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import uuid
 from typing import Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,63 +30,6 @@ COST_COUPLE_REMOTE_GENERATION = COST_COUPLE_LOCAL_GENERATION
 COST_LIVE_PORTRAIT = 6
 COST_LIVE_PORTRAIT_EXTRA_BLOCK = 4
 COST_PER_GENERATION = COST_SINGLE_GENERATION
-logger = logging.getLogger(__name__)
-_credit_guardrails_ready = False
-_credit_refund_guardrails_ready = False
-
-
-async def ensure_credit_guardrails(db: AsyncSession) -> None:
-    """Best-effort DB guardrail for the one-time welcome bonus."""
-    global _credit_guardrails_ready
-    if _credit_guardrails_ready:
-        return
-    if not hasattr(db, "begin_nested"):
-        _credit_guardrails_ready = True
-        return
-    try:
-        async with db.begin_nested():
-            await db.execute(
-                text(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS ux_credit_transactions_welcome_once
-                    ON credit_transactions (user_id)
-                    WHERE transaction_type = 'WELCOME_BONUS'
-                    """
-                )
-            )
-        _credit_guardrails_ready = True
-    except Exception as exc:
-        logger.warning("welcome_bonus_unique_index_unavailable: %s", exc)
-        _credit_guardrails_ready = True
-
-
-async def ensure_generation_refund_guardrails(db: AsyncSession) -> None:
-    """Best-effort DB guardrail for one refund transaction per generation order."""
-    global _credit_refund_guardrails_ready
-    if _credit_refund_guardrails_ready:
-        return
-    if not hasattr(db, "begin_nested"):
-        _credit_refund_guardrails_ready = True
-        return
-    try:
-        async with db.begin_nested():
-            await db.execute(
-                text(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS ux_credit_transactions_order_refund_once
-                    ON credit_transactions (user_id, source_id)
-                    WHERE transaction_type = 'GENERATION_REFUND'
-                      AND source = 'order'
-                      AND source_id IS NOT NULL
-                    """
-                )
-            )
-        _credit_refund_guardrails_ready = True
-    except Exception as exc:
-        logger.warning("generation_refund_unique_index_unavailable: %s", exc)
-        _credit_refund_guardrails_ready = True
-
-
 def _to_user_uuid(user_id: uuid.UUID | str) -> uuid.UUID:
     if isinstance(user_id, uuid.UUID):
         return user_id
@@ -160,8 +102,6 @@ async def grant_welcome_bonus(
 ) -> bool:
     """Grant welcome bonus credits. Returns True if granted, False if already claimed."""
     user_uuid = _to_user_uuid(user_id)
-    await ensure_credit_guardrails(db)
-
     # Check if user already received welcome bonus
     existing = await db.execute(
         select(CreditTransaction).where(
@@ -332,7 +272,6 @@ async def refund_generation_credits_once_async(
     if amount_int <= 0:
         return await get_balance_async(db, user_id), False
 
-    await ensure_generation_refund_guardrails(db)
     source_id = str(order_id)
     row = await _get_or_create_credit_row_for_update(db, user_id)
     existing = await db.execute(

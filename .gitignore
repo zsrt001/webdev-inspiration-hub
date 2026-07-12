@@ -62,6 +62,10 @@ backend/artifacts/
 artifacts/
 backend/backend/
 
+# Generated release evidence and disposable database archives
+artifacts/security-baseline/
+**/restore.dump
+
 # Offline wheels / vendored deps
 backend/wheels/*.whl
 backend/app/_vendor/

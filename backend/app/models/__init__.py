@@ -15,6 +15,13 @@ from app.models.lead import Lead
 from app.models.click_stat import ClickStat
 from app.models.email_delivery_log import EmailDeliveryLog
 from app.models.account_risk_event import AccountRiskEvent
+from app.models.ops_feature_flag import OpsFeatureFlag
+from app.models.ops_feature_flag_audit import OpsFeatureFlagAudit
+from app.models.release_activation import ReleaseActivation
+from app.models.acceptance_identity_binding import AcceptanceIdentityBinding
+from app.models.data_migration_run import DataMigrationRun
+from app.models.data_migration_checkpoint import DataMigrationCheckpoint
+from app.models.release_observation import ReleaseObservationRun, ReleaseObservationSample
 
 __all__ = [
     "User",
@@ -37,4 +44,12 @@ __all__ = [
     "ClickStat",
     "EmailDeliveryLog",
     "AccountRiskEvent",
+    "OpsFeatureFlag",
+    "OpsFeatureFlagAudit",
+    "ReleaseActivation",
+    "AcceptanceIdentityBinding",
+    "DataMigrationRun",
+    "DataMigrationCheckpoint",
+    "ReleaseObservationRun",
+    "ReleaseObservationSample",
 ]

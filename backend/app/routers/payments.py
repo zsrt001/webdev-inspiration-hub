@@ -12,9 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin_token
 from app.core.database import get_db
+from app.core.feature_flags import Capability
 from app.core.user_auth import get_request_user
 from app.models.user import User
 from app.services.payment_service import payment_service, PaymentError
+from app.services.feature_flag_service import require_request_capability
 
 router = APIRouter()
 
@@ -234,6 +236,7 @@ async def create_checkout(
     current_user: User = Depends(get_request_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_request_capability(None, db, Capability.CREDIT_PACK_CHECKOUT)
     try:
         purchase = await payment_service.create_checkout(
             db,
@@ -297,6 +300,7 @@ async def manual_checkout_page(
     token: str = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_request_capability(None, db, Capability.CREDIT_PACK_CHECKOUT)
     try:
         context = await payment_service.get_manual_checkout_context(
             db,
@@ -314,6 +318,7 @@ async def submit_manual_checkout(
     token: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_request_capability(None, db, Capability.CREDIT_PACK_CHECKOUT)
     try:
         purchase = await payment_service.acknowledge_manual_checkout(
             db,
@@ -335,6 +340,7 @@ async def complete_manual_checkout(
     _: None = Depends(require_admin_token),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_request_capability(None, db, Capability.CREDIT_PACK_CHECKOUT)
     try:
         purchase = await payment_service.complete_manual_purchase(
             db,
@@ -356,6 +362,7 @@ async def fail_manual_checkout(
     _: None = Depends(require_admin_token),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_request_capability(None, db, Capability.CREDIT_PACK_CHECKOUT)
     try:
         purchase = await payment_service.fail_manual_purchase(
             db,

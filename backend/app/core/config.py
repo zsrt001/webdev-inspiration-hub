@@ -4,9 +4,11 @@ import base64
 import hashlib
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlparse
+import re
+from typing import Literal
+from urllib.parse import unquote, urlparse
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +19,35 @@ PRODUCTION_ALLOWED_IMAGE_MODELS = (
 )
 
 
+def _database_login_and_target(database_url: str) -> tuple[str, tuple[str, str, int, str]]:
+    try:
+        parsed = urlparse(str(database_url or "").strip())
+        login = unquote(parsed.username or "").strip()
+        host = (parsed.hostname or "").strip().lower()
+        port = parsed.port or 5432
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid PostgreSQL database URL") from exc
+    scheme = parsed.scheme.split("+", 1)[0].lower()
+    database = unquote((parsed.path or "").lstrip("/")).strip()
+    if scheme not in {"postgres", "postgresql"} or not login or not host or not database:
+        raise ValueError("database URL must include PostgreSQL login, host, and database")
+    if host.startswith("db.") and host.endswith(".supabase.co"):
+        project_ref = host.removeprefix("db.").removesuffix(".supabase.co")
+        if not project_ref:
+            raise ValueError("Supabase direct URL is missing its project reference")
+        target = ("supabase", project_ref, 0, database)
+    elif "pooler.supabase." in host:
+        if "." not in login:
+            raise ValueError("Supabase pooler login is missing its project reference")
+        project_ref = login.rsplit(".", 1)[1].strip().lower()
+        if not project_ref:
+            raise ValueError("Supabase pooler login is missing its project reference")
+        target = ("supabase", project_ref, 0, database)
+    else:
+        target = ("postgresql", host, port, database)
+    return login, target
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -25,6 +56,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Application
@@ -32,9 +64,16 @@ class Settings(BaseSettings):
     debug: bool = False
     auto_create_tables: bool | None = None
     cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    runtime_environment: Literal["development", "preview", "production"] = "development"
+    vercel_deployment_id: str = Field(default="", validation_alias="VERCEL_DEPLOYMENT_ID")
+    vercel_git_commit_sha: str = Field(default="", validation_alias="VERCEL_GIT_COMMIT_SHA")
+    runtime_bundle_id: str = ""
+    worker_image_digest: str = ""
+    acceptance_identity_hmac_key: str = ""
 
     # Database (Supabase/Neon compatible)
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_wedding"
+    control_plane_database_url: str = ""
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -141,7 +180,13 @@ class Settings(BaseSettings):
     creem_product_pack_50: str = ""
     creem_product_pack_120: str = ""
     creem_product_pack_300: str = ""
+    google_auth_enabled: bool = False
+    authenticated_upload_enabled: bool = False
+    generation_enabled: bool = False
+    credit_pack_checkout_enabled: bool = False
     subscription_billing_enabled: bool = False
+    private_download_enabled: bool = False
+    partner_invite_enabled: bool = False
     creem_subscription_starter_product_id: str = ""
     creem_subscription_creator_product_id: str = ""
     creem_subscription_studio_product_id: str = ""
@@ -222,7 +267,7 @@ class Settings(BaseSettings):
 
     # Live Portrait / Remote Join
     live_portrait_enabled: bool = False
-    remote_join_enabled: bool = True
+    remote_join_enabled: bool = False
     allow_memory_fallback: bool = False
 
     @field_validator("debug", mode="before")
@@ -238,10 +283,70 @@ class Settings(BaseSettings):
 
     @property
     def should_auto_create_tables(self) -> bool:
-        """Whether startup may mutate database schema for local/dev convenience."""
-        if self.auto_create_tables is not None:
-            return bool(self.auto_create_tables)
-        return bool(self.debug)
+        """Deprecated compatibility property; runtime schema writes stay disabled."""
+        return False
+
+    @property
+    def deployment_id(self) -> str:
+        """Platform-issued deployment coordinate; project `DEPLOYMENT_ID` is ignored."""
+        return self.vercel_deployment_id.strip()
+
+    @property
+    def source_sha(self) -> str:
+        """Platform-issued source coordinate exposed only as a non-secret digest."""
+        value = self.vercel_git_commit_sha.strip().lower()
+        return value if re.fullmatch(r"[0-9a-f]{40,64}", value) else ""
+
+    @property
+    def runtime_coordinate_errors(self) -> list[str]:
+        """Return readiness blockers without preventing the liveness process from starting."""
+        if self.runtime_environment == "development":
+            return []
+        errors: list[str] = []
+        if not self.deployment_id:
+            errors.append("VERCEL_DEPLOYMENT_ID is required")
+        if not re.fullmatch(r"rtb_[0-9a-f]{64}", self.runtime_bundle_id.strip()):
+            errors.append("RUNTIME_BUNDLE_ID must be a canonical rtb_ SHA-256 identity")
+        if len(self.acceptance_identity_hmac_key.strip()) < 32:
+            errors.append("ACCEPTANCE_IDENTITY_HMAC_KEY must contain at least 32 characters")
+        digest = self.worker_image_digest.strip()
+        if digest and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            errors.append("WORKER_IMAGE_DIGEST must be a sha256 OCI digest")
+        return errors
+
+    @property
+    def runtime_coordinates_valid(self) -> bool:
+        return not self.runtime_coordinate_errors
+
+    @property
+    def effective_control_plane_database_url(self) -> str:
+        explicit = self.control_plane_database_url.strip()
+        if explicit:
+            return explicit
+        return self.database_url.strip() if self.runtime_environment == "development" else ""
+
+    @property
+    def control_plane_database_config_errors(self) -> list[str]:
+        if self.runtime_environment == "development":
+            return []
+        explicit = self.control_plane_database_url.strip()
+        if not explicit:
+            return ["CONTROL_PLANE_DATABASE_URL is required outside development"]
+        try:
+            runtime_login, runtime_target = _database_login_and_target(self.database_url)
+            writer_login, writer_target = _database_login_and_target(explicit)
+        except ValueError:
+            return ["DATABASE_URL and CONTROL_PLANE_DATABASE_URL must be valid PostgreSQL URLs"]
+        errors: list[str] = []
+        if runtime_login == writer_login:
+            errors.append(
+                "DATABASE_URL and CONTROL_PLANE_DATABASE_URL must use distinct login roles"
+            )
+        if runtime_target != writer_target:
+            errors.append(
+                "DATABASE_URL and CONTROL_PLANE_DATABASE_URL must target the same database"
+            )
+        return errors
 
     @property
     def effective_cleanup_cron_token(self) -> str:

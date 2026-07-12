@@ -26,8 +26,8 @@ def get_legal_policies() -> dict:
             "subscription_generated_days": SUBSCRIPTION_ORDER_RETENTION_DAYS,
             "studio_generated_days": STUDIO_ORDER_RETENTION_DAYS,
             "summary": (
-                "Uploaded source photos are temporary processing inputs. Generated assets are retained by account tier "
-                "and removed automatically after expiry unless the user deletes them earlier."
+                "The listed periods are the scheduled retention targets for source and generated assets. "
+                "Automated deletion is temporarily paused until the auditable, retryable cleanup flow is verified."
             ),
         },
         "pricing": {

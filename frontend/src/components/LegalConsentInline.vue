@@ -48,8 +48,8 @@ const betweenText = computed(() => tr(' 与 ', ' and the '));
 const afterText = computed(() => {
   if (props.mode === 'generate') {
     return tr(
-      '，确认上传内容合法、真实、已获授权；理解原图会定期删除，AI 结果可能不完全准确。',
-      ', confirm uploaded content is lawful, authentic, and authorized; source images are periodically deleted and AI results may be inaccurate.',
+      '，确认上传内容合法、真实、已获授权；理解原图删除目前暂停，AI 结果可能不完全准确。',
+      ', confirm uploaded content is lawful, authentic, and authorized; source-image deletion is temporarily paused and AI results may be inaccurate.',
     );
   }
   if (props.mode === 'lead') {

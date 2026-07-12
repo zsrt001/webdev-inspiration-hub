@@ -10,16 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.feature_flags import Capability
 from app.core.runtime_checks import run_readiness_checks
 from app.models.order import Order, OrderStatus
 from app.services.generation_service import generation_service
 from app.services.ops_alert_service import get_ops_alerts, push_critical_alerts
 from app.services.ops_config_service import get_public_ops_config
-from app.services.retention_service import (
-    cleanup_expired_orders,
-    cleanup_expired_source_images,
-    cleanup_transient_generated_assets,
-)
+from app.services.feature_flag_service import require_request_capability, resolve_request_capability
 from app.worker_tasks import run_order_generation
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -63,12 +60,22 @@ async def readiness(probe_storage: bool = False, probe_generation_queue: bool = 
 
 @router.get("/public_config")
 @router.get("/config")
-async def public_config():
+async def public_config(db: AsyncSession = Depends(get_db)):
     """Return sanitized operator-managed config for the storefront."""
-    return get_public_ops_config()
+    config = get_public_ops_config()
+    capability_states: dict[str, bool] = {}
+    for capability in Capability:
+        decision = await resolve_request_capability(db, capability)
+        capability_states[capability.value] = decision.allowed
+    config["capabilities"] = capability_states
+    auth = config.get("auth") if isinstance(config.get("auth"), dict) else {}
+    auth["google_oauth_enabled"] = bool(
+        capability_states[Capability.GOOGLE_AUTH.value] and settings.supabase_oauth_enabled
+    )
+    config["auth"] = auth
+    return config
 
 
-@router.get("/cleanup_expired_assets")
 @router.post("/cleanup_expired_assets")
 async def cleanup_expired_assets(
     authorization: str | None = Header(default=None, alias="Authorization"),
@@ -76,18 +83,13 @@ async def cleanup_expired_assets(
 ):
     """Cron-safe cleanup endpoint. Requires a bearer cleanup token."""
     _require_cron_auth(authorization)
-    source_images = await cleanup_expired_source_images(db)
-    generated_assets = await cleanup_expired_orders(db)
-    transient_generated_assets = cleanup_transient_generated_assets(
-        older_than_hours=settings.transient_generated_cleanup_hours,
-        limit=settings.transient_generated_cleanup_limit,
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "cleanup_paused",
+            "message": "Scheduled deletion is paused until durable cleanup retries are available.",
+        },
     )
-    return {
-        "success": True,
-        "source_images": source_images,
-        "generated_assets": generated_assets,
-        "transient_generated_assets": transient_generated_assets,
-    }
 
 
 @router.get("/check_alerts")
@@ -114,6 +116,7 @@ async def poll_pending_orders(
 ):
     """Cron-safe order status poller for launch validation mode."""
     _require_cron_auth(authorization)
+    await require_request_capability(None, db, Capability.GENERATION)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     result = await db.execute(
         select(Order)

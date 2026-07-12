@@ -45,9 +45,9 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
   },
   feature_flags: {
     live_portrait: false,
-    remote_join: true,
-    local_recommendations: true,
-    director_mode: true,
+    remote_join: false,
+    local_recommendations: false,
+    director_mode: false,
   },
 };
 
@@ -78,7 +78,6 @@ export const useOpsStore = defineStore('ops', {
           },
           feature_flags: {
             ...DEFAULT_CONFIG.feature_flags,
-            ...(res?.feature_flags || {}),
           },
         };
         const heroImage = String(this.publicConfig.placements.home_banner.image_url || '').trim();
@@ -109,4 +108,3 @@ export const useOpsStore = defineStore('ops', {
     },
   },
 });
-

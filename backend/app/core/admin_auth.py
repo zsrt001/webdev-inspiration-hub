@@ -46,6 +46,11 @@ def _is_configured_admin(user: User) -> bool:
     return False
 
 
+def is_configured_admin_user(user: User) -> bool:
+    """Public role/config check; authentication strength is enforced by each caller."""
+    return _is_configured_admin(user)
+
+
 async def _local_user_from_token(db: AsyncSession, token: str) -> User | None:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])

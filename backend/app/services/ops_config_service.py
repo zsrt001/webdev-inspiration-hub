@@ -28,10 +28,10 @@ DEFAULT_OPS_CONFIG: dict[str, Any] = {
         }
     },
     "feature_flags": {
-        "live_portrait": bool(settings.live_portrait_enabled),
-        "remote_join": bool(settings.remote_join_enabled),
-        "local_recommendations": True,
-        "director_mode": True,
+        "live_portrait": False,
+        "remote_join": False,
+        "local_recommendations": False,
+        "director_mode": False,
     },
     "recommendations": {
         "lead_lookback_days": 90,
@@ -256,7 +256,6 @@ def get_credit_package_overrides() -> list[dict[str, Any]] | None:
 def get_public_ops_config() -> dict[str, Any]:
     config = get_ops_config()
     placements = config.get("placements") if isinstance(config.get("placements"), dict) else {}
-    feature_flags = config.get("feature_flags") if isinstance(config.get("feature_flags"), dict) else {}
     home_banner = placements.get("home_banner") if isinstance(placements.get("home_banner"), dict) else {}
     image_url = str(home_banner.get("image_url") or DEFAULT_OPS_CONFIG["placements"]["home_banner"]["image_url"]).strip()
     legacy_home_images = {
@@ -294,17 +293,13 @@ def get_public_ops_config() -> dict[str, Any]:
             }
         },
         "feature_flags": {
-            "live_portrait": bool(
-                settings.live_portrait_enabled and feature_flags.get("live_portrait", settings.live_portrait_enabled)
-            ),
-            "remote_join": bool(
-                settings.remote_join_enabled and feature_flags.get("remote_join", settings.remote_join_enabled)
-            ),
-            "local_recommendations": bool(feature_flags.get("local_recommendations", True)),
-            "director_mode": bool(feature_flags.get("director_mode", True)),
+            "live_portrait": False,
+            "remote_join": False,
+            "local_recommendations": False,
+            "director_mode": False,
         },
         "auth": {
-            "google_oauth_enabled": settings.supabase_oauth_enabled,
+            "google_oauth_enabled": bool(settings.google_auth_enabled and settings.supabase_oauth_enabled),
         },
     }
 

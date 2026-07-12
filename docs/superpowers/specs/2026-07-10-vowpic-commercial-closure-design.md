@@ -619,7 +619,7 @@ face embedding 只在任务处理范围内使用，不能写日志或长期保�
 
 页面只负责路由、组合和展示；auth、upload、order polling、payments、downloads 分别进入 typed service/composable。后端 OpenAPI 生成单一前端类型快照，CI 检查契约变化；不能继续手写漂移的 `openid`/小程序字段。该快照成为权威后，每一个新增、修改或删除 router/schema/response 的任务都必须在同一任务内重新导出 `openapi/openapi.json`、重新生成 `frontend/src/generated/api.d.ts`、连续生成两次验证 hash 稳定、审查并提交两者；只在最终 gate 运行 drift 检查而不更新生成物不合格。
 
-前端测试使用与当前 Vue/Vite/Node 20 兼容并锁定版本的组件测试和 Playwright 工具；依赖版本在实施时依据官方兼容矩阵验证后固定，不使用浮动 latest。
+前端测试使用与当前 Vue/Vite 和受支持的 Node 24 LTS 兼容并锁定版本的组件测试和 Playwright 工具；当前 CI 精确固定 Node `24.17.0`，依赖版本依据官方兼容矩阵验证后固定，不使用浮动 latest。
 
 ## 13. Web Partner Invite
 
@@ -680,6 +680,7 @@ Provider `/models` 200、URL 非空或配置字符串存在不能命名为“真
 - Branch protection 只接受一个最终聚合 gate；所有底层 gate 必须汇入它，不能通过遗漏某个 job 绕过。
 - safe-baseline、COMMERCIAL_7A 和 CONTRACT_7B Production workflow 都只能由受保护 `workflow_dispatch` 手工进入，禁止 push/PR/schedule/repository dispatch/可复用 caller；使用全局 concurrency group、`cancel-in-progress: false`，并在解析 Production secret 前确认 exact approved main SHA 与数据库 release lease。
 - Tasks 1–4 safe-baseline workflow 是一次性安装器：`0013` migration 与唯一 `SAFE_BASELINE_INSTALL/RESERVED` row 在同一 PostgreSQL transaction/advisory lock 中全部提交或全部回滚；`0013` 无 row 视为 orphaned schema，不自动领养。完成后任何 later HEAD 在 dump/build/deploy 前拒绝。后续应急先审计/传播 flags OFF，再对已记录 baseline deployment 执行 `vercel rollback`、rollback status 和正式域名核对；已 Promote deployment 禁止二次 Promote，也不能复用该 workflow 构建新代码。
+- safe-baseline 的每个不可逆边界都先完成 create-once 私有证据 checkpoint 并回读 artifact ID/digest：`RESERVED`/deploy 前保存脱敏 inventory/restore/edge，Promote 前保存 staged 验证，`FORMAL_VERIFIED` 前保存 fresh handoff，`COMPLETED` 前保存 completion evidence。原始 dump 只存在独立 runner-temp scratch。首次 prebuilt output 在 deploy 前以 tar 封装目录、Unix mode 和软链接语义后单独私有上传，并把覆盖目录、mode、软链接目标及文件内容的 manifest 作为严格单行 sidecar 同包保存后 CAS 绑定到 `RESERVED`；同一 run 重试先按 `RESERVED.workflow_attempt` 探测原 attempt 的 immutable build artifact，包括 upload 成功但 manifest CAS 前崩溃的窗口。artifact 存在时必须要求解包后的语义 hash 与 sidecar 完全一致后才可绑定，不能把下载层的 digest mismatch warning 当作成功；只有 artifact 缺失、manifest 仍为空且仍在首次预留创建后的 90 天 recovery window 内才允许使用同一 artifact-attempt 名构建，越过该窗口或 manifest 已绑定但 artifact 缺失必须失败并进入审计化人工前向处置。Build artifact 私有保留 90 天。Vercel `pull/build/deploy` 必须绑定非空 protected Project/Org 坐标；恢复必须遍历完整分页，先识别任意状态的 exact project/source/runtime/manifest/role match，只有零 exact match 可 deploy、唯一 READY match 可复用，非 READY 或多个 exact match 均禁止重复 effect。Promote 前先 CAS `STAGED -> PROMOTION_ARMED`；只有首次进入该状态的 attempt 可发一次请求，任何从 `RETRY_PROMOTION_ARMED` 开始的重试只读核对 exact project 的 `lastAliasRequest` 与正式域名，不能证明请求未发出时必须人工前向处置而不是二次 Promote。safe-baseline 禁止 Rolling Release。正式域名 404、项目/Org 不匹配、缺 ID、目标 promote request 未 succeeded、存在其他 active alias request 或非 READY 都是未知/未完成状态；只有 exact project 中 READY 的 staged deployment 且 `lastAliasRequest` 明确证明目标 promote succeeded，才可证明 handoff。所有 runtime-DDL/edge 签名报告绑定 workflow run/attempt 和短 freshness window；`FORMAL_VERIFIED` 重试不得重新添加 edge deny 后跳过 handoff，而要 fresh readback 当前已移除状态。
 - 每个新的 Preview/Production/observation/finalizer runner 都必须独立调用同一个受版本控制、经过单元测试的 release-coordinate resolver，从 ReleaseActivation/observation rows 和 create-once Private evidence 解析 source/runtime/manifest/API/Worker/evidence 坐标并重新验证 freshness/hash。禁止把安全关键的 PowerShell/JSON parsing prologue 复制到多个 job；必须重复的是独立解析与验证动作，而不是实现代码。
 
 release 的原子单位不是单一 Vercel 页面，而是 immutable release bundle：
@@ -704,7 +705,7 @@ API `/version` 必须返回预注入 runtime ID 和平台可信 `VERCEL_DEPLOYME
 - 后端所有 unittest 0 error，且零测试收集视为失败。
 - 临时真实 PostgreSQL 从空库 Alembic upgrade 到 head，RLS/约束/并发集成测试通过。
 - auth、上传、SSRF、积分、payment webhook、outbox、lease、QA、watermark、retention 失败路径通过。
-- 前端 `npm ci`、typecheck、组件测试、无障碍检查和 `build:web` 通过。
+- 前端 `npm ci --ignore-scripts`、typecheck、组件测试、无障碍检查和 `build:web` 通过。
 - OpenAPI snapshot/client 没有未确认 breaking drift。
 - Worker OCI image、migration artifact 和固定版本 Vercel CLI build 都可重复生成并记录 digest。
 

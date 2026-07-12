@@ -7,18 +7,29 @@ import logging
 from typing import Any
 
 from sqlalchemy import select
-
 from app.core.database import async_session_maker
+from app.core.feature_flags import Capability
 from app.models.order import Order, OrderStatus
 from app.models.live_portrait_job import LivePortraitJob, LivePortraitStatus
 from app.services.generation_service import generation_service
 from app.services.session_service import session_service
+from app.services.feature_flag_service import require_worker_capability
 
 logger = logging.getLogger(__name__)
 
 
 async def run_order_generation(order_id: str) -> None:
     """Fetch an order from DB and run generation."""
+    # Immutable job stamps do not exist until Task 16. Staying closed here prevents
+    # caller-supplied payload fields from masquerading as server authority.
+    await require_worker_capability(
+        None,
+        Capability.GENERATION,
+        deployment_id=None,
+        runtime_bundle_id=None,
+        worker_image_digest=None,
+        user_id=None,
+    )
     try:
         order_uuid = uuid.UUID(str(order_id))
     except Exception:
@@ -129,6 +140,7 @@ async def generate_order(ctx: dict[str, Any], order_id: str) -> None:
 
 async def run_live_portrait_generation(job_id: str) -> None:
     """Generate a short Live Portrait video from an image."""
+    raise RuntimeError("live_portrait_retired")
     try:
         job_uuid = uuid.UUID(str(job_id))
     except Exception:

@@ -1,10 +1,25 @@
 {
     "$schema": "https://openapi.vercel.sh/vercel.json",
-    "installCommand": "cd frontend && npm ci",
+    "git": {
+        "deploymentEnabled": {
+            "main": false
+        }
+    },
+    "installCommand": "cd frontend && npm ci --ignore-scripts",
     "buildCommand": "cd frontend && npm run build:web",
     "env": {
-        "REMOTE_JOIN_ENABLED": "true",
-        "QA_REQUIRE_IDENTITY_EMBEDDING": "false"
+        "RUNTIME_ENVIRONMENT": "production",
+        "REMOTE_JOIN_ENABLED": "false",
+        "LIVE_PORTRAIT_ENABLED": "false",
+        "GOOGLE_AUTH_ENABLED": "false",
+        "AUTHENTICATED_UPLOAD_ENABLED": "false",
+        "GENERATION_ENABLED": "false",
+        "CREDIT_PACK_CHECKOUT_ENABLED": "false",
+        "SUBSCRIPTION_BILLING_ENABLED": "false",
+        "PRIVATE_DOWNLOAD_ENABLED": "false",
+        "PARTNER_INVITE_ENABLED": "false",
+        "QA_REQUIRE_VISION": "true",
+        "QA_FAIL_ON_VISION_ERROR": "true"
     },
     "outputDirectory": "frontend/dist/build/h5",
     "functions": {
@@ -13,10 +28,6 @@
         }
     },
     "crons": [
-        {
-            "path": "/api/v1/ops/cleanup_expired_assets",
-            "schedule": "0 19 * * *"
-        },
         {
             "path": "/api/v1/ops/check_alerts",
             "schedule": "0 20 * * *"

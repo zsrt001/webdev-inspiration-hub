@@ -7,8 +7,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from sqlalchemy import text
-
 from app.core.config import get_settings
 from app.core.error_response import (
     http_exception_handler,
@@ -52,31 +50,16 @@ async def lifespan(app: FastAPI):
         if config_errors:
             raise RuntimeError(f"commercial_config_invalid: {'; '.join(config_errors)}")
 
-    try:
-        from app.core.database import engine, Base
-        async with engine.begin() as conn:
-            if settings.should_auto_create_tables:
-                await conn.run_sync(Base.metadata.create_all)
-                await conn.execute(text("ALTER TABLE IF EXISTS leads ALTER COLUMN phone TYPE TEXT"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(32)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_subject VARCHAR(128)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS username VARCHAR(64)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password VARCHAR(255)"))
-                await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS role VARCHAR(32) DEFAULT 'user'"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'active'"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE"))
-        if settings.should_auto_create_tables:
-            logger.info("Database connected and schema auto-create completed")
-        else:
-            logger.info("Database connected; schema auto-create disabled")
-    except Exception as e:
-        if strict_mode:
-            raise RuntimeError(f"database_startup_failed: {e}") from e
-        logger.warning(f"Database not available (dev mode): {e}")
-
     if strict_mode:
+        try:
+            from app.core.database import async_session_maker
+            from app.services.schema_guard_service import validate_runtime_schema
+
+            async with async_session_maker() as db:
+                await validate_runtime_schema(db)
+        except Exception as exc:
+            raise RuntimeError(f"database_schema_readiness_failed: {exc}") from exc
+
         core_readiness = await run_core_readiness_checks(strict_mode=True)
         if not core_readiness.get("ready", False):
             blockers = ", ".join(core_readiness.get("blockers", []))
@@ -168,6 +151,9 @@ async def health_check():
         "kind": "liveness",
         "app": settings.app_name,
         "readiness": "/health/ready",
+        "source_sha": settings.source_sha,
+        "runtime_bundle_id": settings.runtime_bundle_id.strip(),
+        "deployment_id": settings.deployment_id,
     }
 
 

@@ -2,12 +2,13 @@
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin_token
+from app.core.database import get_db
+from app.core.feature_flags import Capability
+from app.services.feature_flag_service import require_request_capability
 from app.services.storage import storage_service
-from app.core.config import get_settings
-
-settings = get_settings()
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -31,7 +32,10 @@ class DeleteResponse(BaseModel):
 
 
 @router.post("", response_model=UploadResponse)
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
     """
     Upload a file to the configured storage provider.
     
@@ -39,6 +43,8 @@ async def upload_file(file: UploadFile = File(...)):
         url: Public URL of the uploaded file
         filename: Original filename
     """
+    await require_request_capability(None, db, Capability.AUTHENTICATED_UPLOAD)
+
     # Validate file type
     allowed_types = ["image/jpeg", "image/png", "image/webp"]
     if file.content_type not in allowed_types:
@@ -78,13 +84,17 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 @router.post("/multiple", response_model=list[UploadResponse])
-async def upload_multiple_files(files: list[UploadFile] = File(...)):
+async def upload_multiple_files(
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+):
     """
     Upload multiple files to S3 storage.
     
     Returns:
         List of upload responses with URLs
     """
+    await require_request_capability(None, db, Capability.AUTHENTICATED_UPLOAD)
     if len(files) > 5:
         raise HTTPException(
             status_code=400,
@@ -116,11 +126,13 @@ async def upload_multiple_files(files: list[UploadFile] = File(...)):
 async def delete_file(
     request: DeleteRequest,
     _: None = Depends(require_admin_token),
+    db: AsyncSession = Depends(get_db),
 ) -> DeleteResponse:
     """
     Delete an uploaded file from the configured storage provider.
 
     Note: This is best-effort in MVP; production should restrict deletion by auth + ownership.
     """
+    await require_request_capability(None, db, Capability.AUTHENTICATED_UPLOAD)
     ok = storage_service.delete_file(request.url)
     return DeleteResponse(success=bool(ok))

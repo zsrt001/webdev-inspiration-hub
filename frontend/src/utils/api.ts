@@ -324,20 +324,23 @@ export async function uploadFile(
     uni.showLoading({ title: uploadLabel });
 
     try {
-        const uploadTask = uni.uploadFile({
-            url: resolveApiUrl(path),
-            filePath,
-            name,
-            header: await buildHeaders(path),
-        });
+        const headers = await buildHeaders(path);
+        const res = await new Promise<UniNamespace.UploadFileSuccessCallbackResult>((resolve, reject) => {
+            const uploadTask = uni.uploadFile({
+                url: resolveApiUrl(path),
+                filePath,
+                name,
+                header: headers,
+                success: resolve,
+                fail: reject,
+            });
 
-        uploadTask.onProgressUpdate((res) => {
-            const pct = Math.round(res.progress);
-            uni.showLoading({ title: `${uploadLabel} ${pct}%`, mask: true });
-            if (options.onProgress) options.onProgress(pct);
+            uploadTask.onProgressUpdate((progress) => {
+                const pct = Math.round(progress.progress);
+                uni.showLoading({ title: `${uploadLabel} ${pct}%`, mask: true });
+                if (options.onProgress) options.onProgress(pct);
+            });
         });
-
-        const res = await uploadTask;
 
         if (res.statusCode === 401 && canRecoverUnauthorized(path) && await rebootstrapSession()) {
             const retryTask = uni.uploadFile({

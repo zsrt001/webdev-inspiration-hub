@@ -244,6 +244,29 @@ async_session_maker = async_sessionmaker(
     expire_on_commit=False,
 )
 
+control_plane_raw_url = settings.effective_control_plane_database_url or settings.database_url
+control_plane_database_url, control_plane_connect_args = normalize_database_url(control_plane_raw_url)
+control_plane_async_creator = _build_supabase_pooler_async_creator(control_plane_raw_url)
+control_plane_engine_kwargs = {
+    "echo": settings.debug,
+    "future": True,
+    "pool_pre_ping": True,
+}
+if control_plane_async_creator is not None:
+    control_plane_engine_kwargs["async_creator"] = control_plane_async_creator
+else:
+    control_plane_engine_kwargs["connect_args"] = control_plane_connect_args
+
+control_plane_engine = create_async_engine(
+    control_plane_database_url,
+    **control_plane_engine_kwargs,
+)
+control_plane_async_session_maker = async_sessionmaker(
+    control_plane_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
 
 class Base(DeclarativeBase):
     """SQLAlchemy declarative base class."""
@@ -254,6 +277,22 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncSession:
     """Dependency to get async database session."""
     async with async_session_maker() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+async def get_control_plane_db() -> AsyncSession:
+    """Yield the dedicated audited control-plane writer session."""
+    errors = settings.control_plane_database_config_errors
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    async with control_plane_async_session_maker() as session:
         try:
             yield session
             await session.commit()

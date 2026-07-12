@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.admin_auth import require_admin_token
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.feature_flags import Capability
 from app.models.order import Order, OrderStatus
 from app.models.user import User
 from app.models.user_credit import UserCredit
@@ -21,6 +22,7 @@ from app.services.admin_service import (
     grant_credits_to_user,
     get_all_users,
 )
+from app.services.feature_flag_service import require_request_capability
 from app.services.account_risk_service import get_account_risk_summary
 from app.services.admin_audit_service import list_admin_audit_logs, log_admin_action
 from app.services.analytics_reporting_service import (
@@ -33,7 +35,7 @@ from app.services.lead_crm_service import build_crm_payload, list_crm_push_histo
 from app.services.ops_alert_service import get_ops_alerts
 from app.services.ops_config_service import get_ops_config, save_ops_config
 from app.services.ops_monitoring_service import get_ops_monitoring_summary
-from app.services.retention_service import apply_order_retention, cleanup_expired_orders, cleanup_expired_source_images
+from app.services.retention_service import apply_order_retention
 from app.services.email_service import get_email_diagnostics, list_email_logs, send_test_email
 from app.services.template_service import get_template_by_id
 from app.services.generation_service import generation_service
@@ -698,8 +700,9 @@ async def get_payment_config_summary():
 
 
 @router.get("/creem_product_check", response_model=CreemProductCheckResponse)
-async def check_creem_products():
+async def check_creem_products(db: AsyncSession = Depends(get_db)):
     """Verify configured Creem products using the configured API key."""
+    await require_request_capability(None, db, Capability.CREDIT_PACK_CHECKOUT)
     api_key = (settings.creem_api_key or "").strip()
     if api_key.startswith("creem_test_"):
         api_key_mode = "test"
@@ -792,8 +795,9 @@ async def check_creem_products():
 
 
 @router.post("/creem_checkout_probe", response_model=CreemCheckoutProbeResponse)
-async def probe_creem_checkout():
+async def probe_creem_checkout(db: AsyncSession = Depends(get_db)):
     """Create a provider-only checkout session to validate outbound live checkout."""
+    await require_request_capability(None, db, Capability.CREDIT_PACK_CHECKOUT)
     api_key = (settings.creem_api_key or "").strip()
     product_id = (settings.creem_product_pack_50 or "").strip()
     if not api_key or not product_id:
@@ -840,6 +844,7 @@ async def probe_generation(
     db: AsyncSession = Depends(get_db),
 ):
     """Start a real admin-only image generation probe without charging a customer."""
+    await require_request_capability(request, db, Capability.GENERATION)
     image_url = _validate_public_image_url(payload.image_url, field_name="image_url")
     images = [image_url]
     if payload.second_image_url and payload.second_image_url.strip():
@@ -968,6 +973,7 @@ async def grant_credits(
     """
     Grant credits to a user (admin operation).
     """
+    await require_request_capability(request, db, Capability.CREDIT_PACK_CHECKOUT)
     if not payload.user_id.strip():
         raise HTTPException(status_code=400, detail="User ID is required")
 
@@ -1180,6 +1186,7 @@ async def regenerate_admin_order(
     db: AsyncSession = Depends(get_db),
 ):
     """Restart generation for an existing order without charging the user again."""
+    await require_request_capability(request, db, Capability.GENERATION)
     await ensure_user_account_columns(db)
     generation_service.validate_runtime_requirements(force=True)
 
@@ -1292,15 +1299,13 @@ async def cleanup_admin_expired_assets(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete expired source images and generated assets according to retention policy."""
-    source_images = await cleanup_expired_source_images(db, limit=limit)
-    generated_assets = await cleanup_expired_orders(db, limit=limit)
-    await log_admin_action(
-        db,
-        action="cleanup_expired_assets",
-        request=request,
-        details={"limit": limit, "source_images": source_images, "generated_assets": generated_assets},
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "cleanup_paused",
+            "message": "Deletion is paused until durable cleanup retries are available.",
+        },
     )
-    return CleanupAssetsResponse(source_images=source_images, generated_assets=generated_assets)
 
 
 @router.get("/ops_config", response_model=OpsConfigResponse)
@@ -1439,6 +1444,10 @@ async def get_admin_crm_preview(
     db: AsyncSession = Depends(get_db),
 ):
     """Return the JSON payload that would be sent to CRM."""
+    raise HTTPException(
+        status_code=410,
+        detail={"code": "leads_retired", "message": "Lead and CRM workflows are retired."},
+    )
     leads = await query_leads_for_crm(
         db,
         limit=limit,
@@ -1461,6 +1470,10 @@ async def post_admin_crm_push(
     db: AsyncSession = Depends(get_db),
 ):
     """Push a filtered batch of leads to the configured CRM webhook."""
+    raise HTTPException(
+        status_code=410,
+        detail={"code": "leads_retired", "message": "Lead and CRM workflows are retired."},
+    )
     result = await push_leads_to_crm(
         db,
         limit=limit,
@@ -1481,7 +1494,10 @@ async def post_admin_crm_push(
 @router.get("/crm_push_history", response_model=list[CrmPushHistoryItem])
 async def get_admin_crm_push_history(limit: int = 20):
     """Return recent CRM push audit records."""
-    return [CrmPushHistoryItem(**item) for item in list_crm_push_history(limit=limit)]
+    raise HTTPException(
+        status_code=410,
+        detail={"code": "leads_retired", "message": "Lead and CRM workflows are retired."},
+    )
 
 
 @router.get("/audit_logs", response_model=list[AdminAuditLogItem])

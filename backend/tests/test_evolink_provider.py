@@ -288,8 +288,12 @@ class EvolinkProviderTest(unittest.TestCase):
         candidate_url = "https://example.test/generated.png"
         calls: list[tuple[str, object]] = []
         original_output_verdict = workflow_module.output_verdict
+        original_session_maker = workflow_module.async_session_maker
         original_fail_on_error = workflow_module.settings.qa_fail_on_vision_error
         original_retry_attempts = workflow_module.settings.qa_vision_error_retry_attempts
+
+        def forbidden_session_maker():
+            raise AssertionError("unit test attempted to open a real database session")
 
         async def fake_output_verdict(*args, **kwargs) -> dict:
             return {
@@ -297,6 +301,9 @@ class EvolinkProviderTest(unittest.TestCase):
                 "reasons": ["vision_error"],
                 "issues": [{"code": "vision_error", "blocking": False}],
             }
+
+        async def fake_template_style_context(*args, **kwargs) -> str:
+            return "isolated test template context"
 
         async def fake_update_state(*args, **kwargs) -> None:
             calls.append(("update", kwargs["attempt"]))
@@ -318,8 +325,10 @@ class EvolinkProviderTest(unittest.TestCase):
 
         try:
             workflow_module.output_verdict = fake_output_verdict  # type: ignore[assignment]
+            workflow_module.async_session_maker = forbidden_session_maker  # type: ignore[assignment]
             workflow_module.settings.qa_fail_on_vision_error = False
             workflow_module.settings.qa_vision_error_retry_attempts = 3
+            service._template_style_context_for_order = fake_template_style_context  # type: ignore[method-assign]
             service._update_image_edit_round_qa_state = fake_update_state  # type: ignore[method-assign]
             service._record_qa_failure = fake_record_failure  # type: ignore[method-assign]
             service._mark_qa_retry_pending = fake_mark_retry  # type: ignore[method-assign]
@@ -353,6 +362,7 @@ class EvolinkProviderTest(unittest.TestCase):
             )
         finally:
             workflow_module.output_verdict = original_output_verdict  # type: ignore[assignment]
+            workflow_module.async_session_maker = original_session_maker  # type: ignore[assignment]
             workflow_module.settings.qa_fail_on_vision_error = original_fail_on_error
             workflow_module.settings.qa_vision_error_retry_attempts = original_retry_attempts
 

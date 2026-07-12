@@ -25,8 +25,8 @@
 - Trial output is one watermarked 3:4 image no larger than 900x1125. Paid output is a private 3:4 master plus 2:3, 3:2, 3:4, 4:5, 9:16, and 1:1 variants.
 - Retention is 24 hours for orphan uploads, 7 days for source/reference images, 30 days free, 90 days credit pack or expired subscription credits, 180 days active ordinary subscription, and 365 days active Studio.
 - Runtime feature flags are PostgreSQL-authoritative and use `OFF | ACCEPTANCE_COHORT | ON`; Redis may cache only `OFF` for at most 30 seconds. `ACCEPTANCE_COHORT`/`ON` require a live authority read, acceptance cohorts expire within 86400 seconds, and every authority/cache failure fails closed.
-- Frontend runs on Node 20. Pin `vue@3.4.21`, `typescript@5.3.3`, `vite@5.2.8`, and `vue-tsc@1.8.27`; add exact `vitest@1.6.1`, `@vue/test-utils@2.4.6`, `jsdom@24.1.3`, `@playwright/test@1.61.1`, `@axe-core/playwright@4.12.1`, and `openapi-typescript@7.13.0`.
-- Pin Vercel CLI to `55.0.0`. Never install `latest` in CI.
+- Frontend CI runs on supported Node 24 LTS, pinned to `24.17.0` in the current workflow. Pin `vue@3.4.21`, `typescript@5.3.3`, `vite@5.2.8`, `vue-tsc@1.8.27`, and `sass@1.97.3`; add exact `vitest@1.6.1`, `@vue/test-utils@2.4.6`, `jsdom@24.1.3`, `@playwright/test@1.61.1`, `@axe-core/playwright@4.12.1`, and `openapi-typescript@7.13.0`.
+- Pin Vercel CLI to `55.0.0` through `scripts/release-tools/package.json` and its committed npm lock. Every release block first runs `npm ci --prefix scripts/release-tools --ignore-scripts`, resolves `scripts/release-tools/node_modules/.bin/vercel.cmd` (or the platform equivalent), verifies stdout is exactly `55.0.0`, and invokes that binary as `$vercelCli`; `npx`, global installs, and floating `latest` are forbidden in CI/release workflows.
 - Every production-affecting task adds focused tests first, proves the new test fails for the intended reason, implements the minimum change, reruns the focused tests, updates `docs/ai-worklog.md`, reviews the diff, and commits.
 - Every PowerShell release/migration job begins with `Set-StrictMode -Version Latest`, `$ErrorActionPreference = 'Stop'`, and, on the pinned PowerShell version, `$PSNativeCommandUseErrorActionPreference = $true`; alternatively every native process is invoked through one tested wrapper that throws on a nonzero exit code. A later successful command must never mask a failed Python/Node/npm/npx/Alembic command. Workflow tests inject a native failure immediately before every write, migration, Provider call, Worker transition, domain transition, flag transition, and final CAS, and prove the next command was not invoked.
 - PowerShell interpolation that appends a colon to an environment variable must use `${env:NAME}:suffix`; static tests reject every unbraced environment-variable-plus-colon form because it truncates fencing/idempotency keys.
@@ -163,7 +163,9 @@ These are production-owner actions, not repository evidence. Execute and capture
 - Create: `backend/tests/test_no_runtime_ddl.py`
 - Modify: `backend/tests/test_commercial_policy.py`
 - Modify: `backend/tests/test_remote_join_config.py`
+- Modify: `backend/tests/test_runtime_config.py`
 - Modify: `backend/app/core/config.py`
+- Modify: `backend/app/core/user_auth.py`
 - Modify: `backend/app/main.py`
 - Modify: `backend/app/services/admin_audit_service.py`
 - Modify: `backend/app/services/account_risk_service.py`
@@ -172,6 +174,7 @@ These are production-owner actions, not repository evidence. Execute and capture
 - Modify: `backend/app/services/schema_guard_service.py`
 - Modify: `backend/app/services/session_service.py`
 - Modify: `backend/app/routers/auth/google.py`
+- Modify: `backend/app/routers/auth/guest.py`
 - Modify: `backend/app/routers/upload.py`
 - Modify: `backend/app/routers/gatekeeper.py`
 - Modify: `backend/app/routers/orders.py`
@@ -187,9 +190,13 @@ These are production-owner actions, not repository evidence. Execute and capture
 - Modify: `backend/app/worker_tasks.py`
 - Modify: `backend/app/services/retention_service.py`
 - Modify: `backend/app/services/ops_config_service.py`
+- Modify: `backend/app/services/legal_policy_service.py`
 - Modify: `backend/app/routers/ops.py`
 - Modify: `backend/data/ops_config.json`
 - Modify: `frontend/src/stores/ops.ts`
+- Modify: `frontend/src/pages/account/index.vue`
+- Modify: `frontend/src/pages/legal/privacy.vue`
+- Modify: `frontend/src/components/LegalConsentInline.vue`
 - Modify: `vercel.json`
 - Modify: `.env.example`
 - Modify: `backend/.env.example`
@@ -324,6 +331,12 @@ Add the seven Boolean fields to `Settings` with false defaults. Invoke the match
 
 Live Portrait, local recommendations, and leads/contact are retired—not hidden capabilities—so Task 1 does not invent enum values or borrow another capability. Every public create/list/detail/read/mutation endpoint for those routers returns 410 before query, serialization, or side effect; no Live Portrait URL is returned. Task 5 completes their UI/product cleanup, but the Tasks 1-4 safe baseline already proves the permanent 410 contract.
 
+Legacy guest/OpenID login is also permanently retired and `POST /auth/login`
+returns 410 before database access. Partner Invite is different: it is a
+mandatory later Web capability, so every current `/session/*` route uses the
+PostgreSQL-authoritative `PARTNER_INVITE` guard and returns structured 503 while
+OFF; it must never be encoded as a permanent 410 tombstone.
+
 Retire the legacy credit mutation/fallback routes immediately: authenticated `POST /credits/deduct`, service-token `POST /credits/add`, and the old direct `POST /credits/purchase` return 410 before any lock, ledger, balance, Provider, or outbox side effect; no route may synthesize `GENERATION_DEBIT` outside a reservation capture. Until Task 12 installs the authoritative PostgreSQL catalog, `GET /credits/packages` returns structured 503 rather than the static package list. Read-only authenticated balance/transaction history remains available. Route tests snapshot every currently existing ledger/balance/purchase/order/legacy-job fact and instrument queue/publish calls to prove all retired calls leave facts unchanged and dispatch nothing; Task 12 adds generic-outbox assertions after that table exists, and Task 16 adds durable-generation-job assertions after its migration. Existing Admin credit and generation actions are guarded OFF before their first side effect; Tasks 13 and 16 either route them through the canonical services or retire them permanently.
 
 Set the corresponding `vercel.json` environment values to `"false"`; set `QA_REQUIRE_VISION` and `QA_FAIL_ON_VISION_ERROR` to `"true"`; remove the current `QA_REQUIRE_IDENTITY_EMBEDDING=false` override. Do not enable ARQ in Vercel yet—Generation remains blocked until Task 17 deploys the Worker.
@@ -379,11 +392,16 @@ git commit -m "fix: fail closed high-risk product capabilities"
 - Create: `backend/tests/test_release_observation_schema.py`
 - Create: `backend/tests/test_runtime_bundle_id.py`
 - Create: `backend/tests/test_release_coordinate_resolver.py`
+- Create: `backend/tests/integration/test_control_plane_rls.py`
+- Modify: `backend/alembic/env.py`
 - Modify: `backend/app/models/__init__.py`
 - Modify: `backend/app/routers/__init__.py`
+- Modify: `backend/app/core/admin_auth.py`
 - Modify: `backend/app/core/feature_flags.py`
 - Modify: `backend/app/core/config.py`
 - Modify: `backend/app/core/redis_client.py`
+- Modify: `backend/app/core/runtime_checks.py`
+- Modify: `backend/app/core/database.py`
 - Modify: `.env.example`
 - Modify: `backend/.env.example`
 - Modify: `vercel.json`
@@ -511,7 +529,13 @@ class FeatureFlagDecision:
     reason: str
 ```
 
-Migration `20260710_0013` has exact `down_revision = "20260516_0012"`, creates `ops_feature_flags`, `ops_feature_flag_audits`, `release_activations`, service-only `acceptance_identity_bindings`, service-only `data_migration_runs`/`data_migration_checkpoints`, and service-only `release_observation_runs`/append-only samples, seeds every high-risk capability OFF for `preview` and `production`, and enables RLS so only service/admin roles can mutate. It also absorbs the exact missing baseline tables/indexes formerly created at runtime by Admin audit, account risk, email, credit/refund guardrails, using stable names that later migrations validate/reuse; migration tests reject duplicate index/table definitions. Use a unique `(environment, capability)` constraint, enum/check `SAFE_BASELINE_INSTALL | PREVIEW_IDENTITY | PREVIEW_COMMERCIAL | COMMERCIAL_7A | CONTRACT_7B`, environment/kind checks, unique `(environment,kind,runtime_bundle_id)`, a separate one-time Production uniqueness guard for `SAFE_BASELINE_INSTALL`, monotonic phase/version CAS, and immutable audits/completed or CLEANED activations. Release activation rows bind final source SHA, pre-deploy `runtime_bundle_id`, role-tagged manifest/report SHA-256, API/Worker IDs and roles where applicable, private evidence prefix, workflow run, phase/version, and approval so a fresh job can resolve coordinates without inheriting a shell or mutable alias; secret values are never stored. They also predeclare nullable `acceptance_fault_intent_id`, `acceptance_fault_intent_sha256`, `acceptance_fault_state`, `acceptance_fault_expires_at`, `acceptance_fault_cleanup_claim_id`, and `acceptance_fault_cleanup_fencing_token`. Check constraints require these fields to be all-null or form one complete production-COMMERCIAL_7A intent, limit TTL to 300 seconds, enforce unique intent ID/hash, and permit only `PREPARED -> ARMED -> DISARMED` or `PREPARED | ARMED -> CLEANUP_CLAIMED -> DISARMED` under release row-version plus cleanup-fence CAS; raw correlation, host rule payload, and secrets remain in signed Private evidence, not the row. A binding stores provider, keyed subject HMAC, environment, target deployment, expiry no later than 86400 seconds, actor/audit reason, consumed local user ID/time, and unique `(environment,deployment_id,provider,subject_hmac)`; raw provider subject or email is forbidden. Migration-run rows form one parent release lease plus per-script/per-mode child runs storing inventory/manifest/script hashes, approval, lease owner/fencing token, heartbeat, state, and sanitized counts; checkpoint rows are append-only and uniquely bind child run/script/mode/batch boundary. Observation runs bind manifest/runtime/deployment/Worker/snapshot hashes, `OBSERVING | FINALIZING | PASSED | FAILED`, start/deadline, cleanup-cycle proof, CAS version, and finalizer; signed samples are append-only with unique time buckets. These tables are control-plane facts for Tasks 28-30, not a runtime-DDL escape hatch.
+Migration `20260710_0013` has exact `down_revision = "20260516_0012"`, creates `ops_feature_flags`, `ops_feature_flag_audits`, `release_activations`, service-only `acceptance_identity_bindings`, service-only `data_migration_runs`/`data_migration_checkpoints`, and service-only `release_observation_runs`/append-only samples, seeds every high-risk capability OFF for `preview` and `production`, and enables plus forces RLS on every control-plane table. It creates fixed NOLOGIN/NOBYPASSRLS group roles: `vowpic_runtime` receives control-plane SELECT plus only the constrained acceptance-binding consume columns, while `vowpic_control_writer` receives audited control-plane mutation privileges. Production/Preview application and control-writer connection URLs must use separate non-owner, non-superuser, NOBYPASSRLS login roles granted the matching group; readiness queries actual PostgreSQL role/owner/membership facts and fails closed. Real PostgreSQL CI proves runtime reads but cannot mutate flags and the writer can perform the trigger/CAS-constrained OFF transition. It also absorbs the exact missing baseline tables/indexes formerly created at runtime by Admin audit, account risk, email, credit/refund guardrails, using stable names that later migrations validate/reuse; migration tests reject duplicate index/table definitions. Use a unique `(environment, capability)` constraint, enum/check `SAFE_BASELINE_INSTALL | PREVIEW_IDENTITY | PREVIEW_COMMERCIAL | COMMERCIAL_7A | CONTRACT_7B`, environment/kind checks, unique `(environment,kind,runtime_bundle_id)`, a separate one-time Production uniqueness guard for `SAFE_BASELINE_INSTALL`, monotonic phase/version CAS, and immutable audits/completed or CLEANED activations. Release activation rows bind final source SHA, pre-deploy `runtime_bundle_id`, role-tagged manifest/report SHA-256, API/Worker IDs and roles where applicable, exact build-artifact ID/digest, private evidence reference, workflow run, phase/version, and approval so a fresh job can resolve coordinates without inheriting a shell or mutable alias; secret values are never stored. They also predeclare nullable `acceptance_fault_intent_id`, `acceptance_fault_intent_sha256`, `acceptance_fault_state`, `acceptance_fault_expires_at`, `acceptance_fault_cleanup_claim_id`, and `acceptance_fault_cleanup_fencing_token`. Check constraints require these fields to be all-null or form one complete production-COMMERCIAL_7A intent, anchor the immutable expiry to `created_at` with a maximum 300-second window so later cleanup remains legal after expiry, enforce unique intent ID/hash, and permit only `PREPARED -> ARMED -> DISARMED` or `PREPARED | ARMED -> CLEANUP_CLAIMED -> DISARMED` under release row-version plus cleanup-fence CAS; raw correlation, host rule payload, and secrets remain in signed Private evidence, not the row. A binding stores provider, keyed subject HMAC, environment, target deployment, expiry no later than 86400 seconds, actor/audit reason, consumed local user ID/time, and unique `(environment,deployment_id,provider,subject_hmac)`; raw provider subject or email is forbidden. Migration-run rows form one parent release lease plus per-script/per-mode child runs storing inventory/manifest/script hashes, approval, lease owner/fencing token, heartbeat, state, and sanitized counts; checkpoint rows are append-only and uniquely bind child run/script/mode/batch boundary. Observation runs bind manifest/runtime/deployment/Worker/snapshot hashes, `OBSERVING | FINALIZING | PASSED | FAILED`, start/deadline, cleanup-cycle proof, CAS version, and finalizer; signed samples are append-only with unique time buckets. These tables are control-plane facts for Tasks 28-30, not a runtime-DDL escape hatch.
+
+The Stage-1 refinement requires the runtime and writer URLs to use distinct
+login names, target the same database, and grant exactly one matching group.
+Readiness rejects membership in the opposite group. Supabase direct/pooler
+targets are compared by project reference so two projects cannot masquerade as
+one database.
 
 Because COMMERCIAL_7A/CONTRACT_7B reserve before the Worker digest/runtime ID exists, `release_activations` also has a partial unique active `(environment, kind, source_sha)` constraint. The runtime ID is filled exactly once by CAS and then the non-null runtime-bundle uniqueness applies; a rerun resolves that same reservation rather than creating an attempt-derived release row.
 
@@ -676,7 +700,31 @@ Aggregate guest/password/`wx_*`/visitor/missing-subject/duplicate-email and dupl
 
 - [ ] **Step 4: Implement backup/restore rehearsal with an isolated target**
 
-`backup_restore_rehearsal.py` must require a read-only source, an encrypted/network-isolated disposable target, and a separate target-admin connection. It rejects the same database identity, rejects a target database name without the `vowpic_restore_` prefix, and rejects a long-lived/shared target credential. It runs `pg_dump --format=custom --no-owner --no-acl`, restores with `pg_restore --clean --if-exists --no-owner --no-acl --exit-on-error`, and compares revision, tables, exact row counts, FK orphans, ledger/balance, and URL-inventory checksum. Credentials are never printed. In one mandatory `finally` path it terminates target connections, drops the rehearsal database, revokes/drops the temporary target role or proves provider TTL destruction, and deletes the archive. Cleanup runs after success, restore failure, and comparison failure; any database/credential cleanup failure makes the gate FAIL and alerts. Only sanitized checksums/counts survive as evidence; neither the dump nor a restored Production-data database is a normal artifact.
+`backup_restore_rehearsal.py` must require a read-only source, an
+encrypted/network-isolated disposable target, a separate target-admin
+connection, and a raw-dump scratch directory outside the sanitized artifact
+directory. It rejects the same database identity, rejects a target database
+name without the `vowpic_restore_` prefix, and rejects a long-lived/shared
+target credential. A hostname suffix or caller-supplied expiry is never proof
+by itself. At
+execution it resolves every target address, rejects any public address, and
+compares the actual `inet_server_addr()` from both restore/Admin connections.
+It reads the target database owner and role `rolvaliduntil`, privilege flags,
+`rolbypassrls`, and privileged memberships from PostgreSQL; a mismatch from the
+dedicated owner, protected expiry, private address, or unprivileged
+NOBYPASSRLS contract fails before `pg_dump`. The evidence retains only counts,
+booleans, and an address hash. It runs `pg_dump --format=custom --no-owner --no-acl`,
+restores with `pg_restore --clean --if-exists --no-owner --no-acl
+--exit-on-error`, and compares revision, tables, exact row counts, FK orphans,
+ledger/balance, and URL-inventory checksum. Credentials are never printed. The
+dump is created only under runner temp so even an interrupted deletion cannot
+place it in an evidence upload. In one mandatory `finally` path it terminates
+target connections, drops the rehearsal database, revokes/drops the temporary
+target role or proves provider TTL destruction, and deletes the archive.
+Cleanup runs after success, restore failure, and comparison failure; any
+database/credential cleanup failure makes the gate FAIL and alerts. Only
+sanitized checksums/counts survive as evidence; neither the dump nor a restored
+Production-data database is a normal artifact.
 
 ```powershell
 python -m unittest backend.tests.test_backup_restore_rehearsal -v
@@ -708,7 +756,7 @@ $env:PRODUCTION_READ_ONLY_DATABASE_URL='postgresql://vowpic_inventory_local:inve
 $env:RESTORE_REHEARSAL_DATABASE_URL='postgresql://vowpic_restore_local_role:restore_local_only@localhost:5432/vowpic_restore_local'
 $env:RESTORE_REHEARSAL_ADMIN_DATABASE_URL='postgresql://postgres:postgres@localhost:5432/postgres'
 $env:RESTORE_REHEARSAL_ROLE_NAME='vowpic_restore_local_role'
-python backend/scripts/backup_restore_rehearsal.py --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL --target-url-env RESTORE_REHEARSAL_DATABASE_URL --target-admin-url-env RESTORE_REHEARSAL_ADMIN_DATABASE_URL --target-role-name-env RESTORE_REHEARSAL_ROLE_NAME --expected-target-db-prefix vowpic_restore_ --artifact-dir "artifacts/security-baseline/$env:GITHUB_RUN_ID/restore"
+python backend/scripts/backup_restore_rehearsal.py --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL --target-url-env RESTORE_REHEARSAL_DATABASE_URL --target-admin-url-env RESTORE_REHEARSAL_ADMIN_DATABASE_URL --target-role-name-env RESTORE_REHEARSAL_ROLE_NAME --expected-target-db-prefix vowpic_restore_ --artifact-dir "artifacts/security-baseline/$env:GITHUB_RUN_ID/restore" --scratch-dir "$env:RUNNER_TEMP/safe-baseline-restore-scratch"
 ```
 
 Expected: exit 0 with sanitized dump checksum, restored Alembic revision, row-count report, no source mutation, and proof that neither `vowpic_restore_local` nor `vowpic_restore_local_role` exists after the report is written. The rehearsal must also attempt a harmless write in a rolled-back source transaction and fail with read-only SQLSTATE `25006`; a source superuser or write-capable role is a hard failure. Production likewise uses a temporary target role; the admin role is used only for terminate/drop/revoke cleanup and is never the restore connection.
@@ -738,20 +786,49 @@ The protected workflow verifies its checked-out SHA equals the tooling commit be
 **Files:**
 - Create: `backend/tests/test_ci_release_contract.py`
 - Create: `scripts/release/verify_baseline.ps1`
+- Create: `scripts/release/fingerprint_worktree.py`
+- Create: `scripts/release/verify_edge_lockdown.py`
 - Create: `scripts/release/verify_safe_baseline.py`
 - Create: `scripts/release/register_safe_baseline.py`
+- Create: `scripts/release/github_artifact_evidence.py`
+- Create: `scripts/release/build_artifact_crypto.py`
+- Create: `scripts/release/verify_github_ref.py`
+- Create: `backend/tests/test_build_artifact_crypto.py`
 - Create: `docs/operations/risk-lockdown-runbook.md`
 - Create: `.github/workflows/safe-baseline-release.yml`
 - Create: `requirements.in`
+- Create: `requirements-resolver.in`
+- Create: `requirements-resolver.txt`
+- Create: `requirements-resolver.windows.txt`
 - Create: `backend/requirements.lock.txt`
+- Create: `backend/requirements.windows.lock.txt`
+- Create: `scripts/release-tools/package.json`
+- Create: `scripts/release-tools/package-lock.json`
 - Modify: `backend/tests/test_no_runtime_ddl.py`
 - Modify: `backend/tests/test_evolink_provider.py`
+- Modify: `backend/scripts/backup_restore_rehearsal.py`
+- Modify: `backend/alembic/versions/20260710_0013_ops_feature_flags.py`
 - Modify: `requirements.txt`
 - Modify: `backend/requirements.txt`
 - Modify: `frontend/package.json`
 - Modify: `frontend/package-lock.json`
+- Modify: `frontend/src/pages/admin/index.vue`
+- Modify: `frontend/src/pages/admin/orders.vue`
+- Modify: `frontend/src/pages/admin/users.vue`
+- Modify: `frontend/src/pages/auth/login.vue`
+- Modify: `frontend/src/pages/auth/register.vue`
+- Modify: `frontend/src/pages/create/index.vue`
+- Modify: `frontend/src/utils/api.ts`
 - Modify: `.github/workflows/ci.yml`
+- Modify: `docs/VERCEL_DEPLOYMENT.md`
+- Modify: `docs/superpowers/plans/2026-07-10-vowpic-commercial-closure-implementation.md`
+- Modify: `docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md`
 - Modify: `docs/ai-worklog.md`
+
+Task 4 may change the listed frontend source files only to make the pinned
+toolchain verification truthful: Sass module syntax, TypeScript narrowing,
+and the installed Uni-app `uploadFile` callback contract. It must not perform
+Task 5's Web-only identity or product-surface removals early.
 
 **Interfaces:**
 - Produces: `npm run typecheck`, `npm run test:unit` (initially a no-tests-is-failure command), hash-locked Python 3.11 API/test dependency sets, and `scripts/release/verify_baseline.ps1`.
@@ -792,7 +869,7 @@ class CiReleaseContractTest(unittest.TestCase):
             self.assertEqual(merged[name], version)
 ```
 
-The same test module also parses `requirements.txt` and `backend/requirements.lock.txt`: every installable line is exact and hash-backed, `fastapi==0.128.0` and `starlette==0.50.0` are present in both resolved environments, no generated file contains `>=`/floating direct requirements, CI installs `backend/requirements.lock.txt` with `--require-hashes`, and Vercel continues to consume the root `requirements.txt`. It runs the resolver twice in a clean Python 3.11 Linux image and requires identical SHA-256 output; a Windows-only resolution is not accepted as Production evidence.
+The same test module also parses the resolver and application locks. Every installable line is exact and hash-backed, `fastapi==0.128.0` and `starlette==0.50.0` are present in both resolved application environments, no generated file contains `>=`/floating direct requirements, Linux CI installs `backend/requirements.lock.txt` with `--require-hashes`, Windows CI installs `backend/requirements.windows.lock.txt` with `--require-hashes`, and Vercel continues to consume the root `requirements.txt`. Linux and Windows each regenerate their own resolver and backend lock twice and require byte-identical SHA-256 output; one platform's resolution is not accepted as evidence for the other.
 
 - [ ] **Step 2: Run tests and baseline commands to capture the current red state**
 
@@ -828,35 +905,169 @@ Use exact package versions; do not upgrade Vue/Uni-app/Vite majors in this task:
 }
 ```
 
-Run `npm install --package-lock-only` so the lockfile matches the exact declarations. Task 22 adds Vitest and the first real test before `test:unit` becomes a mandatory CI command; until then the baseline script must report `frontend_unit=NOT_RUN`, not PASS.
+Remove unused `@dcloudio/uni-automator` and regenerate the lock; its Jest
+27/jsdom 16 chain is not used by source or tests and must not remain as dead
+supply-chain surface. Keep the Task-5 `@dcloudio/uni-mp-weixin` removal in Task
+5. Run `npm install --package-lock-only` so the lockfile matches the exact
+declarations. Every CI, local-baseline, and Vercel locked frontend install uses
+`npm ci --ignore-scripts`; the pinned application does not require dependency
+lifecycle scripts to typecheck or build. Task 22 adds Vitest and the first real
+test before `test:unit` becomes a mandatory CI command; until then the baseline
+script must report `frontend_unit=NOT_RUN`, not PASS.
 
-In the same task, copy the root API direct requirements into `requirements.in`, pin the audited framework boundary as `fastapi==0.128.0` plus `starlette==0.50.0`, and apply those same two exact framework pins to the existing `backend/requirements.txt` direct input. In one clean pinned Python 3.11 Linux resolver image with `pip-tools==7.5.3`, generate the Vercel-consumed root lock and the backend test/Worker lock:
+In the same task, copy the root API direct requirements into `requirements.in`, pin the audited framework boundary as `fastapi==0.128.0` plus `starlette==0.50.0`, and apply those same two exact framework pins to the existing `backend/requirements.txt` direct input. Put only `pip-tools==7.5.3` in `requirements-resolver.in`, generate a hash-bearing resolver lock for each platform, install that lock with `--require-hashes`, and use it to generate the platform's application locks. The pinned Linux resolver image is `python:3.11.15-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f`:
 
 ```powershell
-python -m pip install 'pip-tools==7.5.3'
+python -m pip install --require-hashes -r requirements-resolver.txt
 python -m piptools compile --generate-hashes --resolver=backtracking --output-file=requirements.txt requirements.in
 python -m piptools compile --generate-hashes --resolver=backtracking --output-file=backend/requirements.lock.txt backend/requirements.txt
 ```
 
-Run both commands twice from a clean resolver image and require identical file SHA-256 values and `pip install --require-hashes` success. The safe-baseline Vercel build installs the generated root `requirements.txt`; CI and local baseline verification install `backend/requirements.lock.txt`. Task 17 may extend only the backend direct Worker/test input, regenerate only `backend/requirements.lock.txt`, and must prove the root API input/lock hashes remain unchanged; it does not postpone the first reproducible API/test lock until after the safe baseline is deployed or leak Worker-only dependencies into Vercel.
+Run every compile twice in its clean target environment and require identical files plus fresh `pip install --require-hashes` and `pip check` success. Linux produces the root Vercel API lock and Linux backend lock. Windows produces `requirements-resolver.windows.txt` and `backend/requirements.windows.lock.txt`; platform-only transitive requirements such as `colorama` must be represented by an explicit marker in the direct backend input instead of being silently omitted. The safe-baseline Vercel build installs the generated root `requirements.txt`; Linux CI installs the Linux backend lock, Windows CI installs the Windows backend lock, and local baseline verification selects the matching platform lock. Task 17 may extend only the backend direct Worker/test input, regenerate both backend platform locks, and must prove the root API input/lock hashes remain unchanged; it does not postpone the first reproducible API/test lock until after the safe baseline is deployed or leak Worker-only dependencies into Vercel.
 
 - [ ] **Step 4: Reduce `ci.yml` to a secret-free truthful PR gate**
 
-Keep checkout, Python 3.11 `pip install --require-hashes -r backend/requirements.lock.txt`, all backend unittest, Node 20 `npm ci`, typecheck, and Web build. Remove the `deploy` and `production-smoke` jobs entirely. Add a final `quality-gate` job with `if: always()` that exits nonzero unless every required upstream result equals `success`; zero collected backend tests and a skipped typecheck are failures.
+Keep checkout, exact Python 3.11.15 Linux and Windows hash-lock
+reproduction/install jobs, all backend unittest, exact Node 24.17.0
+`npm ci --ignore-scripts`, typecheck, and Web build. The Linux resolver container must
+self-report Python `3.11.15` and Debian `bookworm`; every installed Linux Python
+graph runs `pip check`. Pin Linux runners to `ubuntu-24.04` and the Windows lock
+job to `windows-2022`. Remove the `deploy` and `production-smoke` jobs entirely.
+Add a final `quality-gate` job with `if: always()` that exits nonzero unless
+every required upstream result equals `success`; zero collected backend tests,
+a skipped platform lock job, and a skipped typecheck are failures.
 
 `risk-lockdown-runbook.md` must state the exact external check: disable Vercel Git Production auto-assignment and deploy hooks, retain Preview builds only, capture the project-setting evidence, and verify the production domain points at the last known deployment only until the protected safe-baseline workflow below succeeds. After that promotion, the domain must remain on the safe baseline (or a later compatible bundle), never on the pre-kill-switch deployment.
 
 - [ ] **Step 5: Implement the one-time protected safe-baseline release**
 
-`safe-baseline-release.yml` is `workflow_dispatch` only, uses GitHub's protected Production Environment and `concurrency.cancel-in-progress: false`, and accepts one `source_sha` that must equal the reviewed Tasks 1-4 commit and current approved main head. A read-only preflight first checks Alembic revision and, when `0013` already exists, the unique activation row; a completed install or different-run reservation rejects before dump/restore, migration, deployment-secret resolution, or build. Only the first schema-`0012` install (or the same run-ID/SHA retry) performs the Task 3 read-only inventory/restore rehearsal. Under one PostgreSQL advisory lock, one explicit transaction, and the same Alembic connection, it runs exactly upgrade `0013` and inserts `ReleaseActivation(kind=SAFE_BASELINE_INSTALL, phase=RESERVED)` bound to source SHA, workflow run/attempt, approver, and expiry; PostgreSQL transactional DDL means both commit or both roll back. Seeing schema `0013` with no reservation is `ORPHANED_SCHEMA`: the workflow does not auto-adopt it or deploy and requires audited manual forward disposition. Seeing `0012` with a reservation is likewise invalid. Crash-boundary tests inject failure before/inside/after migration and prove no deploy secret is resolved unless the revision/row pair is consistent.
+`safe-baseline-release.yml` is `workflow_dispatch` only, uses GitHub's protected
+Production Environment and `concurrency.cancel-in-progress: false`, and accepts
+one `source_sha` that must equal the reviewed Tasks 1-4 commit and current
+approved main head. A read-only preflight first checks Alembic revision and,
+when `0013` already exists, the unique activation row; a completed install or
+different-run reservation rejects before dump/restore, migration, deployment-
+secret resolution, or build. Only the first schema-`0012` install (or the same
+run-ID/SHA retry) performs the Task 3 read-only inventory/restore rehearsal. The
+raw dump is created only in a required runner-temp scratch directory outside
+the upload tree. The fresh signed edge-lockdown report is bound to the exact
+run/attempt and freshness window, then verified before the first Production
+database write. Sanitized reservation evidence is uploaded create-once and its
+non-empty artifact ID/digest/URL is proved before mutation. Under one PostgreSQL
+advisory lock, one explicit transaction, and the same Alembic connection, it
+runs exactly upgrade `0013` and inserts
+`ReleaseActivation(kind=SAFE_BASELINE_INSTALL, phase=RESERVED)` bound to source
+SHA, workflow run/attempt, approver, exact reservation artifact URL, and expiry;
+PostgreSQL transactional DDL means both commit or both roll back. Seeing schema
+`0013` with no reservation is `ORPHANED_SCHEMA`: the workflow does not auto-
+adopt it or deploy and requires audited manual forward disposition. Seeing
+`0012` with a reservation is likewise invalid. Crash-boundary tests inject
+failure before/inside/after migration and prove no deploy secret is resolved
+unless the revision/row pair is consistent.
 
-Before resolving a Vercel deployment secret or building, it computes role `SAFE_BASELINE` runtime bundle ID from only the Task 2 contract. It injects that ID into the exact deployment runtime via pinned `vercel deploy --env`, then reads it back; it does not claim the runner variable changed the prebuilt output. `register_safe_baseline.py` advances CAS phases `RESERVED -> STAGED -> PROMOTED -> FORMAL_VERIFIED -> COMPLETED`, persisting runtime ID, build checksum, exact deployment ID/URL, formal-domain observation, run/attempt, and evidence hashes after each external side effect. A rerun never rebuilds after STAGED: it resolves/inspects/reuses the recorded ID. If a crash occurs between deploy and STAGED CAS, recovery enumerates exact source/runtime/build matches and proceeds only when exactly one unbound candidate exists; ambiguity preserves edge deny and requires manual forward disposition. If Promote succeeded before its CAS, recovery compares the formal domain to the exact staged ID and advances rather than Promoting again. After one completed install every later invocation—including a later main HEAD—fails before build/deploy. `verify_safe_baseline.py` snapshots relevant table counts, requires 503 `capability_disabled` on every guarded high-risk route and 410 on every permanently retired Live Portrait/recommendations/leads/legacy-credit route, then proves counts and public-object references are unchanged. It also proves a deliberately invalid signed-webhook request reaches signature validation (400/401, never capability 503), logout is not feature-blocked, cleanup remains paused, and runtime flags read OFF from PostgreSQL. A database audit/statement recorder around cold start, auth, Admin, credit, webhook, logout, reconciliation, and readiness must record zero runtime DDL; the read-only schema guard reports expected revision/tables/indexes only. Any `CREATE/ALTER/DROP` outside the committed Alembic invocation is a hard failure. Static/workflow tests cover every crash boundary and later-HEAD rejection; emergency recovery may only run audited flags-OFF-first `vercel rollback <recorded-deployment-id>` followed by rollback status/formal verification, never rebuild or second-Promote through this workflow.
+Before resolving a Vercel deployment secret or building, it computes role
+`SAFE_BASELINE` runtime bundle ID from only the Task 2 contract. It injects that
+ID into the exact deployment runtime via pinned `vercel deploy --env`, then
+reads it back; it does not claim the runner variable changed the prebuilt
+output. A new prebuilt output is tar-wrapped to preserve directory entries,
+Unix modes, and symbolic-link targets. The tar and manifest sidecar are each
+stream-encrypted with AES-256-GCM under a protected Environment key and
+coordinate-bound associated data; only the `.enc` envelopes are uploaded
+before the mode/link/content-aware manifest is CAS-bound while `RESERVED` and before
+deploy. The protected 32-byte base64 key is never logged and must remain
+unchanged for the full ninety-day recovery window; a missing/wrong key or AAD
+mismatch fails authentication without retaining partial plaintext.
+`RETRY_RESERVED` always probes
+the artifact named by the row's recorded build attempt, even when the manifest
+is still null because upload succeeded immediately before a CAS crash.
+GitHub's artifact API must first return an authenticated successful lookup with
+the exact run/name. Only that authoritative empty result is `NOT_FOUND`; an
+authentication, network, rate-limit, server, or malformed-response error is
+`ERROR` and fails rather than authorizing a rebuild. A found artifact is bound
+by exact artifact ID and SHA-256 digest in the activation row and downloaded by
+that ID. The existing artifact is unpacked only with its strict manifest sidecar, the
+mode/link/content hash must match that sidecar, and only then is it bound; only a missing artifact plus a still-null
+manifest within the original ninety-day artifact-recovery window permits a
+build under the same attempt name. A missing artifact after that window or a bound
+manifest with a missing artifact fails closed. Build artifacts are retained for ninety days;
+after that boundary a missing artifact requires audited manual forward
+disposition. Deployment recovery
+paginates the entire Vercel listing and detects every exact
+project/source/runtime/manifest/role match before filtering state; cursor cycles,
+page-cap exhaustion, a missing artifact, hash drift, malformed coordinates,
+non-READY exact matches, or multiple matches fail closed. Zero exact matches may
+deploy only the already-bound output; one READY match is reused. The protected
+`VERCEL_PROJECT_ID` and `VERCEL_ORG_ID` must both be nonempty before pull/build,
+so the CLI cannot infer or create a different project. The database trigger
+makes a non-null manifest immutable. A formal-domain 404, project mismatch,
+missing deployment ID, or non-READY response is unknown state and cannot
+authorize Promote.
+
+`register_safe_baseline.py` advances CAS phases `RESERVED -> STAGED ->
+PROMOTION_ARMED -> PROMOTED -> FORMAL_VERIFIED -> COMPLETED`, persisting runtime ID, build checksum, exact
+deployment ID/URL, formal-domain observation, run/attempt, and evidence hashes.
+Sanitized staged evidence is durably uploaded before Promote, formal evidence
+before its phase CAS, and completion evidence before the terminal CAS; the
+final failure upload is diagnostic only. After staged evidence is durable, the
+workflow CAS-arms exactly one Promote request. Only the attempt that enters
+`PROMOTION_ARMED` may send it; a retry starting there is read-only and cannot
+send again. Recovery requires the formal domain to resolve READY in the exact
+project and to the staged ID plus the project's `lastAliasRequest` to prove an
+exact target `promote` succeeded, then advances rather than Promoting again.
+Missing/ambiguous request evidence requires manual forward disposition, and a
+Rolling Release is forbidden. A retry from
+`FORMAL_VERIFIED` does not reinstall edge deny: it requires a fresh signed
+handoff/current-state readback before completion. Runtime-DDL and edge-handoff
+reports are HMAC-authenticated, bound to exact run/attempt, have at most a one-
+hour lifetime with at least fifteen minutes remaining, and the statement audit
+must contain a strictly positive statement count with zero DDL. The handoff's
+signed lockdown hash must match its before hash and, on the initial handoff,
+the verified lockdown after hash.
+
+The workflow independently reads `refs/heads/main` through the authenticated
+GitHub API before reservation/migration, before any staged deployment,
+immediately before and after Promote, before `FORMAL_VERIFIED`, and before
+`COMPLETED`. Any API error or mismatch from the approved `SOURCE_SHA` fails
+closed, including every `RETRY_PROMOTED`/`RETRY_FORMAL_VERIFIED` rerun; detected
+drift cannot be bypassed by resuming from a later database phase. The formal report artifact is
+stored as an opaque, schema-validated GitHub artifact reference containing the
+repository, run ID, artifact ID, digest, and exact report filename. A fresh
+resolver authenticates to GitHub, verifies metadata plus archive digest, safely
+extracts that single JSON file, and matches its byte hash to `report_sha256`;
+an artifact web URL is never treated as a local evidence directory. A
+`RETRY_FORMAL_VERIFIED` run must re-download and hash-verify the reference
+already stored in the activation; an expired, deleted, or mismatched artifact
+requires manual forward disposition and can never be silently replaced.
+
+After one completed install every later invocation—including a later main
+HEAD—fails before build/deploy. `verify_safe_baseline.py` snapshots relevant
+table counts, requires the exact Stage-1 matrix of all 33 blocked routes to
+return 503 with their expected `capability_disabled`, `cleanup_paused`, or
+`credit_catalog_unavailable` code,
+including every Partner Invite/session operation, multi-upload/delete,
+checkout/cancel/Admin regeneration/credit grant, user delete, and generation
+cron route. It also requires all 17 permanent guest/OpenID, legacy-user,
+Live Portrait, recommendations, leads/Admin CRM, and legacy-credit routes to return 410,
+then proves counts and public-object references are
+unchanged. It also proves a deliberately invalid signed-webhook request reaches
+signature validation (400/401, never capability 503), logout is not feature-
+blocked, cleanup remains paused, and runtime flags read OFF from PostgreSQL. A
+database audit/statement recorder around cold start, auth, Admin, credit,
+webhook, logout, reconciliation, and readiness must record zero runtime DDL;
+the read-only schema guard reports expected revision/tables/indexes only. Any
+`CREATE/ALTER/DROP` outside the committed Alembic invocation is a hard failure.
+Static/workflow tests cover every crash boundary and later-HEAD rejection;
+emergency recovery may only run audited flags-OFF-first
+`vercel rollback <recorded-deployment-id>` followed by rollback status/formal
+verification, never rebuild or second-Promote through this workflow.
+
+Reservation expiry is an immutable audit/recovery deadline, not an ownership-transfer mechanism. Only the exact source SHA and workflow run ID may resume an expired `RESERVED`, `STAGED`, `PROMOTION_ARMED`, `PROMOTED`, or `FORMAL_VERIFIED` activation after fresh protected-environment and edge checks; the workflow attempt must increase monotonically. `PROMOTION_ARMED` is an at-most-once external-effect fence: any retry beginning there resolves only formal-domain and Vercel project promotion facts, never sends Promote again, and requires audited manual forward disposition if no exact succeeded request can be proved. A different run or source remains a hard conflict and can never take over the activation.
 
 - [ ] **Step 6: Run the baseline gate locally**
 
 ```powershell
 Push-Location frontend
-npm ci
+npm ci --ignore-scripts
 npm run typecheck
 npm run build:web
 Pop-Location
@@ -869,32 +1080,52 @@ powershell -ExecutionPolicy Bypass -File scripts/release/verify_baseline.ps1
 
 Expected: both dependency locks reproduce, backend suite has zero error/failure, typecheck and build exit 0, and the baseline report explicitly records `frontend_unit=NOT_RUN` until Task 22. The audited pre-existing QA test error is repaired here by completing its missing test isolation while preserving its then-current behavior assertion; Task 11 reverses that unsafe fail-open behavior under the strict Stage 2 contract. No baseline error may be relabeled expected or skipped.
 
+The report must identify the bytes and runtime actually verified. A clean
+worktree records `source_sha=HEAD`, `code_identity=CLEAN_COMMIT`, and may be
+release-eligible. A dirty worktree records `source_sha=null`, `base_sha=HEAD`,
+`code_identity=UNCOMMITTED_WORKTREE`, and a deterministic digest over the raw
+Git binary diff plus untracked path/object hashes; it is never release-eligible.
+`fingerprint_worktree.py` captures Git stdout as bytes, disables external diff/
+text conversion, and must produce the same result under different console
+encodings, including a Unicode worktree. Local baseline verification creates a
+fresh temporary virtual environment, installs the platform-matching backend
+lock with `--require-hashes`, runs `pip check`, and executes the backend suite
+there. It records the selected lock SHA, Python, Node, and operating system.
+Release eligibility additionally requires exact Python `3.11.15`, Node
+`24.17.0`, and Linux; a drifted/Windows local run records
+`runtime_alignment=NOT_RUN` even when its engineering checks pass.
+
 - [ ] **Step 7: Commit the no-auto-production and manual safety-release baseline**
 
 ```powershell
 git diff --check
-git add backend/tests/test_ci_release_contract.py backend/tests/test_no_runtime_ddl.py backend/tests/test_evolink_provider.py scripts/release/verify_baseline.ps1 scripts/release/verify_safe_baseline.py scripts/release/register_safe_baseline.py docs/operations/risk-lockdown-runbook.md requirements.in requirements.txt backend/requirements.txt backend/requirements.lock.txt frontend/package.json frontend/package-lock.json .github/workflows/ci.yml .github/workflows/safe-baseline-release.yml docs/ai-worklog.md
+git add backend/tests/test_ci_release_contract.py backend/tests/test_no_runtime_ddl.py backend/tests/test_evolink_provider.py scripts/release/verify_baseline.ps1 scripts/release/fingerprint_worktree.py scripts/release/verify_safe_baseline.py scripts/release/register_safe_baseline.py scripts/release-tools/package.json scripts/release-tools/package-lock.json docs/operations/risk-lockdown-runbook.md requirements.in requirements.txt requirements-resolver.in requirements-resolver.txt requirements-resolver.windows.txt backend/requirements.txt backend/requirements.lock.txt backend/requirements.windows.lock.txt frontend/package.json frontend/package-lock.json .github/workflows/ci.yml .github/workflows/safe-baseline-release.yml docs/ai-worklog.md
 git commit -m "ci: stop unsafe automatic production releases"
 ```
 
 - [ ] **Step 8: Execute the committed safe-baseline workflow and verify the formal domain**
 
-The protected workflow runs the following commands from the committed Tasks 1-4 SHA only after the unique install reservation succeeds; no uncommitted script or workflow may be executed. Staged verification uses the deployment-protection bypass secret and proves application-level 503. After Promote, temporary project-edge deny rules remain in place while an allowlisted protected runner bypasses them to verify the same application response. The workflow then removes one route-group deny rule at a time and immediately rechecks 503/no-side-effect without bypass; any mismatch atomically restores that rule. Signed webhook/reconciliation/logout rules were never denied. Evidence records `edge_deny`, `edge_bypass_app_503`, and final `app_flag_503` separately so an edge block cannot masquerade as the kill switch. On success it CASes the reservation to completed with the immutable deployment ID; if this final CAS fails, edge deny remains and no other run is allowed to guess state.
+The committed workflow is the only executable authority for these commands; do
+not copy its database/Vercel substeps into a shell. Dispatch the exact reviewed
+Tasks 1-4 SHA only after the unique install prerequisites and fresh, attempt-
+bound external reports exist. Staged verification uses the deployment-
+protection bypass secret and proves application-level 503. After Promote,
+temporary project-edge deny rules remain in place while an allowlisted
+protected runner bypasses them to verify the same application response. The
+workflow then removes one route-group deny rule at a time and immediately
+rechecks 503/no-side-effect without bypass; any mismatch atomically restores
+that rule. Signed webhook/reconciliation/logout rules were never denied.
+Evidence records `edge_deny`, `edge_bypass_app_503`, and final `app_flag_503`
+separately so an edge block cannot masquerade as the kill switch. On success it
+persists the completion checkpoint before CASing the reservation to completed
+with the immutable deployment ID; if this final CAS fails, the durable evidence
+and activation phase determine the only allowed retry.
 
 ```powershell
-npx --yes vercel@55.0.0 pull --yes --environment=production --token=$env:VERCEL_TOKEN
-$safeRuntimeBundleId = python scripts/release/build_runtime_bundle_id.py --release-role SAFE_BASELINE --source-sha $env:GITHUB_SHA --schema 20260710_0013 --safe-baseline-contract release/safe-baseline-contract.json --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py --builder-contract-version safe-baseline.v1 --output $env:RUNNER_TEMP/safe-runtime-bundle-id.txt
-$env:RUNTIME_BUNDLE_ID = $safeRuntimeBundleId.Trim()
-npx --yes vercel@55.0.0 build --prod --token=$env:VERCEL_TOKEN
-$safeBaselineUrl = npx --yes vercel@55.0.0 deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
-python scripts/release/register_safe_baseline.py --phase STAGED --runtime-bundle-id $env:RUNTIME_BUNDLE_ID --deployment-url $safeBaselineUrl --source-sha $env:GITHUB_SHA --build-output .vercel/output --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env SAFE_BASELINE_APPROVAL_ID
-python scripts/release/verify_safe_baseline.py --base-url $safeBaselineUrl --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL --expected-source-sha $env:GITHUB_SHA --expected-runtime-bundle-id $env:RUNTIME_BUNDLE_ID --expected-schema 20260710_0013 --require-platform-deployment-id --expected-layer app --output artifacts/security-baseline/safe-baseline-staged.json
-npx --yes vercel@55.0.0 promote $safeBaselineUrl --yes --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 promote status --token=$env:VERCEL_TOKEN
-python scripts/release/register_safe_baseline.py --phase PROMOTED --deployment-url $safeBaselineUrl --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env SAFE_BASELINE_APPROVAL_ID
-python scripts/release/verify_safe_baseline.py --base-url $env:PRODUCTION_BASE_URL --edge-bypass-header-env EDGE_RULE_BYPASS_HEADER --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL --expected-source-sha $env:GITHUB_SHA --expected-runtime-bundle-id $env:RUNTIME_BUNDLE_ID --expected-schema 20260710_0013 --expected-deployment-url $safeBaselineUrl --require-platform-deployment-id --expected-layer app --output artifacts/security-baseline/safe-baseline-formal.json
-python scripts/release/register_safe_baseline.py --phase FORMAL_VERIFIED --deployment-url $safeBaselineUrl --formal-report artifacts/security-baseline/safe-baseline-formal.json --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env SAFE_BASELINE_APPROVAL_ID
-python scripts/release/register_safe_baseline.py --phase COMPLETED --deployment-url $safeBaselineUrl --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env SAFE_BASELINE_APPROVAL_ID
+$sourceSha = '<exact-reviewed-40-character-main-sha>'
+gh workflow run safe-baseline-release.yml --ref main -f "source_sha=${sourceSha}"
+# Record the returned run ID, approve only through the protected Production
+# Environment, then use the GitHub UI or `gh run watch <run-id> --exit-status`.
 ```
 
 Expected: staged, edge-bypass, and each post-handoff formal-domain report PASS; deployment IDs/SHA match, high-risk rows/counts do not grow, signed webhook/reconciliation/logout paths remain reachable, runtime-DDL count is exactly zero across cold start and every probe, all capability rows are OFF, and temporary edge rules are removed only after their application guard is proven. Any staged failure prevents Promote. Any formal-domain mismatch restores/keeps the corresponding edge deny and requires a forward safe-baseline fix; the workflow must not restore the unsafe old deployment.
@@ -1009,7 +1240,7 @@ Do not globally delete the words “guest” or “WeChat”: content-policy det
 ```powershell
 Push-Location frontend
 npm install --package-lock-only
-npm ci
+npm ci --ignore-scripts
 npm run typecheck
 npm run build:web
 Pop-Location
@@ -2832,16 +3063,18 @@ Redis carries no image, user, order payload, price, or secret. Each handler invo
 
 - [ ] **Step 4: Build a dedicated Worker image and truthful readiness**
 
-Task 4 already established the separate Python 3.11 inputs and hash-locked API/test baseline. Add the durable Worker's new direct dependencies exclusively to `backend/requirements.txt` and regenerate only `backend/requirements.lock.txt` in the same clean Python 3.11 Linux environment using the verified available `pip-tools==7.5.3`. `requirements.in` and root `requirements.txt` remain the unchanged Vercel API input/lock; Worker-only ARQ/runtime packages must not leak into them:
+Task 4 already established the separate Python 3.11 inputs and hash-locked API/test baseline. Add the durable Worker's new direct dependencies exclusively to `backend/requirements.txt` and regenerate both `backend/requirements.lock.txt` and `backend/requirements.windows.lock.txt` in their clean target environments using the matching hash-locked resolver environment. `requirements.in` and root `requirements.txt` remain the unchanged Vercel API input/lock; Worker-only ARQ/runtime packages must not leak into them:
 
 ```powershell
-python -m pip install pip-tools==7.5.3
+python -m pip install --require-hashes -r requirements-resolver.txt
 python -m piptools compile --generate-hashes --resolver=backtracking --output-file backend/requirements.lock.txt backend/requirements.txt
 python -m pip install --require-hashes -r backend/requirements.lock.txt
+# Repeat on the pinned Windows runner with requirements-resolver.windows.txt
+# and --output-file backend/requirements.windows.lock.txt.
 git diff --exit-code -- requirements.in requirements.txt
 ```
 
-`backend/Dockerfile.worker` installs with `python -m pip install --require-hashes -r requirements.lock.txt`, runs only the ARQ Worker plus dispatcher/retention schedules, and never starts Uvicorn. Vercel's root API build consumes Task 4's unchanged generated hash-bearing `requirements.txt`; the committed file contains no floating `>=` constraints. `/version` and Worker heartbeat publish git SHA, image digest supplied at deployment, deployment ID, schema revision, payload min/max, config hash, and target/current feature snapshot hashes. Readiness fails for missing PostgreSQL, Redis, private storage, strict QA runtime, provider configuration, or a heartbeat older than 120 seconds. CI regenerates the Worker lock in the pinned Linux resolver image, verifies Task 4's API lock is unchanged, and fails on any diff, so one source SHA cannot silently mix API and Worker dependency graphs.
+`backend/Dockerfile.worker` installs the Linux lock with `python -m pip install --require-hashes -r requirements.lock.txt`, runs only the ARQ Worker plus dispatcher/retention schedules, and never starts Uvicorn. Vercel's root API build consumes Task 4's unchanged generated hash-bearing `requirements.txt`; the committed file contains no floating `>=` constraints. `/version` and Worker heartbeat publish git SHA, image digest supplied at deployment, deployment ID, schema revision, payload min/max, config hash, and target/current feature snapshot hashes. Readiness fails for missing PostgreSQL, Redis, private storage, strict QA runtime, provider configuration, or a heartbeat older than 120 seconds. CI regenerates both backend platform locks in their pinned environments, verifies Task 4's API lock is unchanged, and fails on any diff, so one source SHA cannot silently mix API and Worker dependency graphs.
 
 - [ ] **Step 5: Verify crash recovery with real PostgreSQL and Redis**
 
@@ -3506,7 +3739,7 @@ npm --prefix frontend ci
 npm --prefix frontend run playwright:install
 ```
 
-Task 4 already pins Vue/TypeScript/Vite/vue-tsc, and Task 7 already pins `@playwright/test@1.61.1` plus creates `playwright:install`, `test:e2e`, and `playwright.config.ts`; assert those exact versions remain in the lockfile rather than reinstalling or recreating them. Add only the missing `typecheck`, `openapi:generate`, `test:unit`, `test:a11y`, and `build:web` scripts while extending the existing browser scripts (`playwright install --with-deps chromium firefox`). Node 20 is the only CI runtime. Every CI/Preview browser job runs `npm --prefix frontend run playwright:install` from the exact locked install (or uses the exact `mcr.microsoft.com/playwright:v1.61.1-noble` image); it never calls a floating npx package. A runner with npm packages but no matching browser binaries fails before tests. Do not install floating `latest`.
+Task 4 already pins Vue/TypeScript/Vite/vue-tsc/Sass, and Task 7 already pins `@playwright/test@1.61.1` plus creates `playwright:install`, `test:e2e`, and `playwright.config.ts`; assert those exact versions remain in the lockfile rather than reinstalling or recreating them. Add only the missing `typecheck`, `openapi:generate`, `test:unit`, `test:a11y`, and `build:web` scripts while extending the existing browser scripts (`playwright install --with-deps chromium firefox`). Exact Node 24.17.0 is the CI runtime. Every CI/Preview browser job runs `npm --prefix frontend run playwright:install` from the exact locked install (or uses the exact `mcr.microsoft.com/playwright:v1.61.1-noble` image); it never calls a floating npx package. A runner with npm packages but no matching browser binaries fails before tests. Do not install floating `latest`.
 
 - [ ] **Step 2: Write contract-export and HTTP harness tests**
 
@@ -3812,12 +4045,12 @@ Structured events carry available `request_id`, internal/hashed `user_id`, `orde
 Define a non-reusable manual-only `workflow_dispatch` entry with required exact source SHA, GitHub Production Environment approval, and global `concurrency.cancel-in-progress: false`; explicitly forbid push/PR/schedule/repository dispatch/`workflow_call`. Pin Vercel CLI to `55.0.0`; require the target SHA to equal approved main HEAD and acquire the database release lease before secrets. The workflow can build once and deploy the same prebuilt output twice as distinct, unbound Production deployments, but Task 27 neither reads Production secrets nor runs it:
 
 ```powershell
-npx --yes vercel@55.0.0 pull --yes --environment=production --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 build --prod --token=$env:VERCEL_TOKEN
-$privateCompatibleBaselineUrl = npx --yes vercel@55.0.0 deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
-$stagedTargetUrl = npx --yes vercel@55.0.0 deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 inspect $privateCompatibleBaselineUrl --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 inspect $stagedTargetUrl --token=$env:VERCEL_TOKEN
+& $vercelCli pull --yes --environment=production --token=$env:VERCEL_TOKEN
+& $vercelCli build --prod --token=$env:VERCEL_TOKEN
+$privateCompatibleBaselineUrl = & $vercelCli deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
+$stagedTargetUrl = & $vercelCli deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
+& $vercelCli inspect $privateCompatibleBaselineUrl --token=$env:VERCEL_TOKEN
+& $vercelCli inspect $stagedTargetUrl --token=$env:VERCEL_TOKEN
 ```
 
 The two deployment IDs must differ while source SHA and prebuilt checksum match. Do not build, deploy, or Promote any Production target in this task; these commands document the committed Task 29 Production workflow phases. The protected Preview execution described next is the only deployment this task's integration workflow may run. Missing token, environment approval, bundle field, or exact SHA is a hard failure. Vercel Git auto production assignment, deploy hooks, and dashboard Promote remain externally disabled and are captured as reviewed evidence.
@@ -4553,13 +4786,13 @@ $runtimeId = python scripts/release/build_runtime_bundle_id.py --release-role CO
 $env:RUNTIME_BUNDLE_ID = $runtimeId.Trim()
 python scripts/release/run_approved_worker_host.py deploy-suspended --contract release/worker-host-contract.json --source-sha $finalSha --image-digest $env:WORKER_IMAGE_DIGEST --runtime-bundle-id $env:RUNTIME_BUNDLE_ID --output $env:RUNNER_TEMP/worker-suspended.json
 python scripts/release/register_bundle.py advance --kind COMMERCIAL_7A --expected-phase RESERVED --phase WORKER_STAGED --runtime-bundle-id $env:RUNTIME_BUNDLE_ID --worker-build-report $env:RUNNER_TEMP/worker-build.json --worker-deployment-report $env:RUNNER_TEMP/worker-suspended.json --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID
-npx --yes vercel@55.0.0 pull --yes --environment=production --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 build --prod --token=$env:VERCEL_TOKEN
-$privateCompatibleBaselineUrl = npx --yes vercel@55.0.0 deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 inspect $privateCompatibleBaselineUrl --token=$env:VERCEL_TOKEN > $env:RUNNER_TEMP/private-baseline-inspect.txt
+& $vercelCli pull --yes --environment=production --token=$env:VERCEL_TOKEN
+& $vercelCli build --prod --token=$env:VERCEL_TOKEN
+$privateCompatibleBaselineUrl = & $vercelCli deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
+& $vercelCli inspect $privateCompatibleBaselineUrl --token=$env:VERCEL_TOKEN > $env:RUNNER_TEMP/private-baseline-inspect.txt
 python scripts/release/register_bundle.py advance --kind COMMERCIAL_7A --expected-phase WORKER_STAGED --phase API_BASELINE_STAGED --runtime-bundle-id $env:RUNTIME_BUNDLE_ID --deployment-url $privateCompatibleBaselineUrl --deployment-role private-compatible-baseline --build-output .vercel/output --inspect-report $env:RUNNER_TEMP/private-baseline-inspect.txt --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID
-$stagedTargetUrl = npx --yes vercel@55.0.0 deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 inspect $stagedTargetUrl --token=$env:VERCEL_TOKEN > $env:RUNNER_TEMP/staged-target-inspect.txt
+$stagedTargetUrl = & $vercelCli deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
+& $vercelCli inspect $stagedTargetUrl --token=$env:VERCEL_TOKEN > $env:RUNNER_TEMP/staged-target-inspect.txt
 python scripts/release/register_bundle.py advance --kind COMMERCIAL_7A --expected-phase API_BASELINE_STAGED --phase API_TARGET_STAGED --runtime-bundle-id $env:RUNTIME_BUNDLE_ID --deployment-url $stagedTargetUrl --deployment-role staged-target --build-output .vercel/output --inspect-report $env:RUNNER_TEMP/staged-target-inspect.txt --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID
 $env:RELEASE_MANIFEST = "$env:RUNNER_TEMP/commercial-7a-bundle-manifest.json"
 python scripts/release/build_manifest.py --release-kind commercial-7a --runtime-bundle-id $env:RUNTIME_BUNDLE_ID --source-sha $finalSha --preview-resolution-report $env:RUNNER_TEMP/preview-resolution.json --private-compatible-baseline-url $privateCompatibleBaselineUrl --private-compatible-baseline-inspect $env:RUNNER_TEMP/private-baseline-inspect.txt --staged-target-url $stagedTargetUrl --staged-target-inspect $env:RUNNER_TEMP/staged-target-inspect.txt --worker-report $env:RUNNER_TEMP/worker-suspended.json --provider-mapping-file-env CREEM_PRODUCT_MAPPING_FILE --expected-schema 20260710_0020 --contracts release --output $env:RELEASE_MANIFEST
@@ -4597,7 +4830,7 @@ $evidence = $productionEvidence
 python scripts/release/verify_runtime_drain.py --formal-base-url $env:PRODUCTION_BASE_URL --expected-api-deployment-id $env:SAFE_BASELINE_DEPLOYMENT_ID --expected-worker-deployment-id none --old-deployments-file-env OLD_RUNTIME_IDS_FILE --legacy-queue-name generate_order --max-api-duration-seconds 300 --output "$evidence/pre-migration-drain.json"
 python scripts/release/inventory_production.py --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL --hmac-key-env INVENTORY_HMAC_KEY --output "$evidence/pre-migration-inventory.json" --signature-output "$evidence/pre-migration-inventory.sig"
 $env:PRE_MIGRATION_INVENTORY_SHA256 = (Get-FileHash "$evidence/pre-migration-inventory.json" -Algorithm SHA256).Hash.ToLowerInvariant()
-python backend/scripts/backup_restore_rehearsal.py --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL --target-url-env RESTORE_REHEARSAL_DATABASE_URL --target-admin-url-env RESTORE_REHEARSAL_ADMIN_DATABASE_URL --target-role-name-env RESTORE_REHEARSAL_ROLE_NAME --expected-target-db-prefix vowpic_restore_ --artifact-dir "$env:RUNNER_TEMP/restore"
+python backend/scripts/backup_restore_rehearsal.py --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL --target-url-env RESTORE_REHEARSAL_DATABASE_URL --target-admin-url-env RESTORE_REHEARSAL_ADMIN_DATABASE_URL --target-role-name-env RESTORE_REHEARSAL_ROLE_NAME --expected-target-db-prefix vowpic_restore_ --artifact-dir "$env:RUNNER_TEMP/restore" --scratch-dir "$env:RUNNER_TEMP/restore-dump-scratch"
 python scripts/release/register_bundle.py bind-migration-parent --kind COMMERCIAL_7A --expected-phase MANIFEST_SEALED --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env DATA_MIGRATION_APPROVAL_ID --output $env:RUNNER_TEMP/migration-parent.json --job-env $env:GITHUB_ENV --env-prefix MIGRATION_
 # A later protected migration step consumes MIGRATION_PARENT_RUN_ID.
 python scripts/release/apply_additive_migrations.py --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --migration-parent-run-id $env:MIGRATION_PARENT_RUN_ID --script-run-id "${env:MIGRATION_PARENT_RUN_ID}:additive-0020:write" --inventory-report "$evidence/pre-migration-inventory.json" --inventory-signature "$evidence/pre-migration-inventory.sig" --expected-inventory-sha256 $env:PRE_MIGRATION_INVENTORY_SHA256 --release-manifest $env:RELEASE_MANIFEST --expected-manifest-sha256 $env:RELEASE_MANIFEST_SHA256 --approval-id-env DATA_MIGRATION_APPROVAL_ID --target-revision 20260710_0020 --report "$evidence/additive-migrations.json" --write
@@ -4621,8 +4854,8 @@ python scripts/release/collect_runtime_report.py --base-url $stagedTargetUrl --d
 python scripts/release/register_bundle.py advance --kind COMMERCIAL_7A --expected-phase SCHEMA_0020 --phase WORKER_RUNNING --worker-start-report "$evidence/worker-start-disabled.json" --worker-heartbeat-report "$evidence/worker-version.json" --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID
 python scripts/release/verify_bundle.py --manifest $env:RELEASE_MANIFEST --api-report "$evidence/private-compatible-baseline-version.json" --worker-report "$evidence/worker-version.json"
 python scripts/release/verify_bundle.py --manifest $env:RELEASE_MANIFEST --api-report "$evidence/staged-target-version.json" --worker-report "$evidence/worker-version.json"
-npx --yes vercel@55.0.0 promote $privateCompatibleBaselineUrl --yes --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 promote status --token=$env:VERCEL_TOKEN
+& $vercelCli promote $privateCompatibleBaselineUrl --yes --token=$env:VERCEL_TOKEN
+& $vercelCli promote status --token=$env:VERCEL_TOKEN
 python scripts/release/register_bundle.py advance --kind COMMERCIAL_7A --expected-phase WORKER_RUNNING --phase BASELINE_PROMOTED --deployment-url $privateCompatibleBaselineUrl --formal-base-url $env:PRODUCTION_BASE_URL --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID
 python scripts/release/verify_runtime_drain.py --formal-base-url $env:PRODUCTION_BASE_URL --expected-api-deployment-id $env:PRIVATE_COMPATIBLE_BASELINE_ID --expected-worker-deployment-id $env:WORKER_DEPLOYMENT_ID --old-deployments-file-env SAFE_BASELINE_RUNTIME_IDS_FILE --legacy-queue-name generate_order --max-api-duration-seconds 300 --output "$evidence/private-baseline-handoff-drain.json"
 python scripts/release/replay_migration_window_events.py --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --migration-parent-run-id $env:MIGRATION_PARENT_RUN_ID --script-run-id "${env:MIGRATION_PARENT_RUN_ID}:window-replay-final:write" --resume-from-report "$evidence/migration-window-replay.json" --cutover-report "$evidence/private-baseline-handoff-drain.json" --inventory-report "$evidence/pre-migration-inventory.json" --inventory-signature "$evidence/pre-migration-inventory.sig" --expected-inventory-sha256 $env:PRE_MIGRATION_INVENTORY_SHA256 --release-manifest $env:RELEASE_MANIFEST --expected-manifest-sha256 $env:RELEASE_MANIFEST_SHA256 --approval-id-env DATA_MIGRATION_APPROVAL_ID --report "$evidence/migration-window-final-replay.json" --write --resume
@@ -4711,8 +4944,8 @@ Reverify main SHA, manifest hash, staged target ID, Worker digest/heartbeat, sch
 ```powershell
 python scripts/release/run_approved_worker_host.py heartbeat --contract release/worker-host-contract.json --deployment-report $env:RUNNER_TEMP/worker-suspended.json --expected-image-digest $env:WORKER_IMAGE_DIGEST --expected-runtime-bundle-id $env:RUNTIME_BUNDLE_ID --require-dispatch-mode enabled --maximum-age-seconds 120 --output "$evidence/worker-version-target-promote.json"
 python scripts/release/verify_bundle.py --manifest $env:RELEASE_MANIFEST --api-report "$evidence/staged-target-version.json" --worker-report "$evidence/worker-version-target-promote.json"
-npx --yes vercel@55.0.0 promote $stagedTargetUrl --yes --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 promote status --token=$env:VERCEL_TOKEN
+& $vercelCli promote $stagedTargetUrl --yes --token=$env:VERCEL_TOKEN
+& $vercelCli promote status --token=$env:VERCEL_TOKEN
 python scripts/release/register_bundle.py advance --kind COMMERCIAL_7A --expected-phase TARGET_ACCEPTED --phase TARGET_PROMOTED --deployment-url $stagedTargetUrl --formal-base-url $env:PRODUCTION_BASE_URL --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID
 python scripts/release/apply_activation_plan.py --phase formal-cohort --manifest $env:RELEASE_MANIFEST --deployment-id $env:STAGED_TARGET_ID --canonical-users-report "$evidence/first-login-users.json" --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID --output "$evidence/formal-cohort.json"
 npm --prefix frontend run test:e2e -- e2e/production-canary.spec.ts
@@ -4792,8 +5025,8 @@ python scripts/release/resolve_release_coordinates.py --coordinate-kind observat
 # A later protected recovery step consumes only RECOVERY_* coordinates resolved above.
 if ($env:RECOVERY_RELEASE_ROLE -eq 'COMMERCIAL_7A') {
     python scripts/release/run_approved_worker_host.py reconcile-failure --contract release/worker-host-contract.json --release-resolution-report "$env:RUNNER_TEMP/observation-recovery.json" --desired-state stopped --output "$env:RUNNER_TEMP/observation-worker-stopped.json"
-    npx --yes vercel@55.0.0 rollback $env:RECOVERY_PRIVATE_COMPATIBLE_BASELINE_URL --yes --token=$env:VERCEL_TOKEN
-    npx --yes vercel@55.0.0 rollback status --token=$env:VERCEL_TOKEN
+    & $vercelCli rollback $env:RECOVERY_PRIVATE_COMPATIBLE_BASELINE_URL --yes --token=$env:VERCEL_TOKEN
+    & $vercelCli rollback status --token=$env:VERCEL_TOKEN
     python scripts/release/collect_runtime_report.py --base-url $env:PRODUCTION_BASE_URL --expected-deployment-id $env:RECOVERY_PRIVATE_COMPATIBLE_BASELINE_DEPLOYMENT_ID --expected-runtime-bundle-id $env:RECOVERY_RUNTIME_BUNDLE_ID --expected-schema 20260710_0020 --output "$env:RUNNER_TEMP/observation-7a-rollback.json"
     python scripts/release/observe_release.py complete-recovery --resolution-report "$env:RUNNER_TEMP/observation-recovery.json" --worker-report "$env:RUNNER_TEMP/observation-worker-stopped.json" --api-report "$env:RUNNER_TEMP/observation-7a-rollback.json" --disposition ROLLED_BACK_PRIVATE_BASELINE --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env PRODUCTION_RECOVERY_APPROVAL_ID --output "$env:RUNNER_TEMP/observation-recovery-final.json"
 } elseif ($env:RECOVERY_RELEASE_ROLE -eq 'CONTRACT_7B' -and $env:RECOVERY_SCHEMA_REVISION -eq '20260710_0021') {
@@ -5040,10 +5273,10 @@ $env:CONTRACT_RUNTIME_BUNDLE_ID = $contractRuntime.Trim()
 $env:RUNTIME_BUNDLE_ID = $env:CONTRACT_RUNTIME_BUNDLE_ID
 python scripts/release/run_approved_worker_host.py deploy-suspended --contract release/worker-host-contract.json --source-sha $contractSha --release-kind contract-7b --image-digest $env:CONTRACT_WORKER_IMAGE_DIGEST --runtime-bundle-id $env:CONTRACT_RUNTIME_BUNDLE_ID --output $env:RUNNER_TEMP/contract-worker-suspended.json
 python scripts/release/register_bundle.py advance --kind CONTRACT_7B --expected-phase RESERVED --phase WORKER_STAGED --runtime-bundle-id $env:CONTRACT_RUNTIME_BUNDLE_ID --worker-build-report $env:RUNNER_TEMP/contract-worker-build.json --worker-deployment-report $env:RUNNER_TEMP/contract-worker-suspended.json --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env CONTRACT_RELEASE_APPROVAL_ID
-npx --yes vercel@55.0.0 pull --yes --environment=production --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 build --prod --token=$env:VERCEL_TOKEN
-$contractTargetUrl = npx --yes vercel@55.0.0 deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:CONTRACT_RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
-npx --yes vercel@55.0.0 inspect $contractTargetUrl --token=$env:VERCEL_TOKEN > $env:RUNNER_TEMP/contract-target-inspect.txt
+& $vercelCli pull --yes --environment=production --token=$env:VERCEL_TOKEN
+& $vercelCli build --prod --token=$env:VERCEL_TOKEN
+$contractTargetUrl = & $vercelCli deploy --prebuilt --prod --skip-domain --env RUNTIME_BUNDLE_ID=$env:CONTRACT_RUNTIME_BUNDLE_ID --token=$env:VERCEL_TOKEN
+& $vercelCli inspect $contractTargetUrl --token=$env:VERCEL_TOKEN > $env:RUNNER_TEMP/contract-target-inspect.txt
 python scripts/release/register_bundle.py advance --kind CONTRACT_7B --expected-phase WORKER_STAGED --phase API_STAGED --runtime-bundle-id $env:CONTRACT_RUNTIME_BUNDLE_ID --deployment-url $contractTargetUrl --deployment-role contract-target --build-output .vercel/output --inspect-report $env:RUNNER_TEMP/contract-target-inspect.txt --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env CONTRACT_RELEASE_APPROVAL_ID
 $env:CONTRACT_RELEASE_MANIFEST = "$env:RUNNER_TEMP/contract-7b-bundle-manifest.json"
 python scripts/release/build_manifest.py --release-kind contract-7b --runtime-bundle-id $env:CONTRACT_RUNTIME_BUNDLE_ID --source-sha $contractSha --preview-resolution-report $env:RUNNER_TEMP/contract-preview-resolution.json --staged-target-url $contractTargetUrl --staged-target-inspect $env:RUNNER_TEMP/contract-target-inspect.txt --worker-report $env:RUNNER_TEMP/contract-worker-suspended.json --schema-before 20260710_0020 --schema-target 20260710_0021 --contract-migration backend/alembic/versions/20260710_0021_contract_cleanup.py --parent-release-resolution $env:RUNNER_TEMP/release-7a-resolution.json --contracts release --output $env:CONTRACT_RELEASE_MANIFEST
@@ -5063,7 +5296,7 @@ python scripts/release/register_bundle.py advance --kind CONTRACT_7B --expected-
 python scripts/release/collect_runtime_report.py --base-url $contractTargetUrl --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER --expected-role contract-target --expected-runtime-bundle-id $env:CONTRACT_RUNTIME_BUNDLE_ID --expected-source-sha $contractSha --expected-schema 20260710_0020 --output $env:RUNNER_TEMP/contract-pre-api.json
 python scripts/release/verify_bundle.py --manifest $env:CONTRACT_RELEASE_MANIFEST --phase pre-contract --api-report $env:RUNNER_TEMP/contract-pre-api.json --worker-report $env:RUNNER_TEMP/contract-pre-worker.json
 python scripts/release/register_bundle.py advance --kind CONTRACT_7B --expected-phase WORKER_RUNNING_DISABLED --phase PRE_CONTRACT_VERIFIED --api-report $env:RUNNER_TEMP/contract-pre-api.json --worker-report $env:RUNNER_TEMP/contract-pre-worker.json --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env CONTRACT_RELEASE_APPROVAL_ID
-npx --yes vercel@55.0.0 promote $contractTargetUrl --yes --token=$env:VERCEL_TOKEN
+& $vercelCli promote $contractTargetUrl --yes --token=$env:VERCEL_TOKEN
 python scripts/release/collect_runtime_report.py --base-url $env:PRODUCTION_BASE_URL --expected-role contract-target --expected-deployment-id $env:CONTRACT_DEPLOYMENT_ID --expected-runtime-bundle-id $env:CONTRACT_RUNTIME_BUNDLE_ID --expected-source-sha $contractSha --expected-schema 20260710_0020 --output $env:RUNNER_TEMP/contract-formal-pre-api.json
 python scripts/release/register_bundle.py advance --kind CONTRACT_7B --expected-phase PRE_CONTRACT_VERIFIED --phase TARGET_PROMOTED --deployment-url $contractTargetUrl --formal-api-report $env:RUNNER_TEMP/contract-formal-pre-api.json --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env CONTRACT_RELEASE_APPROVAL_ID
 python scripts/release/run_approved_worker_host.py stop --contract release/worker-host-contract.json --release-resolution-report $env:RUNNER_TEMP/release-7a-resolution.json --reason contract-cutover --output $env:RUNNER_TEMP/release-7a-worker-stop.json
@@ -5075,7 +5308,7 @@ python scripts/release/inventory_production.py --database-url-env PRODUCTION_REA
 $env:CONTRACT_INVENTORY_REPORT = "$contractEvidence/contract-inventory.json"
 $env:CONTRACT_INVENTORY_SIGNATURE = "$contractEvidence/contract-inventory.sig"
 $env:CONTRACT_INVENTORY_SHA256 = (Get-FileHash $env:CONTRACT_INVENTORY_REPORT -Algorithm SHA256).Hash.ToLowerInvariant()
-python backend/scripts/backup_restore_rehearsal.py --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL --target-url-env RESTORE_REHEARSAL_DATABASE_URL --target-admin-url-env RESTORE_REHEARSAL_ADMIN_DATABASE_URL --target-role-name-env RESTORE_REHEARSAL_ROLE_NAME --expected-target-db-prefix vowpic_restore_ --artifact-dir "$env:RUNNER_TEMP/contract-restore"
+python backend/scripts/backup_restore_rehearsal.py --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL --target-url-env RESTORE_REHEARSAL_DATABASE_URL --target-admin-url-env RESTORE_REHEARSAL_ADMIN_DATABASE_URL --target-role-name-env RESTORE_REHEARSAL_ROLE_NAME --expected-target-db-prefix vowpic_restore_ --artifact-dir "$env:RUNNER_TEMP/contract-restore" --scratch-dir "$env:RUNNER_TEMP/contract-restore-dump-scratch"
 $env:CONTRACT_ENTRY_REPORT = "$contractEvidence/contract-entry.json"
 python scripts/release/verify_forbidden_references.py --contract release/contract-forbidden-references.json --mode production-entry --release-7a-resolution-report $env:RUNNER_TEMP/release-7a-resolution.json --contract-manifest $env:CONTRACT_RELEASE_MANIFEST --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL --report $env:CONTRACT_ENTRY_REPORT
 python scripts/release/register_bundle.py bind-migration-parent --kind CONTRACT_7B --expected-phase DRAINED --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --approval-id-env CONTRACT_RELEASE_APPROVAL_ID --output $env:RUNNER_TEMP/contract-migration-parent.json --job-env $env:GITHUB_ENV --env-prefix CONTRACT_MIGRATION_
@@ -5158,8 +5391,8 @@ if ($env:FAILURE_DISPOSITION -in @('NO_ACTIVE_RELEASE','ENTRY_REJECTED')) {
         python scripts/release/resolve_release_coordinates.py --coordinate-kind parent --parent-of-report $env:RUNNER_TEMP/contract-failure-resolution.json --release-role COMMERCIAL_7A --expected-phase 7A_ACCEPTED --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID --private-evidence-token-env PRIVATE_EVIDENCE_READ_TOKEN --output $env:RUNNER_TEMP/release-7a-failure-resolution.json --job-env $env:GITHUB_ENV --env-prefix PARENT_7A_
         # A later protected rollback step consumes only PARENT_7A_* coordinates resolved above.
         if ($env:RECOVERY_PLAN_ACTION -eq 'ROLLBACK_7A') {
-            npx --yes vercel@55.0.0 rollback $env:PARENT_7A_TARGET_DEPLOYMENT_URL --yes --token=$env:VERCEL_TOKEN
-            npx --yes vercel@55.0.0 rollback status --token=$env:VERCEL_TOKEN
+            & $vercelCli rollback $env:PARENT_7A_TARGET_DEPLOYMENT_URL --yes --token=$env:VERCEL_TOKEN
+            & $vercelCli rollback status --token=$env:VERCEL_TOKEN
         }
         python scripts/release/run_approved_worker_host.py ensure-running --contract release/worker-host-contract.json --release-resolution-report $env:RUNNER_TEMP/release-7a-failure-resolution.json --dispatch-mode enabled --output $env:RUNNER_TEMP/release-7a-worker-restart.json
         python scripts/release/run_approved_worker_host.py heartbeat --contract release/worker-host-contract.json --release-resolution-report $env:RUNNER_TEMP/release-7a-failure-resolution.json --require-dispatch-mode enabled --maximum-age-seconds 120 --output $env:RUNNER_TEMP/release-7a-worker-heartbeat.json

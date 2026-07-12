@@ -15,10 +15,10 @@ from app.services import ops_config_service  # noqa: E402
 
 
 class RemoteJoinConfigTest(unittest.TestCase):
-    def test_remote_join_is_enabled_by_default_for_web_saas(self) -> None:
+    def test_remote_join_is_disabled_by_default_during_bootstrap_lockdown(self) -> None:
         settings = Settings(_env_file=None)
 
-        self.assertTrue(settings.remote_join_enabled)
+        self.assertFalse(settings.remote_join_enabled)
 
     def test_public_config_respects_explicit_remote_join_disable(self) -> None:
         original_settings = ops_config_service.settings
@@ -33,6 +33,25 @@ class RemoteJoinConfigTest(unittest.TestCase):
         finally:
             ops_config_service.settings = original_settings
             ops_config_service.DEFAULT_OPS_CONFIG["feature_flags"]["remote_join"] = original_default
+
+    def test_external_ops_config_cannot_enable_retired_or_high_risk_features(self) -> None:
+        unsafe_config = {
+            **ops_config_service.DEFAULT_OPS_CONFIG,
+            "feature_flags": {
+                "live_portrait": True,
+                "remote_join": True,
+                "local_recommendations": True,
+                "director_mode": True,
+            },
+        }
+
+        with patch.object(ops_config_service, "get_ops_config", return_value=unsafe_config):
+            config = ops_config_service.get_public_ops_config()
+
+        self.assertFalse(config["feature_flags"]["live_portrait"])
+        self.assertFalse(config["feature_flags"]["remote_join"])
+        self.assertFalse(config["feature_flags"]["local_recommendations"])
+        self.assertFalse(config["feature_flags"]["director_mode"])
 
     def test_public_config_hides_google_oauth_until_exchange_is_configured(self) -> None:
         original_settings = ops_config_service.settings
@@ -57,6 +76,7 @@ class RemoteJoinConfigTest(unittest.TestCase):
                 _env_file=None,
                 supabase_url="https://example.supabase.co",
                 supabase_anon_key="anon-key",
+                google_auth_enabled=True,
             )
 
             config = ops_config_service.get_public_ops_config()

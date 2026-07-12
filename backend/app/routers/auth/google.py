@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.feature_flags import Capability, FeatureFlagState
 from app.core.supabase_auth import (
     SupabaseAuthError,
     SupabaseUserClaims,
@@ -22,6 +23,12 @@ from app.services.credit_service import grant_welcome_bonus
 from app.services.account_risk_service import record_account_risk_event
 from app.services.email_service import is_disposable_email
 from app.services.schema_guard_service import ensure_user_account_columns
+from app.services.acceptance_identity_service import (
+    compute_subject_hmac,
+    consume_binding_row,
+    lock_acceptance_binding,
+)
+from app.services.feature_flag_service import require_request_capability, resolve_request_capability
 from app.routers.auth._shared import settings, NEW_ACCOUNT_DEVICE_LIMITER
 from app.routers.auth._helpers import (
     create_access_token,
@@ -36,7 +43,11 @@ router = APIRouter()
 
 
 @router.get("/supabase/google/start")
-async def start_supabase_google_login(next: str | None = None) -> RedirectResponse:
+async def start_supabase_google_login(
+    next: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    await require_request_capability(None, db, Capability.GOOGLE_AUTH)
     if not settings.supabase_oauth_enabled:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase Auth is not fully configured")
 
@@ -52,13 +63,50 @@ async def exchange_supabase_session(
     http_request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
-    await ensure_user_account_columns(db)
+    preflight = await resolve_request_capability(db, Capability.GOOGLE_AUTH)
+    if not preflight.allowed and preflight.reason != "cohort_identity_missing":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "capability_disabled",
+                "capability": Capability.GOOGLE_AUTH.value,
+                "reason": preflight.reason,
+            },
+        )
     try:
         claims = await verify_supabase_token(request.access_token)
     except SupabaseAuthError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Supabase session") from exc
 
+    binding = None
+    if not preflight.allowed:
+        identity_hash = compute_subject_hmac(
+            settings.acceptance_identity_hmac_key,
+            "google",
+            claims.subject,
+        )
+        decision = await require_request_capability(
+            http_request,
+            db,
+            Capability.GOOGLE_AUTH,
+            verified_identity_hash=identity_hash,
+        )
+        if decision.state is not FeatureFlagState.ACCEPTANCE_COHORT:
+            raise HTTPException(status_code=503, detail="acceptance identity state mismatch")
+        binding = await lock_acceptance_binding(
+            db,
+            provider="google",
+            subject_hmac=identity_hash,
+            environment=settings.runtime_environment,
+            deployment_id=settings.deployment_id,
+        )
+        if binding is None:
+            raise HTTPException(status_code=503, detail="acceptance identity binding unavailable")
+
+    await ensure_user_account_columns(db)
     is_new_user, user = await _get_or_create_supabase_user(db, claims, http_request)
+    if binding is not None and not await consume_binding_row(binding, user.id):
+        raise HTTPException(status_code=409, detail="acceptance identity binding already consumed")
     await db.refresh(user)
 
     bonus_granted = False
