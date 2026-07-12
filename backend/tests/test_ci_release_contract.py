@@ -170,6 +170,11 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIs(deployment_enabled["main"], False)
         self.assertEqual(set(deployment_enabled), {"main"})
 
+    def test_vercel_runtime_environment_comes_from_platform_system_environment(self) -> None:
+        config = json.loads(_read("vercel.json"))
+
+        self.assertNotIn("RUNTIME_ENVIRONMENT", config.get("env", {}))
+
     def test_frontend_core_tool_versions_and_scripts_are_exact(self) -> None:
         package = json.loads(_read("frontend/package.json"))
         expected = {

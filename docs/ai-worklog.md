@@ -455,3 +455,43 @@
 
 - One HTTP regression initially created one legacy `wx_*` user in the local development database; the exact test row was identified and deleted immediately, with one-row cleanup readback.
 - Disposable PostgreSQL databases/roles and the failed diagnostic container were removed. No Production credential, business database, formal domain, payment, email, Provider request, storage object, or real customer record was touched.
+
+## 2026-07-12 - Preview runtime pre-sync correction
+
+### Goal and scope
+
+- Verify the already pushed Tasks 1-4 commit against its real Vercel Preview before opening a PR or advancing any Production/domain step.
+- Correct only the Preview cold-start failure while preserving Production config validation, route-level capability guards, and the protected release boundary.
+
+### Live evidence and root cause
+
+- Feature commit `b6012ddd9b41c9d603643edc931156931ac31170` was pushed only to `codex/vowpic-commercial-closure`. Vercel Git integration created Preview deployment `dpl_9iB7V5u6TkAzLbMxukfo735sYEva`; it was `READY`, `target=null`, and bound to that exact branch/SHA.
+- The Preview root returned HTTP 200, but `/api/v1/ops/public_config` returned HTTP 500 `FUNCTION_INVOCATION_FAILED`. Runtime logs proved the FastAPI lifespan rejected missing `RUNTIME_BUNDLE_ID`, `ACCEPTANCE_IDENTITY_HMAC_KEY`, and `CONTROL_PLANE_DATABASE_URL`.
+- `vercel.json` incorrectly forced `RUNTIME_ENVIRONMENT=production` for every deployment. Vercel's documented `VERCEL_ENV` already distinguishes `preview`, `production`, and `development` at build and runtime.
+- `vowpic.com` and `www.vowpic.com` remained on Production deployment `dpl_8ryc7dh5XjocPnPjyw1Yq9ZkqGTA`, source SHA `52208b66fda5ab1a327c3af7d3840eabe74016fd`; the Preview had only its generated `.vercel.app` alias.
+
+### Changes
+
+- `Settings.runtime_environment` now gives explicit `RUNTIME_ENVIRONMENT` first precedence and otherwise consumes Vercel's system `VERCEL_ENV`; the all-deployment Production override was removed from `vercel.json`.
+- Invalid strict configuration no longer crashes the function process. Lifespan records one `runtime_config_blocked` state, skips database/readiness initialization, and retains only liveness and operational readiness surfaces.
+- A lifecycle-backed middleware returns a sanitized `runtime_not_ready` 503 before application dependencies for every other route. A missing lifecycle state revalidates strict configuration and defaults to blocked, while route-contract tests explicitly mark their synthetic app state as config-valid. The response does not expose blocker details, and CORS wraps the guard so allowed-origin GET errors and browser preflight remain usable.
+- Core and operational readiness now report `commercial_config` as an immediate blocker before opening either database when strict configuration is invalid. Non-debug operational readiness cannot downgrade itself with `strict=false`.
+- Sentry uses the resolved Preview/Production runtime environment instead of labeling every hosted error as Production.
+
+### Red/green and regression evidence
+
+- Initial red tests reproduced all four defects: Vercel Preview resolved as `development`, lifespan raised, application API reached the database and returned 500, and `vercel.json` still forced Production.
+- Additional red tests proved strict default/missing-environment requests could bypass the first guard, CORS headers/preflight were lost, and readiness could continue into database probes despite invalid config.
+- A first request-time implementation correctly blocked Preview but polluted local route-contract tests; full discovery exposed five route regressions. The final lifecycle-state implementation preserved the strict hosted behavior without changing those existing expectations.
+- Focused runtime/lockdown/commercial suites passed 70/70; the additional valid-config/missing-lifespan fail-closed case passed 1/1. Final `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q` passed 375/375 with four explicitly opt-in PostgreSQL integration cases skipped.
+- `git diff --check` and the follow-up high-risk secret scan remained clean before the corrective commit.
+
+### Remaining synchronization boundary
+
+- The corrective commit, feature-branch push, replacement Preview deployment, and live HTTP re-verification remain pending at this log entry. A successful static root plus expected liveness/readiness/fail-closed API behavior is required before PR creation may continue.
+- The GitHub connector cannot create the PR (`403 Resource not accessible by integration`), and neither available browser session is signed in. PR-only CI therefore remains `NOT_RUN` until authenticated PR creation is available.
+- No `main` merge, protected release dispatch, Production deployment, alias promotion, DNS/domain mutation, payment, email, Provider request, or business-data write occurred.
+
+### Subagent
+
+- The same read-only review subagent re-opened only the follow-up patch and independently identified the strict-default guard and CORS ordering gaps. It wrote no files and created no child agent; the primary agent reproduced both failures, added red tests, implemented the lifecycle-state correction, and reran the affected and full suites.

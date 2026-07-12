@@ -577,6 +577,21 @@ class CleanupLockdownTest(unittest.IsolatedAsyncioTestCase):
 
 
 class HttpLockdownContractTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        from app.main import app
+
+        self._had_runtime_blocker = hasattr(app.state, "runtime_config_blocked")
+        self._runtime_blocker = getattr(app.state, "runtime_config_blocked", False)
+        app.state.runtime_config_blocked = False
+
+    async def asyncTearDown(self) -> None:
+        from app.main import app
+
+        if self._had_runtime_blocker:
+            app.state.runtime_config_blocked = self._runtime_blocker
+        elif hasattr(app.state, "runtime_config_blocked"):
+            delattr(app.state, "runtime_config_blocked")
+
     async def test_retired_identity_headers_cannot_touch_users_before_lockdown_guards(self) -> None:
         from app.core.database import get_db
         from app.main import app
