@@ -434,7 +434,7 @@
 
 ### Functional and integration verification
 
-- `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q`: 363/363 passed with four PostgreSQL integration cases skipped by their explicit opt-in switch.
+- `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q`: ran 363 tests and reported `OK (skipped=4)`; all 359 executed tests passed, while four PostgreSQL integration cases remained behind their explicit opt-in switch.
 - A random disposable PostgreSQL 15 database then migrated the complete `0001 -> 0013` chain and ran all four RLS integration cases: forced RLS/group-role facts, runtime read/no-write, writer constrained transition, and accidental dual-group readiness rejection all passed. The database, two login roles, and two fixed group roles were removed; readback found zero matching temporary databases and roles.
 - `.venv\Scripts\python.exe -m compileall -q backend/app backend/scripts scripts/release`: passed.
 - `npm run typecheck` and `npm run build:web`: passed. The build still emits the known upstream Uni-app Sass legacy-JavaScript-API warnings; no warning was suppressed or relabeled.
@@ -483,7 +483,7 @@
 - Initial red tests reproduced all four defects: Vercel Preview resolved as `development`, lifespan raised, application API reached the database and returned 500, and `vercel.json` still forced Production.
 - Additional red tests proved strict default/missing-environment requests could bypass the first guard, CORS headers/preflight were lost, and readiness could continue into database probes despite invalid config.
 - A first request-time implementation correctly blocked Preview but polluted local route-contract tests; full discovery exposed five route regressions. The final lifecycle-state implementation preserved the strict hosted behavior without changing those existing expectations.
-- Focused runtime/lockdown/commercial suites passed 70/70; the additional valid-config/missing-lifespan fail-closed case passed 1/1. Final `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q` passed 375/375 with four explicitly opt-in PostgreSQL integration cases skipped.
+- Focused runtime/lockdown/commercial suites passed 70/70; the additional valid-config/missing-lifespan fail-closed case passed 1/1. Final `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q` ran 375 tests and reported `OK (skipped=4)`; all 371 executed tests passed.
 - `git diff --check` and the follow-up high-risk secret scan remained clean before the corrective commit.
 
 ### Remaining synchronization boundary
