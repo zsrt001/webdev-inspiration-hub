@@ -2,13 +2,14 @@
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import get_settings
 from app.core.error_response import (
+    error_response,
     http_exception_handler,
     request_id_middleware,
     unhandled_exception_handler,
@@ -32,7 +33,7 @@ if not settings.debug and settings.sentry_dsn:
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
             traces_sample_rate=0.1,
-            environment="production",
+            environment=settings.runtime_environment,
             send_default_pii=False,
         )
         logger.info("Sentry SDK initialized")
@@ -45,12 +46,14 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     strict_mode = not settings.debug
 
-    if strict_mode:
-        config_errors = validate_commercial_config_values()
-        if config_errors:
-            raise RuntimeError(f"commercial_config_invalid: {'; '.join(config_errors)}")
-
-    if strict_mode:
+    config_errors = validate_commercial_config_values() if strict_mode else []
+    app.state.runtime_config_blocked = bool(config_errors)
+    if config_errors:
+        logger.error(
+            "Commercial runtime is not ready; serving the fail-closed liveness surface: %s",
+            "; ".join(config_errors),
+        )
+    elif strict_mode:
         try:
             from app.core.database import async_session_maker
             from app.services.schema_guard_service import validate_runtime_schema
@@ -97,6 +100,39 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_RUNTIME_CONFIG_EXEMPT_PATHS = frozenset(
+    {
+        "/health",
+        "/health/ready",
+        "/api/v1/ops/health",
+        "/api/v1/ops/readiness",
+    }
+)
+
+
+async def runtime_config_guard_middleware(request: Request, call_next):
+    """Keep misconfigured hosted deployments alive but unable to serve application APIs."""
+    runtime_state = getattr(request.app.state, "runtime_config_blocked", None)
+    if runtime_state is None:
+        runtime_blocked = not settings.debug
+    else:
+        runtime_blocked = bool(runtime_state)
+    if runtime_blocked and request.url.path not in _RUNTIME_CONFIG_EXEMPT_PATHS:
+        logger.warning(
+            "Blocked application request because the hosted runtime is not ready: path=%s",
+            request.url.path,
+        )
+        return error_response(
+            request=request,
+            status_code=503,
+            detail={
+                "code": "runtime_not_ready",
+                "message": "This deployment is not ready to serve application requests.",
+                "action": "Use the liveness or readiness endpoint for diagnostics.",
+            },
+        )
+    return await call_next(request)
+
 cors_origins = settings.cors_origins
 if settings.debug:
     local_debug_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -106,6 +142,7 @@ if settings.debug:
         cors_origins = [*cors_origins, *(origin for origin in local_debug_origins if origin not in cors_origins)]
 
 # CORS middleware
+app.middleware("http")(runtime_config_guard_middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins or ["http://localhost:3000"],

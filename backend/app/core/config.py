@@ -8,7 +8,7 @@ import re
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,7 +64,10 @@ class Settings(BaseSettings):
     debug: bool = False
     auto_create_tables: bool | None = None
     cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
-    runtime_environment: Literal["development", "preview", "production"] = "development"
+    runtime_environment: Literal["development", "preview", "production"] = Field(
+        default="development",
+        validation_alias=AliasChoices("RUNTIME_ENVIRONMENT", "VERCEL_ENV"),
+    )
     vercel_deployment_id: str = Field(default="", validation_alias="VERCEL_DEPLOYMENT_ID")
     vercel_git_commit_sha: str = Field(default="", validation_alias="VERCEL_GIT_COMMIT_SHA")
     runtime_bundle_id: str = ""

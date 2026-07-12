@@ -378,6 +378,16 @@ async def run_readiness_checks(
         "detail": "ok" if not config_errors else "; ".join(config_errors),
         "latency_ms": 0.0,
     }
+    if strict and config_errors:
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "strict_mode": True,
+            "probe_storage": probe_storage,
+            "probe_generation_queue": probe_generation_queue,
+            "commercial_ready": False,
+            "blockers": ["commercial_config"],
+            "checks": checks,
+        }
 
     name, result = await _run_check("database", _check_database, timeout_s=15.0)
     checks[name] = result
@@ -469,6 +479,24 @@ async def run_core_readiness_checks(*, strict_mode: bool | None = None) -> dict[
     strict = (not settings.debug) if strict_mode is None else bool(strict_mode)
     checks: dict[str, dict[str, Any]] = {}
 
+    if strict:
+        config_errors = validate_commercial_config_values()
+        checks["commercial_config"] = {
+            "ok": len(config_errors) == 0,
+            "detail": "ok" if not config_errors else "; ".join(config_errors),
+            "latency_ms": 0.0,
+        }
+        if config_errors:
+            return {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "not_ready",
+                "ready": False,
+                "strict_mode": True,
+                "required": ["commercial_config"],
+                "blockers": ["commercial_config"],
+                "checks": checks,
+            }
+
     name, result = await _run_check("database", _check_database, timeout_s=15.0)
     checks[name] = result
     if strict:
@@ -499,6 +527,7 @@ async def run_core_readiness_checks(*, strict_mode: bool | None = None) -> dict[
 
     required = ["database"]
     if strict:
+        required.insert(0, "commercial_config")
         required.extend(["database_role", "control_plane_database"])
     if _redis_required():
         required.append("redis")

@@ -48,12 +48,13 @@ def _seconds_since_iso(value: object) -> float | None:
 @router.get("/readiness")
 @router.get("/health")
 async def readiness(probe_storage: bool = False, probe_generation_queue: bool = False, strict: bool = True):
+    effective_strict = True if not settings.debug else bool(strict)
     report = await run_readiness_checks(
         probe_storage=probe_storage,
         probe_generation_queue=probe_generation_queue,
-        strict_mode=strict,
+        strict_mode=effective_strict,
     )
-    if strict and not report.get("commercial_ready", False):
+    if effective_strict and not report.get("commercial_ready", False):
         raise HTTPException(status_code=503, detail=report)
     return report
 
