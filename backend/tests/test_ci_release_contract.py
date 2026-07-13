@@ -152,6 +152,18 @@ class CiReleaseContractTest(unittest.TestCase):
         )
         self.assertIn("backend/requirements.windows.lock.txt", workflow)
 
+    def test_windows_lock_job_uses_an_available_exact_python_311_patch(self) -> None:
+        workflow = _read(".github/workflows/ci.yml")
+        windows_job = workflow[
+            workflow.index("  windows-dependency-locks:") : workflow.index(
+                "  backend-test:"
+            )
+        ]
+        self.assertIn('python-version: "3.11.9"', windows_job)
+        self.assertNotIn('python-version: "3.11.15"', windows_job)
+        self.assertIn("platform.python_version()", windows_job)
+        self.assertIn("3.11.9", windows_job)
+
     def test_pr_workflow_is_secret_free_and_contains_no_production_deploy(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
         self.assertNotIn("vercel deploy --prebuilt --prod", workflow)
@@ -311,18 +323,33 @@ class CiReleaseContractTest(unittest.TestCase):
 
     def test_linux_resolver_contract_runs_twice_and_checks_committed_locks(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
-        self.assertIn("python:3.11", workflow)
+        linux_job = workflow[
+            workflow.index("  dependency-locks:") : workflow.index(
+                "  windows-dependency-locks:"
+            )
+        ]
+        self.assertIn("python:3.11", linux_job)
         self.assertRegex(
-            workflow,
+            linux_job,
             r"container:\s*python:3\.11\.15-slim-bookworm@sha256:[0-9a-f]{64}",
         )
-        self.assertIn("--require-hashes -r requirements-resolver.txt", workflow)
-        self.assertGreaterEqual(workflow.count("python -m piptools compile"), 4)
-        self.assertIn("requirements.in", workflow)
-        self.assertIn("backend/requirements.txt", workflow)
-        self.assertIn("backend/requirements.lock.txt", workflow)
-        self.assertIn("sha256sum", workflow)
-        self.assertIn("git diff --exit-code", workflow)
+        self.assertIn("--require-hashes -r requirements-resolver.txt", linux_job)
+        self.assertGreaterEqual(linux_job.count("python -m piptools compile"), 4)
+        self.assertIn("requirements.in", linux_job)
+        self.assertIn("backend/requirements.txt", linux_job)
+        self.assertIn("backend/requirements.lock.txt", linux_job)
+        self.assertIn("sha256sum", linux_job)
+        self.assertIn("git diffutils", linux_job)
+        for expected_snapshot in (
+            "cp requirements-resolver.txt /tmp/requirements-resolver.expected.txt",
+            "cp requirements.txt /tmp/requirements.expected.txt",
+            "cp backend/requirements.lock.txt /tmp/backend-requirements-lock.expected.txt",
+            "cmp /tmp/requirements-resolver.expected.txt requirements-resolver.txt",
+            "cmp /tmp/requirements.expected.txt requirements.txt",
+            "cmp /tmp/backend-requirements-lock.expected.txt backend/requirements.lock.txt",
+        ):
+            self.assertIn(expected_snapshot, linux_job)
+        self.assertNotIn("git diff --exit-code", linux_job)
 
     def test_first_party_actions_are_commit_pinned(self) -> None:
         for relative_path in (
@@ -1692,23 +1719,48 @@ class BaselineToolContractTest(unittest.TestCase):
     def test_worktree_fingerprint_is_independent_of_console_encoding(self) -> None:
         helper = ROOT / "scripts" / "release" / "fingerprint_worktree.py"
         self.assertTrue(helper.is_file(), "the byte-stable worktree fingerprint helper is missing")
-        payloads: list[dict[str, object]] = []
-        for encoding in ("utf-8", "cp1252"):
-            env = dict(os.environ)
-            env["PYTHONIOENCODING"] = encoding
-            completed = subprocess.run(
-                [sys.executable, str(helper), "--root", str(ROOT)],
-                cwd=ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
+        with tempfile.TemporaryDirectory(prefix="vowpic-fingerprint-encoding-") as directory:
+            root = Path(directory)
+
+            def git(*arguments: str) -> None:
+                completed = subprocess.run(
+                    ["git", *arguments],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            git("init")
+            git("config", "user.email", "fingerprint@example.invalid")
+            git("config", "user.name", "VowPic Fingerprint Test")
+            tracked = root / "证据.txt"
+            tracked.write_text("初始\n", encoding="utf-8")
+            git("add", "--", tracked.name)
+            git("commit", "-m", "baseline")
+            tracked.write_text("修改\n", encoding="utf-8")
+            (root / "新增.txt").write_text("内容\n", encoding="utf-8")
+
+            payloads: list[dict[str, object]] = []
+            for encoding in ("utf-8", "cp1252"):
+                env = dict(os.environ)
+                env["PYTHONIOENCODING"] = encoding
+                completed = subprocess.run(
+                    [sys.executable, str(helper), "--root", str(root)],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                payloads.append(json.loads(completed.stdout))
+            self.assertEqual(payloads[0], payloads[1])
+            self.assertEqual(payloads[0]["code_identity"], "UNCOMMITTED_WORKTREE")
+            self.assertRegex(
+                str(payloads[0]["working_tree_sha256"]), r"^[0-9a-f]{64}$"
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            payloads.append(json.loads(completed.stdout))
-        self.assertEqual(payloads[0], payloads[1])
-        self.assertEqual(payloads[0]["code_identity"], "UNCOMMITTED_WORKTREE")
-        self.assertRegex(str(payloads[0]["working_tree_sha256"]), r"^[0-9a-f]{64}$")
 
     def test_worktree_fingerprint_covers_clean_dirty_and_unicode_paths(self) -> None:
         helper = _load_script(

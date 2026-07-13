@@ -631,3 +631,33 @@
 
 - GitHub CI, the exact Preview deployment, Preview OAuth/upload/generation/payment flows, Production read-only inventory, backup/restore, migration, promotion, formal-domain acceptance, and observation remain pending at this entry. No Production database, Vercel project, domain, payment, email, Provider, storage object, or customer data was changed.
 - The next allowed sequence is explicit-file staging, cached-diff review, one intentional commit, branch push, Draft PR, then CI and Preview verification. Production remains blocked until those protected gates pass.
+
+## 2026-07-13 - First PR CI root-cause repair
+
+### Goal and failure evidence
+
+- Repair only the three root causes proven by GitHub Actions run `29227214566` on source SHA `9a771e6dfa924b44e2b3532059916af05ce2b087`; do not weaken quality gates or touch Production, domains, credentials, databases, payments, email, Provider calls, storage objects, or customer data.
+- The Linux dependency job successfully regenerated the resolver lock, then `git diff --exit-code` exited 129 because the container step could not see checkout Git metadata. The committed-file comparison therefore depended on `.git` even though the contract only needs byte equality.
+- The Windows setup step rejected Python `3.11.15` on `windows-2022`. The official `actions/python-versions` manifest at `https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json` currently lists zero Windows x64 artifacts for stable 3.11.15 and one for stable 3.11.9; both versions have Linux x64 artifacts.
+- The backend suite failed because `test_worktree_fingerprint_is_independent_of_console_encoding` asserted `UNCOMMITTED_WORKTREE` against the ambient checkout. A clean checkout returns the correct `CLEAN_COMMIT`, while the same test happened to pass after unrelated local edits made the repository dirty.
+
+### Test-first changes
+
+- The clean-worktree fingerprint test was reproduced red first (`CLEAN_COMMIT != UNCOMMITTED_WORKTREE`). New Linux snapshot and Windows runtime contract expectations then failed on the prior workflow before implementation.
+- Linux lock jobs now explicitly install `diffutils`, copy the committed resolver/root/backend locks to temporary expected files before compilation, and use `cmp` after regeneration. The two-pass SHA-256 comparison remains in place, but the byte-exact committed-baseline check no longer depends on checkout Git metadata or an unproven slim-image package assumption.
+- Only the Windows lock-generation job now pins exact Python `3.11.9` and verifies `platform.python_version()` at runtime. Linux lock generation, Linux backend CI, protected release eligibility, and Production runtime alignment remain pinned to Python `3.11.15`.
+- The encoding-independence test now creates and dirties its own temporary Git repository with tracked and untracked Unicode paths, then compares UTF-8 and CP1252 CLI payloads. The production fingerprint helper is unchanged.
+
+### Verification
+
+- The three focused contracts passed 3/3 after the minimal implementation. Full backend discovery ran 396 tests and reported `OK (skipped=8)`; all 388 non-skipped tests passed.
+- A fresh Python 3.11.9 resolver environment installed `requirements-resolver.windows.txt` with `--require-hashes`, regenerated both Windows locks twice, and matched the committed bytes. A second fresh environment installed `backend/requirements.windows.lock.txt` with hashes and passed `pip check`. SHA-256 remained `3933f13555742a682336343d5e5d0b241061bc3175c075b863be481f7131cc80` for the resolver lock and `6071f58d70b622c2eef4876c0d42386abb986b397cc56e592d9a516ac85161d2` for the backend lock.
+- Project `pip check`, Python compileall, and unique Alembic head `20260712_0014` passed. Both workflow YAML files parsed; all 54 Bash blocks and all four Windows PowerShell blocks passed syntax parsing.
+- `npm --prefix frontend run typecheck` and `npm --prefix frontend run build:web` passed. The known 23 upstream Dart Sass legacy-JavaScript-API warnings remain visible and were not suppressed.
+- `git diff --check`, unchanged Windows lock diff, and the added-line private-key/GitHub/OpenAI/Slack/AWS high-risk secret-pattern scan passed.
+- Pulling the exact pinned Linux container locally was attempted but Docker Hub returned `EOF` while resolving the digest, so exact-image execution remains for the replacement GitHub CI run. The workflow now installs the required comparison package explicitly rather than treating its presence as verified.
+
+### Remaining boundary and Subagent use
+
+- The replacement GitHub CI run and the new Vercel Preview status are pending until this exact reviewed diff is committed and pushed. The prior Vercel Preview check on `9a771e6` succeeded, but it does not prove this unpushed repair.
+- No Subagent was used for this bounded repair. No external production-affecting action occurred; the next allowed actions are explicit staging, cached-diff review, one commit, push to the existing branch, then read-only CI and Preview observation.
