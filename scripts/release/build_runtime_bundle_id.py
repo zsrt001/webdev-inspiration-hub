@@ -12,7 +12,7 @@ from typing import Any
 
 
 DOMAIN_BY_ROLE = {
-    "SAFE_BASELINE": "vowpic.runtime-bundle.safe-baseline.v1",
+    "SAFE_BASELINE": "vowpic.runtime-bundle.safe-baseline.v2",
     "PREVIEW_IDENTITY": "vowpic.runtime-bundle.preview-identity.v1",
     "PREVIEW_COMMERCIAL": "vowpic.runtime-bundle.preview-commercial.v1",
     "COMMERCIAL_7A": "vowpic.runtime-bundle.commercial-7a.v1",
@@ -117,12 +117,13 @@ def _validate_payload(role: str, payload: dict[str, Any]) -> dict[str, Any]:
     if role == "SAFE_BASELINE" and set(contracts) != {"safe_baseline"}:
         raise ValueError("SAFE_BASELINE accepts only the safe_baseline contract")
     if role == "SAFE_BASELINE":
-        if schema_revision != "20260710_0013":
-            raise ValueError("SAFE_BASELINE is fixed to schema 20260710_0013")
-        if len(normalized_migrations) != 1 or normalized_migrations[0]["revision"] != "20260710_0013":
-            raise ValueError("SAFE_BASELINE requires exactly the 20260710_0013 migration checksum")
-        if str(payload["builder_contract_version"]).strip() != "safe-baseline.v1":
-            raise ValueError("SAFE_BASELINE builder contract must be safe-baseline.v1")
+        if schema_revision != "20260712_0014":
+            raise ValueError("SAFE_BASELINE is fixed to schema 20260712_0014")
+        expected_revisions = ["20260710_0013", "20260712_0014"]
+        if [item["revision"] for item in normalized_migrations] != expected_revisions:
+            raise ValueError("SAFE_BASELINE requires ordered 0013 and 0014 migration checksums")
+        if str(payload["builder_contract_version"]).strip() != "safe-baseline.v2":
+            raise ValueError("SAFE_BASELINE builder contract must be safe-baseline.v2")
     if role == "PREVIEW_IDENTITY" and set(contracts) != {"identity_session_flag_preview"}:
         raise ValueError("PREVIEW_IDENTITY accepts only the identity/session/flag preview contract")
     if role in {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"}:

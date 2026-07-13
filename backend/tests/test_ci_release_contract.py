@@ -70,6 +70,9 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIn("RUN_POSTGRES_INTEGRATION: '1'", backend_job)
         self.assertIn("CONTROL_PLANE_RLS_TEST_DATABASE_URL:", backend_job)
         self.assertIn("backend.tests.integration.test_control_plane_rls", backend_job)
+        self.assertIn("RUN_CLICK_STATS_REPAIR_INTEGRATION: '1'", backend_job)
+        self.assertIn("CLICK_STATS_REPAIR_TEST_DATABASE_URL:", backend_job)
+        self.assertIn("backend.tests.integration.test_click_stats_repair", backend_job)
 
     def test_ci_resolver_uses_current_pinned_python_311_patch_image(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
@@ -148,6 +151,18 @@ class CiReleaseContractTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("backend/requirements.windows.lock.txt", workflow)
+
+    def test_windows_lock_job_uses_an_available_exact_python_311_patch(self) -> None:
+        workflow = _read(".github/workflows/ci.yml")
+        windows_job = workflow[
+            workflow.index("  windows-dependency-locks:") : workflow.index(
+                "  backend-test:"
+            )
+        ]
+        self.assertIn('python-version: "3.11.9"', windows_job)
+        self.assertNotIn('python-version: "3.11.15"', windows_job)
+        self.assertIn("platform.python_version()", windows_job)
+        self.assertIn("3.11.9", windows_job)
 
     def test_pr_workflow_is_secret_free_and_contains_no_production_deploy(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
@@ -308,18 +323,33 @@ class CiReleaseContractTest(unittest.TestCase):
 
     def test_linux_resolver_contract_runs_twice_and_checks_committed_locks(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
-        self.assertIn("python:3.11", workflow)
+        linux_job = workflow[
+            workflow.index("  dependency-locks:") : workflow.index(
+                "  windows-dependency-locks:"
+            )
+        ]
+        self.assertIn("python:3.11", linux_job)
         self.assertRegex(
-            workflow,
+            linux_job,
             r"container:\s*python:3\.11\.15-slim-bookworm@sha256:[0-9a-f]{64}",
         )
-        self.assertIn("--require-hashes -r requirements-resolver.txt", workflow)
-        self.assertGreaterEqual(workflow.count("python -m piptools compile"), 4)
-        self.assertIn("requirements.in", workflow)
-        self.assertIn("backend/requirements.txt", workflow)
-        self.assertIn("backend/requirements.lock.txt", workflow)
-        self.assertIn("sha256sum", workflow)
-        self.assertIn("git diff --exit-code", workflow)
+        self.assertIn("--require-hashes -r requirements-resolver.txt", linux_job)
+        self.assertGreaterEqual(linux_job.count("python -m piptools compile"), 4)
+        self.assertIn("requirements.in", linux_job)
+        self.assertIn("backend/requirements.txt", linux_job)
+        self.assertIn("backend/requirements.lock.txt", linux_job)
+        self.assertIn("sha256sum", linux_job)
+        self.assertIn("git diffutils", linux_job)
+        for expected_snapshot in (
+            "cp requirements-resolver.txt /tmp/requirements-resolver.expected.txt",
+            "cp requirements.txt /tmp/requirements.expected.txt",
+            "cp backend/requirements.lock.txt /tmp/backend-requirements-lock.expected.txt",
+            "cmp /tmp/requirements-resolver.expected.txt requirements-resolver.txt",
+            "cmp /tmp/requirements.expected.txt requirements.txt",
+            "cmp /tmp/backend-requirements-lock.expected.txt backend/requirements.lock.txt",
+        ):
+            self.assertIn(expected_snapshot, linux_job)
+        self.assertNotIn("git diff --exit-code", linux_job)
 
     def test_first_party_actions_are_commit_pinned(self) -> None:
         for relative_path in (
@@ -570,7 +600,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         self.assertEqual(
             register.classify_install_state(
-                current_revision="20260710_0013",
+                current_revision=register.TARGET_SCHEMA,
                 activation=None,
                 source_sha=sha,
                 workflow_run_id="run-1",
@@ -588,7 +618,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         self.assertEqual(
             register.classify_install_state(
-                current_revision="20260710_0013",
+                current_revision=register.TARGET_SCHEMA,
                 activation={"source_sha": sha, "workflow_run_id": "run-1", "phase": "RESERVED"},
                 source_sha=sha,
                 workflow_run_id="run-1",
@@ -606,7 +636,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             with self.subTest(expired_phase=phase):
                 self.assertEqual(
                     register.classify_install_state(
-                        current_revision="20260710_0013",
+                        current_revision=register.TARGET_SCHEMA,
                         activation={
                             "source_sha": sha,
                             "workflow_run_id": "run-1",
@@ -651,7 +681,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             )
         self.assertEqual(
             register.classify_install_state(
-                current_revision="20260710_0013",
+                current_revision=register.TARGET_SCHEMA,
                 activation={"source_sha": "b" * 40, "workflow_run_id": "run-0", "phase": "COMPLETED"},
                 source_sha=sha,
                 workflow_run_id="run-1",
@@ -679,10 +709,11 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "workflow_attempt": 2,
             "phase": "RESERVED",
         }
+        connection = mock.MagicMock()
 
         class _Transaction:
             def __enter__(self):
-                return object()
+                return connection
 
             def __exit__(self, *_args):
                 return False
@@ -700,7 +731,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             mock.patch.object(register, "create_engine", return_value=_Engine()),
             mock.patch.object(register, "_advisory_lock"),
             mock.patch.object(register, "_database_identity", return_value=("system", "db", "1")),
-            mock.patch.object(register, "_current_revision", return_value="20260710_0013"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
             mock.patch.object(register, "_read_activation", return_value=activation),
         ):
             with self.assertRaises(ValueError):
@@ -716,6 +747,73 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     evidence_prefix="security-baseline/run-1",
                     inject_failure=None,
                 )
+
+    def test_reservation_configures_bounded_migration_timeouts_before_lock_and_upgrade(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_migration_timeout_contract",
+        )
+        events: list[str] = []
+        connection = mock.MagicMock()
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+
+        with (
+            mock.patch.object(register, "_evidence_pair_sha256", return_value="b" * 64),
+            mock.patch.object(register, "_read_only_database_identity", return_value=("system", "db", "1")),
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(
+                register,
+                "_configure_migration_timeouts",
+                side_effect=lambda _connection: events.append("timeouts"),
+            ),
+            mock.patch.object(
+                register,
+                "_advisory_lock",
+                side_effect=lambda _connection: events.append("lock"),
+            ),
+            mock.patch.object(register, "_database_identity", return_value=("system", "db", "1")),
+            mock.patch.object(register, "_current_revision", side_effect=[register.OLD_SCHEMA, register.TARGET_SCHEMA]),
+            mock.patch.object(register, "_read_activation", return_value=None),
+            mock.patch.object(
+                register,
+                "_alembic_upgrade_on_connection",
+                side_effect=lambda _connection: events.append("upgrade"),
+            ),
+        ):
+            result = register._reserve(
+                "postgresql://migration",
+                inventory_database_url="postgresql://inventory",
+                source_sha="a" * 40,
+                workflow_run_id="run-1",
+                workflow_attempt=1,
+                approval="approval",
+                inventory_report=Path("inventory.json"),
+                restore_report=Path("restore.json"),
+                evidence_prefix="security-baseline/run-1",
+                inject_failure=None,
+            )
+
+        self.assertEqual(events, ["timeouts", "lock", "upgrade"])
+        self.assertEqual(result["state"], "RESERVED")
+
+    def test_migration_timeouts_are_finite_transaction_local_settings(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_migration_timeout_values_contract",
+        )
+        connection = mock.MagicMock()
+
+        register._configure_migration_timeouts(connection)
+
+        statements = [str(call.args[0]) for call in connection.execute.call_args_list]
+        self.assertEqual(
+            statements,
+            [
+                "SET LOCAL lock_timeout = '15s'",
+                "SET LOCAL statement_timeout = '5min'",
+            ],
+        )
 
     def test_read_only_preflight_rejects_a_decreasing_attempt_before_external_effects(self) -> None:
         register = _load_script(
@@ -738,7 +836,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
 
         with (
             mock.patch.object(register, "create_engine", return_value=engine),
-            mock.patch.object(register, "_current_revision", return_value="20260710_0013"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
             mock.patch.object(register, "_read_activation", return_value=activation),
         ):
             with self.assertRaises(ValueError):
@@ -1621,23 +1719,48 @@ class BaselineToolContractTest(unittest.TestCase):
     def test_worktree_fingerprint_is_independent_of_console_encoding(self) -> None:
         helper = ROOT / "scripts" / "release" / "fingerprint_worktree.py"
         self.assertTrue(helper.is_file(), "the byte-stable worktree fingerprint helper is missing")
-        payloads: list[dict[str, object]] = []
-        for encoding in ("utf-8", "cp1252"):
-            env = dict(os.environ)
-            env["PYTHONIOENCODING"] = encoding
-            completed = subprocess.run(
-                [sys.executable, str(helper), "--root", str(ROOT)],
-                cwd=ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
+        with tempfile.TemporaryDirectory(prefix="vowpic-fingerprint-encoding-") as directory:
+            root = Path(directory)
+
+            def git(*arguments: str) -> None:
+                completed = subprocess.run(
+                    ["git", *arguments],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            git("init")
+            git("config", "user.email", "fingerprint@example.invalid")
+            git("config", "user.name", "VowPic Fingerprint Test")
+            tracked = root / "证据.txt"
+            tracked.write_text("初始\n", encoding="utf-8")
+            git("add", "--", tracked.name)
+            git("commit", "-m", "baseline")
+            tracked.write_text("修改\n", encoding="utf-8")
+            (root / "新增.txt").write_text("内容\n", encoding="utf-8")
+
+            payloads: list[dict[str, object]] = []
+            for encoding in ("utf-8", "cp1252"):
+                env = dict(os.environ)
+                env["PYTHONIOENCODING"] = encoding
+                completed = subprocess.run(
+                    [sys.executable, str(helper), "--root", str(root)],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                payloads.append(json.loads(completed.stdout))
+            self.assertEqual(payloads[0], payloads[1])
+            self.assertEqual(payloads[0]["code_identity"], "UNCOMMITTED_WORKTREE")
+            self.assertRegex(
+                str(payloads[0]["working_tree_sha256"]), r"^[0-9a-f]{64}$"
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            payloads.append(json.loads(completed.stdout))
-        self.assertEqual(payloads[0], payloads[1])
-        self.assertEqual(payloads[0]["code_identity"], "UNCOMMITTED_WORKTREE")
-        self.assertRegex(str(payloads[0]["working_tree_sha256"]), r"^[0-9a-f]{64}$")
 
     def test_worktree_fingerprint_covers_clean_dirty_and_unicode_paths(self) -> None:
         helper = _load_script(

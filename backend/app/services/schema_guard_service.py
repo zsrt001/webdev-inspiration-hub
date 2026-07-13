@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-_MINIMUM_SCHEMA_REVISION = "20260710_0013"
+_MINIMUM_SCHEMA_REVISION = "20260712_0014"
 _REQUIRED_TABLES = frozenset(
     {
         "users",
@@ -41,6 +41,7 @@ _REQUIRED_USER_COLUMNS = frozenset(
         "updated_at",
     }
 )
+_REQUIRED_CLICK_STATS_COLUMNS = frozenset({"value_sum", "value_count"})
 _REQUIRED_INDEXES = frozenset(
     {
         "ix_users_username",
@@ -128,6 +129,17 @@ async def validate_runtime_schema(db: AsyncSession) -> None:
     )
     user_columns = {str(value) for value in column_result.scalars().all()}
 
+    click_stats_column_result = await db.execute(
+        text(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'click_stats'
+            """
+        )
+    )
+    click_stats_columns = {str(value) for value in click_stats_column_result.scalars().all()}
+
     problems: list[str] = []
     if not revisions or max(revisions) < _MINIMUM_SCHEMA_REVISION:
         problems.append(
@@ -142,6 +154,9 @@ async def validate_runtime_schema(db: AsyncSession) -> None:
     missing_columns = sorted(_REQUIRED_USER_COLUMNS - user_columns)
     if missing_columns:
         problems.append(f"users missing columns: {', '.join(missing_columns)}")
+    missing_click_stats_columns = sorted(_REQUIRED_CLICK_STATS_COLUMNS - click_stats_columns)
+    if missing_click_stats_columns:
+        problems.append(f"click_stats missing columns: {', '.join(missing_click_stats_columns)}")
 
     if problems:
         raise RuntimeError(f"database_schema_incomplete: {'; '.join(problems)}")
