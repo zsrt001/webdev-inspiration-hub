@@ -495,3 +495,44 @@
 ### Subagent
 
 - The same read-only review subagent re-opened only the follow-up patch and independently identified the strict-default guard and CORS ordering gaps. It wrote no files and created no child agent; the primary agent reproduced both failures, added red tests, implemented the lifecycle-state correction, and reran the affected and full suites.
+
+## 2026-07-13 - Stage 1 release-line reconstruction and PostgreSQL readiness closure
+
+### Goal and scope
+
+- Reconstruct a Stage-1-only release line from exact remote `main` SHA `52208b66fda5ab1a327c3af7d3840eabe74016fd` instead of merging the mixed Stage 1/Stage 2 PR.
+- Reuse the reviewed Tasks 1-4 history, carry only the fourteen allowlisted analytics/runtime repair paths, and keep every Web identity/Task 5 path out of the candidate.
+- Prove the candidate locally, including a real PostgreSQL 15 migration/RLS run, without changing GitHub/Vercel settings, Production data, deployments, or formal-domain aliases.
+
+### Baseline and reconstruction evidence
+
+- `git fetch origin --prune` left `origin/main` at the exact audited SHA. The new isolated branch/worktree did not previously exist and was created cleanly from that remote ref.
+- The pre-change remote-main command `python -m unittest discover -s backend/tests -t . -q` could not collect because `backend/tests` was not yet an importable package. The exact existing CI-style discovery from `backend/` ran 193 tests and reproduced one existing error: `test_vision_error_retry_exhaustion_delivers_candidate_when_non_blocking` opened a real database session. The reviewed `b6012dd` change supplied an explicit forbidden-session assertion and a template-context stub; the isolated regression then passed 1/1.
+- Seven reviewed commits were cherry-picked in order. Before the runner-safe repair was carried, the resulting branch ran 375 tests with one known failure because the console-encoding fingerprint test depended on the checkout already being dirty. The reviewed `25c3e21` test creates its own dirty Unicode repository and removed that runner-state dependency.
+- The fourteen repair files were checked using the union of tracked diff paths and `git ls-files --others --exclude-standard`; `git diff --name-only` alone does not include newly created untracked files. All fourteen current blobs matched their intended reviewed source commit exactly before the focused commit: twelve from `9a771e6` and the CI/test runner-safe pair from `25c3e21`.
+
+### Changes
+
+- Added the forward-only `20260712_0014` click-stats repair, schema-readiness checks, bounded migration timeouts, runtime-bundle/contract update, alert timestamp correction, real migration coverage, and runner-safe CI checks as the focused `ea1ab10` Stage 1 repair commit.
+- Added a bounded CI wait before PostgreSQL integration tests. It requires both the official image entrypoint completion marker and final container-local `pg_isready`; it times out after 120 seconds and prints only the last 100 service log lines on failure.
+- The wait was added through a red/green contract test. The red run failed because the step was absent; the green run passed after the minimal workflow change. This became commit `4fbe9ef`.
+
+### Verification
+
+- Focused repair/CI/alert suite: 70 tests passed with zero failures.
+- `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q`: 386 tests passed, 8 conditionally skipped, zero failures.
+- `npm --prefix frontend ci --ignore-scripts`: installed 594 locked packages successfully; two upstream `phin` deprecation warnings remained visible.
+- `npm --prefix frontend run typecheck` and `npm --prefix frontend run build:web`: both passed. The Web/H5 build completed and retained the known upstream Sass legacy-JavaScript-API warnings.
+- `powershell -ExecutionPolicy Bypass -File scripts/release/verify_baseline.ps1`: exited 0 after a fresh hash-locked Windows dependency install, dependency check, 386-test backend run, frontend locked install, typecheck, and Web build. The clean source identity was `ea1ab1014773381119a50e065d875afaf52bc866`; Python `3.11.9`, Node `24.2.0`, and Windows differ from the protected Python `3.11.15`, Node `24.17.0`, Linux runtime, so `runtime_alignment=NOT_RUN` and the local result is not Production-release evidence. Frontend unit tests also remain `NOT_RUN` by the existing Task 22 contract.
+- The first disposable PostgreSQL run exposed an official-image readiness race: the temporary initialization server briefly reported healthy and then shut down before the final server started. Container-local `psql`, host TCP, and host psycopg2 probes all passed after the final entrypoint marker. A second harness attempt stopped before tests because PowerShell treated normal `docker logs` stderr as terminating output. After correcting only that diagnostic capture, the evidence-backed rerun passed all 8 real PostgreSQL tests: the full migration chain through `20260712_0014`, forced RLS/group-role isolation, runtime read/no-write, writer transition, wrong-group rejection, correct-column idempotency, missing-column repair, nullable backfill/hardening, and incompatible-type rollback without revision advance.
+- CI YAML parsed successfully. `backend.tests.test_ci_release_contract` passed 58/58 after the readiness change. The disposable container and all four integration environment variables were removed; readback found no remaining `vowpic-stage1-postgres` container.
+
+### Scope, risks, and external effects
+
+- No Task 5/Web identity path was copied into this branch. The later identity migration remains Stage 2 and must use full revision ID `20260710_0014` with `down_revision = "20260712_0014"` only after Stage 1 exits.
+- GitHub `production` Environment protection, `main` ruleset, protected secret/variable names, Vercel Production Branch Tracking, deploy-hook removal, PR checks, merge, protected workflow dispatch, Production inventory/restore/migration, signed edge/runtime reports, Promote, and formal-domain acceptance remain external gates and are not represented as PASS here.
+- No branch push, PR creation, merge, GitHub/Vercel setting save, Production data write, deployment, domain mutation, payment, email, provider call, or customer-data operation occurred in this reconstruction. Local effects were limited to commits in the isolated branch, dependency/build directories ignored by Git, and disposable containers that were removed.
+
+### Subagent
+
+- One previously started read-only subagent audited Stage 2 migration/RLS/FK implications and confirmed Task 6 cannot start before Stage 1 exit. It wrote no files and created no child agent. The primary agent independently checked the adopted Stage 1 sequencing and migration-head evidence; no production-code subagent or parallel writer was used.
