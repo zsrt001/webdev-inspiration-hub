@@ -74,6 +74,29 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIn("CLICK_STATS_REPAIR_TEST_DATABASE_URL:", backend_job)
         self.assertIn("backend.tests.integration.test_click_stats_repair", backend_job)
 
+    def test_backend_ci_waits_for_the_final_postgres_server_before_integration_tests(self) -> None:
+        workflow = _read(".github/workflows/ci.yml")
+        backend_job = workflow[
+            workflow.index("  backend-test:") : workflow.index("  frontend-check:")
+        ]
+        wait_step = "- name: Wait for PostgreSQL final startup"
+        first_integration_step = "- name: Run the real PostgreSQL control-plane RLS contract"
+
+        self.assertIn(wait_step, backend_job)
+        self.assertLess(backend_job.index(wait_step), backend_job.index(first_integration_step))
+        self.assertIn("POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}", backend_job)
+        self.assertIn("deadline=$((SECONDS + 120))", backend_job)
+        self.assertIn(
+            "PostgreSQL init process complete; ready for start up.",
+            backend_job,
+        )
+        self.assertIn(
+            'docker exec "$POSTGRES_SERVICE_ID" pg_isready '
+            "-U postgres -d vowpic_rls_test",
+            backend_job,
+        )
+        self.assertIn('docker logs --tail 100 "$POSTGRES_SERVICE_ID"', backend_job)
+
     def test_ci_resolver_uses_current_pinned_python_311_patch_image(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
         self.assertIn(

@@ -133,6 +133,24 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
           python -m pip check
+      - name: Wait for PostgreSQL final startup
+        shell: bash
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 120))
+          while (( SECONDS < deadline )); do
+            logs="$(docker logs "$POSTGRES_SERVICE_ID" 2>&1 || true)"
+            if grep -Fq 'PostgreSQL init process complete; ready for start up.' <<<"$logs"; then
+              if docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres -d vowpic_rls_test >/dev/null 2>&1; then
+                exit 0
+              fi
+            fi
+            sleep 1
+          done
+          docker logs --tail 100 "$POSTGRES_SERVICE_ID" >&2
+          exit 1
       - name: Run the real PostgreSQL control-plane RLS contract
         env:
           RUN_POSTGRES_INTEGRATION: '1'
