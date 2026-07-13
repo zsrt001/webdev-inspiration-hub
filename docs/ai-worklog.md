@@ -536,3 +536,42 @@
 ### Subagent
 
 - One previously started read-only subagent audited Stage 2 migration/RLS/FK implications and confirmed Task 6 cannot start before Stage 1 exit. It wrote no files and created no child agent. The primary agent independently checked the adopted Stage 1 sequencing and migration-head evidence; no production-code subagent or parallel writer was used.
+
+## 2026-07-13 - External Stage 1 release-path protection
+
+### Goal and authorized boundary
+
+- Close only the external protections required before synchronizing the reconstructed Stage 1 branch: Vercel Production domain assignment, GitHub `production` Environment protection, the exact Production branch policy/variable, and the `main` merge ruleset.
+- The authorized synchronization boundary remains a feature-branch push plus draft PR/CI. No merge, protected release dispatch, Production deployment, domain reassignment, DNS change, secret-value creation, or Production-data write is authorized by this step.
+
+### Vercel readback
+
+- Production Branch Tracking remains exactly `main`.
+- `Automatically assign Custom Production Domains` was disabled and saved. A fresh authenticated page readback reported the checkbox unchecked, the Save button disabled, and the page stated that Production deployments require manual promotion.
+- The authenticated Git settings page reported zero Deploy Hooks; no hook was deleted or fabricated.
+- The Production environment still listed `www.vowpic.com` and `webdev-inspiration-hub.vercel.app`. No deployment was created or promoted and no domain/alias mapping was changed.
+
+### GitHub readback
+
+- GitHub CLI authentication was revalidated as account `zsrt001` with repository scope. The earlier invalid-token symptom was a network-routing failure, not a credential failure.
+- Environment `production` (`14989360592`) now requires reviewer `zsrt001`, has `can_admins_bypass=false`, and uses custom deployment branch policies. Exact API readback returned one allowed branch policy: `main` (`54502242`).
+- Environment variable `PRODUCTION_BASE_URL` was created with exact value `https://www.vowpic.com` and read back through the GitHub API.
+- Active repository ruleset `Protect main release path` (`18866940`) targets only `refs/heads/main`, has no bypass actor, prevents deletion and non-fast-forward updates, requires a pull request with conversation resolution, and requires strict status check `quality-gate`. The required context matches the exact job identifier in `.github/workflows/ci.yml`.
+- The Environment secret API returned `total_count=0`. No placeholder or guessed value was created. The release workflow references 21 required names: `ADMIN_TOKEN`, `CLEANUP_CRON_TOKEN`, `EDGE_EVIDENCE_HMAC_KEY`, `EDGE_HANDOFF_REPORT_B64`, `EDGE_LOCKDOWN_REPORT_B64`, `INVENTORY_HMAC_KEY`, `PRODUCTION_MIGRATION_DATABASE_URL`, `PRODUCTION_READ_ONLY_DATABASE_URL`, `RESTORE_TARGET_ADMIN_DATABASE_URL`, `RESTORE_TARGET_CREDENTIAL_EXPIRES_AT`, `RESTORE_TARGET_DATABASE_URL`, `RESTORE_TARGET_ROLE_NAME`, `RUNTIME_AUDIT_HMAC_KEY`, `RUNTIME_DDL_AUDIT_REPORT_B64`, `SAFE_BASELINE_APPROVAL_ID`, `SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64`, `SAFE_BASELINE_PROBE_USER_BEARER`, `VERCEL_AUTOMATION_BYPASS_HEADER`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_TOKEN`.
+- `EDGE_HANDOFF_REPORT_B64`, `EDGE_LOCKDOWN_REPORT_B64`, and `RUNTIME_DDL_AUDIT_REPORT_B64` must contain independently produced signed evidence; they cannot be generated or replaced with placeholders during synchronization.
+
+### Network diagnosis and local routing
+
+- `gh api` initially failed while `curl` and Git-over-SSH remained usable. DNS inspection showed Proxifier remote-DNS placeholder addresses in `127.*`; the active profile was `静态.ppx` and its application rule no longer included `gh.exe`.
+- The profile was loaded through Proxifier's supported silent-load path. Adding `gh.exe` alone did not fix the failure because `api.github.com` still resolved to a placeholder. Adding `github.com` and `*.github.com` to the profile DNS exclusion list, then clearing the DNS cache, changed `api.github.com` to a public address and made both `gh api` and `gh auth status` succeed.
+- This diagnosis was verified with a real HTTP 200 repository API response and an authenticated user readback. No token value was displayed or copied into the repository.
+
+### Verification and remaining boundary
+
+- GitHub Environment, branch-policy, variable, secret-count, and ruleset state were read back again through the official REST API after the writes; the returned objects matched the intended values above.
+- Vercel's saved checkbox state was read back from the authenticated DOM after the write. No Production deployment, Promote action, or alias/domain mutation occurred.
+- The next allowed action is the verified Stage 1 feature-branch push and draft PR. CI must complete against the pushed commit; merging or starting the protected release remains blocked until all 21 owner-supplied secret values and all three signed evidence reports exist and are independently validated.
+
+### Subagent
+
+- No new subagent was started for this external-configuration step. The one previously used read-only subagent wrote no files; the primary agent performed every authenticated readback and applied every external setting change serially.
