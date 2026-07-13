@@ -38,7 +38,7 @@ from app.services.production_inventory_service import (  # noqa: E402
 
 NOT_RUN_EXIT = 3
 OLD_SCHEMA = "20260516_0012"
-TARGET_SCHEMA = "20260710_0013"
+TARGET_SCHEMA = "20260712_0014"
 ACTIVATION_KIND = "SAFE_BASELINE_INSTALL"
 RESERVATION_TTL_MINUTES = 120
 BUILD_ARTIFACT_RECOVERY_DAYS = 90
@@ -53,6 +53,8 @@ PHASE_RANK = {
 PHASE_SEQUENCE = tuple(PHASE_RANK)
 RETRIABLE_STATES = {f"RETRY_{phase}" for phase in PHASE_SEQUENCE if phase != "COMPLETED"}
 MAX_DEPLOYMENT_PAGES = 100
+MIGRATION_LOCK_TIMEOUT = "15s"
+MIGRATION_STATEMENT_TIMEOUT = "5min"
 
 
 class SafeBaselineRegistrationError(RuntimeError):
@@ -274,7 +276,7 @@ def validate_reservation_evidence(
 ) -> None:
     inventory_report = ProductionInventoryReport.model_validate(inventory)
     if inventory_report.schema_revision != OLD_SCHEMA:
-        raise ValueError("reservation inventory must describe the exact pre-0013 schema")
+        raise ValueError("reservation inventory must describe the exact pre-safe-baseline schema")
     if restore.get("passed") is not True:
         raise ValueError("backup/restore rehearsal is not a PASS report")
     _sha256_value(restore.get("archive_sha256"), name="restore archive hash")
@@ -286,7 +288,7 @@ def validate_reservation_evidence(
     if not isinstance(comparison, dict) or comparison.get("matches") is not True:
         raise ValueError("restored database does not match the source snapshot")
     if comparison.get("schema_revision") != OLD_SCHEMA:
-        raise ValueError("restore rehearsal must describe the exact pre-0013 schema")
+        raise ValueError("restore rehearsal must describe the exact pre-safe-baseline schema")
     if int(comparison.get("table_count", 0)) < 1:
         raise ValueError("restore rehearsal contains no tables")
     row_counts = comparison.get("row_counts")
@@ -417,6 +419,13 @@ def _advisory_lock(connection) -> None:
     connection.execute(text("SELECT pg_advisory_xact_lock(1448037459, 1)"))
 
 
+def _configure_migration_timeouts(connection) -> None:
+    connection.execute(text(f"SET LOCAL lock_timeout = '{MIGRATION_LOCK_TIMEOUT}'"))
+    connection.execute(
+        text(f"SET LOCAL statement_timeout = '{MIGRATION_STATEMENT_TIMEOUT}'")
+    )
+
+
 def _preflight(
     database_url: str,
     *,
@@ -508,6 +517,7 @@ def _reserve(
     engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
     try:
         with engine.begin() as connection:
+            _configure_migration_timeouts(connection)
             _advisory_lock(connection)
             validate_database_identity(
                 inventory_database_identity,
@@ -586,7 +596,7 @@ def _advance_phase(database_url: str, args: argparse.Namespace) -> dict[str, Any
         with engine.begin() as connection:
             _advisory_lock(connection)
             if _current_revision(connection) != TARGET_SCHEMA:
-                raise SafeBaselineRegistrationError("safe-baseline activation requires schema 0013")
+                raise SafeBaselineRegistrationError("safe-baseline activation requires schema 0014")
             activation = _read_activation(connection, for_update=True)
             if activation is None:
                 raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
@@ -770,7 +780,7 @@ def _bind_build_manifest(
         with engine.begin() as connection:
             _advisory_lock(connection)
             if _current_revision(connection) != TARGET_SCHEMA:
-                raise SafeBaselineRegistrationError("build binding requires schema 0013")
+                raise SafeBaselineRegistrationError("build binding requires schema 0014")
             activation = _read_activation(connection, for_update=True)
             if activation is None:
                 raise SafeBaselineRegistrationError("safe-baseline activation row is missing")

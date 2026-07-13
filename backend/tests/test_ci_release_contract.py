@@ -70,6 +70,9 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIn("RUN_POSTGRES_INTEGRATION: '1'", backend_job)
         self.assertIn("CONTROL_PLANE_RLS_TEST_DATABASE_URL:", backend_job)
         self.assertIn("backend.tests.integration.test_control_plane_rls", backend_job)
+        self.assertIn("RUN_CLICK_STATS_REPAIR_INTEGRATION: '1'", backend_job)
+        self.assertIn("CLICK_STATS_REPAIR_TEST_DATABASE_URL:", backend_job)
+        self.assertIn("backend.tests.integration.test_click_stats_repair", backend_job)
 
     def test_ci_resolver_uses_current_pinned_python_311_patch_image(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
@@ -570,7 +573,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         self.assertEqual(
             register.classify_install_state(
-                current_revision="20260710_0013",
+                current_revision=register.TARGET_SCHEMA,
                 activation=None,
                 source_sha=sha,
                 workflow_run_id="run-1",
@@ -588,7 +591,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         self.assertEqual(
             register.classify_install_state(
-                current_revision="20260710_0013",
+                current_revision=register.TARGET_SCHEMA,
                 activation={"source_sha": sha, "workflow_run_id": "run-1", "phase": "RESERVED"},
                 source_sha=sha,
                 workflow_run_id="run-1",
@@ -606,7 +609,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             with self.subTest(expired_phase=phase):
                 self.assertEqual(
                     register.classify_install_state(
-                        current_revision="20260710_0013",
+                        current_revision=register.TARGET_SCHEMA,
                         activation={
                             "source_sha": sha,
                             "workflow_run_id": "run-1",
@@ -651,7 +654,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             )
         self.assertEqual(
             register.classify_install_state(
-                current_revision="20260710_0013",
+                current_revision=register.TARGET_SCHEMA,
                 activation={"source_sha": "b" * 40, "workflow_run_id": "run-0", "phase": "COMPLETED"},
                 source_sha=sha,
                 workflow_run_id="run-1",
@@ -679,10 +682,11 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "workflow_attempt": 2,
             "phase": "RESERVED",
         }
+        connection = mock.MagicMock()
 
         class _Transaction:
             def __enter__(self):
-                return object()
+                return connection
 
             def __exit__(self, *_args):
                 return False
@@ -700,7 +704,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             mock.patch.object(register, "create_engine", return_value=_Engine()),
             mock.patch.object(register, "_advisory_lock"),
             mock.patch.object(register, "_database_identity", return_value=("system", "db", "1")),
-            mock.patch.object(register, "_current_revision", return_value="20260710_0013"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
             mock.patch.object(register, "_read_activation", return_value=activation),
         ):
             with self.assertRaises(ValueError):
@@ -716,6 +720,73 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     evidence_prefix="security-baseline/run-1",
                     inject_failure=None,
                 )
+
+    def test_reservation_configures_bounded_migration_timeouts_before_lock_and_upgrade(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_migration_timeout_contract",
+        )
+        events: list[str] = []
+        connection = mock.MagicMock()
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+
+        with (
+            mock.patch.object(register, "_evidence_pair_sha256", return_value="b" * 64),
+            mock.patch.object(register, "_read_only_database_identity", return_value=("system", "db", "1")),
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(
+                register,
+                "_configure_migration_timeouts",
+                side_effect=lambda _connection: events.append("timeouts"),
+            ),
+            mock.patch.object(
+                register,
+                "_advisory_lock",
+                side_effect=lambda _connection: events.append("lock"),
+            ),
+            mock.patch.object(register, "_database_identity", return_value=("system", "db", "1")),
+            mock.patch.object(register, "_current_revision", side_effect=[register.OLD_SCHEMA, register.TARGET_SCHEMA]),
+            mock.patch.object(register, "_read_activation", return_value=None),
+            mock.patch.object(
+                register,
+                "_alembic_upgrade_on_connection",
+                side_effect=lambda _connection: events.append("upgrade"),
+            ),
+        ):
+            result = register._reserve(
+                "postgresql://migration",
+                inventory_database_url="postgresql://inventory",
+                source_sha="a" * 40,
+                workflow_run_id="run-1",
+                workflow_attempt=1,
+                approval="approval",
+                inventory_report=Path("inventory.json"),
+                restore_report=Path("restore.json"),
+                evidence_prefix="security-baseline/run-1",
+                inject_failure=None,
+            )
+
+        self.assertEqual(events, ["timeouts", "lock", "upgrade"])
+        self.assertEqual(result["state"], "RESERVED")
+
+    def test_migration_timeouts_are_finite_transaction_local_settings(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_migration_timeout_values_contract",
+        )
+        connection = mock.MagicMock()
+
+        register._configure_migration_timeouts(connection)
+
+        statements = [str(call.args[0]) for call in connection.execute.call_args_list]
+        self.assertEqual(
+            statements,
+            [
+                "SET LOCAL lock_timeout = '15s'",
+                "SET LOCAL statement_timeout = '5min'",
+            ],
+        )
 
     def test_read_only_preflight_rejects_a_decreasing_attempt_before_external_effects(self) -> None:
         register = _load_script(
@@ -738,7 +809,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
 
         with (
             mock.patch.object(register, "create_engine", return_value=engine),
-            mock.patch.object(register, "_current_revision", return_value="20260710_0013"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
             mock.patch.object(register, "_read_activation", return_value=activation),
         ):
             with self.assertRaises(ValueError):

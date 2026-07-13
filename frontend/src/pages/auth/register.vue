@@ -4,7 +4,7 @@
       <view class="brand" @tap="goHome">
         <text class="brand-title heading-serif">VowPic</text>
         <text class="brand-subtitle">
-          {{ tr('使用 Google 创建账号。访客订单、积分和后续购买会归并到同一个已验证身份。', 'Create your account with Google. Your guest orders, credits, and future purchases stay under one verified identity.') }}
+          {{ tr('使用 Google 创建账号，让积分、订单和后续购买始终绑定到同一个已验证身份。', 'Create your account with Google so credits, orders, and future purchases stay under one verified identity.') }}
         </text>
       </view>
 
@@ -12,7 +12,7 @@
         <text class="auth-kicker">{{ tr('创建账号', 'Create account') }}</text>
         <text class="auth-title heading-serif">{{ tr('从 Google 开始', 'Start with Google') }}</text>
         <text class="auth-copy">
-          {{ tr('邮箱密码注册暂时关闭。当前公开注册统一使用 Google，避免验证码问题影响生成体验。', 'Email-and-password registration is temporarily closed while production email delivery is being finalized.') }}
+          {{ tr('Google 是当前网站唯一公开的注册方式。', 'Google is the only public sign-up method on this website.') }}
         </text>
 
         <view class="form-stack">
@@ -43,7 +43,6 @@
           <text>{{ tr('已经登录？', 'Already signed in?') }}</text>
           <text class="link" @tap="goAccount">{{ tr('打开账户', 'Open account') }}</text>
         </view>
-        <text class="guest-link" @tap="goHome">{{ tr('先浏览首页', 'Continue as guest') }}</text>
       </view>
     </view>
   </view>

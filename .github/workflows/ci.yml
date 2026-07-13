@@ -128,6 +128,11 @@ jobs:
           RUN_POSTGRES_INTEGRATION: '1'
           CONTROL_PLANE_RLS_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
         run: python -m unittest backend.tests.integration.test_control_plane_rls -v
+      - name: Run the real PostgreSQL click-stats repair contract
+        env:
+          RUN_CLICK_STATS_REPAIR_INTEGRATION: '1'
+          CLICK_STATS_REPAIR_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: python -m unittest backend.tests.integration.test_click_stats_repair -v
       - name: Run a non-empty backend suite
         working-directory: backend
         run: |

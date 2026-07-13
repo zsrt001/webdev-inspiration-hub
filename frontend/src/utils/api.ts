@@ -1,4 +1,4 @@
-import { ensureSession, getAuthProvider, getClientFingerprint, getGuestUserId, getToken, isJwtToken, logout } from './auth';
+import { ensureSession, getClientFingerprint, isJwtToken } from './auth';
 import { API_BASE_URL, isH5Runtime, resolveBackendOrigin } from './apiConfig';
 
 function getRuntimeLocale(): 'zh' | 'en' {
@@ -136,54 +136,19 @@ export interface ApiError extends Error {
     requestId?: string;
 }
 
-function canRecoverUnauthorized(path: string): boolean {
-    return !path.startsWith('/auth/login');
-}
-
-async function rebootstrapSession(): Promise<boolean> {
-    const provider = getAuthProvider();
-    if (provider === 'password' || provider === 'supabase') {
-        return false;
-    }
-    logout();
-    try {
-        const session = await ensureSession(API_BASE_URL);
-        return !!session?.token && isJwtToken(session.token);
-    } catch {
-        return false;
-    }
-}
-
-function shouldBootstrapSession(path: string): boolean {
-    const publicPrefixes = ['/templates', '/ops/public_config', '/analytics/click', '/health'];
-    return !publicPrefixes.some((prefix) => path.startsWith(prefix));
-}
-
-async function buildHeaders(path: string): Promise<Record<string, string>> {
+async function buildHeaders(_path: string): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
         'Content-Type': 'application/json',
     };
 
-    let token = getToken();
-    if (!isJwtToken(token) && shouldBootstrapSession(path)) {
-        try {
-            const session = await ensureSession(API_BASE_URL);
-            token = session?.token || getToken();
-        } catch {
-            token = getToken();
-        }
-    }
+    const session = await ensureSession(API_BASE_URL);
+    const token = session?.token || null;
 
-    const hasJwt = isJwtToken(token);
-    if (hasJwt && token) {
+    if (isJwtToken(token) && token) {
         headers.Authorization = `Bearer ${token}`;
     }
 
-    const visitorIdentity = getGuestUserId().trim();
     headers['X-Device-Id'] = getClientFingerprint();
-    if (!hasJwt && visitorIdentity) {
-        headers['X-Visitor-Id'] = visitorIdentity.slice(0, 64);
-    }
 
     return headers;
 }
@@ -251,10 +216,7 @@ async function requestJson<T>(
             });
         };
 
-        let res = await requestOnce();
-        if (res.statusCode === 401 && canRecoverUnauthorized(path) && await rebootstrapSession()) {
-            res = await requestOnce();
-        }
+        const res = await requestOnce();
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
             return res.data as T;
@@ -341,22 +303,6 @@ export async function uploadFile(
                 if (options.onProgress) options.onProgress(pct);
             });
         });
-
-        if (res.statusCode === 401 && canRecoverUnauthorized(path) && await rebootstrapSession()) {
-            const retryTask = uni.uploadFile({
-                url: resolveApiUrl(path),
-                filePath,
-                name,
-                header: await buildHeaders(path),
-            });
-            const retryRes = await retryTask;
-            if (retryRes.statusCode >= 200 && retryRes.statusCode < 300) {
-                return JSON.parse(retryRes.data);
-            }
-            let payload: any = retryRes.data;
-            try { payload = JSON.parse(retryRes.data); } catch {}
-            throw createApiError(retryRes.statusCode, payload);
-        }
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
             return JSON.parse(res.data);

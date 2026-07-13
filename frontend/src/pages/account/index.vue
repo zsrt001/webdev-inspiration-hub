@@ -30,6 +30,14 @@
         <button class="btn btn-primary state-action" @tap="refresh">{{ tr('重试', 'Retry') }}</button>
       </view>
 
+      <view v-else-if="!accountAuthed" class="state-card">
+        <text class="state-title">{{ tr('登录后查看账户', 'Sign in to view your account') }}</text>
+        <text class="account-subtitle">{{ tr('账户数据仅对已验证的 Google 身份开放。', 'Account data is available only to a verified Google identity.') }}</text>
+        <button v-if="supabaseEnabled" class="btn btn-primary state-action" @tap="signIn">
+          {{ tr('使用 Google 登录', 'Sign in with Google') }}
+        </button>
+      </view>
+
       <template v-else>
         <view class="overview-grid">
           <view class="profile-card panel">
@@ -41,7 +49,7 @@
               <view>
                 <text class="card-eyebrow">{{ tr('登录状态', 'Sign-in Status') }}</text>
                 <text class="profile-name">{{ displayName }}</text>
-                <text class="profile-email">{{ profile?.email || tr('访客账号', 'Guest account') }}</text>
+                <text class="profile-email">{{ profile?.email || '--' }}</text>
               </view>
             </view>
 
@@ -180,14 +188,11 @@ import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { useSubscriptionStore } from '../../stores/subscription';
 import { get, resolvePublicUrl } from '../../utils/api';
-import { getAuthProvider, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
+import { ensureSession, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
 import { refreshSupabaseConfig } from '../../utils/supabase';
 
 interface UserProfile {
   id: string;
-  openid: string;
-  auth_provider?: string | null;
-  auth_subject?: string | null;
   email?: string | null;
   nickname?: string | null;
   avatar_url?: string | null;
@@ -256,12 +261,11 @@ const transactions = ref<CreditTransaction[]>([]);
 const orders = ref<Order[]>([]);
 const legalPolicies = ref<LegalPolicies | null>(null);
 const supabaseAuthed = ref(false);
-const passwordAuthed = ref(false);
 const supabaseEnabled = ref(false);
 const adminAccess = ref(false);
 
 const accountAuthed = computed(() => supabaseAuthed.value);
-const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('访客用户', 'Guest user'));
+const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('VowPic 账户', 'VowPic account'));
 const profileInitial = computed(() => (displayName.value || 'A').slice(0, 1).toUpperCase());
 const activePlanName = computed(() => subscriptionStore.activePlan?.name || tr('未订阅', 'No subscription'));
 const retentionNotice = computed(() => {
@@ -272,13 +276,7 @@ const retentionNotice = computed(() => {
   );
 });
 
-const providerLabel = computed(() => {
-  if (supabaseAuthed.value) return 'Google';
-  if (passwordAuthed.value) return tr('用户名密码', 'Username/password');
-  const provider = getAuthProvider() || profile.value?.auth_provider || 'local';
-  if (provider === 'password') return tr('用户名密码', 'Username/password');
-  return provider === 'local' ? tr('访客会话', 'Guest session') : provider;
-});
+const providerLabel = computed(() => 'Google');
 
 function shortId(value?: string | null): string {
   const raw = String(value || '').trim();
@@ -368,8 +366,27 @@ function statusClass(status: string): string {
 async function loadAccount(): Promise<void> {
   loading.value = true;
   error.value = '';
-  supabaseAuthed.value = isSupabaseLoggedIn();
   adminAccess.value = false;
+  profile.value = null;
+  balance.value = null;
+  transactions.value = [];
+  orders.value = [];
+  legalPolicies.value = null;
+  subscriptionStore.clearCurrentSubscription();
+
+  try {
+    await ensureSession();
+  } catch {
+    error.value = tr('Google 会话暂时无法验证，请重试。', 'The Google session could not be verified. Please retry.');
+    loading.value = false;
+    return;
+  }
+
+  supabaseAuthed.value = isSupabaseLoggedIn();
+  if (!supabaseAuthed.value) {
+    loading.value = false;
+    return;
+  }
 
   try {
     const [

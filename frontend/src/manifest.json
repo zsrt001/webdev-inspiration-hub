@@ -31,24 +31,6 @@
         },
         "template": "template.h5.html"
     },
-    "mp-weixin": {
-        "appid": "",
-        "setting": {
-            "urlCheck": false,
-            "es6": true,
-            "minified": true,
-            "postcss": true
-        },
-        "usingComponents": true,
-        "optimization": {
-            "subPackages": true
-        },
-        "permission": {
-            "scope.userLocation": {
-                "desc": "用于获取您的位置信息"
-            }
-        }
-    },
     "networkTimeout": {
         "request": 30000,
         "uploadFile": 60000

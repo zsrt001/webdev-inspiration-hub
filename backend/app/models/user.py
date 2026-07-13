@@ -10,7 +10,7 @@ from app.core.database import Base
 
 
 class User(Base):
-    """User model for WeChat Mini Program users."""
+    """User model for web accounts."""
 
     __tablename__ = "users"
     __table_args__ = (
@@ -66,7 +66,7 @@ class User(Base):
         String(64),
         unique=True,
         nullable=True,
-        comment="WeChat UnionID (if available)",
+        comment="Legacy external identity value retained for migration inventory",
     )
     nickname: Mapped[str | None] = mapped_column(
         String(64),

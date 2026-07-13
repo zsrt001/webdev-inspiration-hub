@@ -1,7 +1,7 @@
 {
-  "contract_version": "safe-baseline.v1",
-  "builder_schema": "vowpic.runtime-bundle.safe-baseline.v1",
-  "schema_revision": "20260710_0013",
+  "contract_version": "safe-baseline.v2",
+  "builder_schema": "vowpic.runtime-bundle.safe-baseline.v2",
+  "schema_revision": "20260712_0014",
   "environments": [
     "preview",
     "production"

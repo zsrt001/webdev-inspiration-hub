@@ -75,6 +75,7 @@ class ColdStartNoDdlTest(unittest.IsolatedAsyncioTestCase):
                 sorted(schema_guard_service._REQUIRED_TABLES),
                 sorted(schema_guard_service._REQUIRED_INDEXES),
                 sorted(schema_guard_service._REQUIRED_USER_COLUMNS),
+                sorted(schema_guard_service._REQUIRED_CLICK_STATS_COLUMNS),
             ]
         )
 
@@ -103,7 +104,7 @@ class ColdStartNoDdlTest(unittest.IsolatedAsyncioTestCase):
             schema_guard_service._runtime_schema_validated = False
             schema_guard_service._user_account_schema_validated = False
 
-        self.assertEqual(len(statements), 4)
+        self.assertEqual(len(statements), 5)
         self.assertTrue(all(statement.lstrip().upper().startswith("SELECT") for statement in statements))
         self.assertTrue(all(DDL_PATTERN.search(statement) is None for statement in statements))
 

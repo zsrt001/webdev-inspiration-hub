@@ -71,9 +71,10 @@ async def get_ops_alerts(db: AsyncSession, *, days: int = 7) -> list[dict[str, A
             )
         )
 
-    since = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    since_utc = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    lead_since = since_utc.replace(tzinfo=None)
     lead_count = (
-        await db.execute(select(func.count(Lead.id)).where(Lead.created_at >= since))
+        await db.execute(select(func.count(Lead.id)).where(Lead.created_at >= lead_since))
     ).scalar_one()
     if int(lead_count or 0) == 0:
         alerts.append(
@@ -88,7 +89,7 @@ async def get_ops_alerts(db: AsyncSession, *, days: int = 7) -> list[dict[str, A
 
     recent_failed_orders = (
         await db.execute(
-            select(func.count(Order.id)).where(Order.updated_at >= since, Order.error_message.is_not(None))
+            select(func.count(Order.id)).where(Order.updated_at >= since_utc, Order.error_message.is_not(None))
         )
     ).scalar_one()
     if int(recent_failed_orders or 0) >= 5:
@@ -105,7 +106,7 @@ async def get_ops_alerts(db: AsyncSession, *, days: int = 7) -> list[dict[str, A
     recent_failed_live = (
         await db.execute(
             select(func.count(LivePortraitJob.id)).where(
-                LivePortraitJob.updated_at >= since,
+                LivePortraitJob.updated_at >= since_utc,
                 LivePortraitJob.status == LivePortraitStatus.FAILED,
             )
         )

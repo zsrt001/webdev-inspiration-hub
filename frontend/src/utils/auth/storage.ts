@@ -7,7 +7,7 @@ import { isJwtToken } from './identity';
 export function storeSession(
     userId: string,
     token: string,
-    provider: 'local' | 'supabase' = 'local',
+    provider: 'supabase' = 'supabase',
 ): { userId: string; token: string } {
     uni.setStorageSync(USER_ID_KEY, userId);
     uni.setStorageSync(TOKEN_KEY, token);
@@ -31,16 +31,11 @@ export function getAuthProvider(): string | null {
 }
 
 export function isLoggedIn(): boolean {
-    return !!getUserId() && isJwtToken(getToken());
+    return isSupabaseLoggedIn();
 }
 
 export function isSupabaseLoggedIn(): boolean {
     return getAuthProvider() === 'supabase' && isJwtToken(getToken());
-}
-
-export function isGuestSession(): boolean {
-    const provider = getAuthProvider();
-    return !!getUserId() && isJwtToken(getToken()) && provider !== 'supabase';
 }
 
 export function logout(): void {

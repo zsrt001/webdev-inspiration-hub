@@ -3,8 +3,6 @@
     "version": "1.0.0",
     "description": "AI Wedding Photo Web App",
     "scripts": {
-        "dev:mp-weixin": "uni -p mp-weixin",
-        "build:mp-weixin": "uni build -p mp-weixin",
         "dev:web": "uni -p h5",
         "build:web": "uni build -p h5",
         "dev:h5": "uni -p h5",
@@ -16,7 +14,6 @@
         "@dcloudio/uni-app": "3.0.0-alpha-5000120260205002",
         "@dcloudio/uni-components": "3.0.0-alpha-5000120260205002",
         "@dcloudio/uni-h5": "3.0.0-alpha-5000120260205002",
-        "@dcloudio/uni-mp-weixin": "3.0.0-alpha-5000120260205002",
         "@supabase/supabase-js": "^2.104.1",
         "pinia": "2.1.7",
         "qrcode": "^1.5.4",

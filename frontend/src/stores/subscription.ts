@@ -103,6 +103,10 @@ export const useSubscriptionStore = defineStore('subscription', () => {
     return current.value;
   }
 
+  function clearCurrentSubscription(): void {
+    current.value = null;
+  }
+
   async function startSubscriptionCheckout(
     planCode: string,
     returnUrl?: string,
@@ -150,6 +154,7 @@ export const useSubscriptionStore = defineStore('subscription', () => {
     loading,
     fetchPlans,
     fetchCurrentSubscription,
+    clearCurrentSubscription,
     startSubscriptionCheckout,
     cancelSubscription,
   };

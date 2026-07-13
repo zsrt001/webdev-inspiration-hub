@@ -26,7 +26,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
         import json
 
         contract = json.loads((ROOT / "release" / "safe-baseline-contract.json").read_text(encoding="utf-8"))
-        self.assertEqual(contract["schema_revision"], "20260710_0013")
+        self.assertEqual(contract["schema_revision"], "20260712_0014")
         self.assertEqual(contract["seed_contract"]["state"], "OFF")
         self.assertEqual(len(contract["capabilities"]), 7)
         forbidden = {"worker", "provider", "model", "catalog", "activation_plan", "deployment_id"}
@@ -36,10 +36,13 @@ class RuntimeBundleIdTest(unittest.TestCase):
         module = _module()
         payload = {
             "source_sha": "a" * 40,
-            "schema_revision": "20260710_0013",
-            "migration_checksums": [{"revision": "20260710_0013", "sha256": "b" * 64}],
+            "schema_revision": "20260712_0014",
+            "migration_checksums": [
+                {"revision": "20260710_0013", "sha256": "b" * 64},
+                {"revision": "20260712_0014", "sha256": "d" * 64},
+            ],
             "contract_hashes": {"safe_baseline": "c" * 64},
-            "builder_contract_version": "safe-baseline.v1",
+            "builder_contract_version": "safe-baseline.v2",
             "tool_version": "vowpic-release-tools.v1",
         }
         first = module.compute_runtime_bundle_id("SAFE_BASELINE", payload)
@@ -70,10 +73,13 @@ class RuntimeBundleIdTest(unittest.TestCase):
             preview_id,
             module.compute_runtime_bundle_id("SAFE_BASELINE", {
                 "source_sha": payload["source_sha"],
-                "schema_revision": payload["schema_revision"],
-                "migration_checksums": payload["migration_checksums"],
+                "schema_revision": "20260712_0014",
+                "migration_checksums": [
+                    {"revision": "20260710_0013", "sha256": "e" * 64},
+                    {"revision": "20260712_0014", "sha256": "a" * 64},
+                ],
                 "contract_hashes": {"safe_baseline": "f" * 64},
-                "builder_contract_version": "safe-baseline.v1",
+                "builder_contract_version": "safe-baseline.v2",
                 "tool_version": payload["tool_version"],
             }),
         )

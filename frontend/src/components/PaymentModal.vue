@@ -32,7 +32,7 @@
       <view class="balance-strip">
         <view>
           <text class="balance-label">{{ tr('当前积分', 'Current credits') }}</text>
-          <text class="balance-value">{{ currentBalance }}</text>
+          <text class="balance-value">{{ accountAuthed ? currentBalance : tr('登录后查看', 'Sign in to view') }}</text>
         </view>
         <view class="balance-meta">
           <text>{{ tr('基础生成', 'Base generation') }} {{ costPerGeneration }} {{ tr('积分起', 'credits and up') }}</text>
@@ -175,6 +175,7 @@ import { useI18nStore } from '../stores/i18n';
 import { useSubscriptionStore, type SubscriptionPlan } from '../stores/subscription';
 import { get, post } from '../utils/api';
 import { trackEvent } from '../utils/analytics';
+import { isSupabaseLoggedIn } from '../utils/auth';
 
 interface CreditPackage {
   id: string;
@@ -250,6 +251,7 @@ const subscriptionStore = useSubscriptionStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const currentBalance = ref(0);
+const accountAuthed = ref(isSupabaseLoggedIn());
 const costPerGeneration = ref(2);
 const packages = ref<CreditPackage[]>([]);
 const selectedPackage = ref<CreditPackage | null>(null);
@@ -454,6 +456,13 @@ function selectPackage(pkg: CreditPackage) {
   selectedPackage.value = pkg;
 }
 
+function requireVerifiedAccount(): boolean {
+  if (isSupabaseLoggedIn()) return true;
+  uni.showToast({ title: tr('请先登录后购买', 'Sign in before purchasing'), icon: 'none' });
+  uni.navigateTo({ url: '/pages/auth/login' });
+  return false;
+}
+
 function normalizeSelections() {
   if (packages.value.length > 0) {
     const existing = selectedPackage.value
@@ -473,16 +482,24 @@ function normalizeSelections() {
 }
 
 async function fetchData() {
-  const balanceTask = get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false })
-    .then((res) => {
-      currentBalance.value = res.balance;
-      costPerGeneration.value = Number(res.cost_per_generation || 2);
-    })
-    .catch(() => undefined);
-
-  const currentSubscriptionTask = subscriptionStore.fetchCurrentSubscription(true)
-    .then(() => normalizeSelections())
-    .catch(() => undefined);
+  accountAuthed.value = isSupabaseLoggedIn();
+  const protectedTasks: Promise<unknown>[] = [];
+  if (accountAuthed.value) {
+    protectedTasks.push(
+      get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false })
+        .then((res) => {
+          currentBalance.value = res.balance;
+          costPerGeneration.value = Number(res.cost_per_generation || 2);
+        })
+        .catch(() => undefined),
+      subscriptionStore.fetchCurrentSubscription(true)
+        .then(() => normalizeSelections())
+        .catch(() => undefined),
+    );
+  } else {
+    currentBalance.value = 0;
+    subscriptionStore.clearCurrentSubscription();
+  }
 
   const [packagesResult] = await Promise.allSettled([
     get<PackagesResponse>(`/credits/packages?locale=${encodeURIComponent(i18nStore.locale)}`, { showLoading: false, showError: false }),
@@ -498,10 +515,11 @@ async function fetchData() {
   }
   normalizeSelections();
 
-  void Promise.allSettled([balanceTask, currentSubscriptionTask]);
+  void Promise.allSettled(protectedTasks);
 }
 
 async function reconcilePendingPurchase() {
+  if (!isSupabaseLoggedIn()) return;
   const routeParams = readRouteParams();
   if (routeParams.subscriptionStatus === 'success') {
     clearRouteParams();
@@ -565,6 +583,7 @@ async function reconcilePendingPurchase() {
 }
 
 async function handlePurchase(pkg?: CreditPackage) {
+  if (!requireVerifiedAccount()) return;
   const targetPackage = pkg || selectedPackage.value;
   if (!targetPackage) return;
   selectedPackage.value = targetPackage;
@@ -607,6 +626,7 @@ async function handlePurchase(pkg?: CreditPackage) {
 }
 
 async function handleSubscriptionPurchase(planCode?: string) {
+  if (!requireVerifiedAccount()) return;
   const targetPlanCode = planCode || selectedPlanCode.value;
   if (!targetPlanCode) return;
   selectedPlanCode.value = targetPlanCode;

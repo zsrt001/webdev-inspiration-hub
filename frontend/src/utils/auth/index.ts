@@ -1,39 +1,29 @@
-/** Barrel re-export — all existing `import { ... } from '@/utils/auth'` continue to work. */
+/** Public authentication helpers for the overseas Web application. */
 
-// Session / guest bootstrap
-export { ensureSession, login } from './session';
+export { ensureSession } from './session';
+export { getClientFingerprint, isJwtToken } from './identity';
+export { getAuthProvider, getToken, getUserId, isLoggedIn, isSupabaseLoggedIn, logout } from './storage';
 
-// Identity & fingerprint
-export { getClientFingerprint, getGuestUserId, isJwtToken } from './identity';
-
-// Storage & auth state
-export { getAuthProvider, getToken, getUserId, isLoggedIn, isGuestSession, isSupabaseLoggedIn, logout } from './storage';
-
-// Google OAuth (re-export from supabase module for backward compatibility)
 import { signInWithGoogle as _googleSignIn } from '../supabase';
 export async function signInWithGoogle(): Promise<void> {
     await _googleSignIn();
 }
 
-// Default export for `import auth from '@/utils/auth'`
 import { ensureSession } from './session';
-import { login } from './session';
-import { getClientFingerprint, getGuestUserId, isJwtToken } from './identity';
-import { getAuthProvider, getToken, getUserId, isLoggedIn, isGuestSession, isSupabaseLoggedIn, logout } from './storage';
+import { getClientFingerprint, isJwtToken } from './identity';
+import { getAuthProvider, getToken, getUserId, isLoggedIn, isSupabaseLoggedIn, logout } from './storage';
 
-const _default = {
+const auth = {
     ensureSession,
-    login,
     logout,
     getToken,
     getUserId,
     getAuthProvider,
     getClientFingerprint,
     isLoggedIn,
-    isGuestSession,
     isSupabaseLoggedIn,
     isJwtToken,
-    getGuestUserId,
     signInWithGoogle,
 };
-export default _default;
+
+export default auth;

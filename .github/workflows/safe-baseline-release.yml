@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact reviewed Tasks 1-4 commit on current main
+        description: Exact reviewed remediation commit on current main
         required: true
         type: string
 
@@ -256,10 +256,11 @@ jobs:
           python scripts/release/build_runtime_bundle_id.py \
             --release-role SAFE_BASELINE \
             --source-sha "$SOURCE_SHA" \
-            --schema 20260710_0013 \
+            --schema 20260712_0014 \
             --safe-baseline-contract release/safe-baseline-contract.json \
             --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
-            --builder-contract-version safe-baseline.v1 \
+            --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
+            --builder-contract-version safe-baseline.v2 \
             --output "$RUNNER_TEMP/safe-runtime-bundle-id.txt"
           RUNTIME_BUNDLE_ID="$(tr -d '\r\n' < "$RUNNER_TEMP/safe-runtime-bundle-id.txt")"
           [[ "$RUNTIME_BUNDLE_ID" =~ ^rtb_[0-9a-f]{64}$ ]]
@@ -611,7 +612,7 @@ jobs:
             --expected-runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
             --expected-workflow-run-id "$GITHUB_RUN_ID" \
             --expected-workflow-attempt "$GITHUB_RUN_ATTEMPT" \
-            --expected-schema 20260710_0013 \
+            --expected-schema 20260712_0014 \
             --expected-deployment-url "$DEPLOYMENT_URL" \
             --expected-deployment-id "$DEPLOYMENT_ID" \
             --require-platform-deployment-id \
@@ -788,7 +789,7 @@ jobs:
             --expected-project-id "$VERCEL_PROJECT_ID" \
             --expected-formal-domain "$PRODUCTION_BASE_URL" \
             --expected-lockdown-after-config-sha256 "${LOCKDOWN_AFTER_CONFIG_SHA256:-}" \
-            --expected-schema 20260710_0013 \
+            --expected-schema 20260712_0014 \
             --expected-deployment-url "$DEPLOYMENT_URL" \
             --expected-deployment-id "$DEPLOYMENT_ID" \
             --require-platform-deployment-id \

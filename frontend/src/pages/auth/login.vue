@@ -42,7 +42,6 @@
         <view class="auth-footer">
           <text>{{ tr('第一次使用？Google 会自动创建你的账号。', 'New here? Google creates your account automatically.') }}</text>
         </view>
-        <text class="guest-link" @tap="goHome">{{ tr('先浏览首页', 'Continue as guest') }}</text>
       </view>
     </view>
   </view>

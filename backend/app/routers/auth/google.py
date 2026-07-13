@@ -31,13 +31,12 @@ from app.services.acceptance_identity_service import (
 from app.services.feature_flag_service import require_request_capability, resolve_request_capability
 from app.routers.auth._shared import settings, NEW_ACCOUNT_DEVICE_LIMITER
 from app.routers.auth._helpers import (
-    create_access_token,
+    _build_login_response,
     _ensure_user_active,
     _welcome_bonus_metadata,
     _oauth_return_url,
     _enforce_new_account_risk_limits_persistent,
 )
-from app.routers.auth.merge import _merge_guest_account
 
 router = APIRouter()
 
@@ -118,13 +117,7 @@ async def exchange_supabase_session(
         metadata={"welcome_bonus_granted": bonus_granted},
     )
 
-    if request.previous_guest_id:
-        await _merge_guest_account(db, request.previous_guest_id, user.id)
-
-    access_token = create_access_token(
-        data={"sub": str(user.id), "openid": user.openid, "auth_provider": "supabase", "email": user.email}
-    )
-    return LoginResponse(access_token=access_token, token_type="bearer", openid=user.openid, user_id=user.id, username=user.username)
+    return _build_login_response(user)
 
 
 async def _get_or_create_supabase_user(db: AsyncSession, claims: SupabaseUserClaims, request: Request) -> tuple[bool, User]:

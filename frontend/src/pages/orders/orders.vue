@@ -69,6 +69,7 @@ import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { getLocalizedTemplateTitle, useTemplateStore } from '../../stores/template';
 import { get, resolvePublicUrl } from '../../utils/api';
+import { isSupabaseLoggedIn } from '../../utils/auth';
 
 interface Order {
   id: string;
@@ -183,6 +184,13 @@ function normalizeOrderRows(response: OrdersResponse): Order[] {
 }
 
 async function fetchOrders() {
+  if (!isSupabaseLoggedIn()) {
+    orders.value = [];
+    error.value = '';
+    authRequired.value = true;
+    loading.value = false;
+    return;
+  }
   loading.value = true;
   error.value = '';
   authRequired.value = false;

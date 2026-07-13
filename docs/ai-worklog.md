@@ -495,3 +495,139 @@
 ### Subagent
 
 - The same read-only review subagent re-opened only the follow-up patch and independently identified the strict-default guard and CORS ordering gaps. It wrote no files and created no child agent; the primary agent reproduced both failures, added red tests, implemented the lifecycle-state correction, and reran the affected and full suites.
+
+## 2026-07-12 - Online deployment defect remediation before database or release mutation
+
+### Goal and scope
+
+- Reproduce the current Preview/browser failures before any further synchronization, fix only verified application defects, and keep Production, formal domains, credentials, and business data untouched until the complete local gate is green.
+- Enforce the already approved overseas Web/H5-only direction: Google/Supabase is the only public identity; retired guest/OpenID and WeChat Mini Program build surfaces must not remain active.
+
+### Verified root causes and changes
+
+- Uni H5 rejects `setTabBarItem` from a non-tab page. `App.vue` invoked the locale update from both launch and show without observing its Promise, producing the four browser rejections seen on direct non-tab routes. The locale store now exits outside the two configured tab routes, awaits both tab item updates, and contains the unexpected-error boundary; legacy lifecycle debug logs were removed.
+- `Lead.created_at` is a PostgreSQL timestamp without time zone while Order and Live Portrait update timestamps are timezone-aware. Ops alerts now bind a naive UTC cutoff only for Lead and retain aware UTC cutoffs for the other two queries.
+- The frontend still auto-bootstrapped the permanently retired `POST /auth/login` guest contract and serialized guest merge fields. Guest bootstrap, identity keys, visitor header, retry bootstrap, guest UI copy, merge schema and merge implementation were removed. The backend tombstone remains an explicit database-free 410.
+- Account, orders, balance, current subscription, pending payment status, and checkout operations now require a verified Google/Supabase application session before protected network access. Anonymous account/orders views show an explicit sign-in state; public pricing/catalog reads remain available without fabricating a guest balance or account.
+- Removed the remaining direct WeChat Mini Program target from `manifest.json`, npm scripts, direct dependencies, and lockfile. The H5/uni-app implementation remains unchanged and the Web build still passes.
+
+### Test-first and functional evidence
+
+- New red/green contracts: `backend.tests.test_frontend_runtime_contract`, `backend.tests.test_ops_alert_service`, and `backend.tests.test_web_only_contract`. Focused combined auth/runtime/feature/risk coverage passed 51/51 before the final Web-only package and anonymous-orders additions; the final Web-only contract passed 6/6.
+- `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q`: final run executed 383 tests and reported `OK (skipped=4)`; all 379 non-skipped tests passed.
+- `npm --prefix frontend run typecheck`: passed, including a fresh rerun after the final account-store cleanup.
+- `npm --prefix frontend run build:web`: passed. The existing Uni-app update notice and 23 upstream Dart Sass legacy-JavaScript-API deprecation warnings remain visible; none was suppressed.
+- `.venv\Scripts\python.exe -m compileall -q backend/app backend/scripts scripts/release api`: passed.
+- Both workflow YAML files parsed. All 53 Linux Bash `run` blocks passed Git Bash `bash -n`; all three Windows blocks passed Windows PowerShell 5.1 `ScriptBlock.Create` parsing.
+- `git diff --check` passed. A changed-diff scan found zero private-key, GitHub-token, OpenAI-key, Slack-token, or AWS access-key pattern.
+- Local browser checks covered direct account, login, create, orders, and home routes plus the pricing modal. No route produced the previous TabBar runtime error or called `/auth/login`; anonymous account/orders and pricing state were explicit, and no anonymous `/credits/balance` or `/subscriptions/me` request occurred. Expected connection-refused errors were limited to public API calls while the local backend was intentionally not running.
+
+### Risks and release boundary
+
+- Frontend `test:unit` remains unavailable because Vitest is named in the legacy script but absent from the dependency tree; source contracts, typechecking, production build, and browser checks provide the current frontend evidence. Adding a new test framework was outside this defect-remediation diff.
+- Production revision/schema readback, backup/restore rehearsal, migration, Preview runtime registration, real Preview OAuth/upload/generation/payment evidence, Production promotion, formal-domain verification, and observation remain `NOT_RUN` at this checkpoint.
+- The build warnings are upstream technical debt. They do not fail the current build but must not be described as a warning-free result.
+
+### Subagent and external effects
+
+- One read-only subagent independently audited the frontend guest/TabBar gap. It wrote no files and created no child agent. The primary agent reopened every adopted path and reproduced the browser and source evidence before changing code.
+- No Production credential, database write, deployment, formal-domain mutation, payment, email, Provider request, commit, stage, push, or real customer-data operation occurred in this remediation checkpoint.
+
+## 2026-07-12 - Stamped-0012 analytics schema repair before protected release
+
+### Verified release defect
+
+- The live analytics failure reports missing `click_stats.value_sum` / `value_count`, while the protected safe-baseline workflow accepts only the pre-release revision `20260516_0012` and previously upgraded directly to `20260710_0013`.
+- Historical migration `20260516_0012` owns those columns. If Production is stamped `0012` without the physical columns, Alembic will not replay that historical migration, so the former `0012 -> 0013` workflow could complete its version advance without repairing the analytics shape.
+- Production revision and catalog readback still require the protected read-only database secret and remain `NOT_RUN`; no claim is made that the live database is already proven to be exactly this stamped-but-incomplete state. The repair covers that evidence-backed failure mode while continuing to fail on incompatible existing types.
+
+### Changes and rollback model
+
+- Added forward-only revision `20260712_0014` after `20260710_0013`. It rejects non-integer pre-existing aggregate columns, adds the two columns with `IF NOT EXISTS`, backfills nulls, and enforces integer-compatible `DEFAULT 0` plus `NOT NULL`.
+- The downgrade intentionally keeps the columns because they belong to historical revision `0012`; dropping them could destroy valid analytics data. Application rollback remains compatible because the change is additive, while the database revision marker can move back to `0013` without removing data.
+- Runtime readiness now requires revision `0014` and both aggregate columns. The safe-baseline workflow, registration target, runtime-bundle domain/contract, migration checksum list, and staged/formal schema verification now bind ordered migrations `0013 + 0014` and builder contract `safe-baseline.v2`.
+
+### Verification
+
+- Red/green affected suite: `backend.tests.test_click_stats_repair_migration`, `backend.tests.test_no_runtime_ddl`, `backend.tests.test_runtime_bundle_id`, `backend.tests.test_ci_release_contract`, `backend.tests.test_backup_restore_rehearsal`, and `backend.tests.test_production_inventory` passed 90/90.
+- Offline Alembic SQL for `20260710_0013:20260712_0014` rendered one transactional sequence containing the type guard, idempotent additions, null backfill, constraints, and revision update. `alembic heads` reports only `20260712_0014 (head)`.
+- A disposable PostgreSQL 15 Alpine container migrated the full `0001 -> 0013` chain. After inserting one analytics row and deleting both aggregate columns to reproduce the inconsistent stamped shape, upgrade to `0014` returned `20260712_0014|0|0`; catalog readback returned `value_count:integer:NO:0,value_sum:integer:NO:0`. A forward-only downgrade marker to `0013` followed by a second `0014` upgrade also returned `20260712_0014|0|0`, proving the already-present path. The disposable container was removed and a name-filtered readback found none.
+- Final `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q` ran 386 tests and reported `OK (skipped=4)`; all 382 non-skipped tests passed.
+- Final frontend typecheck and H5 build passed; the known 23 upstream Sass legacy-JavaScript-API warnings remain. Both workflow YAML files parsed, 53 Bash blocks and three PowerShell blocks passed syntax validation, `git diff --check` passed, and the changed-diff high-risk secret-pattern scan remained zero.
+
+### Remaining protected boundary and local effect
+
+- Production read-only inventory, exact revision/column readback, backup/restore rehearsal, migration, Preview registration, deployment, Promote, domains, and observation remain `NOT_RUN`. The workflow still requires one exact reviewed commit on current `main`; no Production bypass was introduced.
+- Docker Desktop was started only for the disposable PostgreSQL proof. Its project containers auto-started by their existing restart policy. The disposable container was confirmed removed. Subsequent attempts to stop the auto-started containers and shut Docker Desktop gracefully timed out after the Docker API became unresponsive; no force-kill or data-destructive recovery was attempted, so Docker Desktop process state remains a local follow-up item.
+- No Production credential, database write, deployment, formal-domain mutation, commit, stage, push, payment, email, Provider request, or real customer-data operation occurred.
+
+## 2026-07-12 - Second-review closure before Production preflight
+
+### Goal and reviewed gaps
+
+- Close the final independent-review findings before any Production readback or synchronization: remove internal OpenID/provider data from public contracts, bound migration lock/statement waits, and replace source-only migration assurance with real PostgreSQL scenario coverage.
+- Preserve `users.openid`, `auth_provider`, and `auth_subject` only as internal database compatibility fields for existing accounts; no schema drop or customer-data rewrite was performed.
+
+### Changes
+
+- `LoginResponse`, `UserRead`, the account frontend DTO, and application JWTs no longer expose `openid`, `unionid`, `auth_provider`, or `auth_subject`. Google exchange now uses one shared response builder. Retired caller-supplied user routes still fail with 410 but are omitted from OpenAPI and no longer declare OpenID request/response models.
+- The protected reservation transaction now applies transaction-local `lock_timeout = '15s'` and `statement_timeout = '5min'` before the advisory lock and Alembic upgrade, so lock contention or DDL stalls fail closed inside the existing rollback boundary.
+- Added an explicit opt-in PostgreSQL integration suite and CI step. The test refuses non-local hosts and database names without the `_test` suffix, then covers missing columns, already-correct columns with preserved nonzero values, nullable/no-default repair, and incompatible-type rollback with the revision remaining at `20260710_0013`.
+- Updated Google-only registration copy and the safe-baseline workflow input description so neither implies a temporarily pending email/password path or an obsolete Tasks 1-4 boundary.
+
+### Verification and review evidence
+
+- Test-first public-contract and timeout checks failed on the prior implementation, then passed after the boundary changes. The focused auth/Web-only/risk/CI suite passed 66/66.
+- The first full backend rerun found one stale test fixture that returned a bare object where the new transaction-local timeout setup correctly expected a database connection. The fixture was changed to a recording `MagicMock`; the focused retry/timeout pair then passed 2/2.
+- Final `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q` ran 394 tests and reported `OK (skipped=8)`; all 386 non-skipped tests passed. The additional four skips are the new explicit PostgreSQL integration scenarios when their opt-in environment is absent.
+- Against a disposable PostgreSQL 15 Alpine database, `RUN_CLICK_STATS_REPAIR_INTEGRATION=1 ... python -m unittest backend.tests.integration.test_click_stats_repair -v` passed all four real migration scenarios. The correct-shape case retained `(value_sum, value_count) = (17, 3)`; the wrong-type case raised a DBAPI error and retained revision `20260710_0013`.
+- `npm --prefix frontend run typecheck` and `npm --prefix frontend run build:web` passed. The build still emitted the known 23 upstream Sass legacy-JavaScript-API warnings; no warning was hidden.
+- Python compileall, both workflow YAML parses, 54 Bash `run` block parses, three PowerShell `run` block parses, `git diff --check`, and the changed-diff high-risk secret scan all passed.
+- The same one read-only Subagent performed the final bounded review, wrote no files, and created no child agent. It reported no Critical or Important issue. The primary agent independently verified its one Minor data-preservation suggestion, added the nonzero-value assertion, and reran the real database suite green.
+
+### Remaining ordered boundary and local effects
+
+- Production revision/catalog readback, backup/restore rehearsal, migration, exact Preview release, real Preview commercial flows, Production promotion, formal-domain acceptance, and observation remain `NOT_RUN`. No stage, commit, push, PR, deployment, Production credential, business-data write, payment, email, Provider call, or domain mutation occurred in this review loop.
+- Docker Desktop was started for the local test database. Every `vowpic-click-stats-repair-test` container was removed by the bounded harness; Docker Desktop itself remains a local process and is not part of the deliverable.
+
+## 2026-07-12 - Production read-only preflight after local gates
+
+### Current platform and domain evidence
+
+- The connected Vercel project remains `webdev-inspiration-hub` (`prj_nn0VaQOAyZJBh1Eu4C5Ve9FsVM2k`). Its latest Preview is `dpl_FbXbsUpSjBKuatRxEV9EF4ENQqnG`, `READY`, `target=null`, source SHA `acd174aa5783ce3addb76e542cfca52aaa9d6ec3`; it does not include this uncommitted remediation.
+- The formal domains remain on Production deployment `dpl_8ryc7dh5XjocPnPjyw1Yq9ZkqGTA`, source SHA `52208b66fda5ab1a327c3af7d3840eabe74016fd`. Both `vowpic.com` and `www.vowpic.com` are still listed on that project; no alias or DNS mutation occurred.
+- Read-only HTTP probes followed `vowpic.com` to `https://www.vowpic.com/` and returned 200 with a 1,174-byte page. `/health` returned 200 liveness but exposed no source SHA, runtime bundle ID, or deployment ID. `/health/ready` and `/api/v1/ops/readiness` returned 200, while the old Production implementation reported only its legacy checks and therefore does not prove the new role, schema-0014, or immutable-runtime contract. `/api/v1/ops/public_config` returned 200, one capability entry, and Google OAuth enabled.
+- Vercel's grouped runtime evidence for the preceding 24 hours still contains the old Production Lead timestamp error (`can't subtract offset-naive and offset-aware datetimes`) that this local branch fixes. Historical Preview startup errors for missing strict runtime coordinates also remain visible as expected evidence from older deployments.
+
+### Credential and synchronization boundary
+
+- No Production database or Vercel credential exists in the process environment or an ignored local environment file. The protected workflow references `PRODUCTION_READ_ONLY_DATABASE_URL`, `PRODUCTION_MIGRATION_DATABASE_URL`, restore-target, approval, Vercel, and evidence secrets only by name; no value was read or printed.
+- Exact Production Alembic revision, `click_stats` catalog shape, backup/restore rehearsal, and migration therefore remain `NOT_RUN`; they must run inside the protected GitHub `production` Environment after the exact reviewed commit is on current `main`.
+- A fresh `git fetch --prune origin` confirmed local `HEAD` and `origin/codex/vowpic-commercial-closure` are both `acd174aa5783ce3addb76e542cfca52aaa9d6ec3`; the branch is seven commits ahead of and zero behind `origin/main` at `52208b66fda5ab1a327c3af7d3840eabe74016fd`. All remediation remains uncommitted and unstaged.
+- The required GitHub publish prerequisite is currently missing: `gh` is not installed, so authenticated `gh auth status` cannot pass. Per the repository publish workflow, stage/commit/push/PR creation stops here until GitHub CLI is installed and authenticated. Vercel CLI 55.0.0 is present but has no local credentials; no interactive login was completed.
+
+## 2026-07-13 - Authenticated publication preflight and final Web-only wording closure
+
+### Goal and scope
+
+- Recheck the entire uncommitted remediation before synchronization, establish fresh functional evidence, authenticate the repository publication path, and keep Production/domain changes behind the protected ordered workflow.
+- Remove the last misleading product descriptions from active SQLAlchemy models. The moderation patterns that reject payment-code content and the Production inventory queries that detect legacy identity rows remain intentionally active; they are safety/migration controls, not WeChat integrations.
+
+### Final correction and external prerequisite
+
+- Added a Web-only source contract that rejects `wechat` and `mini program` descriptions in the active User and Order models. The assertion failed first on the three stale descriptions, then passed after replacing them with Web-account, legacy-migration, and provider-neutral payment wording.
+- GitHub CLI 2.96.0 is installed and authenticated as the repository owner with `repo` scope. `gh auth status`, `gh api user`, `gh repo view`, and a fresh Git fetch all succeeded. The feature branch remained identical to its remote tip before this publication commit and remained seven commits ahead of, zero behind, `origin/main`.
+- The temporary Proxifier `gh.exe` application rule used for authentication was removed. The active profile was reloaded and inspected through the Proxifier UI; the exact fixed-application list no longer contains `gh.exe`. The XML parses, a rollback copy exists, and after redacting the credential blob and target application list there are no other profile changes. Existing proxied Codex traffic continued after reload.
+
+### Fresh verification evidence
+
+- `.venv\Scripts\python.exe -m unittest discover -s backend/tests -t . -q`: ran 395 tests and reported `OK (skipped=8)`; all 387 non-skipped tests passed after the final wording contract.
+- A disposable pinned PostgreSQL 15 Alpine database migrated the full `0001 -> 0014` chain. All four control-plane RLS/role tests and all four click-stats repair scenarios passed; the container stayed `running` with restart count zero and was removed with zero matching containers left.
+- The first disposable-database invocation used `pg_isready` alone and hit the image's temporary bootstrap server immediately before its normal shutdown/restart, so zero tests ran and the connection closed. A diagnostic host connection proved the final server healthy; the corrected bounded harness waited for the image's initialization-complete marker plus two readiness probes before the successful eight-test rerun. No code conclusion is drawn from the invalid first invocation.
+- `npm --prefix frontend ci --ignore-scripts`, `npm --prefix frontend run typecheck`, and `npm --prefix frontend run build:web` passed in order. The known 23 upstream Dart Sass legacy-JavaScript-API warnings remain visible.
+- `pip check`, Python compileall, unique Alembic head `20260712_0014`, both workflow YAML parses, 54 Git Bash syntax checks, three Windows PowerShell syntax checks, `git diff --check`, and the high-risk added-secret pattern scan passed.
+
+### Remaining ordered boundary
+
+- GitHub CI, the exact Preview deployment, Preview OAuth/upload/generation/payment flows, Production read-only inventory, backup/restore, migration, promotion, formal-domain acceptance, and observation remain pending at this entry. No Production database, Vercel project, domain, payment, email, Provider, storage object, or customer data was changed.
+- The next allowed sequence is explicit-file staging, cached-diff review, one intentional commit, branch push, Draft PR, then CI and Preview verification. Production remains blocked until those protected gates pass.

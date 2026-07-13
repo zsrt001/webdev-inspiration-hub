@@ -22,9 +22,14 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 
 def _build_login_response(user: User) -> LoginResponse:
     access_token = create_access_token(
-        data={"sub": str(user.id), "openid": user.openid, "auth_provider": user.auth_provider or "supabase", "username": user.username}
+        data={"sub": str(user.id), "email": user.email, "username": user.username}
     )
-    return LoginResponse(access_token=access_token, token_type="bearer", openid=user.openid, user_id=user.id, username=user.username)
+    return LoginResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user_id=user.id,
+        username=user.username,
+    )
 
 
 def _ensure_user_active(user: User) -> None:

@@ -4,6 +4,15 @@ import { defineStore } from 'pinia';
 export type Locale = 'zh' | 'en';
 
 const LOCALE_STORAGE_KEY = 'aws_locale';
+const TAB_BAR_ROUTES = new Set(['pages/index/index', 'pages/orders/orders']);
+
+function isCurrentTabBarPage(): boolean {
+  const pages = getCurrentPages();
+  if (pages.length === 0) return false;
+
+  const currentRoute = String(pages[pages.length - 1]?.route || '').replace(/^\/+/, '');
+  return TAB_BAR_ROUTES.has(currentRoute);
+}
 
 const messages: Record<Locale, Record<string, string>> = {
   zh: {
@@ -193,9 +202,17 @@ export const useI18nStore = defineStore('i18n', () => {
     return content;
   };
 
-  const applyTabBarLocale = () => {
-    uni.setTabBarItem({ index: 0, text: t('tab.home') });
-    uni.setTabBarItem({ index: 1, text: t('tab.orders') });
+  const applyTabBarLocale = async (): Promise<void> => {
+    if (!isCurrentTabBarPage()) return;
+
+    try {
+      await Promise.all([
+        uni.setTabBarItem({ index: 0, text: t('tab.home') }),
+        uni.setTabBarItem({ index: 1, text: t('tab.orders') }),
+      ]);
+    } catch (error) {
+      console.warn('Failed to update localized tab bar', error);
+    }
   };
 
   return {

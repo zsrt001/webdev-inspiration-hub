@@ -114,7 +114,7 @@ class Order(Base):
     payment_id: Mapped[str | None] = mapped_column(
         String(128),
         nullable=True,
-        comment="WeChat payment transaction ID",
+        comment="External payment transaction ID",
     )
     paid_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),

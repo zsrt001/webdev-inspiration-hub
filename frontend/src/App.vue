@@ -1,26 +1,20 @@
 <script setup lang="ts">
-import { onLaunch, onShow, onHide } from '@dcloudio/uni-app';
+import { onLaunch, onShow } from '@dcloudio/uni-app';
 import { watch } from 'vue';
 import { useI18nStore } from './stores/i18n';
 
 const i18nStore = useI18nStore();
 
 const applyLocaleUi = () => {
-  i18nStore.applyTabBarLocale();
+  void i18nStore.applyTabBarLocale();
 };
 
 onLaunch(() => {
   applyLocaleUi();
-  console.log('AI Wedding Studio - Professional UI/UX Refactor');
 });
 
 onShow(() => {
   applyLocaleUi();
-  console.log('App Show');
-});
-
-onHide(() => {
-  console.log('App Hide');
 });
 
 watch(() => i18nStore.locale, () => {

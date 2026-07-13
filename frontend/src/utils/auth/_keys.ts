@@ -2,5 +2,4 @@
 
 export const USER_ID_KEY = 'ai_wedding_user_id';
 export const TOKEN_KEY = 'ai_wedding_token';
-export const GUEST_ID_KEY = 'ai_wedding_guest_id';
 export const AUTH_PROVIDER_KEY = 'ai_wedding_auth_provider';

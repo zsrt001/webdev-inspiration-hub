@@ -170,11 +170,9 @@ class RetiredRouteTest(unittest.IsolatedAsyncioTestCase):
         db = AsyncMock()
         user_id = uuid.uuid4()
 
-        await self._assert_gone(
-            users.create_user(users.UserCreate(openid="legacy-openid"), db)
-        )
-        await self._assert_gone(users.get_user(user_id, db))
-        await self._assert_gone(users.update_user(user_id, users.UserUpdate(nickname="legacy"), db))
+        await self._assert_gone(users.create_user())
+        await self._assert_gone(users.get_user(user_id))
+        await self._assert_gone(users.update_user(user_id))
 
         db.execute.assert_not_awaited()
 
