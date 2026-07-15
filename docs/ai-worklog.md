@@ -972,3 +972,38 @@
 - GitHub repository/environment secret-name readback was empty. Protected Preview, Vercel authenticated deployment inspection, Provider/payment/storage contracts, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`.
 - Generation and billing remain OFF. No merge, protected Preview workflow, Production workflow, Production data write, payment, email, Provider submission, DNS, or formal-domain mutation occurred.
 - No Subagent was used.
+
+## 2026-07-15 - Vercel Python runtime lock alignment
+
+### Goal and scope
+
+- Diagnose the first remaining red Vercel Preview after the exact GitHub PR quality gate passed, without using an authenticated browser, changing the formal domain, or enabling high-risk capabilities.
+- Close any repository-owned deployment gap before another ordered commit and Preview retry.
+
+### Evidence and root cause
+
+- GitHub deployment history showed successful Preview deployments through source `166dddd8751bb75e8dffe81fe51f7f13020469d6`, followed by three consecutive failures beginning at `50563ab3753704288e0222f14775c66b69cead27`. The latest failed deployment was `dpl_6naRoJeUCye1zpUxJnr5MC8LGyDf` for source `217b5dfb2867d890d4ab10f4f4db20c04a2fad0a`.
+- The unauthenticated Vercel page exposed no build log, and the locked CLI correctly refused inspection without credentials. No failure reason was inferred from that page.
+- Official Vercel runtime documentation identifies Python 3.12 as the default when the project does not declare a supported version. The repository had no root Python version declaration, while CI regenerated and installed the Vercel API lock only in Python 3.11.15.
+- An isolated Python 3.12.13 Bookworm install reproduced the concrete failure: `vercel==0.6.0` declares `vercel-workers<1,>=0.0.16` only for Python 3.12 and later, but the Python 3.11-generated hash lock omitted it. Pip therefore rejected the unpinned and unhashed transitive requirement before application import.
+
+### Changes
+
+- Added a root `.python-version` declaring Python 3.12 and regenerated the root Vercel API hash lock in exact Python 3.12.13; the lock now pins and hashes `vercel-workers==0.0.25`.
+- Kept the existing Python 3.11.15 Linux backend/Worker lock job and added a separate digest-pinned Python 3.12.13 Bookworm Vercel lock job. Each graph is regenerated twice, compared with the committed output, installed with hashes, and dependency-checked in its owning runtime.
+- The Vercel job now imports the real `api.index` entry point after a fresh locked install. The aggregate PR gate requires the Linux backend lock, Vercel API lock, and Windows backend lock jobs together.
+- Added CI contract regressions for the runtime declaration, exact image, conditional dependency, double lock generation, clean install, entry-point import, and aggregate-gate ownership. Updated the Vercel deployment guide with the split-runtime contract.
+
+### Verification
+
+- The new CI contract failed first because the Vercel 3.12 job and `.python-version` did not exist; after implementation, `python -m unittest backend.tests.test_ci_release_contract -q` passed 60/60 tests.
+- The committed-candidate root lock regenerated twice byte-identically under Python 3.12.13 with SHA-256 `68599f2f8b0eef13b3082055e1bef6478c8d0b734eb7df9c9a46a6394291001a`.
+- A fresh Python 3.12.13 Bookworm virtual environment installed all root requirements with `--require-hashes`, `pip check` reported no broken requirements, and the real Vercel function entry point imported successfully as `api.index.handler is api.index.app`.
+- `.github/workflows/ci.yml` parsed successfully and `git diff --check` passed before the full repository baseline.
+- The complete local baseline then exited 0 from a fresh Windows hash-locked environment: `pip check` passed, all 732 collected backend tests passed with 33 explicit external/environment skips, generated API types were deterministic and matched the committed file, frontend typecheck passed, Vitest passed 5/5, and the Web build completed. The report truthfully recorded `UNCOMMITTED_WORKTREE`, local runtime mismatch, and `release_eligible=false`.
+
+### External boundary
+
+- The failed Vercel deployment is not reclassified as passed. A new GitHub/Vercel Preview run against the corrected committed source is still required.
+- Protected Preview identity/commercial workflows, Provider/payment/private-storage proof, Worker-host execution, formal-domain acceptance, and human quality acceptance remain external `NOT_RUN`/`UNVERIFIED` gates. Generation and billing remain OFF.
+- No Subagent, authenticated Vercel session, merge, Production workflow, domain/DNS mutation, Production data write, payment, email, or Provider submission was used.

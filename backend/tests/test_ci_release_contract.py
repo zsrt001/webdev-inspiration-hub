@@ -109,7 +109,7 @@ class CiReleaseContractTest(unittest.TestCase):
         workflow = _read(".github/workflows/ci.yml")
         linux_job = workflow[
             workflow.index("  dependency-locks:") : workflow.index(
-                "  windows-dependency-locks:"
+                "  vercel-dependency-locks:"
             )
         ]
         self.assertIn("platform.python_version()", linux_job)
@@ -121,6 +121,11 @@ class CiReleaseContractTest(unittest.TestCase):
         workflow = _read(".github/workflows/ci.yml")
         dependency_job = workflow[
             workflow.index("  dependency-locks:") : workflow.index(
+                "  vercel-dependency-locks:"
+            )
+        ]
+        vercel_dependency_job = workflow[
+            workflow.index("  vercel-dependency-locks:") : workflow.index(
                 "  windows-dependency-locks:"
             )
         ]
@@ -128,7 +133,32 @@ class CiReleaseContractTest(unittest.TestCase):
             workflow.index("  backend-test:") : workflow.index("  frontend-check:")
         ]
         self.assertIn("python -m pip check", dependency_job)
+        self.assertIn("python -m pip check", vercel_dependency_job)
         self.assertIn("python -m pip check", backend_job)
+
+    def test_vercel_runtime_and_lock_job_are_python_312_aligned(self) -> None:
+        workflow = _read(".github/workflows/ci.yml")
+        vercel_job = workflow[
+            workflow.index("  vercel-dependency-locks:") : workflow.index(
+                "  windows-dependency-locks:"
+            )
+        ]
+        self.assertEqual(_read(".python-version").strip(), "3.12")
+        self.assertRegex(
+            vercel_job,
+            r"container:\s*python:3\.12\.13-slim-bookworm@sha256:[0-9a-f]{64}",
+        )
+        self.assertIn("platform.python_version()", vercel_job)
+        self.assertIn("3.12.13", vercel_job)
+        self.assertIn("VERSION_CODENAME", vercel_job)
+        self.assertIn("bookworm", vercel_job)
+        self.assertIn("requirements.in", vercel_job)
+        self.assertIn("requirements.txt", vercel_job)
+        self.assertIn("--require-hashes -r requirements.txt", vercel_job)
+        self.assertIn("import api.index", vercel_job)
+        root_lock = _read("requirements.txt")
+        self.assertIn("pip-compile with Python 3.12", root_lock)
+        self.assertIn("vercel-workers==0.0.25", root_lock)
 
     def test_ci_and_release_use_a_supported_exact_node_lts(self) -> None:
         for relative_path in (
@@ -208,6 +238,7 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIn("npm run test:unit", workflow)
         for result_env in (
             "LINUX_LOCKS_RESULT",
+            "VERCEL_LOCKS_RESULT",
             "WINDOWS_LOCKS_RESULT",
             "BACKEND_RESULT",
             "FRONTEND_RESULT",
@@ -388,7 +419,7 @@ class CiReleaseContractTest(unittest.TestCase):
         workflow = _read(".github/workflows/ci.yml")
         linux_job = workflow[
             workflow.index("  dependency-locks:") : workflow.index(
-                "  windows-dependency-locks:"
+                "  vercel-dependency-locks:"
             )
         ]
         self.assertIn("python:3.11", linux_job)
@@ -397,22 +428,39 @@ class CiReleaseContractTest(unittest.TestCase):
             r"container:\s*python:3\.11\.15-slim-bookworm@sha256:[0-9a-f]{64}",
         )
         self.assertIn("--require-hashes -r requirements-resolver.txt", linux_job)
-        self.assertGreaterEqual(linux_job.count("python -m piptools compile"), 4)
-        self.assertIn("requirements.in", linux_job)
+        self.assertGreaterEqual(linux_job.count("python -m piptools compile"), 3)
+        self.assertNotIn("requirements.in", linux_job)
         self.assertIn("backend/requirements.txt", linux_job)
         self.assertIn("backend/requirements.lock.txt", linux_job)
         self.assertIn("sha256sum", linux_job)
         self.assertIn("git diffutils", linux_job)
         for expected_snapshot in (
             "cp requirements-resolver.txt /tmp/requirements-resolver.expected.txt",
-            "cp requirements.txt /tmp/requirements.expected.txt",
             "cp backend/requirements.lock.txt /tmp/backend-requirements-lock.expected.txt",
             "cmp /tmp/requirements-resolver.expected.txt requirements-resolver.txt",
-            "cmp /tmp/requirements.expected.txt requirements.txt",
             "cmp /tmp/backend-requirements-lock.expected.txt backend/requirements.lock.txt",
         ):
             self.assertIn(expected_snapshot, linux_job)
         self.assertNotIn("git diff --exit-code", linux_job)
+
+    def test_vercel_lock_runs_twice_and_checks_committed_output(self) -> None:
+        workflow = _read(".github/workflows/ci.yml")
+        vercel_job = workflow[
+            workflow.index("  vercel-dependency-locks:") : workflow.index(
+                "  windows-dependency-locks:"
+            )
+        ]
+        compile_commands = re.findall(
+            r"(?m)^\s+python -m piptools compile ",
+            vercel_job,
+        )
+        self.assertEqual(len(compile_commands), 2)
+        self.assertIn("cp requirements.txt /tmp/requirements.expected.txt", vercel_job)
+        self.assertIn("sha256sum requirements.txt", vercel_job)
+        self.assertIn(
+            "cmp /tmp/requirements.expected.txt requirements.txt",
+            vercel_job,
+        )
 
     def test_first_party_actions_are_commit_pinned(self) -> None:
         for relative_path in (

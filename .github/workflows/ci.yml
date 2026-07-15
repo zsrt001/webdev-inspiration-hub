@@ -34,29 +34,59 @@ jobs:
           export CUSTOM_COMPILE_COMMAND='python -m piptools compile --allow-unsafe --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=requirements-resolver.txt requirements-resolver.in'
           python -m piptools compile --allow-unsafe --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements-resolver.txt requirements-resolver.in --quiet
           cmp /tmp/requirements-resolver.expected.txt requirements-resolver.txt
-      - name: Resolve locks twice and require byte-identical output
+      - name: Resolve the Linux backend lock twice and require byte-identical output
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp backend/requirements.lock.txt /tmp/backend-requirements-lock.expected.txt
+          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=backend/requirements.lock.txt backend/requirements.txt'
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.lock.txt backend/requirements.txt --quiet
+          sha256sum backend/requirements.lock.txt > /tmp/backend-lock-pass-1.sha256
+          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=backend/requirements.lock.txt backend/requirements.txt'
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.lock.txt backend/requirements.txt --quiet
+          sha256sum backend/requirements.lock.txt > /tmp/backend-lock-pass-2.sha256
+          diff --unified /tmp/backend-lock-pass-1.sha256 /tmp/backend-lock-pass-2.sha256
+          cmp /tmp/backend-requirements-lock.expected.txt backend/requirements.lock.txt
+      - name: Prove the Linux backend lock installs with hashes
+        run: |
+          python -m venv /tmp/vowpic-backend-lock
+          /tmp/vowpic-backend-lock/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          /tmp/vowpic-backend-lock/bin/python -m pip check
+
+  vercel-dependency-locks:
+    runs-on: ubuntu-24.04
+    container: python:3.12.13-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
+    steps:
+      - name: Verify the Vercel Python runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(python -c 'import platform; print(platform.python_version())')" = "3.12.13"
+          . /etc/os-release
+          test "${VERSION_CODENAME:-}" = "bookworm"
+      - name: Install Git and byte-comparison tools
+        run: apt-get update && apt-get install --yes --no-install-recommends git diffutils && rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install the hash-locked resolver
+        run: python -m pip install --disable-pip-version-check --require-hashes --index-url=https://pypi.org/simple -r requirements-resolver.txt
+      - name: Resolve the Vercel API lock twice and require byte-identical output
         shell: bash
         run: |
           set -euo pipefail
           cp requirements.txt /tmp/requirements.expected.txt
-          cp backend/requirements.lock.txt /tmp/backend-requirements-lock.expected.txt
           export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=requirements.txt requirements.in'
           python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements.txt requirements.in --quiet
-          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=backend/requirements.lock.txt backend/requirements.txt'
-          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.lock.txt backend/requirements.txt --quiet
-          sha256sum requirements.txt backend/requirements.lock.txt > /tmp/lock-pass-1.sha256
-          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=requirements.txt requirements.in'
+          sha256sum requirements.txt > /tmp/vercel-lock-pass-1.sha256
           python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements.txt requirements.in --quiet
-          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=backend/requirements.lock.txt backend/requirements.txt'
-          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.lock.txt backend/requirements.txt --quiet
-          sha256sum requirements.txt backend/requirements.lock.txt > /tmp/lock-pass-2.sha256
-          diff --unified /tmp/lock-pass-1.sha256 /tmp/lock-pass-2.sha256
+          sha256sum requirements.txt > /tmp/vercel-lock-pass-2.sha256
+          diff --unified /tmp/vercel-lock-pass-1.sha256 /tmp/vercel-lock-pass-2.sha256
           cmp /tmp/requirements.expected.txt requirements.txt
-          cmp /tmp/backend-requirements-lock.expected.txt backend/requirements.lock.txt
-      - name: Prove the Vercel API lock installs with hashes
+      - name: Prove the Vercel API lock installs and the function entry point imports
         run: |
-          python -m pip install --disable-pip-version-check --require-hashes -r requirements.txt
-          python -m pip check
+          python -m venv /tmp/vowpic-vercel-runtime
+          /tmp/vowpic-vercel-runtime/bin/python -m pip install --disable-pip-version-check --require-hashes -r requirements.txt
+          /tmp/vowpic-vercel-runtime/bin/python -m pip check
+          /tmp/vowpic-vercel-runtime/bin/python -c "import api.index; assert api.index.handler is api.index.app"
 
   windows-dependency-locks:
     runs-on: windows-2022
@@ -251,10 +281,11 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [dependency-locks, windows-dependency-locks, backend-test, frontend-check, worker-image]
+    needs: [dependency-locks, vercel-dependency-locks, windows-dependency-locks, backend-test, frontend-check, worker-image]
     runs-on: ubuntu-24.04
     env:
       LINUX_LOCKS_RESULT: ${{ needs.dependency-locks.result }}
+      VERCEL_LOCKS_RESULT: ${{ needs.vercel-dependency-locks.result }}
       WINDOWS_LOCKS_RESULT: ${{ needs.windows-dependency-locks.result }}
       BACKEND_RESULT: ${{ needs.backend-test.result }}
       FRONTEND_RESULT: ${{ needs.frontend-check.result }}
@@ -278,6 +309,7 @@ jobs:
 
           results = {
               "locks": os.environ["LINUX_LOCKS_RESULT"] == "success"
+              and os.environ["VERCEL_LOCKS_RESULT"] == "success"
               and os.environ["WINDOWS_LOCKS_RESULT"] == "success",
               "backend": os.environ["BACKEND_RESULT"] == "success",
               "frontend": os.environ["FRONTEND_RESULT"] == "success",
