@@ -5,15 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.admin_auth import is_configured_admin_user
+from app.core.admin_auth import require_admin_user
 from app.core.database import get_control_plane_db, get_db
 from app.core.feature_flags import FeatureFlagState
-from app.core.supabase_auth import SupabaseAuthError, verify_supabase_token
 from app.models.ops_feature_flag import OpsFeatureFlag
 from app.models.user import User
 from app.services.feature_flag_service import (
@@ -21,7 +20,6 @@ from app.services.feature_flag_service import (
     emergency_disable,
     set_capability_state,
 )
-from app.services.schema_guard_service import ensure_user_account_columns
 
 
 router = APIRouter(prefix="/ops/admin", tags=["ops-admin"])
@@ -43,47 +41,11 @@ class EmergencyDisableRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=512)
 
 
-def _bearer(authorization: str | None) -> str:
-    scheme, separator, token = (authorization or "").partition(" ")
-    if not separator or scheme.lower() != "bearer":
-        return ""
-    return token.strip()
-
-
-async def require_google_database_admin(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-) -> User:
-    """Reject backend tokens, local JWTs, spoofed headers, and debug fallback."""
-    token = _bearer(authorization)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google Admin bearer required")
-    try:
-        claims = await verify_supabase_token(token)
-    except SupabaseAuthError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Admin session") from exc
-    if claims.provider.strip().lower() != "google":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Google-backed Admin required")
-    await ensure_user_account_columns(db)
-    result = await db.execute(
-        select(User).where(
-            User.auth_provider == "supabase",
-            User.auth_subject == claims.subject,
-        )
-    )
-    user = result.scalar_one_or_none()
-    if user is None or not is_configured_admin_user(user) or (user.status or "").lower() != "active":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Database Admin role required")
-    request.state.admin_actor = f"google-admin:{user.id}"
-    return user
-
-
 @router.get("/feature-flags")
 async def list_feature_flags(
     environment: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_google_database_admin),
+    _: User = Depends(require_admin_user),
 ):
     if environment not in {"preview", "production"}:
         raise HTTPException(status_code=422, detail="environment must be preview or production")
@@ -122,7 +84,7 @@ async def mutate_feature_flag(
     payload: FeatureFlagMutationRequest,
     request: Request,
     db: AsyncSession = Depends(get_control_plane_db),
-    _: User = Depends(require_google_database_admin),
+    _: User = Depends(require_admin_user),
 ):
     known_capability = coerce_capability(capability)
     actor = str(getattr(request.state, "admin_actor", ""))
@@ -143,7 +105,7 @@ async def mutate_feature_flag(
             expires_at=payload.expires_at,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail={"code": "feature_flag_change_invalid"}) from exc
     return {
         "capability": decision.capability.value,
         "state": decision.state.value,
@@ -160,7 +122,7 @@ async def emergency_disable_feature_flag(
     payload: EmergencyDisableRequest,
     request: Request,
     db: AsyncSession = Depends(get_control_plane_db),
-    _: User = Depends(require_google_database_admin),
+    _: User = Depends(require_admin_user),
 ):
     try:
         decision = await emergency_disable(
@@ -171,7 +133,7 @@ async def emergency_disable_feature_flag(
             reason=payload.reason,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail={"code": "feature_flag_change_invalid"}) from exc
     return {
         "capability": decision.capability.value,
         "state": decision.state.value,

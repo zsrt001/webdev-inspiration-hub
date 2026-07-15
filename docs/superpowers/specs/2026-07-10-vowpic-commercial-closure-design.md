@@ -8,13 +8,13 @@
 
 ## 1. 决策摘要
 
-VowPic 的目标产品是面向海外用户的 Web 网站，不是微信产品，也不包含微信小程序。此次工作采用“保留现有架构、分阶段加固、最终一次生产验收”的方案：继续使用 FastAPI、Vue 3/Uni-app H5、Supabase/PostgreSQL、Redis/ARQ、Creem、Evolink 和对象存储，不建立 `/v2`，不重写技术栈，也不引入新的 UI 框架。
+VowPic 的目标产品是面向海外用户的 Web SaaS，不是微信产品，也不包含微信小程序。此次工作采用“保留现有架构、分阶段加固、最终一次生产验收”的方案：继续使用 FastAPI、Vue 3/Uni-app Web（其编译目标 token 为 `h5`）、Supabase/PostgreSQL、Redis/ARQ、Creem、Evolink 和对象存储，不建立 `/v2`，不重写技术栈，也不引入新的 UI 框架。
 
 本文是一份统一验收的 umbrella spec，不是一份可以原子执行的单任务计划。后续实施计划必须按本文七个阶段拆成有先后依赖、独立退出门和回滚点的工作包；“一步到位”指最终只接受完整商业闭环，不表示把身份、存储、支付、队列、QA、前端和迁移塞进一次部署。只有全部强制门禁通过、达到 `Production accepted` 后，才能报告“规划已经完整实现”。
 
 核心决策如下：
 
-1. 产品只构建和验收 Web/H5；删除微信、小程序、OpenID 和 `wx_*` 身份语义。
+1. 产品只构建和验收海外 Web SaaS；删除微信、小程序、OpenID 和 `wx_*` 身份语义。
 2. 公开账户只使用 Supabase Google OAuth，业务后端签发短期、可撤销的本地会话。
 3. 上传、订单、积分、支付、生成、下载全部要求可信身份；匿名标识只用于统计和风控。
 4. 用户图片全部进入私有存储；业务数据只保存 artifact ID 和 private object key，不保存永久公开 URL。
@@ -90,7 +90,7 @@ VowPic 的目标产品是面向海外用户的 Web 网站，不是微信产品�
 
 - 不支持微信登录、微信公众号或微信小程序。
 - 不保留游客生成、密码账户公开入口或 OpenID 业务身份。
-- 不更换 FastAPI、Vue/Uni-app H5、PostgreSQL、Redis/ARQ、Creem 或当前生成 Provider。
+- 不更换 FastAPI、Vue/Uni-app Web 构建链、PostgreSQL、Redis/ARQ、Creem 或当前生成 Provider。
 - 不建立多 Provider 自动降级；生产配置只允许一个明确的图像生成主 Provider。
 - 不重写成 `/v2`，不另起前后端项目。
 - 不引入新的 UI 框架或视觉风格重做。
@@ -191,7 +191,7 @@ Vercel 只承载 Web 静态产物和短时 API。生成、轮询、QA、修复�
 - `wx_*` 身份前缀、WeChat payment 注释和公共 API 中的 `openid` 字段。
 - README/PRD/验收中“Web/小程序”或小程序 E2E 描述。
 
-Uni-app 仅作为现有 Vue H5 构建工具保留。默认语言为英语，中文作为可选语言。
+Uni-app 仅作为现有 Vue Web 构建工具保留；`h5` 只表示其固定编译目标，不是产品形态。默认语言为英语，中文作为可选语言。
 
 旧业务实现可以删除，但本规格要求永久 retired 的公共路径必须由一个集中、无数据库查询、无序列化和无副作用的 tombstone router 明确返回 HTTP 410；删除旧 router 不能把明确的 retired 合同静默变成 404。该 router 只保存路径与统一错误合同，不得反向导入旧 auth/session/Live Portrait/recommendation/lead 服务。
 
@@ -214,7 +214,7 @@ Uni-app 仅作为现有 Vue H5 构建工具保留。默认语言为英语，中�
 
 生产业务接口只能接受本地 JWT/session。Supabase token 只用于初次交换和重新认证，不能与本地 JWT 长期混用。
 
-本地 access/refresh Cookie 都是 HttpOnly；access 只发往 `/api/v1`，refresh 只发往 `/api/v1/auth/refresh`。double-submit CSRF Cookie 必须是 Secure/SameSite、非 HttpOnly 且 `Path=/`，让 `/create`、`/account` 等真实 H5 页面能读取并回送 `X-CSRF-Token`；服务端仍按 session 内 hash、精确 Origin 和 constant-time comparison 校验。refresh rotation 同时轮换 CSRF 值，旧值立即失效。禁止把 raw CSRF 放进 URL、localStorage 或持久业务状态。
+本地 access/refresh Cookie 都是 HttpOnly；access 只发往 `/api/v1`，refresh 只发往 `/api/v1/auth/refresh`。double-submit CSRF Cookie 必须是 Secure/SameSite、非 HttpOnly 且 `Path=/`，让 `/create`、`/account` 等真实 Web 页面能读取并回送 `X-CSRF-Token`；服务端仍按 session 内 hash、精确 Origin 和 constant-time comparison 校验。refresh rotation 同时轮换 CSRF 值，旧值立即失效。禁止把 raw CSRF 放进 URL、localStorage 或持久业务状态。
 
 浏览器不得继续把 JWT 放进 local storage。`X-User-OpenID` 必须删除；`X-Visitor-Id` 仅可用于匿名统计、限流和风险分析，不能进入所有权判断。
 
@@ -891,7 +891,7 @@ URL 盘点必须先分类：用户 source/candidate/final 等 private asset 才�
 
 | 范围 | PR 必选证据 | Preview 必选证据 | Production 必选证据 |
 | --- | --- | --- | --- |
-| Web-only | 活跃代码/依赖/CI 无微信运行路径；Web build | H5 桌面/移动 E2E | 正式域名桌面/移动 canary；无小程序发布物 |
+| Web-only | 活跃代码/依赖/CI 无微信运行路径；Web build | Web SaaS 桌面/移动 E2E | 正式域名桌面/移动 canary；无小程序发布物 |
 | Auth | state/nonce/PKCE、sid 撤销、伪造/过期/禁用/CSRF 单元与集成 | 真实 Supabase test identity、Admin 403、跨用户拒绝 | 真实 Google 登录、refresh/logout、legacy/header 冒充拒绝 |
 | Upload/storage | 恶意 MIME、图片炸弹、intent 崩溃、批量回滚、SSRF | 真实 Private Blob upload/read/delete、两用户隔离 | linked flow 私有上传/删除；旧公共 URL 及 CDN 404/410 |
 | Database | 空库 migration、约束/RLS/并发、migration rollback rehearsal | 独立 DB revision 与 RLS E2E | 生产 revision、备份恢复、分批 backfill 和行数/余额/引用核对 |

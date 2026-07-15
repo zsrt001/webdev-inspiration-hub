@@ -16,7 +16,6 @@ from app.models.user import User
 
 
 NEW_ACCOUNT_EVENT_TYPES = (
-    "password_register_created",
     "google_register_created",
 )
 
@@ -34,7 +33,6 @@ def _device_key(request: Request | None) -> str:
         return "unknown"
     explicit = (
         request.headers.get("x-device-id")
-        or request.headers.get("x-visitor-id")
         or request.headers.get("x-client-fingerprint")
         or ""
     ).strip()

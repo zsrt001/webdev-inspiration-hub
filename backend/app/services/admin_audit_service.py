@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from fastapi import Request
-from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,22 +16,7 @@ def _actor_from_request(request: Request | None) -> str:
     state_actor = getattr(request.state, "admin_actor", "")
     if state_actor:
         return str(state_actor)[:128]
-    token = request.headers.get("x-admin-token") or ""
-    if token:
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
-        return f"admin:{digest}"
-    authorization = request.headers.get("authorization") or ""
-    scheme, _, bearer = authorization.partition(" ")
-    if scheme.lower() == "bearer" and bearer.strip():
-        try:
-            claims = jwt.get_unverified_claims(bearer.strip())
-            subject = str(claims.get("sub") or "").strip()
-            if subject:
-                digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:12]
-                return f"admin-user:{digest}"
-        except JWTError:
-            pass
-    return "debug-admin"
+    return "admin-actor-missing"
 
 
 def _client_ip(request: Request | None) -> str | None:

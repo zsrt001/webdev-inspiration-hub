@@ -14,7 +14,13 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
-from app.services.qa_rules import build_structured_qa_issues, expand_specific_lighting_qa_reasons
+from app.schemas.qa import (
+    QA_CHECKER_VERSION,
+    QA_MODEL_VERSION,
+    QA_SCHEMA_VERSION,
+    StrictQaResponse,
+)
+from app.services.qa_rules import build_structured_qa_issues
 
 settings = get_settings()
 
@@ -625,7 +631,17 @@ async def verify_generated_image_quality(
     Fail-close when LLM provider is configured but the call fails.
     """
     if not is_vision_provider_configured():
-        return {"passed": True, "reasons": [], "notes": "llm_not_configured"}
+        reasons = ["vision_error"]
+        return {
+            "passed": False,
+            "reasons": reasons,
+            "issues": build_structured_qa_issues(
+                reasons,
+                source="vision",
+                notes="vision_not_configured",
+            ),
+            "notes": "vision_not_configured",
+        }
 
     source_images = [str(url).strip() for url in (source_image_urls or []) if str(url).strip()]
     couple_rules = (
@@ -675,26 +691,28 @@ async def verify_generated_image_quality(
         "You are a strict QA inspector for AI-generated wedding photos.\n"
         "Check for critical errors that make the result NOT acceptable for a paid product.\n"
         "Focus especially on: identity mismatch, distorted faces, unnatural eyes or expression, too many fingers, broken hands, abnormal limbs, unsafe or wrong wedding dress exposure, missing subjects, severe artifacts, commercial subject scale, face readability, crop boundaries, gown/train completeness, professional lighting, premium background clarity, and whether the result looks like a paid bridal-studio deliverable.\n"
-        "Return strictly valid JSON only with this schema:\n"
+        "Return strictly valid JSON only with this exact versioned schema; every key is required and no additional key is allowed:\n"
         "{\n"
+        f'  "schema_version": "{QA_SCHEMA_VERSION}",\n'
+        f'  "checker_version": "{QA_CHECKER_VERSION}",\n'
+        f'  "model_version": "{QA_MODEL_VERSION}",\n'
         '  "passed": boolean,\n'
-        '  "reasons": string[],\n'
-        '  "issues": [\n'
-        '    {\n'
-        '      "code": string,\n'
-        '      "category": "identity" | "face" | "anatomy" | "wardrobe" | "photography_quality" | "composition" | "output_integrity" | "safety" | "technical_quality" | "unknown",\n'
-        '      "target": string,\n'
-        '      "severity": "critical" | "major" | "minor" | "review",\n'
-        '      "evidence": string,\n'
-        '      "repair_hint": string\n'
-        '    }\n'
-        '  ],\n'
-        '  "notes": string\n'
+        '  "reason_codes": string[],\n'
+        '  "checks": {\n'
+        '    "technical": {"passed": boolean, "score": number, "reason_codes": string[]},\n'
+        '    "identity": {"passed": boolean, "score": number, "reason_codes": string[]},\n'
+        '    "subject": {"passed": boolean, "score": number, "reason_codes": string[]},\n'
+        '    "safety": {"passed": boolean, "score": number, "reason_codes": string[]},\n'
+        '    "style": {"passed": boolean, "score": number, "reason_codes": string[]},\n'
+        '    "composition": {"passed": boolean, "score": number, "reason_codes": string[]},\n'
+        '    "exposure": {"passed": boolean, "score": number, "reason_codes": string[]},\n'
+        '    "watermark": {"passed": boolean, "score": number, "reason_codes": string[]}\n'
+        '  }\n'
         "}\n"
         "Rules:\n"
-        "- If ANY critical issue exists, passed=false.\n"
-        '- reasons must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","unexpected_extra_subject","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","unnatural_expression","unnatural_gaze","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","background_over_blurred","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
-        "- issues must describe each failure with code, category, target, severity, short evidence, and a concrete repair_hint.\n"
+        "- If ANY mandatory check fails, top-level passed=false. Top-level passed must equal the AND of all eight checks.\n"
+        "- Passing checks must have an empty reason_codes list. Failed checks require at least one reason code.\n"
+        '- top-level reason_codes must be a subset of: ["headless","cropped_face","face_distortion","fused_faces","body_fusion","subject_missing","unexpected_extra_subject","identity_swap","identity_mismatch","extra_limbs","bad_hands","dress_exposure_error","poor_studio_quality","unnatural_expression","unnatural_gaze","face_underexposed","flat_lighting","no_catchlights","oily_skin_highlight","dress_highlights_blown","mixed_color_temperature","subject_too_small","face_too_small","background_dominates","excessive_headroom","awkward_crop","dress_cropped","poor_subject_separation","background_brighter_than_face","background_over_blurred","flat_centered_pose","weak_couple_interaction","harsh_backlight","black_or_blank","watermark_or_text","nsfw","severe_artifacts","other"].\n'
         "- Commercial framing standard: single subject should occupy about 66-78% of canvas height, with face height about 7.5-11%, headroom about 4-7.5%, and bottom room for shoes/gown/train about 7-11%. Outdoor environmental portraits may be wider, but subject height must not fall below about 58% and the face must stay recognizable. If the subject fills about 85-95% of height, the face/torso/bouquet dominates, or the scene has no breathing room, fail with awkward_crop even if the body is technically visible.\n"
         "- Commercial couple framing standard: the couple group should occupy about 64-76% of canvas height and 46-68% of canvas width; each face should be about 6-10% of canvas height, both faces readable, both bodies separated, outfits complete, and the pose should show subtle professional interaction rather than flat tourist-photo blocking. If faces, torsos, bouquet, or upper bodies overfill the 3:4 frame, fail with awkward_crop.\n"
         "- Main delivery layout is strict: unless the user explicitly requested a close-up, the result must not be a headshot, bust portrait, half-body portrait, waist-up crop, square crop, landscape banner, overfilled full-length portrait, or an image dominated by empty sky/ceiling/blank space. A polished face close-up is still a paid-product failure if the full wedding wardrobe, gown hem/train, shoes, floor/scene breathing room, or background context are missing.\n"
@@ -717,7 +735,6 @@ async def verify_generated_image_quality(
         f"{identity_rules}"
         f"{template_rules}"
         f"{golden_rules}"
-        "- notes: brief (<= 200 chars)."
     )
 
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -752,85 +769,30 @@ async def verify_generated_image_quality(
                 provider=provider,
             )
             content_text = _coerce_message_content_text(result["choices"][0]["message"]["content"])
-            data = _coerce_json_object_payload(json.loads(_clean_json_block(content_text)))
-            passed = bool(data.get("passed"))
-            reasons = data.get("reasons") or []
-            if not isinstance(reasons, list):
-                reasons = [str(reasons)]
-            reasons = [_normalize_qa_reason(str(reason)) for reason in reasons if str(reason).strip()]
-            reasons = [reason for reason in reasons if reason]
-            notes = str(data.get("notes") or "")[:200]
-            if index > 0:
-                notes = f"{notes}; qa_provider_fallback={provider}"[:200] if notes else f"qa_provider_fallback={provider}"
-            issues_raw = data.get("issues") or []
-            issues: list[dict[str, Any]] = []
-            lighting_evidence_texts: list[str] = [notes]
-            if isinstance(issues_raw, list):
-                for item in issues_raw:
-                    if not isinstance(item, dict):
-                        continue
-                    code = _normalize_qa_reason(str(item.get("code") or item.get("reason") or ""))
-                    if not code or code == "other" and str(item.get("code") or item.get("reason") or "").strip() not in {
-                        "other",
-                        "",
-                    }:
-                        code = "other"
-                    issue = build_structured_qa_issues(
-                        [code],
-                        source="vision",
-                        notes=str(item.get("evidence") or item.get("notes") or notes or "")[:200],
-                    )[0]
-                    if item.get("category"):
-                        issue["category"] = str(item.get("category"))[:80]
-                    if item.get("target"):
-                        issue["target"] = str(item.get("target"))[:80]
-                    if item.get("severity"):
-                        issue["severity"] = str(item.get("severity"))[:40]
-                    if item.get("repair_hint"):
-                        issue["repair_hint"] = str(item.get("repair_hint"))[:240]
-                    if item.get("evidence"):
-                        issue["evidence"] = str(item.get("evidence"))[:240]
-                    for key in ("code", "reason", "evidence", "notes", "repair_hint"):
-                        value = item.get(key)
-                        if value:
-                            lighting_evidence_texts.append(str(value))
-                    issues.append(issue)
-            if not reasons and issues:
-                reasons = [
-                    str(issue.get("code"))
-                    for issue in issues
-                    if isinstance(issue, dict) and str(issue.get("code") or "").strip()
-                ]
-            if not issues and reasons:
-                issues = build_structured_qa_issues(reasons, source="vision", notes=notes)
-            expanded_reasons = expand_specific_lighting_qa_reasons(
-                reasons,
-                evidence_texts=lighting_evidence_texts,
+            strict_verdict = StrictQaResponse.model_validate_json(
+                _clean_json_block(content_text)
             )
-            if expanded_reasons != reasons:
-                issue_by_code = {
-                    str(issue.get("code") or ""): issue
-                    for issue in issues
-                    if isinstance(issue, dict) and str(issue.get("code") or "").strip()
-                }
-                rebuilt_issues: list[dict[str, Any]] = []
-                for reason in expanded_reasons:
-                    existing = issue_by_code.get(reason)
-                    if existing:
-                        rebuilt_issues.append(existing)
-                        continue
-                    rebuilt_issues.extend(
-                        build_structured_qa_issues(
-                            [reason],
-                            source="vision",
-                            notes=notes or "\n".join(lighting_evidence_texts)[:200],
-                        )
-                    )
-                reasons = expanded_reasons
-                issues = rebuilt_issues
-            if reasons or any(bool(issue.get("blocking")) for issue in issues if isinstance(issue, dict)):
-                passed = False
-            return {"passed": passed, "reasons": reasons, "issues": issues, "notes": notes}
+            reasons = [
+                _normalize_qa_reason(reason)
+                for reason in strict_verdict.reason_codes
+            ]
+            reasons = [reason for reason in reasons if reason]
+            notes = (
+                f"strict_qa:{strict_verdict.checker_version}:{strict_verdict.model_version}"
+            )
+            if index > 0:
+                notes = f"{notes};qa_provider_fallback={provider}"
+            return {
+                "passed": strict_verdict.passed,
+                "reasons": reasons,
+                "issues": build_structured_qa_issues(
+                    reasons,
+                    source="vision",
+                    notes=notes,
+                ),
+                "notes": notes[:200],
+                "qa_contract": strict_verdict.model_dump(mode="json"),
+            }
         except Exception as exc:
             last_error = exc
             logger.warning("Vision QA failed via %s: %s", provider, exc)

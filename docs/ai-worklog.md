@@ -575,3 +575,362 @@
 ### Subagent
 
 - No new subagent was started for this external-configuration step. The one previously used read-only subagent wrote no files; the primary agent performed every authenticated readback and applied every external setting change serially.
+
+## 2026-07-13 - Task 5 Web-only runtime cleanup and residual removal
+
+### Goal and scope
+
+- Align the active product with the current overseas responsive Web SaaS contract. The Uni-app `h5` token remains only the browser compiler target; it is not the product definition.
+- Remove obsolete Mini Program, WeChat/guest identity, anonymous Remote Join, Live Portrait, local recommendation, lead, and CRM runtime surfaces without rewriting historical migrations or deleting compatibility data needed for existing in-flight orders.
+- Keep high-risk commercial capabilities fail-closed and make retired public routes deterministic, side-effect-free 410 responses.
+
+### Baseline and red evidence
+
+- Before the cleanup, the selected existing backend baseline ran 36 tests with zero failures; frontend typecheck and Web build also passed. This separated pre-existing health from the new contract failures.
+- The first `backend.tests.test_web_only_contract` run produced 38 failures. Additional focused red cases covered hidden billing without a real catalog, forbidden public `remote_join`, dead operations configuration, legacy Admin identity surfaces, the unused lead-phone crypto path, the obsolete visitor header, and incorrect deployment documentation.
+- No validation, assertion, release guard, or security check was weakened to obtain green results.
+
+### Changes
+
+- Removed Mini Program scripts/dependency/configuration, native tab-bar code, QR poster dependency/use, WeChat and guest authentication branches, guest merge, and anonymous partner-join UI/runtime routes.
+- Final diff scanning found and removed a hard-coded non-Web OAuth redirect plus three unused/no-op Supabase helpers (`getSupabaseClient`, `isSupabaseConfigured`, and `signOutFromSupabase`). Their contract test failed before deletion and passed afterward.
+- Removed the active Live Portrait, local recommendation, lead/CRM, and obsolete credit-mutation implementations. A centralized retired router preserves stable 410 compatibility for former public endpoints before auth, query parsing, database access, or other side effects.
+- Public authentication is Google-only; public user/Admin contracts use canonical UUID/email identity. The internal `users.openid` compatibility column remains for the later data migration and for bounded internal mapping, but is no longer a public or Admin authorization surface.
+- New orders reject unknown input including `remote_join`; two-subject creation follows the local-couple flow. Historical worker/session fields needed to finish already-created orders remain readable.
+- Removed dead operations flags/configuration, the unused phone-crypto module/config, obsolete visitor-header handling, fake frontend unit-test script, hard-coded price/catalog fallbacks, and signed-out account defaults that looked like real subscription data.
+- Billing and plan UI now remain absent unless the matching public capability and a real catalog are available. The Golden Anniversary detail page now exposes only its correct workflow.
+- Rewrote current README/PRD/deployment guidance as Web SaaS documentation while preserving frozen specifications, migrations, inventory evidence, anti-fraud WeChat Pay/QR detectors, and negative legacy-header tests.
+- Strengthened the retired-route contract so all 26 probes prove the database dependency is never resolved and no URL key is serialized. Added `path_separator = os` to Alembic configuration under a red/green config test, eliminating the Alembic 1.18 legacy path-splitting warning.
+
+### Verification
+
+- `Set-Location backend; ..\.venv\Scripts\python.exe -m unittest discover -s tests -q`: 406 tests collected, 398 passed, and the 8 explicitly gated PostgreSQL tests were skipped in discovery; zero failures.
+- The same 8 gated tests then ran against the CI-pinned PostgreSQL 15 image and all passed: four forced-RLS/role-isolation cases and four click-stats migration/idempotency/backfill/rollback cases. The final rerun used `-W error::DeprecationWarning` and remained clean.
+- The disposable `vowpic-task5-postgres-20260713` container was removed after exact name/image verification, port `5432` was confirmed free, and the Docker Desktop instance started for this proof was stopped.
+- The affected aggregate suites ran 194 tests with zero failures. Task 5 itself requires the Python Web-only contract, typecheck, build, static scan, and browser gates; the separate frontend unit framework is introduced by the later Task 30 contract and is not counted as a Task 5 omission.
+- Final `\.venv\Scripts\python.exe -m unittest backend.tests.test_web_only_contract -v`: 19 Web-only/static/tombstone tests passed after the OAuth helper and retired-route evidence cleanup.
+- `Set-Location frontend; npm ci --ignore-scripts`, `npm run typecheck`, and `npm run build:web`: passed. Build output retained the upstream Dart Sass legacy-JavaScript-API deprecation warnings and Uni-app update notice.
+- Desktop browser at 1280x720: Home had no horizontal overflow, remote flow, price, Buy Credits, View Plans, or pricing overlay; signed-out Account showed placeholders and sign-in requirements with no Admin console; Golden Anniversary exposed only `Start Golden Anniversary` and the Golden workflow.
+- Independent Chrome mobile emulation at 390x844: the complete Home rendered at `scrollWidth=390` with no horizontal overflow, remote flow, price, Buy Credits, or View Plans. Desktop and mobile console/error collection returned zero warnings or errors.
+- The in-app viewport override API did not apply its requested 390x844 size and remained 1280x720; mobile evidence therefore came from an independent CDP Chrome session rather than being misreported from that failed override.
+
+### External release boundary
+
+- No local Task 5 code or test gap remains open in this entry. Real Google OAuth, checkout/payment/webhook, AI provider generation, private object storage/download, Production inventory, deployment, formal-domain routing, and Production data belong to later protected stages; they were not fabricated with mocks or guessed credentials. Their capabilities remain OFF until those gates supply real credentials, authorization, and evidence.
+- No commit, push, PR, merge, deployment, domain change, payment, email, provider call, or Production/customer-data write occurred.
+
+### Subagent
+
+- One read-only Subagent audited Web-only residuals, dependencies, compatibility boundaries, and missing tests. It wrote no files and created no child agent. The primary agent independently opened the cited code, implemented the cleanup, and verified the final behavior and scans.
+
+## 2026-07-13 - Task 6 Web identity and revocable-session schema
+
+### Goal and scope
+
+- Add the approved Stage 2 normalized Web identity, OAuth-intent, local-session, rotating refresh-token, account-claim, email-conflict, immutable merge-lineage, and account-tombstone contracts.
+- Follow the real Stage 1 head `20260712_0014`; the plan's stale parent reference was corrected before implementation. No Task 7 cookie/session endpoint, Production migration, deployment, or domain action was included.
+
+### Baseline and red evidence
+
+- The pre-change database had nine user foreign keys: two already used non-destructive actions and seven retained financial/order/subscription/job facts still used `ON DELETE CASCADE`. Business identity tables did not yet exist.
+- Initial schema tests produced 21 missing-contract failures. Initial real PostgreSQL integration produced six failures because all eight Task 6 tables were absent.
+- Second-review red tests reproduced the remaining security gaps: unsafe pre-existing cluster roles were accepted; malformed JWT claim types resolved users; backslash/control-character redirects passed; seven consumed/revoked/resolved states could move backward; legacy fallback had no counter; and a downgrade could silently drop nonempty identity facts.
+
+### Changes
+
+- Added and exported the eight Task 6 ORM models and migration `20260710_0014`, parented to `20260712_0014`. `users.email` is non-authoritative profile data, `openid` is nullable legacy compatibility data, and the existing OpenID unique-constraint/index representation now matches ORM metadata without changing uniqueness semantics.
+- Converted the seven retained user foreign keys from destructive `CASCADE` to `RESTRICT`. Added exact provider/subject, family, generation, hash, state/timestamp, proof-consumption, conflict-resolution, and local-redirect constraints.
+- Added forced service-only RLS for every identity table; ordinary authenticated users have no direct table privileges. The resolver is owned by a validated non-login/non-superuser/non-bypass role, uses fixed `pg_catalog, public` search path, rejects malformed provider/subject/anonymous claim types, and exposes EXECUTE only to `authenticated`.
+- Added a restricted PostgreSQL sequence that records nonzero legacy-fallback use without exposing it to ordinary authenticated users. Normalized and invalid claim paths do not increment it.
+- Added one-way database guards for identity revocation, OAuth intent consumption, session version/revocation, refresh state, claim consumption, conflict resolution, tombstone cleanup, and immutable merge facts. Deterministic advisory locks plus exact single-use proof binding make concurrent merge attempts commit at most once.
+- Downgrade now fails before mutation when legacy columns are incompatible, any Task 6 table retains facts, fallback use has been observed, or a pre-existing identity role has unsafe attributes. An empty safe downgrade restores the previous foreign keys, comments, resolver, and Supabase RLS policies.
+
+### Verification
+
+- `python -m unittest backend.tests.test_identity_session_schema backend.tests.test_alembic_config -v`: 13 tests passed after the final schema-alignment additions.
+- Disposable, pinned PostgreSQL 15 integration: `python -m unittest backend.tests.integration.test_identity_rls -v` passed 15/15. It covered fresh full-chain upgrade, exact constraints, per-table ACL/RLS, resolver ownership/configuration, malicious `search_path`, strict JWT shapes, fallback counting, service access, concurrent merge, one-way states, delete restrictions, two fail-closed downgrade paths, successful empty rollback, and unsafe-role rejection without revision advance.
+- Fresh `alembic current` reported `20260710_0014 (head)`. Targeted autogenerate inspection found zero drift for all eight Task 6 tables, all seven touched identity comments, OpenID uniqueness metadata, and email uniqueness removal. Repository-wide `alembic check` still reports objects explicitly owned by later remote-join/control-plane cleanup tasks; they were not deleted out of sequence.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify_baseline.ps1` exited 0 after a fresh hash-locked Windows dependency install, dependency check, 431-test backend discovery (`OK`, 23 environment-gated skips), frontend locked install, typecheck, and Web build. The known Dart Sass legacy-JavaScript-API warnings remained non-fatal.
+- `git diff --check` passed. The disposable PostgreSQL container was exact-name verified and removed. Local Python `3.11.9`, Node `24.2.0`, and Windows still differ from the protected Python `3.11.15`, Node `24.17.0`, Linux release runtime, so this is engineering evidence rather than Production acceptance.
+
+### External boundary and residual ordering
+
+- No commit, push, PR, merge, deployment, Production database write, domain/DNS mutation, payment, email, Provider call, or customer-data operation occurred.
+- The remaining repository-wide Alembic drift belongs to later approved tasks that retire legacy remote-join/control-plane structures. Removing those objects in Task 6 would violate dependency order and rollback compatibility; their presence is not represented as a Task 6 PASS.
+
+### Subagent
+
+- One read-only Subagent reviewed Task 6 models, migration, tests, and the authoritative plan/spec. It wrote no files and created no child agent. The primary agent independently reproduced every accepted finding in real PostgreSQL, fixed the implementation, added regression tests, and reran the complete suite.
+
+## 2026-07-13 - Task 7 Google PKCE, Cookie sessions, protected Preview identity, and residual closure
+
+### Goal and scope
+
+- Replace the old browser Bearer/local-storage identity path with broker-verified Google Authorization Code + PKCE and revocable first-party Cookie sessions.
+- Add the protected, deployment-bound Preview identity smoke/cleanup path without authorizing Production, a Worker, or any other commercial capability.
+- Close locally actionable Web-only security, stale-build, dead-code, branding, cache, and browser-flow residues found during the second review. Preserve only the migration/read compatibility explicitly deferred by the approved plan; no out-of-order Production contract migration was executed.
+
+### Baseline and red evidence
+
+- The read-only Task 7 audit found the old implicit-token exchange, persistent Bearer path, permissive Supabase claim mapping, email/OpenID identity fallback, non-verifying database TLS, browser Admin service-token acceptance, and missing Origin/CSRF/security-header/Preview contracts. The primary agent opened and reproduced each accepted finding before changing it.
+- Focused red tests covered missing Cookie/session/rotation/reuse, strict broker claims, exact-origin/CSRF/CORS/TLS/Admin separation, Preview activation/cleanup, and browser storage constraints.
+- The final residual pass added red evidence for uncleared PKCE state on failed callbacks, unreachable retired Live Portrait Worker code, a dead queue producer, seven obsolete static files, international metadata still declaring `zh-CN`/the old brand, and an unchanged Service Worker cache namespace.
+- One final baseline attempt failed after all 471 backend tests because the diagnostic Uni dev process still held `esbuild.exe`; process/parent/path inspection identified the exact Node/esbuild pair. After exact-process cleanup, the same baseline command passed.
+
+### Changes
+
+- Added hashed OAuth intents, strict Supabase Google broker verification, provider-subject-only normalized identity resolution, acceptance-binding consumption, local session/access/rotating-refresh issuance, refresh-family reuse revocation, logout, `/auth/me`, and Cookie-only browser dependencies. Browser Admin now requires the local session plus database role; service credentials use an isolated dependency.
+- Added exact Origin/CSRF/CORS rules, minimum browser security headers, strict public error shaping, verified Supabase/PostgreSQL TLS, staged-origin activation proof, and POST-only mutating operations. Implicit OAuth fragments fail closed.
+- Frontend login now uses PKCE with no persistent broker session or local Bearer. All account/navigation/create/Admin consumers use the local session. OAuth failure and exchange paths always clear the app intent plus the explicit Supabase PKCE storage key, verifier, and user key.
+- Added the protected Preview identity workflow, exact activation reservation locks/uniqueness, deployment/runtime binding, owned callback add/read-back/removal, isolated Acceptance Identity binding, linked-session cleanup, artifact-independent database-authoritative cleanup, and explicit NOT_RUN behavior when protected inputs are absent.
+- Removed generated Uni remote asset dependencies and made the Web build fail on the forbidden DCloud/Google font hosts. Added a guarded clean step because local Node `fs.rmSync` did not remove the old output reliably; identical rebuilds now produce identical hashes.
+- Removed the retired Live Portrait queue producer and its unreachable database/provider body while keeping only the deterministic no-side-effect legacy queue rejection required before the later contract migration. Removed obsolete native-tab icons, static placeholder README, and two stale promotional backgrounds.
+- Unified active international metadata and install surfaces on `VowPic` with English default language; updated the Service Worker namespace to `vowpic-pwa-v2` so previously deployed clients discard the old application shell.
+- Fixed Admin dashboard loading to verify `/admin/me` before any Admin data reads, corrected the Windows Web dev launchers, removed a dead auth helper/import, and made non-Supabase production-inventory providers use a generic retired-provider category instead of product-specific identity labels.
+
+### Verification
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify_baseline.ps1`: final rerun exited 0 after a fresh hash-locked Windows Python install, `pip check`, 471 backend tests (`OK`, 23 environment-gated skips), `npm ci --ignore-scripts`, frontend typecheck, and Web build.
+- `python -m unittest backend.tests.test_cookie_sessions backend.tests.test_supabase_auth backend.tests.test_web_security_baseline backend.tests.test_web_only_contract backend.tests.test_risk_lockdown backend.tests.test_preview_identity_workflow -q`: 92 focused tests passed after the OAuth/dead-code/static cleanup.
+- Two consecutive `npm run build:web` runs produced the same file/hash manifest: 92 total output files and 48 bundled assets. The built-output scan found no forbidden remote asset host or deleted legacy asset.
+- Real Chrome against the final built SPA rejected `#access_token`, reduced the URL to `/pages/auth/callback`, removed every seeded intent/PKCE session key, stored no access token, made no remote request, and emitted no page or console error. Earlier browser passes also covered Home/Create/Account/Admin/legal pages and verified Admin data requests do not start before role proof.
+- `python -m compileall -q backend/app scripts/release`, `python -m pip check`, `npm ls --all --silent`, and `git diff --check` passed during the final verification loop. Test listeners on 3000/4173/9222 were removed.
+- Expected non-fatal build output remains limited to the Uni update notice and Dart Sass legacy-JavaScript-API deprecation warnings.
+
+### External boundary and truthful NOT_RUN items
+
+- The 23 environment-gated PostgreSQL integration cases were not rerun in this final loop: Docker Desktop remained stuck while stopping, `docker version` timed out, no local `psql` existed, and no isolated PostgreSQL URL was supplied. Their skips are not counted as PASS.
+- The protected real-Google Preview Playwright journey is NOT_RUN because `RUN_PREVIEW_E2E`, `PREVIEW_BASE_URL`, `PREVIEW_GOOGLE_STORAGE_STATE_PATH`, and `PREVIEW_GOOGLE_EMAIL` were not supplied. The test exits nonzero with that explicit reason rather than becoming a false skip.
+- `npm audit --omit=dev` is NOT_RUN: the configured mirror did not support the audit endpoint and the official registry connection timed out through the local proxy. Locked install and dependency-tree checks passed, but they do not replace an advisory audit.
+- Local Python `3.11.9`, Node `24.2.0`, and Windows differ from the protected Python `3.11.15`, Node `24.17.0`, Linux release runtime, so the local report is engineering evidence and correctly remains non-release-bindable.
+- Planned legacy database fields/tables and bounded historical readers remain until the approved later migration/observation gate. They are not public authentication/product features and were not deleted out of sequence.
+- No commit, push, PR, merge, deployment, domain/DNS mutation, Production database write, payment, email, Provider call, or customer-data operation occurred.
+
+### Subagent
+
+- One read-only Subagent audited the Web-only/Task 7 runtime, dependencies, compatibility boundaries, and missing tests. It wrote no files and created no child agent. The primary agent independently reopened the cited code, reproduced accepted findings, implemented the fixes, and reran the final focused, browser, build, and complete baseline checks.
+
+## 2026-07-13 - Task 8 verified legacy-account claim and soft closure
+
+### Goal and scope
+
+- Add a controlled recovery path for an empty legacy account using an authenticated canonical Google session plus a server-verified claim proof. Do not expose arbitrary support strings as proof and do not move financial history before the later lot/lineage schema exists.
+- Add immediate identity/session revocation and PII minimization for account closure while preserving financial rows and media references for the later deletion state machine.
+
+### Baseline and red evidence
+
+- Before Task 8 changes, 34 selected session, identity-schema, ledger, and Admin tests passed.
+- Interface tests first failed because the three Task 8 services did not exist. The behavior suite then produced 24 business assertion failures with zero harness errors for unverified proof, mismatch/reuse/expiry, commercial footprint, graph safety, session revocation, and retained history.
+- A second-review regression test failed because the service attempted to overwrite the PostgreSQL trigger's proof-consumption timestamp. The service was corrected to refresh the trigger-owned fact instead of assigning it.
+
+### Changes
+
+- Added hash-only payment/support claim-proof creation. Payment proof requires an existing paid purchase plus a matching processed provider event; support proof is internal-only, database-Admin-authorized, tied to a monitored HTTPS/email channel, and requires a 64-hex audit-evidence hash.
+- Added one-time empty-account merge with exact proof binding, canonical normalized identity checks, graph safety, legacy session/token revocation, immutable merge lineage, and fail-closed rejection when any financial, subscription, order, or job footprint exists. Immutable financial/audit owners are not rewritten.
+- Added soft account closure that revokes identities and sessions, minimizes profile/auth fields, writes an idempotent tombstone, retains all financial/media rows, and truthfully marks media cleanup pending.
+- Added Cookie/CSRF-protected customer routes and account-page controls. The UI requires exact `CLOSE MY ACCOUNT` confirmation and does not claim that media bytes were already deleted.
+
+### Verification and boundary
+
+- `python -m unittest backend.tests.test_account_merge backend.tests.test_account_closure backend.tests.test_cookie_sessions backend.tests.test_identity_session_schema backend.tests.test_credit_ledger -q`: 46 tests passed after the trigger-ownership correction.
+- A broader Task 8 backend run passed 51 tests; frontend `npm run typecheck` and `npm run build:web` passed. Build output retained only the known Uni update notice and Dart Sass legacy-API warnings.
+- The real PostgreSQL identity/RLS suite is NOT_RUN in this loop. Docker API calls repeatedly timed out; logs showed a half-stopped Desktop/backend state, and a clean exact-process restart still did not restore the engine within the bounded health window. No local PostgreSQL service, listener, or `psql` executable exists. Unit/static success is not represented as a PostgreSQL PASS.
+- No commit, push, PR, merge, deployment, Production data write, domain mutation, payment, email, Provider call, or customer-data operation occurred.
+
+## 2026-07-13 - Task 9 private media, grant, quota, and deletion schema
+
+### Goal and scope
+
+- Introduce the expand-only private-media authority required by Tasks 10-11 without deleting legacy URL compatibility columns before Task 30.
+- Make `asset_id` plus private `object_key` authoritative, keep signed/provider URLs out of the schema, and persist exact upload admission, quota settlement, grant binding, and deletion-retry facts.
+
+### Baseline and red evidence
+
+- Before Task 9 changes, 22 selected RLS, commercial-retention, and order-creation tests passed.
+- `backend.tests.test_media_asset_schema` first failed at import because all six planned model modules and migration `0015` were absent.
+- The second-review red pass then failed on an unbound quota reservation and missing database mutation guards. That proved crash recovery could not identify the exact daily bucket and that storage tombstones could still be physically deleted before absence was confirmed.
+
+### Changes
+
+- Added upload-batch, media-asset, hash-only access-grant, quota-window, per-user slot-state, and per-batch/part quota-reservation models. Grant rows include nullable indexed future job/attempt UUIDs with no premature foreign keys, plus exact provider, purpose, runtime bundle, target API deployment, serving role, expiry, and read limit facts.
+- Added migration `20260710_0015` on `20260710_0014`, with `RESTRICT` ownership/history references, unique provider/object key and batch/part facts, nonnegative quota/deletion counters, coherent deletion leases, exact state checks, service-only forced RLS, and owner-only active-asset metadata reads that do not grant object-key access.
+- Quota reservations bind the exact daily window and permit actual attempted bytes to exceed the reserved file maximum so rejected over-limit chunks can still be charged truthfully. Slot and settlement timestamps remain durable and idempotent.
+- Added database triggers that enforce the documented media transition graph, make immutable object facts stable, make read revocation/deletion timestamps one-way, and reject physical media-row deletion. The media service role has no SQL `DELETE` privilege.
+- Added canonical UUID-list columns to Orders and nullable `source_asset_id`/`video_asset_id` references to retained Live Portrait rows while preserving every legacy URL column for the later inventory/backfill/contract migration.
+
+### Verification and boundary
+
+- `python -m unittest backend.tests.test_media_asset_schema -v`: 8 schema/transition/ownership/RLS tests passed.
+- Aggregate Task 8-9 and adjacent regressions ran 64 tests with zero failures.
+- `python -m compileall -q ...`, `alembic heads`, SQLAlchemy metadata import/sort, and `git diff --check` passed; the sole migration head is `20260710_0015` and all six Task 9 tables are registered.
+- Fresh-database upgrade, constraint/RLS behavior, and downgrade rehearsal remain NOT_RUN for the same verified local Docker/PostgreSQL environment failure recorded above. This entry does not call Task 9 release-accepted until that real PostgreSQL gate is rerun.
+
+### Subagent
+
+- One read-only Subagent audited Tasks 8-19 and classified each plan task against the current tree. It wrote no files and created no child agent. The primary agent independently opened the cited files, replaced an early interface-only scaffold with real behavior tests and implementations, found and fixed the trigger-timestamp defect, and verified the Task 9 schema changes directly.
+
+## 2026-07-14 - Stage 5 multi-runtime evidence closure and residual audit
+
+### Goal and scope
+
+- Close the locally actionable Stage 5 Provider/Worker/cleanup evidence gaps without enabling Generation, starting Stage 6, deploying, binding the formal domain, or fabricating protected evidence.
+- Repair the CI-to-Preview evidence handoff so the exact secret-free PR gate, Preview Identity runtime, Preview Commercial runtime, and joint cleanup can be aggregated without pretending they share one runtime bundle ID.
+- Recheck residual code/test truthfulness after the Web SaaS cleanup; no WeChat or Mini Program surface was reintroduced.
+
+### Baseline and red evidence
+
+- Focused workflow tests first failed because CI did not persist its exact PR gate evidence and the Preview cleanup job attempted Stage 5 aggregation before Commercial ran. Since `commercial` depended on that cleanup job, the incomplete aggregate necessarily failed and skipped Commercial.
+- The original gate aggregator accepted only one runtime ID, while the approved PR, Preview Identity, and Preview Commercial evidence intentionally belongs to different immutable runtimes. Moving the aggregate alone would therefore still have rejected valid evidence.
+- Full backend discovery initially found two stale test contracts: one Provider catalog test depended on the caller's working directory for `sys.path`, and the Web-only test still asserted that the now-real Vitest suite must not exist.
+- Executing the local baseline exposed another historical false status: it still reported `frontend_unit=NOT_RUN` after Task 22. A Windows PowerShell 5.1 run also showed that normal `unittest` progress on stderr could be elevated to `NativeCommandError` when the Python process participated in a strict pipeline.
+
+### Changes
+
+- Added exact `runtime_scope` ownership to every release gate and exact scope-to-runtime binding validation to `aggregate_gates.py`. Stage 5 now binds `pr`, `preview_identity`, `preview_commercial`, and a deterministic `stage5_composite` cleanup runtime; missing, extra, malformed, stale, duplicate, or cross-runtime evidence fails closed.
+- Kept the Creem sandbox contract in the later full-release profile because the approved Stage 5 exit is Provider/Worker focused and the Creem contract remains intentionally unverified until the later payment stage.
+- CI now uploads the exact PR evidence only after its own registry aggregate succeeds. The manual protected Preview workflow requires the exact CI run ID/attempt, downloads that immutable artifact with `actions:read`, and validates source SHA, gate hash, case set, runtime, freshness, and schema before reuse.
+- Removed the premature cleanup-job aggregate. Added a final always-run Stage 5 job after both Preview Identity cleanup and Preview Commercial cleanup. It materializes a fresh content-scoped evidence set, verifies Provider source lineage and terminal task status, validates exact API/Worker/image coordinates, and writes the aggregate report outside the raw gate-evidence directory so later recursive replay cannot ingest the report as a fake case.
+- Hardened Worker cleanup evidence to record and revalidate API deployment ID and image digest, retained terminal Redis-heartbeat absence proof, and kept Provider case/alias cleanup independent and fail-visible.
+- Restored the real frontend unit contract across CI, Web-only tests, and `verify_baseline.ps1`. The baseline now actually runs `npm run test:unit`, records `frontend_unit=PASS` only after exit zero, and keeps runtime alignment/release eligibility separate. Its Python test runner writes progress to stdout while preserving the real exit code and all diagnostics.
+- Made the catalog-import test independent of current working directory and redirected runtime-coordinate assertions to the extracted public runtime-bundle service rather than the old FastAPI entry point.
+- Removed locally generated Playwright failure artifacts and ignored the standard Playwright result/report directories so future browser verification does not leave untracked test residue.
+- Replaced product-level `H5` wording in the current authoritative design/implementation documents with `overseas Web SaaS`; retained `h5` only where it is the literal Uni-app compiler target/output token and explicitly documented that it is not a product form.
+
+### Verification
+
+- Final focused release/workflow regression: 70 tests passed with zero failures.
+- Final backend discovery from `backend`: 723 tests passed, 33 environment-gated integration cases skipped, zero failures. Expected failure-path logging for catalog, retention, private storage, and fail-closed runtime guards remained visible.
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify_baseline.ps1` exited 0 after a fresh hash-locked Windows dependency install. Its report recorded backend tests, frontend typecheck, frontend unit, and Web build as PASS; `UNCOMMITTED_WORKTREE`, Windows/Python 3.11.9/Node 24.2.0 runtime mismatch, and `release_eligible=false` remained truthful.
+- Frontend locked install and exact top-level tool check passed. OpenAPI types were byte-deterministic at SHA-256 `1ef36b51a2ba18c87299fb02d156afaceede5bb1d54a90d212997ca31e91042a`; typecheck passed; 5 Vitest tests passed; the Web build completed.
+- OpenAPI export was byte-deterministic at SHA-256 `ee859a918793ad16e9d1cab5770fea92f43f60098ccf0c9eb27eda6e196eefb2`.
+- System Chrome ran the built Web SaaS accessibility checks for Home, Login, Privacy, and Terms: 4/4 passed with no serious or critical axe violations. Local Firefox remained NOT_RUN because its Playwright engine is unavailable after the previously recorded download timeout; CI still installs and requires both engines.
+- Both changed workflows parsed as YAML; `git diff --check` passed except for existing line-ending conversion warnings. `actionlint` is not installed locally, so semantic GitHub Actions execution remains a CI check rather than a claimed local PASS.
+
+### External boundary and remaining gates
+
+- Stage 5 protected execution remains NOT_RUN: no Preview/PostgreSQL/private-storage/Vercel/Google acceptance credentials or accepted EvoLink lost-response contract evidence are present locally. Generation remains OFF and Stage 6 is not authorized by the plan until the real Stage 5 Provider proof passes.
+- The 33 skipped integration cases include real PostgreSQL/RLS/concurrency and protected external-service paths. They are configured in CI but were not relabeled as local PASS; Docker/PostgreSQL is still unavailable in this environment.
+- `npm audit --omit=dev --audit-level=high` remains NOT_RUN because the configured npm mirror returns `404 [NOT_IMPLEMENTED]` for the audit API; the earlier official-registry attempt timed out. Locked install and exact dependency-tree checks passed but are not represented as an advisory audit.
+- No commit, push, PR, merge, deployment, domain/DNS mutation, Production database write, payment, email, Provider submission, or customer-data operation occurred.
+
+### Subagent
+
+- No Subagent was used for this closure. All reads, edits, test executions, workflow review, and evidence checks were performed directly in the primary session.
+
+## 2026-07-15 - Task 17 real PostgreSQL/Redis recovery and Worker image closure
+
+### Goal and scope
+
+- Replace the Task 17 hard-fail integration placeholder with a real, opt-in PostgreSQL plus Redis crash-recovery test and close the remaining local Worker-image build gate.
+- Repair only defects proven by real asyncpg migration execution; do not enable Generation, call the Provider, advance Stage 6, deploy, or weaken the protected Stage 5 exit criteria.
+
+### Baseline and red evidence
+
+- A fresh PostgreSQL upgrade first failed because asyncpg bound the seeded catalog UUID parameters as `varchar` for UUID columns. A second fresh upgrade then failed because prepared asyncpg statements cannot contain multiple `CREATE FUNCTION`/`CREATE TRIGGER` commands.
+- The existing Worker recovery integration file was an unconditional hard failure, so it could not prove PostgreSQL commit/rollback behavior, Redis ARQ deduplication, expired-lease reconciliation, or stale fencing.
+- The first real integration run exposed a test-fixture ordering defect: the generation job was flushed before its referenced order. The fixture was corrected with explicit parent flushes; no production foreign key or validation was relaxed.
+
+### Changes
+
+- Added explicit PostgreSQL UUID casts to the commercial-catalog seed binds and a regression assertion for those casts.
+- Split asyncpg-incompatible multi-command migration blocks in commercial ledger, Creem payment, subscription, and generation-job migrations into one DDL command per `op.execute`. Added an AST-based compatibility test covering migrations `0016` through `0020`.
+- Replaced the Worker recovery placeholder with a local-only, explicit opt-in integration harness. It creates and drops a unique temporary database whose base name must contain `test`, runs `alembic upgrade head`, uses an isolated ARQ queue, cleans exact Redis keys, rejects non-PostgreSQL/non-Redis or non-local URLs, and still drops the temporary database if migration execution fails or times out.
+- The real scenario proves that a Redis enqueue followed by a PostgreSQL rollback is safely redispatched and deduplicated, that an expired `SUBMITTING` attempt resumes in `RECONCILING` without a second Provider submission, that no credit settlement occurs, and that the stale fence cannot complete the attempt.
+
+### Verification
+
+- Focused migration, outbox, lease, heartbeat, and real recovery regression: 31 tests passed.
+- Full backend discovery from the authoritative `backend` import root with the recovery integration enabled: 725 tests passed, 32 external/environment-gated tests skipped, zero failures.
+- The integration's fresh temporary PostgreSQL database upgraded through migration `20260710_0020`; real Redis queue state and PostgreSQL recovery state were asserted before cleanup.
+- The original `backend/Dockerfile.worker` built as `vowpic-worker:local` without editing the Dockerfile or dropping `--require-hashes`. Because the host/container DNS path returned false loopback/poisoned answers, the verification command used current bounded host mappings for Debian and PyPI after a first fail-visible build; the cached retry completed after Docker Desktop restarted from a transient daemon exit.
+- Image inspection reported Linux/amd64, user `vowpic`, UID/GID `10001`, and command `["python","scripts/worker_entrypoint.py"]`. A container run imported `arq`, `cv2`, `onnxruntime`, and the real `app.worker` module and printed `worker-import-ok`.
+- `.venv\\Scripts\\python.exe -m pip check` reported no broken requirements. `git diff --check` passed with only pre-existing LF-to-CRLF conversion warnings for three script files.
+
+### Cleanup and boundary
+
+- Removed the verified temporary `crane.exe` aliases, the downloaded image archive/checksums directory, the temporary PostgreSQL/Redis containers, the three local image tags created solely for this build proof, and the temporary Proxifier download rule. Restored the Docker Direct Proxifier rule name and the normal screen-log level.
+- Protected Preview Identity/Commercial execution remains NOT_RUN because the required Preview environments/secrets are absent. The EvoLink lost-submit-response contract remains unverified because no accepted Provider idempotency or queryable client-correlation evidence exists. These are external Stage 5 gates, not silently reclassified local passes; Generation remains OFF and Stage 6 remains blocked by the approved plan.
+- No Subagent was used. No commit, push, PR mutation, merge, deployment, domain/DNS mutation, Production data write, payment, email, Provider submission, or customer-data operation occurred.
+
+## 2026-07-15 - Cross-runtime security, Worker, database, and browser closure
+
+### Goal and scope
+
+- Close the remaining locally actionable dependency, Worker-image, real-database, and public-browser gaps without enabling Generation or changing any remote environment, domain, deployment, payment, Provider, or Production state.
+- Preserve the external Stage 5/6 gates as explicit `UNVERIFIED`/`NOT_RUN`; local success is engineering evidence only and is not release acceptance.
+
+### Changes and decisions
+
+- Replaced the unfixed `python-jose`/`ecdsa` chain with `PyJWT==2.13.0`, added the real release-artifact requirement `cryptography==49.0.0`, raised FastAPI/Starlette/Pillow to `0.139.0`/`1.3.1`/`12.3.0`, regenerated exact Linux and Windows hash locks, and added source/lock regression scans. JWT session secrets now fail closed below 32 bytes.
+- Updated FastAPI route-contract introspection for the framework's lazy router inclusion without weakening the actual OpenAPI or HTTP contract. Regenerated the committed OpenAPI snapshot. Replaced the remaining Pillow service-layer `getdata()` calls with `get_flattened_data()` and added a deprecation regression scan.
+- Upgraded the isolated release-tool Vercel CLI to `56.2.0`, added exact security overrides for its actionable transitive findings, regenerated its lock, and synchronized workflow/runbook/contract assertions.
+- Added semantic `main`, `navigation`, and level-one heading contracts to Home, Login, Registration, Privacy, Refunds, and Terms. Added a keyboard skip link, descriptive image alternatives, and Playwright assertions so an axe-only pass cannot hide an empty heading/landmark tree.
+- Pinned the Worker base to `python:3.11.15-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f`. The Dockerfile now normalizes Debian's default source to official HTTPS before installing system libraries and still installs the Linux lock with `--require-hashes` as non-root UID/GID `10001`.
+- The real identity downgrade integration exposed two stale assertions that assumed revision `20260710_0014` was still head. The tests now capture the starting revision and prove a rejected multi-revision downgrade leaves that exact revision unchanged; production migration behavior was not altered.
+- Added a frontend security contract that keeps Vite development/preview servers on `127.0.0.1` and rejects raw HTML/code sinks (`v-html`, `innerHTML`, `outerHTML`, `document.write`, `eval`, and `new Function`) in active source.
+
+### Dependency and lock evidence
+
+- Linux backend lock two-pass SHA-256: `a9becc1e855217afb949e1de743b9208ca1bebd84530b735781bd735d2548790`. Windows backend lock two-pass SHA-256: `70813a2074e28d4ff792a3e9502dc280c46d3626920fdab23e5892ab219325ce`. Both regenerations were byte-identical; a fresh Windows `--require-hashes` install and `pip check` passed.
+- OSV-Scanner `v2.3.8` was checksum-verified against its release metadata and scanned the root/backend Linux/backend Windows/resolver locks plus frontend and release-tool npm locks. It found no Python or actionable release-tool advisory after the changes.
+- Remaining frontend matches are upstream DCloud constraints: `@babel/core@7.25.2` and `vite@5.2.8`. The current DCloud release still pins those exact versions. Babel's advisory excludes trusted-source compilation; this repository compiles reviewed local source only. Vite is a build/development dependency, both local servers are loopback-only, and the static output does not ship a Vite server. Forced Babel/Vite overrides were rejected after they produced an invalid peer tree. Two `sandbox@3.4.3` matches are package-name-revival false positives because the advisory affected only the historical `<1.0.0` package.
+
+### Verification
+
+- Final repository baseline: `powershell.exe -ExecutionPolicy Bypass -File scripts/release/verify_baseline.ps1` exited 0, created a fresh hash-locked Windows environment, reported `pip check` PASS, collected 729 backend tests with zero failures and 33 explicit external/environment skips, and passed frontend typecheck, 5/5 unit tests, and Web build. The report remained truthful: `UNCOMMITTED_WORKTREE`, `release_eligible=false`, and Windows/Python 3.11.9/Node 24.2.0 versus the protected Linux/Python 3.11.15/Node 24.17.0 runtime.
+- Independent full backend discovery also passed 729 tests with 33 skips. The expected fail-closed error-path logs remained visible and did not hide failures.
+- Real disposable PostgreSQL/Redis verification passed: Worker crash recovery 1/1; control-plane RLS 4/4; Partner Invite RLS 3/3; click-stats repair 4/4. The first identity run passed 13/15 and exposed the two stale revision assertions; the targeted corrected pair passed 2/2, then a clean full rerun inside the pinned Python 3.11.15 Linux Worker image passed 15/15 against PostgreSQL 15 after migration through `20260710_0020`.
+- The final uniquely tagged Worker build produced local image ID `sha256:c318eafafeff61f0f21580dd2ac192993daf1f155aa567fb8eb14a0bb0ceda3d`. History readback included the HTTPS source normalization; inspection showed user `vowpic` and command `["python","scripts/worker_entrypoint.py"]`; runtime UID/GID was `10001`; `pip check` passed; and imports reported cryptography `49.0.0`, FastAPI `0.139.0`, PyJWT `2.13.0`, Pillow `12.3.0`, and Starlette `1.3.1`.
+- Frontend final checks passed: typecheck, Vitest 5/5, Web build, and built-site accessibility 12/12 across system Chrome and Playwright Firefox for the six public routes. An independent CDP inspection also confirmed Home has one main landmark, one navigation landmark, and one level-one heading.
+- `git diff --check` passed with only the three previously recorded LF-to-CRLF advisory lines.
+
+### Cleanup and external boundary
+
+- A canceled local BuildKit client was observed continuing server-side and later overwriting a reused local validation tag. No remote registry or deployment was involved. All BuildKit history entries were confirmed completed/error, the overwritten tag was removed, and the current Dockerfile was rebuilt under a fresh unique tag before final inspection. The final validation tag and every disposable PostgreSQL/Redis container were removed.
+- The task-owned CDP Chrome profile/process tree was stopped. No user Chrome session was closed.
+- `CREEM_REFUND_CREATION`, `CREEM_SUBSCRIPTION_PAID_TRANSACTION`, `CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION`, and `EVOLINK_SUBMISSION_RECONCILIATION` remain `UNVERIFIED`. Protected Preview environments/secrets, real Provider/payment/storage evidence, Worker-host approval, formal-domain acceptance, and human quality approval remain external `NOT_RUN`. Generation remains OFF and Stage 6 remains blocked.
+- No Subagent was used. No commit, push, PR mutation, merge, deployment, domain/DNS mutation, Production data write, payment, email, Provider submission, or customer-data operation occurred.
+
+## 2026-07-15 - Frontend dependency and public-accessibility residual closure
+
+### Goal and scope
+
+- Remove locally actionable frontend dependency advisories, extend the built Web SaaS accessibility gate to every public legal/auth route, and reduce exposure from the upstream-pinned Vite development server.
+- Recheck the protected Preview and Provider contract boundaries without creating environments, adding secrets, triggering workflows, deploying, changing the domain, or enabling Generation.
+
+### Baseline and evidence
+
+- The first complete lockfile OSV pass found 29 package/advisory matches across the build, test, and runtime tree, including the old Vitest 1.6.1 critical range and high-severity Babel SystemJS, glob, immutable, path-to-regexp, picomatch, and Rollup ranges.
+- The existing accessibility list omitted Registration and Refunds. Adding both routes reproduced a serious `scrollable-region-focusable` violation on the built Refunds page.
+- The first complete baseline after the upgrade correctly failed one CI-contract test because it still required vue-tsc 1.8.27. The contract and CI top-level dependency probe were updated to the evidence-backed versions before the final baseline rerun.
+- `npm audit --omit=dev --audit-level=high` remains NOT_RUN: the configured mirror returns `404 [NOT_IMPLEMENTED]` for the audit endpoint, while the official registry path resolves through the local proxy to a false/fake-IP route. Direct OSV query-batch access was available and was used as independent lockfile evidence, not mislabeled as npm audit.
+
+### Changes
+
+- Upgraded Vitest from 1.6.1 to 3.2.6 and vue-tsc from 1.8.27 to 2.2.12. Added exact, lockfile-backed overrides for the other actionable vulnerable transitive packages and regenerated the install lock.
+- Synchronized the exact frontend-tool CI contract and workflow dependency probe with those upgrades, and made the override set plus loopback-only development command regression-protected.
+- Two attempted Babel-core overrides were rejected after `npm ls --all` proved peer-tree invalidity; both were fully removed. The final dependency tree has no invalid, extraneous, or missing required dependency.
+- Added Registration and Refunds to the six-route accessibility contract. The Refunds page now provides a labeled, keyboard-focusable main region, matching the Privacy and Terms legal-shell contract.
+- Bound `dev:web` explicitly to `127.0.0.1`; `preview:web` was already loopback-only. A real dev-server start reported only `http://127.0.0.1:3000/`, and the listener was absent after controlled shutdown.
+
+### Verification
+
+- `npm ci --no-audit --registry=https://registry.npmmirror.com`: passed; 654 packages installed. `npm ls --all --json`: exit 0 with no dependency problems.
+- `npm run typecheck`: passed. `npm run test:unit`: Vitest 3.2.6 passed 5/5 tests. `npm run build:web`: passed.
+- Final `scripts/release/verify_baseline.ps1` exited 0: the hash-locked Windows backend install and `pip check` passed; all 725 collected backend tests passed with 33 environment/external cases explicitly skipped; frontend typecheck, unit, and build all reported PASS. Its report truthfully retained `UNCOMMITTED_WORKTREE`, runtime mismatch, and `release_eligible=false`.
+- System Chrome executed the final built Web SaaS axe gate for Home, Login, Registration, Privacy, Refunds, and Terms: 6/6 passed with no serious or critical violations.
+- Final direct OSV lockfile scan covered 659 unique package/version pairs. All previously actionable critical/high findings were removed. The only remaining matches are the DCloud-exact `@babel/core@7.25.2` advisory and 15 `vite@5.2.8` advisories. The current DCloud Vue 3 release tag still pins those exact versions; forcing Babel 7.29.6 breaks npm's peer-tree validity, and forcing Vite 6 would violate DCloud's exact `vite: 5.2.8` peer contract. These build/development tools are not shipped in the generated static Web assets, and their local servers are loopback-bound.
+- Removed Playwright's `.last-run.json` result residue. The temporary OSV download directory was absent, no temporary Proxifier npm rule remained, the existing Docker rule remained present, and Proxifier screen logging was restored to Normal.
+
+### External boundary and residual gates
+
+- GitHub read-only recheck found only `Preview`, `production`, and `fantastic-blessing / production`; required `preview-identity` and `preview-commercial` environments and their protected secrets are absent. No protected Stage 5 workflow was triggered.
+- EvoLink's current public contract returns a provider task ID only in the submission response and supports status lookup by that ID. No accepted idempotency header or queryable client-correlation recovery contract was found, so lost-submit-response reconciliation remains unverified. Generation remains OFF and Stage 6 remains blocked.
+- Firefox remains NOT_RUN locally because the Playwright Firefox engine is not installed; the final system-Chrome six-route gate passed. Protected Preview browser journeys remain NOT_RUN because their environments and credentials do not exist.
+- No Subagent was used. No commit, push, PR mutation, merge, deployment, domain/DNS mutation, Production data write, payment, email, Provider submission, or customer-data operation occurred.
+
+### Superseding final verification note
+
+- The later cross-runtime closure entry above supersedes this entry's local Firefox and 725-test counts: the exact Playwright Firefox engine was subsequently installed and the six-route Chrome/Firefox gate passed 12/12; the final collected backend count is 729 with 33 explicit skips and zero failures.
+- External protected Preview journeys are still `NOT_RUN`; installing a local browser engine does not supply Preview identities, environments, secrets, or release evidence.
+- Final cleanup removed the task-owned CDP profile/screenshot, security/resolver virtual environments, Vercel candidate directories, checksum-verified OSV scanner/report directory, Playwright result traces, every disposable database/Redis container, and both local Worker validation tags. Readback found no matching file, container, image tag, or running BuildKit residue.

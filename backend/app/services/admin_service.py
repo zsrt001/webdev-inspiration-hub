@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.live_portrait_job import LivePortraitJob, LivePortraitStatus
+from app.models.credit_transaction import CreditTransaction, CreditTransactionType
 from app.models.order import Order, OrderStatus
 from app.models.payment_event import PaymentEvent
 from app.models.subscription_credit_grant import SubscriptionCreditGrant
@@ -16,8 +17,14 @@ from app.models.subscription_plan import SubscriptionPlan
 from app.models.user_subscription import SubscriptionStatus, UserSubscription
 from app.models.user import User
 from app.models.user_credit import UserCredit
-from app.services.generation_credit_policy import billable_generation_credits
-from app.services.credit_service import add_credits_async
+from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
+from app.services.credit_reversal_service import reverse_root_grant
+from app.services.idempotency_service import (
+    IdempotencyConflict,
+    begin_idempotent_request,
+    canonical_request_hash,
+    complete_idempotent_request,
+)
 from app.services.template_service import get_template_by_id
 
 
@@ -30,27 +37,19 @@ def _pick_first_image_url(payload: dict | None) -> str:
     return ""
 
 
-async def _resolve_or_create_user(db: AsyncSession, user_id: str) -> User:
+async def _resolve_user(db: AsyncSession, user_id: str) -> User:
     user_id = (user_id or "").strip()
     if not user_id:
         raise ValueError("user_id is required")
 
-    user: User | None = None
     try:
         user_uuid = uuid.UUID(user_id)
-        result = await db.execute(select(User).where(User.id == user_uuid))
-        user = result.scalar_one_or_none()
-    except Exception:
-        user = None
-
+    except (TypeError, ValueError) as exc:
+        raise ValueError("user_id must be a UUID") from exc
+    result = await db.execute(select(User).where(User.id == user_uuid))
+    user = result.scalar_one_or_none()
     if user is None:
-        result = await db.execute(select(User).where(User.openid == user_id))
-        user = result.scalar_one_or_none()
-
-    if user is None:
-        user = User(openid=user_id)
-        db.add(user)
-        await db.flush()
+        raise LookupError("user not found")
 
     return user
 
@@ -64,7 +63,10 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
     """
     total_orders = int(await db.scalar(select(func.count(Order.id))) or 0)
     total_users = int(await db.scalar(select(func.count(User.id))) or 0)
-    total_credits_in_circulation = int(await db.scalar(select(func.coalesce(func.sum(UserCredit.balance), 0))) or 0)
+    total_credits_in_circulation = int(
+        await db.scalar(select(func.coalesce(func.sum(CreditTransaction.amount), 0)))
+        or 0
+    )
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=24)
@@ -88,25 +90,25 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
         for template_id, count in tpl_rows.all()
     }
 
-    completed_orders = (
-        await db.execute(
-            select(Order.generation_params).where(Order.status == OrderStatus.COMPLETED)
-        )
-    ).scalars().all()
-    order_revenue_credits = 0
-    for params in completed_orders:
-        if isinstance(params, dict):
-            order_revenue_credits += billable_generation_credits(params)
-
-    live_revenue_credits = int(
+    generation_debits = -int(
         await db.scalar(
-            select(func.coalesce(func.sum(LivePortraitJob.credits_cost), 0)).where(
-                LivePortraitJob.status == LivePortraitStatus.COMPLETED
+            select(func.coalesce(func.sum(CreditTransaction.amount), 0)).where(
+                CreditTransaction.transaction_type
+                == CreditTransactionType.GENERATION_DEBIT.value
             )
         )
         or 0
     )
-    total_revenue_credits = int(order_revenue_credits + live_revenue_credits)
+    generation_refunds = int(
+        await db.scalar(
+            select(func.coalesce(func.sum(CreditTransaction.amount), 0)).where(
+                CreditTransaction.transaction_type
+                == CreditTransactionType.GENERATION_REFUND.value
+            )
+        )
+        or 0
+    )
+    total_revenue_credits = max(0, generation_debits - generation_refunds)
 
     recent_orders = (
         await db.execute(select(Order).order_by(Order.created_at.desc()).limit(50))
@@ -163,8 +165,10 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
     )
     credits_granted_this_month = int(
         await db.scalar(
-            select(func.coalesce(func.sum(SubscriptionCreditGrant.credits), 0)).where(
-                SubscriptionCreditGrant.created_at >= month_start
+            select(func.coalesce(func.sum(CreditTransaction.amount), 0)).where(
+                CreditTransaction.transaction_type
+                == CreditTransactionType.SUBSCRIPTION_GRANT.value,
+                CreditTransaction.created_at >= month_start,
             )
         )
         or 0
@@ -194,7 +198,9 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
     return {
         "total_orders": total_orders,
         "total_revenue_credits": total_revenue_credits,
-        "estimated_revenue_usd": round(total_revenue_credits * 0.10, 2),
+        # Monetary revenue is unavailable until normalized payment facts land;
+        # credits are not converted with a fabricated exchange rate.
+        "estimated_revenue_usd": 0.0,
         "total_users": total_users,
         "active_users_24h": active_users_24h,
         "total_credits_in_circulation": total_credits_in_circulation,
@@ -209,23 +215,166 @@ async def get_dashboard_stats(db: AsyncSession) -> dict:
     }
 
 
-async def grant_credits_to_user(db: AsyncSession, user_id: str, amount: int) -> dict:
-    """
-    Grant credits to a specific user (admin operation).
+async def adjust_user_credits_by_admin(
+    db: AsyncSession,
+    *,
+    admin_user_id: uuid.UUID,
+    user_id: str,
+    amount: int,
+    idempotency_key: str,
+    approval_id: str,
+    reason: str,
+    positive_grant_policy: dict | None,
+    reversal_roots: list[dict],
+) -> dict:
+    """Apply an audited root grant or bounded named-root compensation."""
 
-    Args:
-        user_id: Target user ID (openid or UUID)
-        amount: Number of credits to grant
-    """
-    target = await _resolve_or_create_user(db, user_id)
-    new_balance = await add_credits_async(db, target.id, amount)
+    clean_approval = str(approval_id or "").strip()
+    clean_reason = str(reason or "").strip()
+    clean_key = str(idempotency_key or "").strip()
+    if not clean_approval or len(clean_approval) > 128:
+        raise ValueError("approval_id_invalid")
+    if len(clean_reason) < 8 or len(clean_reason) > 500:
+        raise ValueError("approval_reason_invalid")
+    if not clean_key or len(clean_key) > 80:
+        raise ValueError("idempotency_key_invalid")
+    normalized_amount = int(amount)
+    if normalized_amount == 0 or abs(normalized_amount) > 10000:
+        raise ValueError("adjustment_amount_invalid")
+    target = await _resolve_user(db, user_id)
+    payload = {
+        "admin_user_id": str(admin_user_id),
+        "target_user_id": str(target.id),
+        "amount": normalized_amount,
+        "approval_id": clean_approval,
+        "reason": clean_reason,
+        "positive_grant_policy": positive_grant_policy,
+        "reversal_roots": reversal_roots,
+    }
+    attempt = await begin_idempotent_request(
+        db,
+        user_id=admin_user_id,
+        endpoint="admin.credit.adjust",
+        key=clean_key,
+        request_hash=canonical_request_hash(payload),
+    )
+    if attempt.replayed:
+        if attempt.state != "COMPLETED" or attempt.response_json is None:
+            raise IdempotencyConflict("admin_credit_adjustment_in_progress")
+        return dict(attempt.response_json)
 
-    return {
+    if normalized_amount > 0:
+        if positive_grant_policy is None or reversal_roots:
+            raise ValueError("positive_grant_policy_required")
+        policy_code = str(positive_grant_policy.get("policy_code") or "").strip()
+        source_reference = str(
+            positive_grant_policy.get("source_reference") or ""
+        ).strip()
+        retention_days = int(positive_grant_policy.get("retention_days") or 0)
+        if (
+            policy_code not in {"support_compensation", "service_recovery"}
+            or not source_reference
+            or len(source_reference) > 128
+            or retention_days != 90
+        ):
+            raise ValueError("positive_grant_policy_invalid")
+        credit = await db.scalar(
+            select(UserCredit)
+            .where(UserCredit.user_id == target.id)
+            .with_for_update()
+        )
+        if credit is None:
+            credit = UserCredit(
+                id=uuid.uuid4(),
+                user_id=target.id,
+                balance=0,
+                reserved_balance=0,
+            )
+            db.add(credit)
+            await db.flush()
+        prior_balance = int(credit.balance or 0)
+        next_balance = prior_balance + normalized_amount
+        transaction_id = uuid.uuid4()
+        transaction = CreditTransaction(
+            id=transaction_id,
+            user_id=target.id,
+            transaction_type=CreditTransactionType.ADMIN_GRANT,
+            amount=normalized_amount,
+            balance_after=next_balance,
+            source="database_admin",
+            source_id=clean_approval,
+            description=clean_reason,
+            root_transaction_id=transaction_id,
+            request_id=f"admin:{clean_key}",
+            metadata_json={
+                "admin_user_id": str(admin_user_id),
+                "approval_id": clean_approval,
+                "policy_code": policy_code,
+                "source_reference": source_reference,
+            },
+        )
+        lot = CreditGrantLot(
+            id=uuid.uuid4(),
+            user_id=target.id,
+            root_transaction_id=transaction_id,
+            source_type=GrantLotSourceType.ADMIN,
+            source_id=source_reference,
+            original_amount=normalized_amount,
+            debt_offset_amount=min(normalized_amount, max(0, -prior_balance)),
+            reversed_amount=0,
+            frozen_amount=0,
+            consumed_amount=0,
+            retention_tier="paid_90d",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=retention_days),
+        )
+        db.add(transaction)
+        db.add(lot)
+        credit.balance = next_balance
+        await db.flush()
+        new_balance = next_balance
+    else:
+        if positive_grant_policy is not None or not reversal_roots:
+            raise ValueError("reversal_roots_required")
+        reversal_total = sum(int(item.get("amount") or 0) for item in reversal_roots)
+        if reversal_total != abs(normalized_amount):
+            raise ValueError("reversal_root_amount_mismatch")
+        seen_roots: set[uuid.UUID] = set()
+        for index, root in enumerate(reversal_roots):
+            root_id = uuid.UUID(str(root.get("root_transaction_id") or ""))
+            root_amount = int(root.get("amount") or 0)
+            if root_id in seen_roots or root_amount <= 0:
+                raise ValueError("reversal_root_invalid")
+            seen_roots.add(root_id)
+            await reverse_root_grant(
+                db,
+                user_id=target.id,
+                root_transaction_id=root_id,
+                amount=root_amount,
+                request_id=f"admin:{clean_key}:{index}",
+                reason_code=clean_reason,
+            )
+        credit = await db.scalar(
+            select(UserCredit)
+            .where(UserCredit.user_id == target.id)
+            .with_for_update()
+        )
+        if credit is None:
+            raise ValueError("credit_account_missing")
+        new_balance = int(credit.balance or 0)
+
+    response = {
         "success": True,
-        "user_id": target.openid or str(target.id),
-        "credits_granted": amount,
+        "user_id": str(target.id),
+        "credits_granted": normalized_amount,
         "new_balance": new_balance,
     }
+    await complete_idempotent_request(
+        db,
+        record_id=attempt.record_id,
+        response_status=200,
+        response_json=response,
+    )
+    return response
 
 
 async def get_all_users(db: AsyncSession, *, limit: int = 500) -> list[dict]:
@@ -241,7 +390,7 @@ async def get_all_users(db: AsyncSession, *, limit: int = 500) -> list[dict]:
     ).all()
     return [
         {
-            "user_id": user.openid or str(credit.user_id),
+            "user_id": str(credit.user_id),
             "balance": int(credit.balance or 0),
         }
         for credit, user in rows

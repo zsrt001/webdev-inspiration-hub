@@ -32,11 +32,5 @@
       "subtitle": "Premium wedding portraits in minutes",
       "cta_label": "Start Now"
     }
-  },
-  "feature_flags": {
-    "live_portrait": false,
-    "remote_join": false,
-    "local_recommendations": false,
-    "director_mode": false
   }
 }

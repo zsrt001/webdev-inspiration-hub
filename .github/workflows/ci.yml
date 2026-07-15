@@ -133,6 +133,16 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
           python -m pip check
+      - name: Require deterministic committed OpenAPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/scripts/export_openapi.py
+          sha256sum openapi/openapi.json > /tmp/openapi-pass-1.sha256
+          python backend/scripts/export_openapi.py
+          sha256sum openapi/openapi.json > /tmp/openapi-pass-2.sha256
+          diff --unified /tmp/openapi-pass-1.sha256 /tmp/openapi-pass-2.sha256
+          git diff --exit-code -- openapi/openapi.json
       - name: Wait for PostgreSQL final startup
         shell: bash
         env:
@@ -151,6 +161,11 @@ jobs:
           done
           docker logs --tail 100 "$POSTGRES_SERVICE_ID" >&2
           exit 1
+      - name: Run an empty PostgreSQL migration to head
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: alembic upgrade head
       - name: Run the real PostgreSQL control-plane RLS contract
         env:
           RUN_POSTGRES_INTEGRATION: '1'
@@ -161,6 +176,16 @@ jobs:
           RUN_CLICK_STATS_REPAIR_INTEGRATION: '1'
           CLICK_STATS_REPAIR_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
         run: python -m unittest backend.tests.integration.test_click_stats_repair -v
+      - name: Run the real identity RLS and concurrency contract
+        env:
+          RUN_POSTGRES_INTEGRATION: '1'
+          IDENTITY_RLS_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: python -m unittest backend.tests.integration.test_identity_rls -v
+      - name: Run the real Partner Invite RLS contract
+        env:
+          RUN_POSTGRES_INTEGRATION: '1'
+          PARTNER_INVITE_RLS_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: python -m unittest backend.tests.integration.test_partner_invite_rls -v
       - name: Run a non-empty backend suite
         working-directory: backend
         run: |
@@ -188,26 +213,133 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --ignore-scripts
         working-directory: frontend
+      - name: Require exact locked frontend test tools
+        working-directory: frontend
+        run: npm ls --depth=0 vitest@3.2.6 @vue/test-utils@2.4.6 jsdom@24.1.3 @axe-core/playwright@4.12.1 openapi-typescript@7.13.0 @playwright/test@1.61.1
+      - name: Require deterministic generated API types
+        shell: bash
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npm run openapi:generate
+          sha256sum src/generated/api.d.ts > /tmp/api-types-pass-1.sha256
+          npm run openapi:generate
+          sha256sum src/generated/api.d.ts > /tmp/api-types-pass-2.sha256
+          diff --unified /tmp/api-types-pass-1.sha256 /tmp/api-types-pass-2.sha256
+          git diff --exit-code -- src/generated/api.d.ts
       - run: npm run typecheck
+        working-directory: frontend
+      - run: npm run test:unit
         working-directory: frontend
       - run: npm run build:web
         working-directory: frontend
+      - name: Install the exact browser engines for accessibility checks
+        working-directory: frontend
+        run: npm run playwright:install
+      - name: Run non-empty browser accessibility checks against the real Web build
+        working-directory: frontend
+        env:
+          RUN_LOCAL_A11Y: '1'
+        run: npm run test:a11y
+
+  worker-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Build the production Worker image from the locked backend context
+        run: docker build --file backend/Dockerfile.worker --tag vowpic-worker:pr-${GITHUB_SHA} backend
 
   quality-gate:
     if: always()
-    needs: [dependency-locks, windows-dependency-locks, backend-test, frontend-check]
+    needs: [dependency-locks, windows-dependency-locks, backend-test, frontend-check, worker-image]
     runs-on: ubuntu-24.04
     env:
-      LINUX_LOCKS_OK: ${{ needs.dependency-locks.result == 'success' }}
-      WINDOWS_LOCKS_OK: ${{ needs.windows-dependency-locks.result == 'success' }}
-      BACKEND_OK: ${{ needs.backend-test.result == 'success' }}
-      FRONTEND_OK: ${{ needs.frontend-check.result == 'success' }}
+      LINUX_LOCKS_RESULT: ${{ needs.dependency-locks.result }}
+      WINDOWS_LOCKS_RESULT: ${{ needs.windows-dependency-locks.result }}
+      BACKEND_RESULT: ${{ needs.backend-test.result }}
+      FRONTEND_RESULT: ${{ needs.frontend-check.result }}
+      WORKER_IMAGE_RESULT: ${{ needs.worker-image.result }}
     steps:
-      - name: Require every upstream quality job
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Materialize exact secret-free PR evidence from required job results
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$LINUX_LOCKS_OK" != "true" || "$WINDOWS_LOCKS_OK" != "true" || "$BACKEND_OK" != "true" || "$FRONTEND_OK" != "true" ]]; then
-            echo "quality gate failed: linux_locks=$LINUX_LOCKS_OK windows_locks=$WINDOWS_LOCKS_OK backend=$BACKEND_OK frontend=$FRONTEND_OK" >&2
-            exit 1
-          fi
+          RUNTIME_BUNDLE_ID="rtb_$(printf '%s' "${GITHUB_SHA}:pr-gate.v1" | sha256sum | cut -d' ' -f1)"
+          GATE_SHA256="$(sha256sum release/gates.json | cut -d' ' -f1)"
+          EVIDENCE_ROOT="artifacts/release/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/pr/01-ci"
+          mkdir -p "$EVIDENCE_ROOT"
+          export RUNTIME_BUNDLE_ID GATE_SHA256 EVIDENCE_ROOT
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+
+          results = {
+              "locks": os.environ["LINUX_LOCKS_RESULT"] == "success"
+              and os.environ["WINDOWS_LOCKS_RESULT"] == "success",
+              "backend": os.environ["BACKEND_RESULT"] == "success",
+              "frontend": os.environ["FRONTEND_RESULT"] == "success",
+              "worker": os.environ["WORKER_IMAGE_RESULT"] == "success",
+          }
+          owners = {
+              "pr_dependency_locks": "locks",
+              "pr_empty_postgres_migration": "backend",
+              "pr_backend_tests": "backend",
+              "pr_postgres_rls_concurrency": "backend",
+              "pr_openapi_drift": "backend",
+              "pr_frontend_typecheck": "frontend",
+              "pr_frontend_unit": "frontend",
+              "pr_frontend_a11y": "frontend",
+              "pr_frontend_build": "frontend",
+              "pr_worker_image_build": "worker",
+              "pr_gate_aggregate": "backend",
+          }
+          root = Path(os.environ["EVIDENCE_ROOT"])
+          for case_id, owner in owners.items():
+              passed = results[owner]
+              payload = {
+                  "schema": "vowpic.gate-evidence.v1",
+                  "case_id": case_id,
+                  "status": "PASS" if passed else "FAIL",
+                  "source_sha": os.environ["GITHUB_SHA"],
+                  "runtime_bundle_id": os.environ["RUNTIME_BUNDLE_ID"],
+                  "gate_contract_sha256": os.environ["GATE_SHA256"],
+                  "produced_at": datetime.now(timezone.utc).isoformat(),
+                  "execution": "completed",
+                  "test_count": 1,
+                  "capability_enabled": False,
+              }
+              path = root / f"{case_id}.json"
+              path.write_text(
+                  json.dumps(payload, sort_keys=True, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+          (Path(os.environ["RUNNER_TEMP"]) / "pr-runtime-bundle-id.txt").write_text(
+              os.environ["RUNTIME_BUNDLE_ID"] + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Aggregate the exact PR registry and fail on any non-PASS result
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE_ROOT="artifacts/release/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/pr/01-ci"
+          evidence_args=()
+          while IFS= read -r path; do evidence_args+=(--evidence "$path"); done < <(find "$EVIDENCE_ROOT" -type f -name '*.json' -print | sort)
+          python scripts/release/aggregate_gates.py \
+            --contract release/gates.json \
+            --profile pr \
+            "${evidence_args[@]}" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --expected-runtime-bundle-id "$(tr -d '\r\n' < "$RUNNER_TEMP/pr-runtime-bundle-id.txt")" \
+            --output "$RUNNER_TEMP/pr-gate-aggregate.json"
+      - name: Persist exact PR gate evidence after successful aggregation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-pr-gates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/pr/01-ci/*.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9

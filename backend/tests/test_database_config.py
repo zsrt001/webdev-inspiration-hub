@@ -23,8 +23,8 @@ class DatabaseConfigTest(unittest.TestCase):
         self.assertTrue(url.startswith("postgresql+asyncpg://"))
         self.assertNotIn("sslmode=", url)
         self.assertIsInstance(connect_args.get("ssl"), ssl.SSLContext)
-        self.assertFalse(connect_args["ssl"].check_hostname)
-        self.assertEqual(connect_args["ssl"].verify_mode, ssl.CERT_NONE)
+        self.assertTrue(connect_args["ssl"].check_hostname)
+        self.assertEqual(connect_args["ssl"].verify_mode, ssl.CERT_REQUIRED)
 
     def test_asyncpg_url_without_sslmode_is_preserved(self) -> None:
         url, connect_args = normalize_database_url(

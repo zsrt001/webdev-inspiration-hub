@@ -1,272 +1,262 @@
-"""Storage Service for file uploads."""
+"""Private object storage operations.
 
-import os
-import uuid
+Provider URLs and signed URLs are intentionally not part of this interface. The
+database stores only the provider name and deterministic object key.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime, timezone
+from enum import Enum
+import os
 from pathlib import Path
-from typing import BinaryIO
-from urllib.parse import urlparse, unquote
+import re
+from typing import BinaryIO, Protocol
 
 from app.core.config import get_settings
 
+
 settings = get_settings()
 
-_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-_STATIC_DIR = os.path.join(_BACKEND_DIR, "static")
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+_LOCAL_PRIVATE_ROOT = (_BACKEND_DIR / ".private-storage").resolve()
+_OBJECT_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}$")
+
+
+class DeleteResult(str, Enum):
+    DELETED = "DELETED"
+    NOT_FOUND = "NOT_FOUND"
+    FAILED = "FAILED"
+
+
+class PrivateObjectStore(Protocol):
+    def put_private(self, object_key: str, data: bytes, content_type: str) -> None:
+        raise NotImplementedError
+
+    def read_private(self, object_key: str) -> bytes:
+        raise NotImplementedError
+
+    def delete_private(self, object_key: str) -> DeleteResult:
+        raise NotImplementedError
+
+    def list_private(self, prefix: str, *, limit: int = 1000) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+def _validated_object_key(value: str) -> str:
+    key = str(value or "")
+    if (
+        not _OBJECT_KEY_PATTERN.fullmatch(key)
+        or key.startswith("/")
+        or "\\" in key
+        or any(segment in {"", ".", ".."} for segment in key.split("/"))
+    ):
+        raise ValueError("invalid private object key")
+    return key
+
+
+def _validated_object_prefix(value: str) -> str:
+    raw = str(value or "")
+    trailing = raw.endswith("/")
+    base = _validated_object_key(raw[:-1] if trailing else raw)
+    return f"{base}/" if trailing else base
 
 
 class StorageService:
-    """Service for uploading files to the configured storage backend."""
+    """Provider adapter whose only authority is a private object key."""
 
-    def __init__(self):
-        """Initialize S3 client."""
+    def __init__(self) -> None:
         self._client = None
 
     @property
     def client(self):
-        """Lazy-load S3 client."""
         if self._client is None:
             import boto3
 
-            config = {
+            config: dict[str, str] = {
                 "aws_access_key_id": settings.aws_access_key_id,
                 "aws_secret_access_key": settings.aws_secret_access_key,
                 "region_name": settings.aws_region,
             }
-            
-            # Use custom endpoint for MinIO/LocalStack
             if settings.aws_s3_endpoint:
                 config["endpoint_url"] = settings.aws_s3_endpoint
-            
             self._client = boto3.client("s3", **config)
-        
         return self._client
 
-    def upload_file(
-        self,
-        file_content: BinaryIO,
-        filename: str,
-        content_type: str = "image/jpeg",
-        folder: str = "uploads",
-    ) -> str:
-        """
-        Upload file to storage provider.
-        
-        Args:
-            file_content: File-like object to upload
-            filename: Original filename
-            content_type: MIME type of the file
-            folder: Folder path in bucket
-            
-        Returns:
-            Public URL of uploaded file
-        """
+    def put_private(self, object_key: str, data: bytes, content_type: str) -> None:
+        key = _validated_object_key(object_key)
+        payload = bytes(data)
+        mime_type = str(content_type or "").strip().lower()
+        if not payload or not mime_type:
+            raise ValueError("private object data and content type are required")
+
         provider = settings.effective_storage_provider
         if provider == "local":
-            if settings.is_vercel_runtime or not settings.debug:
-                raise Exception("Local storage is disabled in production. Configure STORAGE_PROVIDER=vercel.")
-            return self._upload_local(file_content, filename, content_type, folder)
+            self._put_local(key, payload)
+            return
         if provider == "vercel":
-            return self._upload_vercel(file_content, filename, content_type, folder)
+            self._put_vercel(key, payload, mime_type)
+            return
         if settings.is_vercel_runtime and settings.aws_s3_endpoint_is_loopback:
-            raise Exception(
-                "Production storage points to a local S3 endpoint. Configure STORAGE_PROVIDER=vercel "
-                "with BLOB_READ_WRITE_TOKEN, or configure real S3/R2 credentials and clear AWS_S3_ENDPOINT."
-            )
-        return self._upload_s3(file_content, filename, content_type, folder)
+            raise RuntimeError("production private storage endpoint is loopback")
+        self._put_s3(key, payload, mime_type)
 
-    def _upload_local(
-        self,
-        file_content: BinaryIO,
-        filename: str,
-        content_type: str,
-        folder: str,
-    ) -> str:
-        """
-        Local dev storage:
-        - Writes under `backend/static/<folder>/...`
-        - Returns a public URL served by FastAPI StaticFiles (`/static`)
-
-        This is intended for local development. Production should use S3/MinIO or Vercel Blob.
-        """
-        _ = content_type  # served as static; content-type set by server
-
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
-        if not ext.isalnum() or len(ext) > 10:
-            ext = "jpg"
-        unique_key = f"{folder}/{uuid.uuid4()}.{ext}"
-
-        static_root = Path(_STATIC_DIR).resolve()
-        target_path = (static_root / unique_key).resolve()
-        if static_root not in target_path.parents and static_root != target_path:
-            raise Exception("Invalid local storage path")
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        data = file_content.read()
-        with open(target_path, "wb") as f:
-            f.write(data)
-
-        base = settings.effective_webhook_base_url.rstrip("/")
-        rel = unique_key.replace("\\", "/")
-        return f"{base}/static/{rel}"
-
-    def _upload_s3(
-        self,
-        file_content: BinaryIO,
-        filename: str,
-        content_type: str,
-        folder: str,
-    ) -> str:
-        from botocore.exceptions import ClientError
-
-        # Generate unique key
-        ext = filename.split(".")[-1] if "." in filename else "jpg"
-        unique_key = f"{folder}/{uuid.uuid4()}.{ext}"
-
-        try:
-            self.client.upload_fileobj(
-                file_content,
-                settings.aws_s3_bucket,
-                unique_key,
-                ExtraArgs={
-                    "ContentType": content_type,
-                    "ACL": "public-read",
-                },
-            )
-
-            # Return public URL
-            return f"{settings.s3_public_url_base}/{unique_key}"
-
-        except ClientError as e:
-            raise Exception(f"Failed to upload file: {e}")
-
-    def _upload_vercel(
-        self,
-        file_content: BinaryIO,
-        filename: str,
-        content_type: str,
-        folder: str,
-    ) -> str:
-        token = settings.blob_token_effective
-        if not token:
-            raise Exception("Missing Vercel Blob token")
-
-        ext = filename.split(".")[-1] if "." in filename else "jpg"
-        unique_key = f"{folder}/{uuid.uuid4()}.{ext}"
-        data = file_content.read()
-
-        try:
-            from vercel.blob import put as vercel_put
-
-            result = vercel_put(
-                unique_key,
-                data,
-                access="public",
-                content_type=content_type,
-                add_random_suffix=False,
-                token=token,
-            )
-            url = getattr(result, "url", None)
-            if not url and isinstance(result, dict):
-                url = result.get("url")
-            if isinstance(url, str) and url.strip():
-                return url.strip()
-        except ImportError as exc:
-            raise Exception("Vercel Blob SDK unavailable") from exc
-
-    def delete_file(self, file_url: str) -> bool:
-        """
-        Delete file from storage provider.
-        
-        Args:
-            file_url: Public URL of the file
-            
-        Returns:
-            True if deleted successfully
-        """
+    def read_private(self, object_key: str) -> bytes:
+        key = _validated_object_key(object_key)
         provider = settings.effective_storage_provider
         if provider == "local":
-            if settings.is_vercel_runtime or not settings.debug:
-                return False
-            return self._delete_local(file_url)
+            return self._read_local(key)
         if provider == "vercel":
-            return self._delete_vercel(file_url)
+            return self._read_vercel(key)
         if settings.is_vercel_runtime and settings.aws_s3_endpoint_is_loopback:
-            return False
-        return self._delete_s3(file_url)
+            raise RuntimeError("production private storage endpoint is loopback")
+        return self._read_s3(key)
 
-    def cleanup_generated_files_older_than(
-        self,
-        *,
-        cutoff: datetime,
-        limit: int = 200,
-    ) -> dict:
-        """Delete transient provider/intermediate outputs under generated/ only."""
-        provider = settings.effective_storage_provider
-        if provider != "vercel":
-            return {
-                "provider": provider,
-                "prefix": "generated/",
-                "checked": 0,
-                "matched": 0,
-                "deleted_files": 0,
-                "failed_files": 0,
-                "freed_bytes_estimate": 0,
-                "freed_mb_estimate": 0.0,
-                "skipped": True,
-                "reason": "unsupported_storage_provider",
-            }
-        return self._cleanup_vercel_generated_files(cutoff=cutoff, limit=limit)
-
-    def _delete_local(self, file_url: str) -> bool:
+    def delete_private(self, object_key: str) -> DeleteResult:
         try:
-            parsed = urlparse(file_url)
-            path = parsed.path or ""
-            if not path.startswith("/static/"):
-                return False
-            rel = unquote(path[len("/static/") :])
-            if not rel:
-                return False
+            key = _validated_object_key(object_key)
+        except ValueError:
+            return DeleteResult.FAILED
+        provider = settings.effective_storage_provider
+        if provider == "local":
+            return self._delete_local(key)
+        if provider == "vercel":
+            return self._delete_vercel(key)
+        if settings.is_vercel_runtime and settings.aws_s3_endpoint_is_loopback:
+            return DeleteResult.FAILED
+        return self._delete_s3(key)
 
-            static_root = Path(_STATIC_DIR).resolve()
-            target_path = (static_root / rel).resolve()
-            if static_root not in target_path.parents and static_root != target_path:
-                return False
+    def list_private(self, prefix: str, *, limit: int = 1000) -> tuple[str, ...]:
+        clean_prefix = _validated_object_prefix(prefix)
+        bounded = max(1, min(1000, int(limit)))
+        provider = settings.effective_storage_provider
+        if provider == "local":
+            return self._list_local(clean_prefix, limit=bounded)
+        if provider == "vercel":
+            return self._list_vercel(clean_prefix, limit=bounded)
+        if settings.is_vercel_runtime and settings.aws_s3_endpoint_is_loopback:
+            raise RuntimeError("production private storage endpoint is loopback")
+        return self._list_s3(clean_prefix, limit=bounded)
 
-            if target_path.is_file():
-                target_path.unlink()
-                return True
-            return False
+    def _local_path(self, object_key: str) -> Path:
+        if settings.is_vercel_runtime or not settings.debug:
+            raise RuntimeError("local private storage is debug-only")
+        target = (_LOCAL_PRIVATE_ROOT / object_key).resolve()
+        if target != _LOCAL_PRIVATE_ROOT and _LOCAL_PRIVATE_ROOT not in target.parents:
+            raise ValueError("private object path escaped its root")
+        return target
+
+    def _put_local(self, object_key: str, data: bytes) -> None:
+        target = self._local_path(object_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            raise FileExistsError("private object already exists")
+        with target.open("xb") as handle:
+            handle.write(data)
+
+    def _read_local(self, object_key: str) -> bytes:
+        target = self._local_path(object_key)
+        if not target.is_file():
+            raise FileNotFoundError("private object not found")
+        return target.read_bytes()
+
+    def _delete_local(self, object_key: str) -> DeleteResult:
+        try:
+            target = self._local_path(object_key)
+            if not target.exists():
+                return DeleteResult.NOT_FOUND
+            if not target.is_file():
+                return DeleteResult.FAILED
+            target.unlink()
+            return DeleteResult.DELETED
         except Exception:
-            return False
+            return DeleteResult.FAILED
 
-    def _delete_s3(self, file_url: str) -> bool:
+    def _list_local(self, prefix: str, *, limit: int) -> tuple[str, ...]:
+        base = self._local_path(prefix.rstrip("/"))
+        if not base.exists():
+            return ()
+        if not base.is_dir():
+            raise RuntimeError("private object prefix is not a directory")
+        keys = [
+            path.relative_to(_LOCAL_PRIVATE_ROOT).as_posix()
+            for path in base.rglob("*")
+            if path.is_file()
+        ]
+        keys.sort()
+        if len(keys) > limit:
+            raise RuntimeError("private object prefix exceeds reconciliation limit")
+        return tuple(keys)
+
+    def _put_s3(self, object_key: str, data: bytes, content_type: str) -> None:
         from botocore.exceptions import ClientError
 
         try:
-            key = file_url.replace(f"{settings.s3_public_url_base}/", "")
-            self.client.delete_object(
+            self.client.put_object(
                 Bucket=settings.aws_s3_bucket,
-                Key=key,
+                Key=object_key,
+                Body=data,
+                ContentType=content_type,
+                IfNoneMatch="*",
             )
-            return True
-        except ClientError:
-            return False
+        except ClientError as exc:
+            raise RuntimeError("private object upload failed") from exc
 
-    def _delete_vercel(self, file_url: str) -> bool:
-        token = settings.blob_token_effective
-        if not token:
-            return False
+    def _read_s3(self, object_key: str) -> bytes:
+        from botocore.exceptions import ClientError
+
         try:
-            try:
-                from vercel.blob import delete as vercel_delete
+            response = self.client.get_object(
+                Bucket=settings.aws_s3_bucket,
+                Key=object_key,
+            )
+            return bytes(response["Body"].read())
+        except ClientError as exc:
+            raise FileNotFoundError("private object unavailable") from exc
 
-                vercel_delete(file_url, token=token)
-                return True
-            except ImportError:
-                return False
-        except Exception:
-            return False
+    @staticmethod
+    def _is_not_found_client_error(exc: Exception) -> bool:
+        response = getattr(exc, "response", {})
+        code = str((response.get("Error") or {}).get("Code") or "").lower()
+        status = int((response.get("ResponseMetadata") or {}).get("HTTPStatusCode") or 0)
+        return status in {404, 410} or code in {"404", "nosuchkey", "notfound"}
+
+    def _delete_s3(self, object_key: str) -> DeleteResult:
+        from botocore.exceptions import ClientError
+
+        try:
+            self.client.head_object(Bucket=settings.aws_s3_bucket, Key=object_key)
+        except ClientError as exc:
+            if self._is_not_found_client_error(exc):
+                return DeleteResult.NOT_FOUND
+            return DeleteResult.FAILED
+        try:
+            self.client.delete_object(Bucket=settings.aws_s3_bucket, Key=object_key)
+            return DeleteResult.DELETED
+        except ClientError:
+            return DeleteResult.FAILED
+
+    def _list_s3(self, prefix: str, *, limit: int) -> tuple[str, ...]:
+        keys: list[str] = []
+        token = None
+        while True:
+            request = {
+                "Bucket": settings.aws_s3_bucket,
+                "Prefix": prefix,
+                "MaxKeys": min(1000, limit + 1 - len(keys)),
+            }
+            if token:
+                request["ContinuationToken"] = token
+            response = self.client.list_objects_v2(**request)
+            keys.extend(str(item.get("Key") or "") for item in response.get("Contents") or [])
+            if len(keys) > limit:
+                raise RuntimeError("private object prefix exceeds reconciliation limit")
+            if not response.get("IsTruncated"):
+                break
+            token = response.get("NextContinuationToken")
+            if not token:
+                raise RuntimeError("private object listing pagination invalid")
+        return tuple(sorted(key for key in keys if key))
 
     @staticmethod
     def _blob_value(blob: object, *names: str):
@@ -277,131 +267,135 @@ class StorageService:
                 return getattr(blob, name)
         return None
 
-    @classmethod
-    def _blob_uploaded_at(cls, blob: object) -> datetime | None:
-        value = cls._blob_value(blob, "uploaded_at", "uploadedAt")
-        if isinstance(value, datetime):
-            parsed = value
-        elif isinstance(value, str) and value.strip():
-            try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError:
-                return None
-        else:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-
-    def _cleanup_vercel_generated_files(self, *, cutoff: datetime, limit: int) -> dict:
+    def _blob_token(self) -> str:
         token = settings.blob_token_effective
         if not token:
-            return {
-                "provider": "vercel",
-                "prefix": "generated/",
-                "checked": 0,
-                "matched": 0,
-                "deleted_files": 0,
-                "failed_files": 0,
-                "freed_bytes_estimate": 0,
-                "freed_mb_estimate": 0.0,
-                "skipped": True,
-                "reason": "missing_blob_token",
-            }
+            raise RuntimeError("private Blob token is missing")
+        return token
 
+    def _put_vercel(self, object_key: str, data: bytes, content_type: str) -> None:
         try:
-            from vercel.blob import delete as vercel_delete
-            from vercel.blob import list_objects
+            from vercel.blob import put
         except ImportError as exc:
-            return {
-                "provider": "vercel",
-                "prefix": "generated/",
-                "checked": 0,
-                "matched": 0,
-                "deleted_files": 0,
-                "failed_files": 0,
-                "freed_bytes_estimate": 0,
-                "freed_mb_estimate": 0.0,
-                "skipped": True,
-                "reason": f"vercel_blob_sdk_unavailable:{type(exc).__name__}",
-            }
-
-        clean_limit = max(1, min(1000, int(limit or 200)))
-        clean_cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=timezone.utc)
-        checked = 0
-        matched: list[tuple[str, int]] = []
-        cursor = None
-
+            raise RuntimeError("Vercel Blob SDK unavailable") from exc
         try:
-            while len(matched) < clean_limit:
-                result = list_objects(prefix="generated/", limit=1000, cursor=cursor, token=token)
-                blobs = self._blob_value(result, "blobs") or []
-                for blob in blobs:
-                    checked += 1
-                    uploaded_at = self._blob_uploaded_at(blob)
-                    url = self._blob_value(blob, "url")
-                    pathname = str(self._blob_value(blob, "pathname") or "")
-                    if not isinstance(url, str) or not url.strip():
-                        continue
-                    if not pathname.startswith("generated/"):
-                        continue
-                    if uploaded_at is None or uploaded_at >= clean_cutoff:
-                        continue
-                    size = int(self._blob_value(blob, "size") or 0)
-                    matched.append((url.strip(), max(0, size)))
-                    if len(matched) >= clean_limit:
-                        break
-
-                cursor = self._blob_value(result, "cursor")
-                has_more = bool(self._blob_value(result, "has_more", "hasMore"))
-                if not cursor or not has_more:
-                    break
+            result = put(
+                object_key,
+                data,
+                access="private",
+                content_type=content_type,
+                add_random_suffix=False,
+                overwrite=False,
+                token=self._blob_token(),
+            )
         except Exception as exc:
-            return {
-                "provider": "vercel",
-                "prefix": "generated/",
-                "checked": checked,
-                "matched": len(matched),
-                "deleted_files": 0,
-                "failed_files": 0,
-                "freed_bytes_estimate": 0,
-                "freed_mb_estimate": 0.0,
-                "skipped": True,
-                "reason": f"list_failed:{type(exc).__name__}",
-            }
+            raise RuntimeError("private Blob upload failed") from exc
+        pathname = str(self._blob_value(result, "pathname") or "")
+        provider_url = str(self._blob_value(result, "url") or "")
+        if pathname != object_key or ".private.blob.vercel-storage.com/" not in provider_url:
+            raise RuntimeError("connected Blob store did not prove private object semantics")
 
-        deleted = 0
-        failed = 0
-        freed_bytes = 0
-        for index in range(0, len(matched), 50):
-            batch_items = matched[index : index + 50]
-            batch = [url for url, _size in batch_items]
-            try:
-                vercel_delete(batch, token=token)
-                deleted += len(batch)
-                freed_bytes += sum(size for _url, size in batch_items)
-            except Exception:
-                for url, size in batch_items:
-                    try:
-                        vercel_delete(url, token=token)
-                        deleted += 1
-                        freed_bytes += size
-                    except Exception:
-                        failed += 1
+    def _read_vercel(self, object_key: str) -> bytes:
+        try:
+            from vercel.blob import BlobNotFoundError, get
+        except ImportError as exc:
+            raise RuntimeError("Vercel Blob SDK unavailable") from exc
+        try:
+            result = get(
+                object_key,
+                access="private",
+                token=self._blob_token(),
+                timeout=30.0,
+                use_cache=False,
+            )
+        except BlobNotFoundError as exc:
+            raise FileNotFoundError("private object not found") from exc
+        except Exception as exc:
+            raise RuntimeError("private Blob read failed") from exc
+        if int(self._blob_value(result, "status_code", "statusCode") or 0) != 200:
+            raise FileNotFoundError("private object not found")
+        return bytes(self._blob_value(result, "content") or b"")
 
+    def _delete_vercel(self, object_key: str) -> DeleteResult:
+        try:
+            from vercel.blob import BlobNotFoundError, delete, head
+        except ImportError:
+            return DeleteResult.FAILED
+        try:
+            head(object_key, token=self._blob_token())
+        except BlobNotFoundError:
+            return DeleteResult.NOT_FOUND
+        except Exception:
+            return DeleteResult.FAILED
+        try:
+            delete(object_key, token=self._blob_token())
+            return DeleteResult.DELETED
+        except BlobNotFoundError:
+            return DeleteResult.NOT_FOUND
+        except Exception:
+            return DeleteResult.FAILED
+
+    def _list_vercel(self, prefix: str, *, limit: int) -> tuple[str, ...]:
+        try:
+            from vercel.blob import iter_objects
+        except ImportError as exc:
+            raise RuntimeError("Vercel Blob SDK unavailable") from exc
+        try:
+            values = tuple(
+                str(item.pathname)
+                for item in iter_objects(
+                    prefix=prefix,
+                    limit=limit + 1,
+                    token=self._blob_token(),
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError("private Blob listing failed") from exc
+        if len(values) > limit:
+            raise RuntimeError("private object prefix exceeds reconciliation limit")
+        return tuple(sorted(values))
+
+    def upload_file(
+        self,
+        file_content: BinaryIO,
+        filename: str,
+        content_type: str = "image/jpeg",
+        folder: str = "uploads",
+    ) -> str:
+        """Retired compatibility method; callers must migrate to MediaAsset IDs."""
+
+        _ = (file_content, filename, content_type, folder)
+        raise RuntimeError("legacy URL upload is retired; use put_private with a MediaAsset")
+
+    def delete_file(self, file_url: str) -> bool:
+        """Retired compatibility method; arbitrary URL deletion is forbidden."""
+
+        _ = file_url
+        return False
+
+    def cleanup_generated_files_older_than(
+        self,
+        *,
+        cutoff: datetime,
+        limit: int = 200,
+    ) -> dict:
+        """Compatibility report until Task 11 moves retention to MediaAsset rows."""
+
+        clean_cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=timezone.utc)
         return {
-            "provider": "vercel",
+            "provider": settings.effective_storage_provider,
             "prefix": "generated/",
-            "checked": checked,
-            "matched": len(matched),
-            "deleted_files": deleted,
-            "failed_files": failed,
-            "freed_bytes_estimate": freed_bytes,
-            "freed_mb_estimate": round(freed_bytes / 1024 / 1024, 2),
-            "skipped": False,
+            "checked": 0,
+            "matched": 0,
+            "deleted_files": 0,
+            "failed_files": 0,
+            "freed_bytes_estimate": 0,
+            "freed_mb_estimate": 0.0,
+            "skipped": True,
+            "reason": "media_asset_retention_required",
             "cutoff": clean_cutoff.isoformat(),
+            "limit": max(1, min(1000, int(limit or 200))),
         }
 
 
-# Singleton instance
 storage_service = StorageService()

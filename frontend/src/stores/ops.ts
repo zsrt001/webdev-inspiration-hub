@@ -8,25 +8,44 @@ export interface HomeBannerConfig {
   cta_label: string;
   secondary_cta_label: string;
   image_url: string;
-  legacy_enabled: boolean;
-  portal_enabled: boolean;
+}
+
+export interface ActiveCapabilities {
+  google_auth: boolean;
+  authenticated_upload: boolean;
+  generation: boolean;
+  credit_pack_checkout: boolean;
+  subscription_billing: boolean;
+  private_download: boolean;
+  partner_invite: boolean;
 }
 
 export interface PublicOpsConfig {
   placements: {
     home_banner: HomeBannerConfig;
   };
-  feature_flags: {
-    live_portrait: boolean;
-    remote_join: boolean;
-    local_recommendations: boolean;
-    director_mode: boolean;
-  };
-  recommendations?: {
-    lead_lookback_days?: number;
-    lead_boost_per_conversion?: number;
-    lead_boost_cap?: number;
-    manual_boosts?: Record<string, number>;
+  capabilities: ActiveCapabilities;
+}
+
+const DEFAULT_CAPABILITIES: ActiveCapabilities = {
+  google_auth: false,
+  authenticated_upload: false,
+  generation: false,
+  credit_pack_checkout: false,
+  subscription_billing: false,
+  private_download: false,
+  partner_invite: false,
+};
+
+function normalizeCapabilities(value: Partial<ActiveCapabilities> | null | undefined): ActiveCapabilities {
+  return {
+    google_auth: value?.google_auth === true,
+    authenticated_upload: value?.authenticated_upload === true,
+    generation: value?.generation === true,
+    credit_pack_checkout: value?.credit_pack_checkout === true,
+    subscription_billing: value?.subscription_billing === true,
+    private_download: value?.private_download === true,
+    partner_invite: value?.partner_invite === true,
   };
 }
 
@@ -34,21 +53,14 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
   placements: {
     home_banner: {
       enabled: true,
-      title: 'AI Wedding Studio',
+      title: 'VowPic Studio',
       subtitle: 'Premium wedding portraits in minutes',
       cta_label: 'Start Now',
       secondary_cta_label: 'Browse Collection',
       image_url: '/style-previews/couple_old_money.jpg',
-      legacy_enabled: true,
-      portal_enabled: true,
     },
   },
-  feature_flags: {
-    live_portrait: false,
-    remote_join: false,
-    local_recommendations: false,
-    director_mode: false,
-  },
+  capabilities: { ...DEFAULT_CAPABILITIES },
 };
 
 export const useOpsStore = defineStore('ops', {
@@ -76,9 +88,7 @@ export const useOpsStore = defineStore('ops', {
               ...(res?.placements?.home_banner || {}),
             },
           },
-          feature_flags: {
-            ...DEFAULT_CONFIG.feature_flags,
-          },
+          capabilities: normalizeCapabilities(res?.capabilities),
         };
         const heroImage = String(this.publicConfig.placements.home_banner.image_url || '').trim();
         if (

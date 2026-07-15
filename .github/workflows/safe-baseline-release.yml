@@ -66,7 +66,7 @@ jobs:
           npm ci --prefix scripts/release-tools --ignore-scripts
           VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
           test -x "$VERCEL_CLI"
-          test "$("$VERCEL_CLI" --version)" = "55.0.0"
+          test "$("$VERCEL_CLI" --version)" = "56.2.0"
           echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends postgresql-client-16
@@ -481,6 +481,7 @@ jobs:
           RECOVERY_REPORT="$RUNNER_TEMP/deployment-recovery-before.json"
           if [[ "$CANDIDATE_COUNT" = "0" ]]; then
             DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
+              --env "RELEASE_ROLE=SAFE_BASELINE" \
               --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
               --meta "vowpicSourceSha=$SOURCE_SHA" \
               --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
@@ -587,8 +588,6 @@ jobs:
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
         env:
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
-          SAFE_BASELINE_PROBE_USER_BEARER: ${{ secrets.SAFE_BASELINE_PROBE_USER_BEARER }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
           RUNTIME_DDL_AUDIT_REPORT_B64: ${{ secrets.RUNTIME_DDL_AUDIT_REPORT_B64 }}
@@ -755,8 +754,6 @@ jobs:
       - name: Verify formal-domain handoff without an edge bypass
         env:
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
-          SAFE_BASELINE_PROBE_USER_BEARER: ${{ secrets.SAFE_BASELINE_PROBE_USER_BEARER }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           RUNTIME_DDL_AUDIT_REPORT_B64: ${{ secrets.RUNTIME_DDL_AUDIT_REPORT_B64 }}
           EDGE_HANDOFF_REPORT_B64: ${{ secrets.EDGE_HANDOFF_REPORT_B64 }}

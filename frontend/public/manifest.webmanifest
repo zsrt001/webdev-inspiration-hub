@@ -1,9 +1,9 @@
 {
   "id": "/",
-  "name": "AI Wedding Photo",
-  "short_name": "AI Wedding",
-  "description": "AI wedding portrait studio for mobile creation, preview, and HD delivery.",
-  "lang": "zh-CN",
+  "name": "VowPic",
+  "short_name": "VowPic",
+  "description": "VowPic creates AI wedding portraits for private preview and HD delivery.",
+  "lang": "en",
   "dir": "ltr",
   "start_url": "/?source=pwa",
   "scope": "/",

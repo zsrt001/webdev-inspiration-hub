@@ -1,5 +1,5 @@
 <template>
-  <view v-if="visible" class="pricing-overlay" @tap="handleClose">
+  <view v-if="visible && billingAvailable" class="pricing-overlay" @tap="handleClose">
     <view class="pricing-dialog" @tap.stop>
       <button class="close-button" aria-label="Close" @tap="handleClose">x</button>
 
@@ -9,6 +9,7 @@
 
         <view class="billing-tabs" role="tablist">
           <view
+            v-if="creditCheckoutAvailable"
             class="billing-tab"
             :class="{ active: activeBillingMode === 'credits' }"
             role="tab"
@@ -18,6 +19,7 @@
             {{ tr('积分包', 'Credit packs') }}
           </view>
           <view
+            v-if="subscriptionBillingAvailable"
             class="billing-tab"
             :class="{ active: activeBillingMode === 'subscription' }"
             role="tab"
@@ -56,7 +58,7 @@
       </view>
 
       <template v-else>
-        <view v-if="activeBillingMode === 'credits'" class="pricing-grid">
+        <view v-if="activeBillingMode === 'credits' && creditCheckoutAvailable" class="pricing-grid">
           <view
             v-for="pkg in packages"
             :key="pkg.id"
@@ -127,12 +129,12 @@
 
             <view class="price-line">
               <text class="currency">{{ currencySymbol(plan.currency) }}</text>
-              <text class="price-value">{{ priceFromCents(plan.price_cents) }}</text>
+              <text class="price-value">{{ priceFromCents(plan.pre_tax_minor_units) }}</text>
               <text class="price-unit">{{ plan.currency }} / {{ tr('月', 'mo') }}</text>
             </view>
 
             <text class="plan-description">
-              {{ plan.monthly_credits }} {{ tr('积分 / 月，进入同一个积分余额', 'credits / month added to the same balance') }}
+              {{ plan.credits }} {{ tr('积分 / 月，进入同一个积分余额', 'credits / month added to the same balance') }}
             </text>
 
             <button
@@ -172,6 +174,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import LegalConsentInline from './LegalConsentInline.vue';
 import { useI18nStore } from '../stores/i18n';
+import { useOpsStore } from '../stores/ops';
 import { useSubscriptionStore, type SubscriptionPlan } from '../stores/subscription';
 import { get, post } from '../utils/api';
 import { trackEvent } from '../utils/analytics';
@@ -198,16 +201,6 @@ interface BalanceResponse {
 
 interface PackagesResponse {
   packages: CreditPackage[];
-}
-
-const DEFAULT_CREDIT_PACKAGES: CreditPackage[] = [
-  { id: 'pack_50', credits: 50, price: 12.90, currency: 'USD', label: 'AI Wedding Starter', popular: false },
-  { id: 'pack_120', credits: 120, price: 24.90, currency: 'USD', label: 'AI Wedding Popular', popular: true },
-  { id: 'pack_300', credits: 300, price: 49.90, currency: 'USD', label: 'AI Wedding Premium', popular: false },
-];
-
-function defaultCreditPackages(): CreditPackage[] {
-  return DEFAULT_CREDIT_PACKAGES.map((pkg) => ({ ...pkg }));
 }
 
 interface CheckoutResponse {
@@ -246,6 +239,7 @@ const emit = defineEmits<{
 }>();
 
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const subscriptionStore = useSubscriptionStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
@@ -261,6 +255,9 @@ const purchaseSuccess = ref(false);
 const creditsAdded = ref(0);
 const newBalance = ref(0);
 const paymentConsentAccepted = ref(false);
+const creditCheckoutAvailable = computed(() => opsStore.publicConfig.capabilities.credit_pack_checkout);
+const subscriptionBillingAvailable = computed(() => opsStore.publicConfig.capabilities.subscription_billing);
+const billingAvailable = computed(() => creditCheckoutAvailable.value || subscriptionBillingAvailable.value);
 
 const activePlanName = computed(() => {
   const plan = subscriptionStore.activePlan;
@@ -274,18 +271,18 @@ const modeSummary = computed(() => {
   return tr('每月自动获得固定积分，适合持续创作和成套出图。', 'Monthly credits for ongoing creation and portrait sets.');
 });
 
-function isH5(): boolean {
+function isWeb(): boolean {
   return typeof window !== 'undefined' && typeof document !== 'undefined';
 }
 
 function currentReturnUrl(): string | undefined {
-  return isH5() ? window.location.href : undefined;
+  return isWeb() ? window.location.href : undefined;
 }
 
 function readRouteParams(): { purchaseId: string; checkoutId: string; subscriptionStatus: string } {
   const result = { purchaseId: '', checkoutId: '', subscriptionStatus: '' };
 
-  if (isH5()) {
+  if (isWeb()) {
     const url = new URL(window.location.href);
     result.purchaseId = url.searchParams.get('purchase_id') || '';
     result.checkoutId = url.searchParams.get('checkout_id') || '';
@@ -303,7 +300,7 @@ function readRouteParams(): { purchaseId: string; checkoutId: string; subscripti
 }
 
 function clearRouteParams() {
-  if (!isH5()) return;
+  if (!isWeb()) return;
   const url = new URL(window.location.href);
   ['payment', 'purchase_id', 'checkout_id', 'subscription', 'plan_code'].forEach((key) => {
     url.searchParams.delete(key);
@@ -404,7 +401,7 @@ function packageFeatureLines(pkg: CreditPackage): string[] {
 }
 
 function planDisplayName(plan: SubscriptionPlan): string {
-  const name = String(plan.name || plan.code).replace(/\s*Monthly$/i, '').trim();
+  const name = String(plan.code).replace(/_monthly$/i, '').trim();
   if (i18nStore.locale !== 'zh') return name || plan.code;
   const zhNames: Record<string, string> = {
     starter_monthly: 'Starter 月度',
@@ -419,14 +416,13 @@ function planShortName(plan: SubscriptionPlan): string {
 }
 
 function billingIntervalLabel(plan: SubscriptionPlan): string {
-  return plan.billing_interval === 'year'
-    ? tr('年付订阅', 'Yearly subscription')
-    : tr('月付订阅', 'Monthly subscription');
+  void plan;
+  return tr('月付订阅', 'Monthly subscription');
 }
 
 function isCurrentPlan(plan: SubscriptionPlan): boolean {
-  return subscriptionStore.current?.plan_code === plan.code
-    && ['active', 'trialing', 'past_due'].includes(subscriptionStore.current?.status || '');
+  return subscriptionStore.current?.product_code === plan.code
+    && ['ACTIVE', 'PAST_DUE', 'CANCEL_REQUESTED'].includes(subscriptionStore.current?.status || '');
 }
 
 function isPlanHighlighted(plan: SubscriptionPlan, index: number): boolean {
@@ -437,16 +433,13 @@ function isPlanHighlighted(plan: SubscriptionPlan, index: number): boolean {
 }
 
 function planFeatureLines(plan: SubscriptionPlan): string[] {
-  const flags = plan.feature_flags || {};
   const lines = [
-    `${plan.monthly_credits} ${tr('积分 / 月', 'credits / month')}`,
-    unitPriceLabel(Number(plan.price_cents || 0) / 100, plan.monthly_credits, plan.currency),
-    generationEstimate(plan.monthly_credits),
+    `${plan.credits} ${tr('积分 / 月', 'credits / month')}`,
+    unitPriceLabel(Number(plan.pre_tax_minor_units || 0) / 100, plan.credits, plan.currency),
+    generationEstimate(plan.credits),
   ];
-  if (flags.remote_join) lines.push(tr('支持双人异地合拍', 'Remote couple creation included'));
-  if (flags.live_portrait) lines.push(tr('适合动态人像等进阶玩法', 'Works for advanced portrait features'));
-  if (flags.priority_generation) lines.push(tr('高峰期享有更高处理优先级', 'Higher processing priority during busy periods'));
   lines.push(tr('每月积分自动加入账户余额', 'Monthly credits are added to your account balance'));
+  lines.push(`${tr('保留层级', 'Retention tier')}: ${plan.retention_tier}`);
   return lines;
 }
 
@@ -465,7 +458,7 @@ function normalizeSelections() {
   if (subscriptionStore.plans.length > 0) {
     const existingPlan = subscriptionStore.plans.find((plan) => plan.code === selectedPlanCode.value);
     selectedPlanCode.value = existingPlan?.code
-      || subscriptionStore.current?.plan_code
+      || subscriptionStore.current?.product_code
       || subscriptionStore.plans.find((plan) => plan.code.includes('creator'))?.code
       || subscriptionStore.plans[0]?.code
       || '';
@@ -473,6 +466,19 @@ function normalizeSelections() {
 }
 
 async function fetchData() {
+  await opsStore.fetchPublicConfig();
+  if (!billingAvailable.value) {
+    packages.value = [];
+    selectedPackage.value = null;
+    selectedPlanCode.value = '';
+    return;
+  }
+  if (!creditCheckoutAvailable.value && subscriptionBillingAvailable.value) {
+    activeBillingMode.value = 'subscription';
+  } else if (creditCheckoutAvailable.value && !subscriptionBillingAvailable.value) {
+    activeBillingMode.value = 'credits';
+  }
+
   const balanceTask = get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false })
     .then((res) => {
       currentBalance.value = res.balance;
@@ -480,25 +486,26 @@ async function fetchData() {
     })
     .catch(() => undefined);
 
-  const currentSubscriptionTask = subscriptionStore.fetchCurrentSubscription(true)
-    .then(() => normalizeSelections())
-    .catch(() => undefined);
-
-  const [packagesResult] = await Promise.allSettled([
-    get<PackagesResponse>(`/credits/packages?locale=${encodeURIComponent(i18nStore.locale)}`, { showLoading: false, showError: false }),
-    subscriptionStore.fetchPlans(true),
-  ]);
-
-  if (packagesResult.status === 'fulfilled') {
-    packages.value = Array.isArray(packagesResult.value.packages) && packagesResult.value.packages.length > 0
-      ? packagesResult.value.packages
-      : defaultCreditPackages();
-  } else {
-    packages.value = defaultCreditPackages();
+  const dataTasks: Promise<unknown>[] = [balanceTask];
+  if (subscriptionBillingAvailable.value) {
+    dataTasks.push(subscriptionStore.fetchPlans(true));
+    dataTasks.push(subscriptionStore.fetchCurrentSubscription(true));
   }
+  if (creditCheckoutAvailable.value) {
+    dataTasks.push(
+      get<PackagesResponse>(`/credits/packages?locale=${encodeURIComponent(i18nStore.locale)}`, { showLoading: false, showError: false })
+        .then((result) => {
+          packages.value = Array.isArray(result.packages) ? result.packages : [];
+        })
+        .catch(() => {
+          packages.value = [];
+        }),
+    );
+  } else {
+    packages.value = [];
+  }
+  await Promise.allSettled(dataTasks);
   normalizeSelections();
-
-  void Promise.allSettled([balanceTask, currentSubscriptionTask]);
 }
 
 async function reconcilePendingPurchase() {
@@ -565,6 +572,7 @@ async function reconcilePendingPurchase() {
 }
 
 async function handlePurchase(pkg?: CreditPackage) {
+  if (!creditCheckoutAvailable.value) return;
   const targetPackage = pkg || selectedPackage.value;
   if (!targetPackage) return;
   selectedPackage.value = targetPackage;
@@ -594,7 +602,7 @@ async function handlePurchase(pkg?: CreditPackage) {
       meta: { purchase_id: response.purchase_id, provider: response.provider, package_id: targetPackage.id },
     });
     savePendingPurchase({ purchaseId: response.purchase_id });
-    if (isH5()) {
+    if (isWeb()) {
       window.location.href = response.checkout_url;
       return;
     }
@@ -607,6 +615,7 @@ async function handlePurchase(pkg?: CreditPackage) {
 }
 
 async function handleSubscriptionPurchase(planCode?: string) {
+  if (!subscriptionBillingAvailable.value) return;
   const targetPlanCode = planCode || selectedPlanCode.value;
   if (!targetPlanCode) return;
   selectedPlanCode.value = targetPlanCode;
@@ -633,7 +642,7 @@ async function handleSubscriptionPurchase(planCode?: string) {
       templateId: null,
       meta: { plan_code: targetPlanCode, checkout_url: !!response.checkout_url },
     });
-    if (isH5()) {
+    if (isWeb()) {
       window.location.href = response.checkout_url;
       return;
     }

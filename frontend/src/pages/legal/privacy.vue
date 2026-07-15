@@ -1,10 +1,10 @@
 <template>
   <view class="legal-page">
     <NavBar />
-    <view class="legal-shell">
+    <view class="legal-shell" role="main" tabindex="0" aria-label="Privacy Policy">
       <view class="legal-hero">
         <text class="eyebrow">{{ tr('法务与合规', 'Legal & Compliance') }}</text>
-        <text class="title heading-serif">{{ tr('隐私政策', 'Privacy Policy') }}</text>
+        <text class="title heading-serif" role="heading" aria-level="1">{{ tr('隐私政策', 'Privacy Policy') }}</text>
         <text class="subtitle">{{ tr('最后更新：2026 年 4 月 26 日', 'Last updated: April 26, 2026') }}</text>
       </view>
 
@@ -36,11 +36,11 @@ const sections = computed(() => [
     titleZh: '适用范围',
     titleEn: 'Scope',
     zh: [
-      '本政策适用于 AI Wedding 的照片上传、AI 生成、支付、订阅、账户中心和客服支持流程。',
+      '本政策适用于 VowPic 的照片上传、AI 生成、支付、订阅、账户中心和客服支持流程。',
       '你使用本服务即表示同意我们按本政策处理必要信息。',
     ],
     en: [
-      'This policy applies to AI Wedding photo uploads, AI generation, payments, subscriptions, account center, and support workflows.',
+      'This policy applies to VowPic photo uploads, AI generation, payments, subscriptions, account center, and support workflows.',
       'By using the service, you agree that we process necessary information under this policy.',
     ],
   },

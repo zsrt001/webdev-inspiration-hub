@@ -119,13 +119,13 @@ async def _send_email(
             result = {"sent": True, "id": resp.json().get("id")}
             await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
             return result
-        logger.warning("Resend API error %d: %s", resp.status_code, resp.text[:200])
-        result = {"sent": False, "status": resp.status_code, "message": resp.text[:500]}
+        logger.warning("Resend API rejected email status=%d", resp.status_code)
+        result = {"sent": False, "status": resp.status_code, "error_code": "provider_rejected"}
         await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
         return result
     except Exception as exc:
-        logger.warning("Email send failed: %s", exc)
-        result = {"sent": False, "error": str(exc)}
+        logger.warning("Email send failed exception_type=%s", type(exc).__name__)
+        result = {"sent": False, "error_code": "provider_unavailable"}
         await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
         return result
 
@@ -159,7 +159,7 @@ def build_order_result_url(order_id: str) -> str:
     clean_id = str(order_id or "").strip()
     if not base_url or not clean_id:
         return ""
-    return f"{base_url}/#/pages/preview/preview?id={quote(clean_id)}"
+    return f"{base_url}/pages/preview/preview?id={quote(clean_id)}"
 
 
 async def send_order_completed(

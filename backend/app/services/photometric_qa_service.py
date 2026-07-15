@@ -193,7 +193,7 @@ class PhotometricQAService:
 
     @staticmethod
     def _pixels(image: Any, box: tuple[int, int, int, int]) -> list[tuple[int, int, int]]:
-        return [tuple(pixel) for pixel in image.crop(box).getdata()]
+        return [tuple(pixel) for pixel in image.crop(box).get_flattened_data()]
 
     @staticmethod
     def _background_pixels(
@@ -217,7 +217,7 @@ class PhotometricQAService:
                 selected.append(tuple(pixels[x, y]))
         if selected:
             return selected
-        return [tuple(pixel) for pixel in image.getdata()]
+        return [tuple(pixel) for pixel in image.get_flattened_data()]
 
     @staticmethod
     def _is_skin(pixel: tuple[int, int, int]) -> bool:

@@ -7,8 +7,6 @@ const LOCALE_STORAGE_KEY = 'aws_locale';
 
 const messages: Record<Locale, Record<string, string>> = {
   zh: {
-    'tab.home': '首页',
-    'tab.orders': '订单',
     'nav.brand': 'VowPic',
     'nav.home': '首页',
     'nav.studio': '创作',
@@ -82,8 +80,6 @@ const messages: Record<Locale, Record<string, string>> = {
     'orders.days_ago': '{count} 天前',
   },
   en: {
-    'tab.home': 'Home',
-    'tab.orders': 'Orders',
     'nav.brand': 'VowPic',
     'nav.home': 'Home',
     'nav.studio': 'Studio',
@@ -193,11 +189,6 @@ export const useI18nStore = defineStore('i18n', () => {
     return content;
   };
 
-  const applyTabBarLocale = () => {
-    uni.setTabBarItem({ index: 0, text: t('tab.home') });
-    uni.setTabBarItem({ index: 1, text: t('tab.orders') });
-  };
-
   return {
     locale,
     isZh,
@@ -205,6 +196,5 @@ export const useI18nStore = defineStore('i18n', () => {
     toggleLocale,
     t,
     tf,
-    applyTabBarLocale,
   };
 });

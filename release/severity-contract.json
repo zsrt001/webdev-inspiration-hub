@@ -1,0 +1,17 @@
+{
+  "schema": "vowpic.severity.v1",
+  "default_unknown_production": "P1",
+  "categories": {
+    "unauthorized_access": "P0",
+    "privacy": "P0",
+    "key_exposure": "P0",
+    "data_loss": "P0",
+    "double_charge": "P0",
+    "real_flow": "P1",
+    "ledger": "P1",
+    "worker": "P1",
+    "outbox": "P1",
+    "webhook": "P1",
+    "deletion": "P1"
+  }
+}

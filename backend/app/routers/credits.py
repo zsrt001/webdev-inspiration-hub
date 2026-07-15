@@ -4,21 +4,28 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.admin_auth import require_admin_token
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.feature_flags import Capability
-from app.core.user_auth import get_request_user
+from app.core.session_auth import get_session_user
 from app.models.user import User
 from app.services.credit_service import (
     get_balance_async,
     list_credit_transactions_async,
     COST_PER_GENERATION,
 )
+from app.services.billing_catalog_service import (
+    BillingCatalogUnavailable,
+    load_active_catalog,
+    localize_catalog_products,
+)
 from app.services.feature_flag_service import resolve_request_capability
 
 router = APIRouter()
+settings = get_settings()
 
 
 def _raise_credit_catalog_unavailable() -> None:
@@ -28,13 +35,6 @@ def _raise_credit_catalog_unavailable() -> None:
             "code": "credit_catalog_unavailable",
             "message": "The authoritative credit catalog is not available yet.",
         },
-    )
-
-
-def _raise_legacy_credit_mutation_retired() -> None:
-    raise HTTPException(
-        status_code=410,
-        detail={"code": "legacy_credit_mutation_retired", "message": "Legacy credit mutations are retired."},
     )
 
 
@@ -66,24 +66,6 @@ class PackagesResponse(BaseModel):
     packages: List[CreditPackage]
 
 
-class PurchaseRequest(BaseModel):
-    """Purchase request."""
-    package_id: str
-
-
-class PurchaseResponse(BaseModel):
-    """Purchase result response."""
-    success: bool
-    credits_added: int
-    new_balance: int
-    message: str
-
-
-class AdminAddCreditsRequest(BaseModel):
-    user_id: str
-    amount: int
-
-
 class CreditTransactionRead(BaseModel):
     id: str
     transaction_type: str
@@ -101,12 +83,14 @@ class CreditTransactionsResponse(BaseModel):
 
 @router.get("/balance", response_model=BalanceResponse)
 async def get_user_balance(
-    current_user: User = Depends(get_request_user),
+    current_user: User = Depends(get_session_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get current user's credit balance."""
     balance = await get_balance_async(db, current_user.id)
-    generation = await resolve_request_capability(db, Capability.GENERATION)
+    generation = await resolve_request_capability(
+        db, Capability.GENERATION, verified_user_id=current_user.id
+    )
     return BalanceResponse(
         balance=balance,
         can_generate=(generation.allowed and balance >= COST_PER_GENERATION),
@@ -117,19 +101,48 @@ async def get_user_balance(
 @router.get(
     "/packages",
     response_model=PackagesResponse,
-    dependencies=[Depends(_raise_credit_catalog_unavailable)],
 )
 async def list_packages(
     region: str | None = Query(default=None, max_length=8),
     locale: str | None = Query(default=None, max_length=16),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Get available credit packages for purchase."""
-    _raise_credit_catalog_unavailable()
+    """Read the sole active, versioned PostgreSQL billing catalog."""
+    _ = region
+    if not callable(getattr(db, "scalars", None)):
+        _raise_credit_catalog_unavailable()
+    try:
+        catalog = await load_active_catalog(
+            db,
+            environment=settings.runtime_environment,
+        )
+        localized = localize_catalog_products(catalog.products, locale=locale)
+    except (BillingCatalogUnavailable, SQLAlchemyError, OSError):
+        _raise_credit_catalog_unavailable()
+
+    return PackagesResponse(
+        packages=[
+            CreditPackage(
+                id=item["product_code"],
+                credits=item["credits"],
+                price=item["pre_tax_minor_units"] / 100,
+                currency=item["currency"],
+                price_cents=item["pre_tax_minor_units"],
+                display_price=item["display_price"],
+                region=item["region"],
+                payment_methods=[],
+                localized_pricing_ready=item["localized_pricing_ready"],
+                label=item["product_code"],
+                popular=False,
+            )
+            for item in localized
+        ]
+    )
 
 
 @router.get("/transactions", response_model=CreditTransactionsResponse)
 async def list_credit_transactions(
-    current_user: User = Depends(get_request_user),
+    current_user: User = Depends(get_session_user),
     db: AsyncSession = Depends(get_db),
     limit: int = 100,
 ):
@@ -150,42 +163,3 @@ async def list_credit_transactions(
             for row in rows
         ]
     )
-
-
-@router.post(
-    "/purchase",
-    response_model=PurchaseResponse,
-    dependencies=[Depends(_raise_legacy_credit_mutation_retired)],
-)
-async def purchase_credits(
-    request: PurchaseRequest,
-    current_user: User = Depends(get_request_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Purchase credits for current user.
-    """
-    _raise_legacy_credit_mutation_retired()
-
-
-@router.post("/deduct", dependencies=[Depends(_raise_legacy_credit_mutation_retired)])
-async def deduct_user_credits(
-    amount: int = COST_PER_GENERATION,
-    current_user: User = Depends(get_request_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Deduct credits (called internally during generation).
-    Returns 402 if insufficient balance.
-    """
-    _raise_legacy_credit_mutation_retired()
-
-
-@router.post("/add", dependencies=[Depends(_raise_legacy_credit_mutation_retired)])
-async def add_user_credits(
-    request: AdminAddCreditsRequest,
-    _: None = Depends(require_admin_token),
-    db: AsyncSession = Depends(get_db),
-):
-    """Add credits for a specific user (admin only)."""
-    _raise_legacy_credit_mutation_retired()

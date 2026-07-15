@@ -142,9 +142,13 @@ class CiReleaseContractTest(unittest.TestCase):
     def test_resolver_bootstrap_is_hash_locked(self) -> None:
         resolver_input = _read("requirements-resolver.in")
         resolver_lock = _read("requirements-resolver.txt")
-        self.assertEqual(resolver_input.strip(), "pip-tools==7.5.3")
+        self.assertEqual(
+            resolver_input.splitlines(),
+            ["build==1.5.0", "pip-tools==7.5.3"],
+        )
         blocks = _hashed_requirement_blocks(resolver_lock)
         self.assertGreater(len(blocks), 0)
+        self.assertTrue(any(block.startswith("build==1.5.0") for block in blocks))
         self.assertTrue(any(block.startswith("pip-tools==7.5.3") for block in blocks))
         for block in blocks:
             self.assertIn("--hash=sha256:", block)
@@ -199,8 +203,17 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIn("--require-hashes -r backend/requirements.lock.txt", workflow)
         self.assertIn("npm run typecheck", workflow)
         self.assertIn("npm run build:web", workflow)
-        self.assertNotIn("npm run test:unit", workflow)
-        self.assertRegex(workflow, r"needs\.[A-Za-z0-9_-]+\.result\s*==\s*'success'")
+        self.assertIn("vowpic-pr-gates-${{ github.run_id }}-${{ github.run_attempt }}", workflow)
+        self.assertIn("artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/pr/01-ci/*.json", workflow)
+        self.assertIn("npm run test:unit", workflow)
+        for result_env in (
+            "LINUX_LOCKS_RESULT",
+            "WINDOWS_LOCKS_RESULT",
+            "BACKEND_RESULT",
+            "FRONTEND_RESULT",
+            "WORKER_IMAGE_RESULT",
+        ):
+            self.assertIn(f'os.environ["{result_env}"] == "success"', workflow)
 
     def test_vercel_git_main_auto_deployment_is_disabled_but_preview_remains_available(self) -> None:
         config = json.loads(_read("vercel.json"))
@@ -219,15 +232,23 @@ class CiReleaseContractTest(unittest.TestCase):
             "vue": "3.4.21",
             "typescript": "5.3.3",
             "vite": "5.2.8",
-            "vue-tsc": "1.8.27",
+            "vitest": "3.2.6",
+            "vue-tsc": "2.2.12",
             "sass": "1.97.3",
         }
         merged = {**package["dependencies"], **package["devDependencies"]}
         for name, version in expected.items():
             self.assertEqual(merged[name], version)
         self.assertEqual(package["scripts"]["typecheck"], "vue-tsc --noEmit")
-        self.assertEqual(package["scripts"]["test:unit"], "vitest run --passWithNoTests=false")
-        self.assertEqual(package["scripts"]["build:web"], "uni build -p h5")
+        self.assertEqual(package["scripts"]["test:unit"], "vitest run")
+        self.assertEqual(
+            package["scripts"]["dev:web"],
+            "uni -p h5 --host 127.0.0.1",
+        )
+        self.assertEqual(
+            package["scripts"]["build:web"],
+            "node scripts/clean-web-output.mjs && uni build -p h5",
+        )
 
         lock = json.loads(_read("frontend/package-lock.json"))
         root_package = lock["packages"][""]
@@ -238,6 +259,25 @@ class CiReleaseContractTest(unittest.TestCase):
         for name, version in expected.items():
             self.assertEqual(merged_lock[name], version)
             self.assertEqual(lock["packages"][f"node_modules/{name}"]["version"], version)
+
+        expected_overrides = {
+            "@babel/plugin-transform-modules-systemjs": "7.29.4",
+            "@intlify/core-base": "9.14.5",
+            "@intlify/message-resolver": "9.1.11",
+            "cookie": "0.7.0",
+            "esbuild": "0.25.0",
+            "glob": "10.5.0",
+            "immutable": "5.1.5",
+            "path-to-regexp": "0.1.13",
+            "picomatch@2.3.1": "2.3.2",
+            "picomatch@4.0.3": "4.0.4",
+            "postcss": "8.5.10",
+            "qs": "6.15.2",
+            "rollup": "4.59.0",
+            "send": "0.19.0",
+            "yaml": "1.10.3",
+        }
+        self.assertEqual(package["overrides"], expected_overrides)
 
     def test_unused_uni_automator_and_its_jest27_chain_are_absent(self) -> None:
         package = json.loads(_read("frontend/package.json"))
@@ -301,8 +341,8 @@ class CiReleaseContractTest(unittest.TestCase):
         root_input = _read("requirements.in")
         backend_input = _read("backend/requirements.txt")
         for content in (root_input, backend_input):
-            self.assertIn("fastapi==0.128.0", content)
-            self.assertIn("starlette==0.50.0", content)
+            self.assertIn("fastapi==0.139.0", content)
+            self.assertIn("starlette==1.3.1", content)
 
     def test_uvicorn_standard_dependencies_keep_the_linux_only_marker(self) -> None:
         for relative_path in ("requirements.in", "backend/requirements.txt"):
@@ -341,8 +381,8 @@ class CiReleaseContractTest(unittest.TestCase):
                     self.assertIn("--hash=sha256:", block)
                     self.assertNotIn(">=", block)
                     self.assertNotIn("~=", block)
-            self.assertIn("fastapi==0.128.0", content)
-            self.assertIn("starlette==0.50.0", content)
+            self.assertIn("fastapi==0.139.0", content)
+            self.assertIn("starlette==1.3.1", content)
 
     def test_linux_resolver_contract_runs_twice_and_checks_committed_locks(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
@@ -417,9 +457,34 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
     def test_release_cli_is_installed_from_a_committed_integrity_lock(self) -> None:
         package = json.loads(_read("scripts/release-tools/package.json"))
         lock = json.loads(_read("scripts/release-tools/package-lock.json"))
-        self.assertEqual(package["devDependencies"]["vercel"], "55.0.0")
-        self.assertEqual(lock["packages"][""]["devDependencies"]["vercel"], "55.0.0")
-        self.assertEqual(lock["packages"]["node_modules/vercel"]["version"], "55.0.0")
+        expected_security_overrides = {
+            "@tootallnate/once@2.0.0": "2.0.1",
+            "ajv@8.6.3": "8.18.0",
+            "js-yaml@4.1.1": "4.2.0",
+            "minimatch@10.1.1": "10.2.5",
+            "path-to-regexp@6.1.0": "6.3.0",
+            "path-to-regexp@8.2.0": "8.4.0",
+            "path-to-regexp@8.3.0": "8.4.0",
+            "sandbox@3.4.0": "3.4.3",
+            "smol-toml@1.5.2": "1.6.1",
+            "tar@7.5.7": "7.5.16",
+            "undici@5.28.4": "6.27.0",
+            "undici@5.29.0": "6.27.0",
+        }
+        self.assertEqual(package["devDependencies"]["vercel"], "56.2.0")
+        self.assertEqual(package["overrides"], expected_security_overrides)
+        self.assertEqual(lock["packages"][""]["devDependencies"]["vercel"], "56.2.0")
+        self.assertEqual(lock["packages"]["node_modules/vercel"]["version"], "56.2.0")
+        self.assertEqual(lock["packages"]["node_modules/@tootallnate/once"]["version"], "2.0.1")
+        self.assertEqual(lock["packages"]["node_modules/ajv"]["version"], "8.18.0")
+        self.assertEqual(lock["packages"]["node_modules/js-yaml"]["version"], "4.2.0")
+        self.assertEqual(lock["packages"]["node_modules/minimatch"]["version"], "10.2.5")
+        self.assertEqual(lock["packages"]["node_modules/path-to-regexp"]["version"], "8.4.0")
+        self.assertEqual(lock["packages"]["node_modules/path-to-regexp-updated"]["version"], "6.3.0")
+        self.assertEqual(lock["packages"]["node_modules/sandbox"]["version"], "3.4.3")
+        self.assertEqual(lock["packages"]["node_modules/smol-toml"]["version"], "1.6.1")
+        self.assertEqual(lock["packages"]["node_modules/tar"]["version"], "7.5.16")
+        self.assertEqual(lock["packages"]["node_modules/undici"]["version"], "6.27.0")
         self.assertRegex(
             lock["packages"]["node_modules/vercel"]["integrity"],
             r"^sha512-",
@@ -434,7 +499,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            'test "$("$VERCEL_CLI" --version)" = "55.0.0"',
+            'test "$("$VERCEL_CLI" --version)" = "56.2.0"',
             workflow,
         )
         self.assertNotIn("npx --yes vercel", workflow)
@@ -1684,19 +1749,21 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
 class BaselineToolContractTest(unittest.TestCase):
     def test_liveness_exposes_only_nonsecret_immutable_runtime_coordinates(self) -> None:
         config_source = _read("backend/app/core/config.py")
-        main_source = _read("backend/app/main.py")
+        runtime_source = _read("backend/app/services/runtime_bundle_service.py")
         self.assertIn("vercel_git_commit_sha", config_source)
         for coordinate in ("source_sha", "runtime_bundle_id", "deployment_id"):
-            self.assertIn(f'"{coordinate}"', main_source)
+            self.assertIn(f"{coordinate}:", runtime_source)
 
-    def test_local_baseline_is_truthful_about_missing_frontend_unit_suite(self) -> None:
+    def test_local_baseline_runs_the_real_frontend_unit_suite(self) -> None:
         script = _read("scripts/release/verify_baseline.ps1")
-        self.assertIn("frontend_unit", script)
-        self.assertIn("NOT_RUN", script)
         self.assertIn("countTestCases", script)
+        self.assertIn("TextTestRunner(stream=sys.stdout", script)
         self.assertIn("npm run typecheck", script)
+        self.assertIn("npm run test:unit", script)
         self.assertIn("npm run build:web", script)
-        self.assertNotIn("npm run test:unit", script)
+        self.assertIn('frontend_unit = "PASS"', script)
+        self.assertNotIn("Task 22 has not installed Vitest", script)
+        self.assertNotIn("TASKS_1_4_BASELINE_PASS_WITH_NOT_RUN", script)
 
     def test_local_baseline_binds_the_actual_worktree_and_locked_environment(self) -> None:
         script = _read("scripts/release/verify_baseline.ps1")
@@ -1714,7 +1781,8 @@ class BaselineToolContractTest(unittest.TestCase):
         self.assertNotIn("git diff --binary", script)
         self.assertIn("UNCOMMITTED_WORKTREE", helper)
         self.assertIn("stdout=subprocess.PIPE", helper)
-        self.assertIn("TASKS_1_4_BASELINE_PASS_WITH_NOT_RUN", script)
+        self.assertIn("TASKS_1_4_BASELINE_PASS", script)
+        self.assertNotIn("TASKS_1_4_BASELINE_PASS_WITH_NOT_RUN", script)
         self.assertIn("python -m venv", script)
         self.assertIn("--require-hashes", script)
         self.assertIn("backend/requirements.lock.txt", script.replace("\\", "/"))
@@ -1831,10 +1899,47 @@ class BaselineToolContractTest(unittest.TestCase):
             "scripts/release/verify_safe_baseline.py",
             "verify_safe_baseline_contract",
         )
-        self.assertEqual(len(verify.GUARDED_ROUTE_PROBES), 33)
-        self.assertEqual(len(verify.RETIRED_ROUTE_PROBES), 17)
-        self.assertTrue(all(probe.expected_status == 503 for probe in verify.GUARDED_ROUTE_PROBES))
-        self.assertTrue(all(probe.expected_status == 410 for probe in verify.RETIRED_ROUTE_PROBES))
+        self.assertEqual(len(verify.GUARDED_ROUTE_PROBES), 17)
+        self.assertEqual(len(verify.RETIRED_ROUTE_PROBES), 33)
+        guarded = {probe.name: probe for probe in verify.GUARDED_ROUTE_PROBES}
+        self.assertEqual(guarded["google_oauth_intent"].expected_status, 503)
+        self.assertEqual(guarded["google_exchange"].expected_status, 401)
+        for name in (
+            "private_media_upload",
+            "gatekeeper",
+            "order_create",
+            "credit_checkout",
+            "subscription_checkout",
+            "subscription_cancel",
+            "admin_creem_product_check",
+            "admin_creem_checkout_probe",
+            "admin_grant_credits",
+            "admin_cleanup_paused",
+        ):
+            self.assertEqual(guarded[name].expected_status, 401, name)
+            self.assertEqual(guarded[name].expected_code, "session_missing", name)
+        for name in (
+            "order_delete_paused",
+            "credit_catalog_paused",
+        ):
+            self.assertEqual(guarded[name].expected_status, 503, name)
+        for name in ("admin_generation_probe", "admin_regenerate", "ops_poll_pending_post"):
+            self.assertEqual(guarded[name].expected_status, 410, name)
+        retired = {probe.name: probe for probe in verify.RETIRED_ROUTE_PROBES}
+        for name in (
+            "manual_checkout_page_removed",
+            "manual_checkout_submit_removed",
+            "manual_checkout_complete_removed",
+            "manual_checkout_fail_removed",
+        ):
+            self.assertEqual(retired[name].expected_status, 404, name)
+        self.assertTrue(
+            all(
+                probe.expected_status == 410
+                for name, probe in retired.items()
+                if not name.startswith("manual_checkout_")
+            )
+        )
         before = {
             "table_counts": {"users": 1, "orders": 2},
             "public_reference_checksum": "a" * 64,
@@ -1849,6 +1954,12 @@ class BaselineToolContractTest(unittest.TestCase):
         self.assertNotIn(503, verify.LOGOUT_ALLOWED_STATUSES)
         source = _read("scripts/release/verify_safe_baseline.py")
         self.assertIn('"created_at": generated_at', source)
+        self.assertNotIn("SAFE_BASELINE_PROBE_USER_BEARER", source)
+        self.assertNotIn("--user-bearer-env", source)
+        self.assertNotIn("--admin-token-env", source)
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        self.assertIn('--env "RELEASE_ROLE=SAFE_BASELINE"', workflow)
+        self.assertNotIn("SAFE_BASELINE_PROBE_USER_BEARER", workflow)
 
     def test_external_runtime_and_edge_evidence_requires_authentication(self) -> None:
         verify = _load_script(

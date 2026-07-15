@@ -77,7 +77,7 @@ class ProductionInventoryReportTest(unittest.TestCase):
                 "total": 3,
                 "guest": 1,
                 "password": 0,
-                "wechat_legacy": 0,
+                "other_retired_provider": 0,
                 "visitor": 1,
                 "missing_subject": 1,
                 "duplicate_email_groups": 1,
@@ -95,12 +95,21 @@ class ProductionInventoryReportTest(unittest.TestCase):
         serialized_values = "\n".join(_flatten_strings(payload)).lower()
         for raw_secret in (
             "person@example.com",
-            "wx_raw_openid",
+            "retired_provider_subject",
             "https://bucket.example/private/photo.jpg",
             "users/123/photo.jpg",
             "secret-token",
         ):
             self.assertNotIn(raw_secret, serialized_values)
+
+    def test_inventory_classifies_non_supabase_providers_without_product_specific_legacy_branches(self) -> None:
+        service = _service()
+        source = (ROOT / "backend/app/services/production_inventory_service.py").read_text(encoding="utf-8").lower()
+        sql = service.build_user_inventory_sql(service.FULL_SCHEMA_SHAPE).lower()
+        for retired_product_token in ("wechat", "weixin", "mini_program", "wx_%"):
+            self.assertNotIn(retired_product_token, source)
+        self.assertIn("other_retired_provider", sql)
+        self.assertIn("auth_provider <> 'supabase'", sql)
 
     def test_report_rejects_extra_sensitive_fields_and_negative_counts(self) -> None:
         service = _service()

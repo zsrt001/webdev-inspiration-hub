@@ -1,38 +1,59 @@
 {
     "name": "ai-wedding-frontend",
     "version": "1.0.0",
-    "description": "AI Wedding Photo Web App",
+    "description": "VowPic overseas AI wedding portrait Web SaaS",
     "scripts": {
-        "dev:mp-weixin": "uni -p mp-weixin",
-        "build:mp-weixin": "uni build -p mp-weixin",
-        "dev:web": "uni -p h5",
-        "build:web": "uni build -p h5",
-        "dev:h5": "uni -p h5",
-        "build:h5": "uni build -p h5",
+        "dev:web": "uni -p h5 --host 127.0.0.1",
+        "build:web": "node scripts/clean-web-output.mjs && uni build -p h5",
+        "preview:web": "vite preview --outDir dist/build/h5 --host 127.0.0.1 --port 4173",
         "typecheck": "vue-tsc --noEmit",
-        "test:unit": "vitest run --passWithNoTests=false"
+        "openapi:generate": "openapi-typescript ../openapi/openapi.json -o src/generated/api.d.ts",
+        "playwright:install": "playwright install --with-deps chromium firefox",
+        "test:unit": "vitest run",
+        "test:a11y": "playwright test --grep @a11y",
+        "test:e2e": "playwright test"
     },
     "dependencies": {
         "@dcloudio/uni-app": "3.0.0-alpha-5000120260205002",
         "@dcloudio/uni-components": "3.0.0-alpha-5000120260205002",
         "@dcloudio/uni-h5": "3.0.0-alpha-5000120260205002",
-        "@dcloudio/uni-mp-weixin": "3.0.0-alpha-5000120260205002",
         "@supabase/supabase-js": "^2.104.1",
         "pinia": "2.1.7",
-        "qrcode": "^1.5.4",
         "vue": "3.4.21"
     },
     "devDependencies": {
+        "@axe-core/playwright": "4.12.1",
         "@dcloudio/types": "^3.4.8",
         "@dcloudio/uni-cli-shared": "3.0.0-alpha-5000120260205002",
         "@dcloudio/uni-stacktracey": "3.0.0-alpha-5000120260205002",
         "@dcloudio/vite-plugin-uni": "3.0.0-alpha-5000120260205002",
+        "@playwright/test": "1.61.1",
         "@types/node": "^20.11.0",
-        "@types/qrcode": "^1.5.6",
+        "@vue/test-utils": "2.4.6",
         "@vue/tsconfig": "^0.5.1",
+        "jsdom": "24.1.3",
+        "openapi-typescript": "7.13.0",
         "sass": "1.97.3",
         "typescript": "5.3.3",
         "vite": "5.2.8",
-        "vue-tsc": "1.8.27"
+        "vitest": "3.2.6",
+        "vue-tsc": "2.2.12"
+    },
+    "overrides": {
+        "@babel/plugin-transform-modules-systemjs": "7.29.4",
+        "@intlify/core-base": "9.14.5",
+        "@intlify/message-resolver": "9.1.11",
+        "cookie": "0.7.0",
+        "esbuild": "0.25.0",
+        "glob": "10.5.0",
+        "immutable": "5.1.5",
+        "path-to-regexp": "0.1.13",
+        "picomatch@2.3.1": "2.3.2",
+        "picomatch@4.0.3": "4.0.4",
+        "postcss": "8.5.10",
+        "qs": "6.15.2",
+        "rollup": "4.59.0",
+        "send": "0.19.0",
+        "yaml": "1.10.3"
     }
 }

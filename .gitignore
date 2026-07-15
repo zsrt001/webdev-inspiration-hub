@@ -35,7 +35,7 @@ node_modules/
 dist/
 .npm
 
-# Uni-app / WeChat
+# Uni-app Web build
 unpackage/
 .hbuilderx/
 
@@ -52,6 +52,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+frontend/test-results/
+frontend/playwright-report/
 PROJECT_RECOVERY_CONTEXT.md
 backend/test_wenwen_apis.py
 
@@ -73,3 +75,4 @@ backend/app/_vendor_pkgs/
 backend/app/_vendor_path.txt
 
 .vercel
+backend/.private-storage/

@@ -95,9 +95,9 @@ def _route_supabase_direct_to_pooler(raw: str) -> str:
 
 
 def _ssl_context() -> ssl.SSLContext:
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
+    context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
     return context
 
 
@@ -196,21 +196,18 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
         lowered = key.lower()
         if lowered == "sslmode":
             sslmode = value.strip().lower()
-            if sslmode in {"require", "prefer"}:
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                connect_args["ssl"] = ssl_context
-            elif sslmode in {"verify-ca", "verify-full"}:
-                connect_args["ssl"] = ssl.create_default_context()
+            if sslmode in {"require", "prefer", "verify-ca", "verify-full"}:
+                connect_args["ssl"] = _ssl_context()
+            elif sslmode == "disable" and (
+                settings.runtime_environment != "development"
+                or host not in {"localhost", "127.0.0.1", "::1"}
+            ):
+                raise ValueError("sslmode=disable is allowed only for local development PostgreSQL")
             continue
         kept_pairs.append((key, value))
 
     if is_supabase_host and "ssl" not in connect_args:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        connect_args["ssl"] = ssl_context
+        connect_args["ssl"] = _ssl_context()
 
     if is_pooler_host:
         connect_args.setdefault("statement_cache_size", 0)

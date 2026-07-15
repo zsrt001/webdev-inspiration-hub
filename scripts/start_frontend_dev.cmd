@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0..\frontend"
-npm.cmd run dev:h5
+npm.cmd run dev:web

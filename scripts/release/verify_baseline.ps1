@@ -83,7 +83,7 @@ count = suite.countTestCases()
 print(f"collected_backend_tests={count}")
 if count == 0:
     raise SystemExit("backend test discovery collected zero tests")
-result = unittest.TextTestRunner(verbosity=2).run(suite)
+result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
 '@
     $backendTestProgram | & $lockedPython -
@@ -95,6 +95,7 @@ sys.exit(0 if result.wasSuccessful() else 1)
     try {
         Invoke-Checked "frontend locked install" { npm ci --ignore-scripts }
         Invoke-Checked "frontend typecheck" { npm run typecheck }
+        Invoke-Checked "frontend unit tests" { npm run test:unit }
         Invoke-Checked "frontend web build" { npm run build:web }
     }
     finally {
@@ -136,9 +137,9 @@ sys.exit(0 if result.wasSuccessful() else 1)
         backend_tests = "PASS"
         frontend_typecheck = "PASS"
         frontend_build = "PASS"
-        frontend_unit = "NOT_RUN"
-        frontend_unit_reason = "Task 22 has not installed Vitest or committed the first real unit suite"
-        overall = "TASKS_1_4_BASELINE_PASS_WITH_NOT_RUN"
+        frontend_unit = "PASS"
+        frontend_unit_reason = $null
+        overall = "TASKS_1_4_BASELINE_PASS"
     }
     $json = $report | ConvertTo-Json -Depth 5
     if ($Output) {

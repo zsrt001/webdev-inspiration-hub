@@ -33,7 +33,7 @@ from the named environment variables and are never written to the report.
 | `url_inventory_hmac_sha256` | SHA-256 over sorted unique HMACs of normalized URL/object references. |
 | `read_only_proof` | Runtime proof that both the transaction and source role are read-only. |
 
-The `users` section includes `guest`, `password`, `wechat_legacy`, `visitor`,
+The `users` section includes `guest`, `password`, `other_retired_provider`, `visitor`,
 `missing_subject`, duplicate group counts, orphan owners, and these migration
 size gates:
 
@@ -44,7 +44,7 @@ size gates:
 - `legacy_subscription_credit_grants`
 
 Legacy counts measure records that must be reconciled or retired for the
-overseas web product. They do not enable or restore WeChat functionality.
+overseas web product. Provider-specific retired branches are not restored.
 
 The URL inventory covers `users.avatar_url`, all strings nested in the three
 order JSONB image fields, both Live Portrait URL fields, and

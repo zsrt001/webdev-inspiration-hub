@@ -30,7 +30,7 @@ function open(url: string) {
   padding: 28px 20px 34px;
   max-width: 980px;
   text-align: center;
-  color: #6b7280;
+  color: #4c5360;
 }
 
 .footer-note {

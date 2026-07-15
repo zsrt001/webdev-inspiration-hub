@@ -37,6 +37,12 @@ MUTATION_TABLES = (
     "orders",
     "user_credits",
     "credit_transactions",
+    "credit_reservations",
+    "idempotency_records",
+    "generation_jobs",
+    "generation_attempts",
+    "qa_verdicts",
+    "outbox_events",
     "credit_purchases",
     "user_subscriptions",
     "subscription_credit_grants",
@@ -173,6 +179,7 @@ class RouteProbe:
         params: dict[str, str] | None = None,
         form_body: dict[str, str] | None = None,
         expected_code: str | None = None,
+        include_origin: bool = False,
     ) -> None:
         self.name = name
         self.method = method
@@ -184,6 +191,7 @@ class RouteProbe:
         self.multipart_field = multipart_field
         self.params = params
         self.form_body = form_body
+        self.include_origin = include_origin
         self.expected_code = (
             expected_code
             if expected_code is not None
@@ -192,56 +200,60 @@ class RouteProbe:
 
 
 GUARDED_ROUTE_PROBES = (
-    RouteProbe("google_start", "GET", "/api/v1/auth/supabase/google/start", 503),
+    RouteProbe(
+        "google_oauth_intent",
+        "POST",
+        "/api/v1/auth/oauth-intents",
+        503,
+        json_body={"next_path": "/pages/account/index"},
+        include_origin=True,
+    ),
     RouteProbe(
         "google_exchange",
         "POST",
         "/api/v1/auth/supabase/session",
-        503,
-        json_body={"access_token": "x" * 16},
+        401,
+        json_body={"access_token": "x" * 16, "intent_token": "i" * 32},
+        expected_code="oauth_intent_invalid",
+        include_origin=True,
     ),
-    RouteProbe("upload", "POST", "/api/v1/upload", 503, multipart=True),
     RouteProbe(
-        "upload_multiple",
+        "private_media_upload",
         "POST",
-        "/api/v1/upload/multiple",
-        503,
+        "/api/v1/media/uploads",
+        401,
         multipart=True,
-        multipart_field="files",
-    ),
-    RouteProbe(
-        "upload_delete",
-        "POST",
-        "/api/v1/upload/delete",
-        503,
-        json_body={"url": "https://example.invalid/probe.jpg"},
-        auth_kind="admin",
+        auth_kind="retired_bearer",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "gatekeeper",
         "POST",
         "/api/v1/gatekeeper/check",
-        503,
-        json_body={"image_url": "https://example.invalid/probe.jpg"},
+        401,
+        json_body={"asset_id": "00000000-0000-0000-0000-000000000000"},
+        auth_kind="retired_bearer",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "order_create",
         "POST",
         "/api/v1/orders/create",
-        503,
+        401,
         json_body={
-            "template_id": "safe-baseline-probe",
-            "user_images": ["https://example.invalid/a.jpg"],
+            "template_id": "solo_royal_castle",
+            "asset_ids": ["00000000-0000-4000-8000-000000000001"],
             "legal_accepted": True,
         },
-        auth_kind="user",
+        auth_kind="retired_bearer",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "order_delete_paused",
         "DELETE",
         "/api/v1/orders/00000000-0000-0000-0000-000000000000",
         503,
-        auth_kind="user",
+        auth_kind="retired_bearer",
         expected_code="cleanup_paused",
     ),
     RouteProbe(
@@ -255,152 +267,194 @@ GUARDED_ROUTE_PROBES = (
         "credit_checkout",
         "POST",
         "/api/v1/payments/checkout",
-        503,
+        401,
         json_body={"package_id": "pack_50", "return_url": "https://example.invalid/return"},
-        auth_kind="user",
-    ),
-    RouteProbe(
-        "manual_checkout_page",
-        "GET",
-        "/api/v1/payments/manual/checkout",
-        503,
-        params={"purchase_id": "safe-baseline", "token": "safe-baseline"},
-    ),
-    RouteProbe(
-        "manual_checkout_submit",
-        "POST",
-        "/api/v1/payments/manual/submit",
-        503,
-        form_body={"purchase_id": "safe-baseline", "token": "safe-baseline"},
-    ),
-    RouteProbe(
-        "manual_checkout_complete",
-        "POST",
-        "/api/v1/payments/manual/admin/complete",
-        503,
-        json_body={"purchase_id": "safe-baseline"},
-        auth_kind="admin",
-    ),
-    RouteProbe(
-        "manual_checkout_fail",
-        "POST",
-        "/api/v1/payments/manual/admin/fail",
-        503,
-        json_body={"purchase_id": "safe-baseline", "reason": "safe baseline probe"},
-        auth_kind="admin",
+        auth_kind="retired_bearer",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "subscription_checkout",
         "POST",
         "/api/v1/subscriptions/checkout",
-        503,
+        401,
         json_body={"plan_code": "starter", "return_url": "https://example.invalid/return"},
-        auth_kind="user",
+        auth_kind="retired_bearer",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "subscription_cancel",
         "POST",
         "/api/v1/subscriptions/cancel",
-        503,
-        auth_kind="user",
-    ),
-    RouteProbe(
-        "partner_invite_create",
-        "POST",
-        "/api/v1/session/create",
-        503,
-        json_body={"template_id": "safe-baseline-probe"},
-    ),
-    RouteProbe("partner_invite_status", "GET", "/api/v1/session/safe-baseline-probe/status", 503),
-    RouteProbe(
-        "partner_invite_upload_host",
-        "POST",
-        "/api/v1/session/safe-baseline-probe/upload/host",
-        503,
-        params={"image_url": "https://example.invalid/host.jpg"},
-    ),
-    RouteProbe(
-        "partner_invite_upload_guest",
-        "POST",
-        "/api/v1/session/safe-baseline-probe/upload/guest",
-        503,
-        params={"image_url": "https://example.invalid/guest.jpg"},
-    ),
-    RouteProbe("partner_invite_images", "GET", "/api/v1/session/safe-baseline-probe/images", 503),
-    RouteProbe("partner_invite_share_meta", "GET", "/api/v1/session/safe-baseline-probe/share_meta", 503),
-    RouteProbe("partner_invite_processing", "POST", "/api/v1/session/safe-baseline-probe/processing", 503),
-    RouteProbe("partner_invite_complete", "POST", "/api/v1/session/safe-baseline-probe/complete", 503),
-    RouteProbe(
-        "partner_invite_bind_order",
-        "POST",
-        "/api/v1/session/safe-baseline-probe/bind_order",
-        503,
-        json_body={"order_id": "00000000-0000-0000-0000-000000000000"},
+        401,
+        auth_kind="retired_bearer",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "admin_creem_product_check",
         "GET",
         "/api/v1/admin/creem_product_check",
-        503,
-        auth_kind="admin",
+        401,
+        auth_kind="retired_admin_header",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "admin_creem_checkout_probe",
         "POST",
         "/api/v1/admin/creem_checkout_probe",
-        503,
-        auth_kind="admin",
+        401,
+        auth_kind="retired_admin_header",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "admin_generation_probe",
         "POST",
         "/api/v1/admin/generation_probe",
-        503,
+        410,
         json_body={"image_url": "https://example.invalid/a.jpg"},
-        auth_kind="admin",
+        auth_kind="retired_admin_header",
+        expected_code="admin_generation_execution_retired",
     ),
     RouteProbe(
         "admin_grant_credits",
         "POST",
         "/api/v1/admin/grant_credits",
-        503,
+        401,
         json_body={"user_id": "00000000-0000-0000-0000-000000000000", "amount": 1},
-        auth_kind="admin",
+        auth_kind="retired_admin_header",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "admin_regenerate",
         "POST",
         "/api/v1/admin/orders/00000000-0000-0000-0000-000000000000/regenerate",
-        503,
+        410,
         json_body={"reason": "safe baseline probe"},
-        auth_kind="admin",
+        auth_kind="retired_admin_header",
+        expected_code="admin_generation_execution_retired",
     ),
     RouteProbe(
         "admin_cleanup_paused",
         "POST",
         "/api/v1/admin/cleanup_expired_assets",
-        503,
-        auth_kind="admin",
-        expected_code="cleanup_paused",
-    ),
-    RouteProbe(
-        "ops_poll_pending_get",
-        "GET",
-        "/api/v1/ops/poll_pending_orders",
-        503,
-        auth_kind="cleanup",
+        401,
+        auth_kind="retired_admin_header",
+        expected_code="session_missing",
     ),
     RouteProbe(
         "ops_poll_pending_post",
         "POST",
         "/api/v1/ops/poll_pending_orders",
-        503,
+        410,
         auth_kind="cleanup",
+        expected_code="legacy_order_poller_retired",
     ),
 )
 
 RETIRED_ROUTE_PROBES = (
-    RouteProbe("guest_auth_retired", "POST", "/api/v1/auth/login", 410, json_body={"code": "safe-baseline"}),
+    RouteProbe(
+        "manual_checkout_page_removed",
+        "GET",
+        "/api/v1/payments/manual/checkout",
+        404,
+        params={"purchase_id": "safe-baseline", "token": "safe-baseline"},
+        expected_code="not_found",
+    ),
+    RouteProbe(
+        "manual_checkout_submit_removed",
+        "POST",
+        "/api/v1/payments/manual/submit",
+        404,
+        form_body={"purchase_id": "safe-baseline", "token": "safe-baseline"},
+        expected_code="not_found",
+    ),
+    RouteProbe(
+        "manual_checkout_complete_removed",
+        "POST",
+        "/api/v1/payments/manual/admin/complete",
+        404,
+        json_body={"purchase_id": "safe-baseline"},
+        auth_kind="retired_admin_header",
+        expected_code="not_found",
+    ),
+    RouteProbe(
+        "manual_checkout_fail_removed",
+        "POST",
+        "/api/v1/payments/manual/admin/fail",
+        404,
+        json_body={"purchase_id": "safe-baseline", "reason": "safe baseline probe"},
+        auth_kind="retired_admin_header",
+        expected_code="not_found",
+    ),
+    RouteProbe(
+        "auth_method_retired",
+        "POST",
+        "/api/v1/auth/login",
+        410,
+        json_body={"code": "safe-baseline"},
+        expected_code="auth_method_retired",
+    ),
+    RouteProbe(
+        "public_upload_retired",
+        "POST",
+        "/api/v1/upload",
+        410,
+        multipart=True,
+        expected_code="public_upload_retired",
+    ),
+    RouteProbe(
+        "public_multi_upload_retired",
+        "POST",
+        "/api/v1/upload/multiple",
+        410,
+        multipart=True,
+        multipart_field="files",
+        expected_code="public_upload_retired",
+    ),
+    RouteProbe(
+        "public_url_delete_retired",
+        "POST",
+        "/api/v1/upload/delete",
+        410,
+        json_body={"url": "https://example.invalid/probe.jpg"},
+        expected_code="public_upload_retired",
+    ),
+    RouteProbe(
+        "partner_session_create_retired",
+        "POST",
+        "/api/v1/session/create",
+        410,
+        json_body={"template_id": "safe-baseline-probe"},
+        expected_code="partner_session_retired",
+    ),
+    RouteProbe("partner_session_status_retired", "GET", "/api/v1/session/safe-baseline-probe/status", 410, expected_code="partner_session_retired"),
+    RouteProbe(
+        "partner_session_upload_host_retired",
+        "POST",
+        "/api/v1/session/safe-baseline-probe/upload/host",
+        410,
+        params={"image_url": "https://example.invalid/host.jpg"},
+        expected_code="partner_session_retired",
+    ),
+    RouteProbe(
+        "partner_session_upload_guest_retired",
+        "POST",
+        "/api/v1/session/safe-baseline-probe/upload/guest",
+        410,
+        params={"image_url": "https://example.invalid/partner.jpg"},
+        expected_code="partner_session_retired",
+    ),
+    RouteProbe("partner_session_images_retired", "GET", "/api/v1/session/safe-baseline-probe/images", 410, expected_code="partner_session_retired"),
+    RouteProbe("partner_session_share_meta_retired", "GET", "/api/v1/session/safe-baseline-probe/share_meta", 410, expected_code="partner_session_retired"),
+    RouteProbe("partner_session_processing_retired", "POST", "/api/v1/session/safe-baseline-probe/processing", 410, expected_code="partner_session_retired"),
+    RouteProbe("partner_session_complete_retired", "POST", "/api/v1/session/safe-baseline-probe/complete", 410, expected_code="partner_session_retired"),
+    RouteProbe(
+        "partner_session_bind_order_retired",
+        "POST",
+        "/api/v1/session/safe-baseline-probe/bind_order",
+        410,
+        json_body={"order_id": "00000000-0000-0000-0000-000000000000"},
+        expected_code="partner_session_retired",
+    ),
     RouteProbe("legacy_user_create_retired", "POST", "/api/v1/users/", 410, json_body={"openid": "legacy"}),
     RouteProbe("legacy_user_read_retired", "GET", "/api/v1/users/00000000-0000-0000-0000-000000000000", 410),
     RouteProbe("legacy_user_patch_retired", "PATCH", "/api/v1/users/00000000-0000-0000-0000-000000000000", 410, json_body={"nickname": "legacy"}),
@@ -436,7 +490,7 @@ RETIRED_ROUTE_PROBES = (
         "GET",
         "/api/v1/admin/crm_preview",
         410,
-        auth_kind="admin",
+        auth_kind="retired_admin_header",
         expected_code="leads_retired",
     ),
     RouteProbe(
@@ -444,7 +498,7 @@ RETIRED_ROUTE_PROBES = (
         "POST",
         "/api/v1/admin/crm_push",
         410,
-        auth_kind="admin",
+        auth_kind="retired_admin_header",
         expected_code="leads_retired",
     ),
     RouteProbe(
@@ -452,7 +506,7 @@ RETIRED_ROUTE_PROBES = (
         "GET",
         "/api/v1/admin/crm_push_history",
         410,
-        auth_kind="admin",
+        auth_kind="retired_admin_header",
         expected_code="leads_retired",
     ),
 )
@@ -648,17 +702,18 @@ def _run_route_probe(
     base_headers: dict[str, str],
     probe: RouteProbe,
     *,
-    user_bearer: str,
-    admin_token: str,
     cleanup_token: str,
 ) -> dict[str, Any]:
     headers = dict(base_headers)
-    if probe.auth_kind == "user":
-        headers["Authorization"] = f"Bearer {user_bearer}"
-    elif probe.auth_kind == "admin":
-        headers["X-Admin-Token"] = admin_token
+    if probe.auth_kind == "retired_bearer":
+        headers["Authorization"] = "Bearer retired-safe-baseline-probe"
+    elif probe.auth_kind == "retired_admin_header":
+        headers["X-Admin-Token"] = "retired-safe-baseline-probe"
     elif probe.auth_kind == "cleanup":
         headers["Authorization"] = f"Bearer {cleanup_token}"
+    if probe.include_origin:
+        parsed = urlsplit(str(client.base_url))
+        headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
     kwargs: dict[str, Any] = {"headers": headers}
     if probe.params is not None:
         kwargs["params"] = probe.params
@@ -687,8 +742,6 @@ def _verify_http(
     base_url: str,
     *,
     protected_headers: dict[str, str],
-    user_bearer: str,
-    admin_token: str,
     cleanup_token: str,
     expected_source_sha: str,
     expected_runtime_bundle_id: str,
@@ -714,8 +767,6 @@ def _verify_http(
                 client,
                 headers,
                 probe,
-                user_bearer=user_bearer,
-                admin_token=admin_token,
                 cleanup_token=cleanup_token,
             )
             for probe in GUARDED_ROUTE_PROBES
@@ -725,8 +776,6 @@ def _verify_http(
                 client,
                 headers,
                 probe,
-                user_bearer=user_bearer,
-                admin_token=admin_token,
                 cleanup_token=cleanup_token,
             )
             for probe in RETIRED_ROUTE_PROBES
@@ -932,8 +981,6 @@ def main() -> int:
     header_group.add_argument("--deployment-bypass-header-env")
     header_group.add_argument("--edge-bypass-header-env")
     parser.add_argument("--database-url-env", default="PRODUCTION_READ_ONLY_DATABASE_URL")
-    parser.add_argument("--user-bearer-env", default="SAFE_BASELINE_PROBE_USER_BEARER")
-    parser.add_argument("--admin-token-env", default="ADMIN_TOKEN")
     parser.add_argument("--cleanup-token-env", default="CLEANUP_CRON_TOKEN")
     parser.add_argument("--runtime-ddl-audit-report", required=True)
     parser.add_argument("--edge-handoff-report")
@@ -955,13 +1002,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         database_url = os.environ.get(args.database_url_env, "").strip()
-        user_bearer = os.environ.get(args.user_bearer_env, "").strip()
-        admin_token = os.environ.get(args.admin_token_env, "").strip()
         cleanup_token = os.environ.get(args.cleanup_token_env, "").strip()
         runtime_audit_hmac_key = os.environ.get(args.runtime_audit_hmac_key_env, "").encode("utf-8")
         edge_evidence_hmac_key = os.environ.get(args.edge_evidence_hmac_key_env, "").encode("utf-8")
-        if not all((database_url, user_bearer, admin_token, cleanup_token)):
-            print("NOT_RUN: read-only DB and protected probe credentials are required", file=sys.stderr)
+        if not all((database_url, cleanup_token)):
+            print("NOT_RUN: read-only DB and the cleanup service credential are required", file=sys.stderr)
             return NOT_RUN_EXIT
         if len(runtime_audit_hmac_key) < 32:
             print("NOT_RUN: authenticated runtime DDL audit evidence is required", file=sys.stderr)
@@ -1027,8 +1072,6 @@ def main() -> int:
         http_evidence = _verify_http(
             args.base_url,
             protected_headers=protected_headers,
-            user_bearer=user_bearer,
-            admin_token=admin_token,
             cleanup_token=cleanup_token,
             expected_source_sha=source_sha,
             expected_runtime_bundle_id=runtime_bundle_id,

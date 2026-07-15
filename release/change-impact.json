@@ -1,0 +1,24 @@
+{
+  "schema": "vowpic.change-impact.v1",
+  "unknown_or_unparseable": "FULL_QUALITY",
+  "full_quality_globs": [
+    "backend/app/core/provider_contracts.py",
+    "backend/app/services/evolink*.py",
+    "backend/app/services/generation_*.py",
+    "backend/app/services/photometric_qa_service.py",
+    "backend/app/services/identity_embedding_service.py",
+    "backend/app/services/delivery_asset_service.py",
+    "backend/app/worker.py",
+    "backend/comfyui_workflows/**",
+    "frontend/src/stores/order.ts",
+    "frontend/src/pages/create/**",
+    "frontend/src/pages/preview/**",
+    "release/catalog/**",
+    "release/quality-*.json"
+  ],
+  "canary_only_globs": [
+    "docs/**",
+    "README.md",
+    ".github/ISSUE_TEMPLATE/**"
+  ]
+}

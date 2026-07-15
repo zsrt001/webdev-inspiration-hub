@@ -84,6 +84,7 @@ services:
   worker:
     build:
       context: ./backend
+      dockerfile: Dockerfile.worker
     container_name: ai_wedding_worker
     restart: unless-stopped
     depends_on:
@@ -99,7 +100,6 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/ai_wedding
       REDIS_URL: redis://redis:6379/0
       AWS_S3_ENDPOINT: http://minio:9000
-    command: ["arq", "app.worker.WorkerSettings"]
 
   frontend:
     image: nginx:1.27-alpine

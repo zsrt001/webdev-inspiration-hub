@@ -46,6 +46,7 @@ class FeatureFlagDecisionTest(unittest.TestCase):
             runtime_environment="production",
             vercel_deployment_id="dpl_system",
             runtime_bundle_id="rtb_" + "a" * 64,
+            release_role="SAFE_BASELINE",
             acceptance_identity_hmac_key="k" * 32,
         )
         self.assertTrue(configured.runtime_coordinates_valid)
@@ -159,6 +160,35 @@ class FeatureFlagAuthorityTest(unittest.IsolatedAsyncioTestCase):
                     release_activation_id=uuid4(),
                 )
             db.execute.assert_not_awaited()
+
+    async def test_generation_cannot_open_even_through_protected_gate_while_provider_contract_unverified(self) -> None:
+        flags = _flags_module()
+        service = _service_module()
+        now = datetime.now(timezone.utc)
+        db = AsyncMock()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "provider_contract_unverified:evolink:submission_reconciliation",
+        ):
+            await service.set_capability_state(
+                db,
+                flags.Capability.GENERATION,
+                environment="production",
+                state=flags.FeatureFlagState.ACCEPTANCE_COHORT,
+                actor="protected-release:test",
+                reason="provider evidence is deliberately absent",
+                deployment_id="dpl_target",
+                runtime_bundle_id="rtb_" + "a" * 64,
+                worker_image_digest="sha256:" + "b" * 64,
+                release_activation_id=uuid4(),
+                cohort_user_ids=(uuid4(),),
+                expires_at=now + timedelta(minutes=30),
+                now=now,
+                allow_production_enable=True,
+            )
+
+        db.execute.assert_not_awaited()
 
     async def test_database_error_fails_closed_and_never_reuses_enabled_cache(self) -> None:
         flags = _flags_module()

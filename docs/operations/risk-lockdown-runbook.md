@@ -1,12 +1,14 @@
 # Risk-lockdown and one-time safe-baseline runbook
 
-This runbook is for the overseas VowPic web deployment. The protected
+This runbook is for the overseas VowPic Web SaaS deployment. The protected
 Tasks 1-4 safe-baseline workflow does not depend on WeChat, a WeChat Mini
 Program, guest OpenID, Remote Join, Live Portrait, local recommendations, or
-lead capture, and every high-risk public capability is guarded OFF. This is not
-evidence that the legacy client/runtime code has already been deleted: WeChat,
-Mini Program, and related identity paths remain in the repository until Task 5
-passes its Web-only contract and is released through the later stage gates.
+lead capture, and every high-risk public capability is guarded OFF. Task 5's
+Web-only runtime cleanup is implemented and locally verified in the current
+dirty worktree, but it is not committed, released, or Production evidence.
+Historical migrations, inventory readers, anti-fraud detectors, negative
+security tests, and bounded in-flight-order compatibility remain deliberately;
+they are not active product entry points.
 
 ## Status language
 
@@ -237,7 +239,7 @@ report, staged/formal verification is `NOT_RUN`.
 5. Install the release toolchain with
    `npm ci --prefix scripts/release-tools --ignore-scripts`, resolve the
    committed-lock Vercel CLI executable, and require its version output to be
-   exactly `55.0.0`. Require nonempty protected `VERCEL_PROJECT_ID` and
+   exactly `56.2.0`. Require nonempty protected `VERCEL_PROJECT_ID` and
    `VERCEL_ORG_ID` coordinates before `vercel pull` or `vercel build`; the
    checkout has no authority to infer, link, or create a project. Compute the
    `SAFE_BASELINE` runtime identity. If no build is bound, build once, tar-wrap
@@ -331,10 +333,11 @@ edge deny active until the application guard and no-side-effect checks pass.
 
 ## Current execution state
 
-Creating these scripts/workflows does not execute the protected release. Until
-the Production owner supplies the setting, edge, statement-audit, inventory,
-restore, staged, and formal-domain evidence, the release status remains
-`NOT_RUN`, not risk-contained and not `Production accepted`.
+Creating these scripts/workflows and the current Task 5 patch does not execute
+the protected release. Until the Production owner supplies the setting, edge,
+statement-audit, inventory, restore, staged, and formal-domain evidence, the
+release status remains `NOT_RUN`, not risk-contained and not `Production
+accepted`.
 
 The local baseline report is also non-transferable evidence. It creates a fresh
 virtual environment, installs the platform-matching hash lock, runs `pip check`
@@ -350,11 +353,19 @@ or otherwise drifted local run remains a useful engineering result but records
 `runtime_alignment=NOT_RUN`. Linux and Windows resolver/backend locks are
 distinct and are each regenerated and installed on their own CI platform.
 
-Task 5 has not run in this checkout. `dev:mp-weixin`, `build:mp-weixin`,
-`@dcloudio/uni-mp-weixin`, `manifest.json` Mini Program configuration, and the
-`uni.login({ provider: 'weixin' })` branch therefore remain known Web-only scope
-debt. They are not used as evidence of safe-baseline completion and must not be
-described as removed until Task 5's static, unit, and browser gates pass.
+Task 5 is implemented in this dirty checkout and passed its local static,
+backend, typecheck, build, browser, and eight real PostgreSQL integration gates
+on 2026-07-13. The PostgreSQL proof used the exact CI-pinned PostgreSQL 15
+image and covered forced RLS/role separation plus migration repair/rollback.
+The Mini Program
+scripts, dependency, manifest configuration, native tab bar, WeChat/guest auth
+branches, anonymous Remote Join UI/API, Live Portrait, recommendations, leads,
+and CRM runtime implementations were removed. Permanently retired public paths
+now return side-effect-free 410 tombstones; new order input rejects the removed
+`remote_join` field; billing UI remains hidden unless a real public capability
+and catalog are available. These are local engineering results only: the
+worktree is uncommitted, the formal domain was not exercised, and Production
+status remains `NOT_RUN`.
 
 Local PostgreSQL integration can prove the mechanics but not Production state.
 The current local verification covered a legacy `0012` shape, real

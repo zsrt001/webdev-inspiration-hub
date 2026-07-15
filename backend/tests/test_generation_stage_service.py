@@ -22,11 +22,11 @@ class GenerationStageServiceTest(unittest.TestCase):
         self.assertEqual([item["stage"] for item in params["generation_stage_history"]], ["queued", "identity_refs_ready"])
         self.assertTrue(params["generation_stage_history"][0]["at"])
 
-    def test_unknown_stage_falls_back_to_queued(self) -> None:
-        params = merge_generation_stage({"generation_stage_history": []}, "bad_stage")
+    def test_unknown_stage_fails_closed(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            merge_generation_stage({"generation_stage_history": []}, "bad_stage")
 
-        self.assertEqual(params["generation_stage"], "queued")
-        self.assertEqual(params["generation_stage_history"][0]["stage"], "queued")
+        self.assertEqual(str(raised.exception), "unknown_generation_stage:bad_stage")
 
 
 if __name__ == "__main__":

@@ -8,11 +8,6 @@ export type SmartInputVerdict = {
   quality_level: 'good' | 'warning' | 'poor';
 };
 
-const FACE_API_SCRIPT = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js';
-const FACE_API_MODEL_BASE = 'https://justadudewhohacks.github.io/face-api.js/weights';
-
-let faceApiReadyPromise: Promise<boolean> | null = null;
-
 const defaultVerdict = (): SmartInputVerdict => ({
   passed: true,
   reasons: [],
@@ -65,55 +60,6 @@ const finalizeQualityScore = (verdict: SmartInputVerdict): SmartInputVerdict => 
 const isWebRuntime = (): boolean => {
   const g = globalThis as any;
   return !!(g?.window && g?.document);
-};
-
-const loadScript = async (src: string): Promise<void> => {
-  const g = globalThis as any;
-  const doc = g?.document;
-  if (!doc) return;
-
-  await new Promise<void>((resolve, reject) => {
-    const existing = doc.querySelector(`script[data-aiws-src="${src}"]`);
-    if (existing) {
-      if ((existing as any).dataset?.loaded === '1') return resolve();
-      existing.addEventListener('load', () => resolve(), { once: true });
-      existing.addEventListener('error', () => reject(new Error(`script_load_failed:${src}`)), { once: true });
-      return;
-    }
-    const script = doc.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.defer = true;
-    script.setAttribute('data-aiws-src', src);
-    script.onload = () => {
-      (script as any).dataset.loaded = '1';
-      resolve();
-    };
-    script.onerror = () => reject(new Error(`script_load_failed:${src}`));
-    doc.head.appendChild(script);
-  });
-};
-
-const ensureFaceApi = async (): Promise<boolean> => {
-  if (faceApiReadyPromise) return faceApiReadyPromise;
-
-  faceApiReadyPromise = (async () => {
-    const g = globalThis as any;
-    if (!g?.window || !g?.document) return false;
-    await loadScript(FACE_API_SCRIPT);
-    const faceapi = g?.faceapi;
-    if (!faceapi) return false;
-
-    if (!faceapi.nets.tinyFaceDetector.isLoaded) {
-      await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_API_MODEL_BASE);
-    }
-    if (!faceapi.nets.faceLandmark68TinyNet.isLoaded) {
-      await faceapi.nets.faceLandmark68TinyNet.loadFromUri(FACE_API_MODEL_BASE);
-    }
-    return true;
-  })().catch(() => false);
-
-  return faceApiReadyPromise;
 };
 
 const loadImageElement = async (src: string): Promise<HTMLImageElement> => {
@@ -198,74 +144,7 @@ const runFaceDetection = async (img: HTMLImageElement): Promise<{ metrics: Recor
   const imageWidth = Math.max(1, img.naturalWidth || img.width || 1);
   const imageHeight = Math.max(1, img.naturalHeight || img.height || 1);
 
-  const faceApiReady = await ensureFaceApi();
   const g = globalThis as any;
-
-  if (faceApiReady && g?.faceapi) {
-    const faceapi = g.faceapi;
-    const detections = await faceapi
-      .detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.45 }))
-      .withFaceLandmarks(true);
-
-    const count = detections?.length || 0;
-    metrics.face_count = count;
-    if (count === 0) {
-      reasons.push('no_face');
-      return { metrics, reasons };
-    }
-    if (count > 1) reasons.push('multiple_faces');
-
-    const main = detections[0];
-    const box = main?.detection?.box;
-    const score = Number(main?.detection?.score || 0);
-    metrics.face_score = score;
-    if (score > 0 && score < 0.62) reasons.push('face_occluded');
-
-    if (box) {
-      const faceAreaRatio = (box.width * box.height) / Math.max(1, imageWidth * imageHeight);
-      const leftMarginRatio = box.x / imageWidth;
-      const rightMarginRatio = Math.max(0, imageWidth - (box.x + box.width)) / imageWidth;
-      const topMarginRatio = box.y / imageHeight;
-      const bottomMarginRatio = Math.max(0, imageHeight - (box.y + box.height)) / imageHeight;
-      metrics.face_area_ratio = faceAreaRatio;
-      metrics.face_left_margin_ratio = leftMarginRatio;
-      metrics.face_right_margin_ratio = rightMarginRatio;
-      metrics.face_top_margin_ratio = topMarginRatio;
-      metrics.face_bottom_margin_ratio = bottomMarginRatio;
-      if (faceAreaRatio < 0.04) reasons.push('face_too_small');
-      if (faceAreaRatio > 0.70) reasons.push('face_too_close');
-      if (Math.min(leftMarginRatio, rightMarginRatio, topMarginRatio, bottomMarginRatio) < 0.015) reasons.push('face_near_edge');
-      if (topMarginRatio < 0.02 && faceAreaRatio > 0.18) reasons.push('head_maybe_cropped');
-    }
-
-    const lm = main?.landmarks;
-    if (lm?.getLeftEye && lm?.getRightEye && lm?.getNose) {
-      const leftEye = lm.getLeftEye();
-      const rightEye = lm.getRightEye();
-      const nose = lm.getNose();
-      if (leftEye?.length && rightEye?.length && nose?.length) {
-        const le = leftEye.reduce((acc: any, p: any) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-        const re = rightEye.reduce((acc: any, p: any) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-        const ne = nose.reduce((acc: any, p: any) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-        const lcx = le.x / leftEye.length;
-        const lcy = le.y / leftEye.length;
-        const rcx = re.x / rightEye.length;
-        const rcy = re.y / rightEye.length;
-        const ncx = ne.x / nose.length;
-
-        const eyeSlopeDeg = Math.atan2(rcy - lcy, rcx - lcx) * (180 / Math.PI);
-        const eyeDistance = Math.sqrt((rcx - lcx) ** 2 + (rcy - lcy) ** 2) || 1;
-        const yawRatio = Math.abs(ncx - (lcx + rcx) / 2) / eyeDistance;
-        metrics.face_tilt_deg = Math.abs(eyeSlopeDeg);
-        metrics.face_yaw_ratio = yawRatio;
-
-        if (Math.abs(eyeSlopeDeg) > 12) reasons.push('face_tilted');
-        if (yawRatio > 0.34) reasons.push('not_frontal');
-      }
-    }
-
-    return { metrics, reasons };
-  }
 
   const FaceDetectorCtor = (g as any).FaceDetector;
   if (FaceDetectorCtor) {
@@ -275,6 +154,20 @@ const runFaceDetection = async (img: HTMLImageElement): Promise<{ metrics: Recor
     metrics.face_count = count;
     if (count === 0) reasons.push('no_face');
     if (count > 1) reasons.push('multiple_faces');
+    const box = faces?.[0]?.boundingBox;
+    if (box) {
+      const faceAreaRatio = (box.width * box.height) / Math.max(1, imageWidth * imageHeight);
+      const leftMarginRatio = box.x / imageWidth;
+      const rightMarginRatio = Math.max(0, imageWidth - (box.x + box.width)) / imageWidth;
+      const topMarginRatio = box.y / imageHeight;
+      const bottomMarginRatio = Math.max(0, imageHeight - (box.y + box.height)) / imageHeight;
+      metrics.face_area_ratio = faceAreaRatio;
+      if (faceAreaRatio < 0.04) reasons.push('face_too_small');
+      if (faceAreaRatio > 0.70) reasons.push('face_too_close');
+      if (Math.min(leftMarginRatio, rightMarginRatio, topMarginRatio, bottomMarginRatio) < 0.015) {
+        reasons.push('face_near_edge');
+      }
+    }
     return { metrics, reasons };
   }
 

@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+import logging
+import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
+from app.models.media_asset import MediaAssetStatus
 from app.models.order import Order
+from app.services.media_deletion_service import request_asset_deletion
 from app.services.storage import storage_service
+
+
+logger = logging.getLogger(__name__)
 
 
 SOURCE_IMAGE_RETENTION_DAYS = 7
@@ -83,6 +89,7 @@ def _extract_urls(payload: dict | None) -> list[str]:
 
 
 def order_asset_urls(order: Order, *, include_source: bool = True, include_generated: bool = True) -> list[str]:
+    """Return legacy URL references for migration diagnostics only."""
     urls: list[str] = []
     if include_source:
         urls.extend(_extract_urls(order.source_image_urls))
@@ -98,18 +105,59 @@ def order_asset_urls(order: Order, *, include_source: bool = True, include_gener
     return deduped
 
 
-def delete_storage_urls(urls: Iterable[str]) -> dict[str, int]:
-    deleted = 0
-    failed = 0
-    for url in urls:
+def _parse_asset_ids(values: list[str] | None) -> tuple[list[uuid.UUID], int]:
+    parsed: list[uuid.UUID] = []
+    invalid = 0
+    seen: set[uuid.UUID] = set()
+    for raw_value in values or []:
         try:
-            if storage_service.delete_file(str(url)):
-                deleted += 1
-            else:
-                failed += 1
+            asset_id = uuid.UUID(str(raw_value))
+        except (TypeError, ValueError, AttributeError):
+            invalid += 1
+            continue
+        if asset_id not in seen:
+            seen.add(asset_id)
+            parsed.append(asset_id)
+    return parsed, invalid
+
+
+async def _rollback_after_cleanup_error(db: AsyncSession) -> None:
+    rollback = getattr(db, "rollback", None)
+    if callable(rollback):
+        await rollback()
+
+
+async def _request_retention_deletions(
+    db: AsyncSession,
+    asset_ids: list[uuid.UUID],
+    *,
+    reason: str,
+    now: datetime,
+) -> dict[str, int]:
+    summary = {"deleted_assets": 0, "pending_assets": 0, "failed_assets": 0}
+    for asset_id in asset_ids:
+        try:
+            result = await request_asset_deletion(
+                db,
+                asset_id,
+                reason=reason,
+                now=now,
+            )
         except Exception:
-            failed += 1
-    return {"deleted": deleted, "failed": failed}
+            summary["failed_assets"] += 1
+            await _rollback_after_cleanup_error(db)
+            logger.exception("Retention deletion request failed for asset %s", asset_id)
+            continue
+        if MediaAssetStatus(result.asset.status) == MediaAssetStatus.DELETED:
+            summary["deleted_assets"] += 1
+        else:
+            summary["pending_assets"] += 1
+    return summary
+
+
+def _merge_cleanup_counts(target: dict[str, int], update: dict[str, int]) -> None:
+    for key in ("deleted_assets", "pending_assets", "failed_assets"):
+        target[key] += int(update.get(key, 0))
 
 
 async def cleanup_expired_source_images(
@@ -125,25 +173,45 @@ async def cleanup_expired_source_images(
             Order.deleted_at.is_(None),
             Order.source_images_expires_at.is_not(None),
             Order.source_images_expires_at <= cutoff,
-            Order.source_image_urls.is_not(None),
+            or_(
+                Order.source_asset_ids.is_not(None),
+                Order.source_image_urls.is_not(None),
+            ),
         )
         .order_by(Order.source_images_expires_at.asc())
         .limit(max(1, min(500, int(limit))))
     )
     orders = list(result.scalars().all())
-    deleted_files = 0
-    failed_files = 0
+    summary = {
+        "orders": len(orders),
+        "deleted_assets": 0,
+        "pending_assets": 0,
+        "failed_assets": 0,
+        "legacy_blocked_orders": 0,
+    }
     for order in orders:
-        summary = delete_storage_urls(order_asset_urls(order, include_source=True, include_generated=False))
-        deleted_files += summary["deleted"]
-        failed_files += summary["failed"]
-        if summary["failed"] == 0:
-            order.source_image_urls = None
-            order.storage_cleanup_status = "source_deleted"
-        else:
+        asset_ids, invalid_ids = _parse_asset_ids(order.source_asset_ids)
+        if order_asset_urls(order, include_source=True, include_generated=False):
+            order.storage_cleanup_status = "legacy_reference_blocked"
+            summary["legacy_blocked_orders"] += 1
+            continue
+        request_summary = await _request_retention_deletions(
+            db,
+            asset_ids,
+            reason="retention_source",
+            now=cutoff,
+        )
+        request_summary["failed_assets"] += invalid_ids
+        _merge_cleanup_counts(summary, request_summary)
+        if request_summary["failed_assets"]:
             order.storage_cleanup_status = "cleanup_failed"
+        elif request_summary["pending_assets"]:
+            order.storage_cleanup_status = "cleanup_pending"
+        else:
+            order.source_asset_ids = None
+            order.storage_cleanup_status = "source_deleted"
     await db.flush()
-    return {"orders": len(orders), "deleted_files": deleted_files, "failed_files": failed_files}
+    return summary
 
 
 async def cleanup_expired_orders(
@@ -164,22 +232,52 @@ async def cleanup_expired_orders(
         .limit(max(1, min(500, int(limit))))
     )
     orders = list(result.scalars().all())
-    deleted_files = 0
-    failed_files = 0
+    summary = {
+        "orders": len(orders),
+        "deleted_assets": 0,
+        "pending_assets": 0,
+        "failed_assets": 0,
+        "legacy_blocked_orders": 0,
+    }
     for order in orders:
-        summary = delete_storage_urls(order_asset_urls(order))
-        deleted_files += summary["deleted"]
-        failed_files += summary["failed"]
-        if summary["failed"] == 0:
+        asset_ids: list[uuid.UUID] = []
+        invalid_ids = 0
+        for raw_ids in (
+            order.source_asset_ids,
+            order.preview_asset_ids,
+            order.final_asset_ids,
+        ):
+            parsed, invalid = _parse_asset_ids(raw_ids)
+            asset_ids.extend(parsed)
+            invalid_ids += invalid
+        asset_ids = list(dict.fromkeys(asset_ids))
+        if order_asset_urls(order):
+            order.storage_cleanup_status = "legacy_reference_blocked"
+            summary["legacy_blocked_orders"] += 1
+            continue
+        request_summary = await _request_retention_deletions(
+            db,
+            asset_ids,
+            reason="retention_order",
+            now=cutoff,
+        )
+        request_summary["failed_assets"] += invalid_ids
+        _merge_cleanup_counts(summary, request_summary)
+        if request_summary["failed_assets"]:
+            order.storage_cleanup_status = "cleanup_failed"
+        elif request_summary["pending_assets"]:
+            order.storage_cleanup_status = "cleanup_pending"
+        else:
+            order.source_asset_ids = None
+            order.preview_asset_ids = None
+            order.final_asset_ids = None
             order.source_image_urls = None
             order.preview_image_urls = None
             order.final_image_urls = None
             order.deleted_at = cutoff
             order.storage_cleanup_status = "deleted"
-        else:
-            order.storage_cleanup_status = "cleanup_failed"
     await db.flush()
-    return {"orders": len(orders), "deleted_files": deleted_files, "failed_files": failed_files}
+    return summary
 
 
 def cleanup_transient_generated_assets(

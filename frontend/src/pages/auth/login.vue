@@ -1,5 +1,5 @@
 <template>
-  <view class="auth-page">
+  <view class="auth-page" role="main">
     <view class="auth-shell">
       <view class="brand" @tap="goHome">
         <text class="brand-title heading-serif">VowPic</text>
@@ -10,9 +10,9 @@
 
       <view class="auth-card">
         <text class="auth-kicker">{{ tr('安全登录', 'Secure sign in') }}</text>
-        <text class="auth-title heading-serif">{{ tr('使用 Google 继续', 'Continue with Google') }}</text>
+        <text class="auth-title heading-serif" role="heading" aria-level="1">{{ tr('使用 Google 继续', 'Continue with Google') }}</text>
         <text class="auth-copy">
-          {{ tr('当前公开登录方式只保留 Google，邮箱验证码不会阻塞图片生成。', 'Google is the only public sign-in method right now, so email verification will not block image creation.') }}
+          {{ tr('VowPic 使用 Google 作为网站的统一登录方式。', 'VowPic uses Google as the single sign-in method for the web app.') }}
         </text>
 
         <view class="form-stack">
@@ -42,7 +42,7 @@
         <view class="auth-footer">
           <text>{{ tr('第一次使用？Google 会自动创建你的账号。', 'New here? Google creates your account automatically.') }}</text>
         </view>
-        <text class="guest-link" @tap="goHome">{{ tr('先浏览首页', 'Continue as guest') }}</text>
+        <text class="home-link" @tap="goHome">{{ tr('返回首页', 'Back to home') }}</text>
       </view>
     </view>
   </view>

@@ -1,0 +1,150 @@
+name: Manual serialized Production release
+
+on:
+  workflow_dispatch:
+    inputs:
+      required_source_sha:
+        description: Exact approved 40-character main commit
+        required: true
+        type: string
+      worker_image_digest:
+        description: Approved Production Worker sha256 OCI digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vowpic-production-release
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Verify exact source and approved host contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.required_source_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11.15"
+      - name: Verify the approved SHA is the current trusted main head
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "${{ inputs.required_source_sha }}" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/trusted-main.json"
+      - name: Keep Production blocked until the Worker host addendum is approved
+        run: |
+          test -f release/worker-host-contract.json
+          python -c "import json; p=json.load(open('release/worker-host-contract.json', encoding='utf-8')); assert p.get('approved') is True"
+
+  build-stage:
+    name: Build once and stage two unbound Production deployments
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production
+    env:
+      SOURCE_SHA: ${{ inputs.required_source_sha }}
+      RELEASE_ROLE: COMMERCIAL_7A
+      WORKER_IMAGE_DIGEST: ${{ inputs.worker_image_digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.required_source_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11.15"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+      - name: Install the pinned control-plane runtime
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.17.0"
+          cache: npm
+          cache-dependency-path: scripts/release-tools/package-lock.json
+      - name: Install and verify pinned release tooling
+        run: |
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          test -x "$VERCEL_CLI"
+          test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
+      - name: Validate immutable Worker coordinate and reserve before any deployment write
+        env:
+          PRODUCTION_CONTROL_READ_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}
+          RELEASE_PRIVATE_EVIDENCE_ROOT: ${{ secrets.RELEASE_PRIVATE_EVIDENCE_ROOT }}
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+        run: |
+          [[ "$WORKER_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          python scripts/release/resolve_release_coordinates.py \
+            --coordinate-kind safe-baseline \
+            --database-url-env PRODUCTION_CONTROL_READ_DATABASE_URL \
+            --private-evidence-root-env RELEASE_PRIVATE_EVIDENCE_ROOT \
+            --output "$RUNNER_TEMP/safe-baseline.json" \
+            --job-env "$GITHUB_ENV" \
+            --env-prefix BASELINE_
+          python scripts/release/resolve_release_coordinates.py \
+            --coordinate-kind preview-commercial-cleaned \
+            --database-url-env PRODUCTION_CONTROL_READ_DATABASE_URL \
+            --private-evidence-root-env RELEASE_PRIVATE_EVIDENCE_ROOT \
+            --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/preview-resolution.json" \
+            --job-env "$GITHUB_ENV" \
+            --env-prefix PREVIEW_
+          python scripts/release/register_bundle.py reserve \
+            --kind COMMERCIAL_7A \
+            --environment production \
+            --source-sha "$SOURCE_SHA" \
+            --preview-resolution-report "$RUNNER_TEMP/preview-resolution.json" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+            --output "$RUNNER_TEMP/release-reserved.json"
+      - name: Build the deployment-independent Production runtime ID
+        run: |
+          python scripts/release/build_runtime_bundle_id.py \
+            --release-role "$RELEASE_ROLE" \
+            --source-sha "$SOURCE_SHA" \
+            --schema 20260710_0020 \
+            --worker-image-digest "$WORKER_IMAGE_DIGEST" \
+            --runtime-contract release/runtime-contracts.json \
+            --provider-contract release/provider-contracts.json \
+            --catalog-contract release/catalog/catalog-2026-07-10.json \
+            --flag-contract release/gates.json \
+            --activation-plan release/activation-plan.json \
+            --builder-contract-version commercial-7a.v1 \
+            --output "$RUNNER_TEMP/runtime-id.txt"
+          echo "RUNTIME_BUNDLE_ID=$(cat "$RUNNER_TEMP/runtime-id.txt")" >> "$GITHUB_ENV"
+      - name: Build once and deploy the same prebuilt output twice without a domain
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
+          test -d .vercel/output
+          PRIVATE_BASELINE_URL=$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" --token="$VERCEL_TOKEN")
+          STAGED_TARGET_URL=$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" --token="$VERCEL_TOKEN")
+          test "$PRIVATE_BASELINE_URL" != "$STAGED_TARGET_URL"
+          "$VERCEL_CLI" inspect "$PRIVATE_BASELINE_URL" --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" inspect "$STAGED_TARGET_URL" --token="$VERCEL_TOKEN"
+          printf '%s\n' "$PRIVATE_BASELINE_URL" > "$RUNNER_TEMP/private-baseline-url.txt"
+          printf '%s\n' "$STAGED_TARGET_URL" > "$RUNNER_TEMP/staged-target-url.txt"

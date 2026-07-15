@@ -31,7 +31,7 @@
 .brand-subtitle,
 .auth-copy,
 .auth-footer,
-.guest-link {
+.home-link {
   display: block;
   color: #4c5360;
   font-size: 14px;
@@ -103,6 +103,12 @@
   min-height: 48px;
 }
 
+.auth-button[disabled] {
+  opacity: 1;
+  background: #e1e5ea;
+  color: #4c5360;
+}
+
 .auth-button.secondary {
   margin-top: -4px;
 }
@@ -162,12 +168,12 @@
 }
 
 .link,
-.guest-link {
+.home-link {
   color: #116a60;
   font-weight: 900;
 }
 
-.guest-link {
+.home-link {
   margin-top: 14px;
   text-align: center;
 }

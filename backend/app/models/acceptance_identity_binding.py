@@ -20,6 +20,10 @@ class AcceptanceIdentityBinding(Base):
             name="uq_acceptance_identity_binding_coordinate",
         ),
         CheckConstraint("environment IN ('preview', 'production')", name="ck_acceptance_binding_environment"),
+        CheckConstraint(
+            "revoked_at IS NULL OR (consumed_at IS NULL AND consumed_user_id IS NULL)",
+            name="ck_acceptance_binding_revocation_unconsumed",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -34,4 +38,5 @@ class AcceptanceIdentityBinding(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
     )
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

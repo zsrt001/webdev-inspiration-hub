@@ -1,109 +1,55 @@
-"""User API routes."""
+"""Authenticated user profile and soft-closure API routes."""
 
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.user_auth import get_request_user
+from app.core.error_response import get_request_id
+from app.core.session_auth import get_session_user
 from app.models.user import User
-from app.schemas.user import UserCreate, UserRead, UserUpdate
+from app.schemas.user import AccountCloseRequest, AccountCloseResponse, UserRead
+from app.services.account_closure_service import AccountClosureError, close_account
+from app.services.auth_session_service import clear_session_cookies
 
 router = APIRouter()
 
 
-def _raise_legacy_user_route_retired() -> None:
-    raise HTTPException(
-        status_code=410,
-        detail={"code": "legacy_user_route_retired", "message": "Legacy OpenID user routes are retired."},
-    )
-
-
 @router.get("/me", response_model=UserRead)
 async def get_current_user_profile(
-    current_user: User = Depends(get_request_user),
+    current_user: User = Depends(get_session_user),
 ) -> User:
     """Get current authenticated user's business profile."""
     return current_user
 
 
-@router.post(
-    "/",
-    response_model=UserRead,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(_raise_legacy_user_route_retired)],
-)
-async def create_user(
-    user_in: UserCreate,
+@router.post("/me/close", response_model=AccountCloseResponse)
+async def close_current_user_account(
+    _payload: AccountCloseRequest,
+    request: Request,
+    response: Response,
+    current_user: User = Depends(get_session_user),
     db: AsyncSession = Depends(get_db),
-) -> User:
-    """Create or get user from WeChat login."""
-    _raise_legacy_user_route_retired()
-    # Check if user exists
-    result = await db.execute(
-        select(User).where(User.openid == user_in.openid)
+) -> AccountCloseResponse:
+    """Soft-close the account without deleting financial or media facts."""
+
+    try:
+        tombstone = await close_account(
+            db,
+            user_id=current_user.id,
+            closure_reason="USER_REQUESTED",
+            audit_request_id=get_request_id(request),
+        )
+        await db.commit()
+    except AccountClosureError as exc:
+        await db.rollback()
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code == "account_not_found"
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(status_code=status_code, detail={"code": exc.code}) from exc
+    clear_session_cookies(response)
+    return AccountCloseResponse(
+        closed_at=tombstone.closed_at,
+        media_cleanup_pending=tombstone.media_cleanup_pending,
     )
-    existing_user = result.scalar_one_or_none()
-
-    if existing_user:
-        return existing_user
-
-    # Create new user
-    user = User(**user_in.model_dump())
-    db.add(user)
-    await db.flush()
-    await db.refresh(user)
-    return user
-
-
-@router.get(
-    "/{user_id}",
-    response_model=UserRead,
-    dependencies=[Depends(_raise_legacy_user_route_retired)],
-)
-async def get_user(
-    user_id: UUID,
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Get user by ID."""
-    _raise_legacy_user_route_retired()
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-    return user
-
-
-@router.patch(
-    "/{user_id}",
-    response_model=UserRead,
-    dependencies=[Depends(_raise_legacy_user_route_retired)],
-)
-async def update_user(
-    user_id: UUID,
-    user_in: UserUpdate,
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Update user profile."""
-    _raise_legacy_user_route_retired()
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    update_data = user_in.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(user, field, value)
-
-    await db.flush()
-    await db.refresh(user)
-    return user

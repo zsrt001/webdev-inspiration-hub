@@ -1,0 +1,1181 @@
+name: Protected Preview identity integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful CI run ID for this exact source SHA
+        required: true
+        type: string
+      ci_run_attempt:
+        description: Successful CI run attempt containing the exact PR gate artifact
+        required: true
+        type: string
+      failure_boundary:
+        description: Optional cleanup failure-injection proof
+        required: true
+        default: none
+        type: choice
+        options:
+          - "none"
+          - "reserve"
+          - "deploy"
+          - "register"
+          - "add"
+          - "login"
+          - "upload"
+          - "owner-read"
+          - "cross-user"
+          - "delete"
+          - "refresh"
+          - "logout"
+          - "cleanup"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vowpic-preview-identity
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11.15"
+  NODE_VERSION: "24.17.0"
+  SOURCE_SHA: ${{ github.sha }}
+  EVIDENCE_DIR: artifacts/preview-identity
+
+jobs:
+  register:
+    name: Build and register exact Preview runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: preview-identity
+    steps:
+      - name: Check out only the workflow commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            scripts/release-tools/package-lock.json
+
+      - name: Require protected credentials before any mutation
+        shell: bash
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_IDENTITY_APPROVAL_ID: ${{ secrets.PREVIEW_IDENTITY_APPROVAL_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          PREVIEW_PRIVATE_STORAGE_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          PREVIEW_PRIVATE_STORAGE_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PREVIEW_MIGRATION_DATABASE_URL"
+          test -n "$PREVIEW_IDENTITY_APPROVAL_ID"
+          test -n "$VERCEL_TOKEN"
+          test -n "$VERCEL_PROJECT_ID"
+          test -n "$VERCEL_ORG_ID"
+          test -n "$VERCEL_AUTOMATION_BYPASS_SECRET"
+          test -n "$PREVIEW_PRIVATE_STORAGE_BUCKET"
+          test -n "$PREVIEW_PRIVATE_STORAGE_REGION"
+          test -n "$PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID"
+          test -n "$PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY"
+
+      - name: Verify this is the exact current trusted main commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/trusted-main.json"
+
+      - name: Install pinned release, backend, and frontend tools
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          npm ci --prefix frontend --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          test -x "$VERCEL_CLI"
+          test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
+
+      - name: Run the identity and Web-security regression before deploy
+        run: |
+          python -m unittest \
+            backend.tests.test_cookie_sessions \
+            backend.tests.test_supabase_auth \
+            backend.tests.test_web_security_baseline \
+            backend.tests.test_preview_identity_workflow \
+            backend.tests.test_welcome_grant \
+            backend.tests.test_idempotency_service \
+            backend.tests.test_release_coordinate_resolver -v
+          npm run typecheck --prefix frontend
+          npm run build:web --prefix frontend
+
+      - name: Apply the exact Preview schema through Partner consent revision 0020
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+        run: alembic upgrade 20260710_0020
+
+      - name: Compute the Worker-free PREVIEW_IDENTITY runtime ID
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          python scripts/release/build_runtime_bundle_id.py \
+            --release-role PREVIEW_IDENTITY \
+            --source-sha "$SOURCE_SHA" \
+            --schema 20260710_0020 \
+            --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
+            --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
+            --migration 20260710_0014=backend/alembic/versions/20260710_0014_web_identity_sessions.py \
+            --migration 20260710_0015=backend/alembic/versions/20260710_0015_private_media_assets.py \
+            --migration 20260710_0016=backend/alembic/versions/20260710_0016_commercial_ledger.py \
+            --migration 20260710_0017=backend/alembic/versions/20260710_0017_creem_payment_facts.py \
+            --migration 20260710_0018=backend/alembic/versions/20260710_0018_subscription_facts.py \
+            --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
+            --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
+            --contract identity_private_media_preview=release/preview-runtime-contract.json \
+            --api-version vowpic-web-identity-private-media.v3 \
+            --output "$RUNNER_TEMP/preview-runtime-id.txt"
+
+      - name: Reserve one exact Preview activation
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_IDENTITY_APPROVAL_ID: ${{ secrets.PREVIEW_IDENTITY_APPROVAL_ID }}
+        run: |
+          python scripts/release/register_preview_activation.py reserve \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-id-file "$RUNNER_TEMP/preview-runtime-id.txt" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --approval-id-env PREVIEW_IDENTITY_APPROVAL_ID \
+            --activation-id-file "$RUNNER_TEMP/preview-activation-id.txt" \
+            --output "$EVIDENCE_DIR/phase-reserved.json"
+          if [[ "${{ inputs.failure_boundary }}" == "reserve" ]]; then exit 91; fi
+
+      - name: Build and deploy the exact Vercel Preview output
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PREVIEW_PRIVATE_STORAGE_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          PREVIEW_PRIVATE_STORAGE_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          PREVIEW_PRIVATE_STORAGE_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          RUNTIME_BUNDLE_ID="$(tr -d '\r\n' < "$RUNNER_TEMP/preview-runtime-id.txt")"
+          "$VERCEL_CLI" pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" build --token="$VERCEL_TOKEN"
+          MANIFEST_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
+          [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s\n' "$MANIFEST_SHA256" > "$RUNNER_TEMP/preview-manifest-sha256.txt"
+          DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt \
+            --env "RUNTIME_ENVIRONMENT=preview" \
+            --env "RELEASE_ROLE=PREVIEW_IDENTITY" \
+            --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
+            --env "STORAGE_PROVIDER=s3" \
+            --env "AWS_S3_BUCKET=$PREVIEW_PRIVATE_STORAGE_BUCKET" \
+            --env "AWS_REGION=$PREVIEW_PRIVATE_STORAGE_REGION" \
+            --env "AWS_ACCESS_KEY_ID=$PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID" \
+            --env "AWS_SECRET_ACCESS_KEY=$PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY" \
+            --env "AWS_S3_ENDPOINT=$PREVIEW_PRIVATE_STORAGE_ENDPOINT" \
+            --meta "vowpicSourceSha=$SOURCE_SHA" \
+            --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
+            --meta "vowpicReleaseRole=PREVIEW_IDENTITY" \
+            --token="$VERCEL_TOKEN")"
+          [[ "$DEPLOYMENT_URL" =~ ^https://[^[:space:]]+\.vercel\.app$ ]]
+          printf '%s\n' "$DEPLOYMENT_URL" > "$RUNNER_TEMP/preview-deployment-url.txt"
+          if [[ "${{ inputs.failure_boundary }}" == "deploy" ]]; then exit 92; fi
+
+      - name: Read back Vercel and register DEPLOYED
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          python scripts/release/register_preview_activation.py deployed \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-id-file "$RUNNER_TEMP/preview-runtime-id.txt" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --activation-id-file "$RUNNER_TEMP/preview-activation-id.txt" \
+            --deployment-url "$(tr -d '\r\n' < "$RUNNER_TEMP/preview-deployment-url.txt")" \
+            --manifest-sha256 "$(tr -d '\r\n' < "$RUNNER_TEMP/preview-manifest-sha256.txt")" \
+            --activation-report "$EVIDENCE_DIR/activation-report.json" \
+            --output "$EVIDENCE_DIR/phase-deployed.json"
+
+      - name: Persist the create-once activation report
+        id: activation_evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-activation
+          path: artifacts/preview-identity/activation-report.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Bind immutable artifact evidence and complete registration
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+        run: |
+          test -n "${{ steps.activation_evidence.outputs.artifact-id }}"
+          test -n "${{ steps.activation_evidence.outputs.artifact-digest }}"
+          python scripts/release/github_artifact_evidence.py build-reference \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --artifact-id "${{ steps.activation_evidence.outputs.artifact-id }}" \
+            --artifact-digest "${{ steps.activation_evidence.outputs.artifact-digest }}" \
+            --report-name activation-report.json \
+            --output "$RUNNER_TEMP/activation-evidence-reference.txt"
+          python scripts/release/register_preview_activation.py complete \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-id-file "$RUNNER_TEMP/preview-runtime-id.txt" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --activation-id-file "$RUNNER_TEMP/preview-activation-id.txt" \
+            --activation-report "$EVIDENCE_DIR/activation-report.json" \
+            --evidence-reference-file "$RUNNER_TEMP/activation-evidence-reference.txt" \
+            --output "$EVIDENCE_DIR/phase-completed.json"
+          if [[ "${{ inputs.failure_boundary }}" == "register" ]]; then exit 93; fi
+
+  smoke:
+    name: Resolve fresh coordinates and run real Google session smoke
+    needs: register
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: preview-identity
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Require every protected smoke credential
+        env:
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PREVIEW_IDENTITY_APPROVAL_ID: ${{ secrets.PREVIEW_IDENTITY_APPROVAL_ID }}
+          PREVIEW_GOOGLE_SUBJECTS_B64: ${{ secrets.PREVIEW_GOOGLE_SUBJECTS_B64 }}
+          PREVIEW_GOOGLE_STORAGE_STATE_B64: ${{ secrets.PREVIEW_GOOGLE_STORAGE_STATE_B64 }}
+          PREVIEW_GOOGLE_EMAIL: ${{ secrets.PREVIEW_GOOGLE_EMAIL }}
+          PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64: ${{ secrets.PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64 }}
+          PREVIEW_SECOND_GOOGLE_EMAIL: ${{ secrets.PREVIEW_SECOND_GOOGLE_EMAIL }}
+          PREVIEW_PRIVATE_STORAGE_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          PREVIEW_PRIVATE_STORAGE_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PREVIEW_CONTROL_READ_DATABASE_URL"
+          test -n "$PREVIEW_MIGRATION_DATABASE_URL"
+          test -n "$SUPABASE_MANAGEMENT_TOKEN"
+          test -n "$SUPABASE_PROJECT_REF"
+          test -n "$ACCEPTANCE_IDENTITY_HMAC_KEY"
+          test -n "$PREVIEW_IDENTITY_APPROVAL_ID"
+          test -n "$PREVIEW_GOOGLE_SUBJECTS_B64"
+          test -n "$PREVIEW_GOOGLE_STORAGE_STATE_B64"
+          test -n "$PREVIEW_GOOGLE_EMAIL"
+          test -n "$PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64"
+          test -n "$PREVIEW_SECOND_GOOGLE_EMAIL"
+          test -n "$PREVIEW_PRIVATE_STORAGE_BUCKET"
+          test -n "$PREVIEW_PRIVATE_STORAGE_REGION"
+          test -n "$PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID"
+          test -n "$PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY"
+
+      - name: Install the fresh-job resolver and browser harness
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+          npm ci --prefix frontend --ignore-scripts
+          npm run playwright:install --prefix frontend
+
+      - name: Resolve only service-owned PREVIEW_IDENTITY coordinates
+        env:
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/resolve_release_coordinates.py \
+            --coordinate-kind preview-identity \
+            --database-url-env PREVIEW_CONTROL_READ_DATABASE_URL \
+            --github-token-env GITHUB_TOKEN \
+            --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/resolved-preview.json" \
+            --job-env "$GITHUB_ENV" \
+            --env-prefix PREVIEW_
+
+      - name: CAS-record the original Supabase callback snapshot
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          mkdir -p artifacts/preview-origin
+          python scripts/release/configure_preview_auth_origin.py snapshot \
+            --activation-id "$PREVIEW_ACTIVATION_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --state-output artifacts/preview-origin/origin-state.json \
+            --output "$RUNNER_TEMP/origin-snapshot.json"
+
+      - name: Persist restore state before adding the callback
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-origin
+          path: artifacts/preview-origin/origin-state.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Add and read back only the exact Preview callback
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          python scripts/release/configure_preview_auth_origin.py add \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --state-file artifacts/preview-origin/origin-state.json \
+            --output "$RUNNER_TEMP/origin-added.json"
+          if [[ "${{ inputs.failure_boundary }}" == "add" ]]; then exit 94; fi
+
+      - name: Provision exactly two hash-only acceptance identities
+        env:
+          PREVIEW_GOOGLE_SUBJECTS_B64: ${{ secrets.PREVIEW_GOOGLE_SUBJECTS_B64 }}
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PREVIEW_IDENTITY_APPROVAL_ID: ${{ secrets.PREVIEW_IDENTITY_APPROVAL_ID }}
+        run: |
+          printf '%s' "$PREVIEW_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/preview-google-subjects.json"
+          python - "$RUNNER_TEMP/preview-google-subjects.json" <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not isinstance(payload, list) or len(payload) != 2 or len(set(payload)) != 2:
+              raise SystemExit("exactly two distinct protected Google subjects are required")
+          PY
+          python scripts/release/provision_acceptance_identity.py \
+            --subjects-file "$RUNNER_TEMP/preview-google-subjects.json" \
+            --environment preview \
+            --deployment-id "$PREVIEW_API_DEPLOYMENT_ID" \
+            --ttl-seconds 3600 \
+            --actor "github-actions:$GITHUB_RUN_ID" \
+            --reason "protected Preview identity smoke" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --hmac-key-env ACCEPTANCE_IDENTITY_HMAC_KEY \
+            --approval-id-env PREVIEW_IDENTITY_APPROVAL_ID
+
+      - name: Enable only bounded GOOGLE_AUTH and AUTHENTICATED_UPLOAD cohorts
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+        run: |
+          python scripts/release/configure_preview_identity_flag.py \
+            --activation-id "$PREVIEW_ACTIVATION_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$PREVIEW_RUNTIME_BUNDLE_ID" \
+            --deployment-id "$PREVIEW_API_DEPLOYMENT_ID" \
+            --ttl-seconds 3600 \
+            --actor "github-actions:$GITHUB_RUN_ID" \
+            --reason "real Google session and private media acceptance" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --output "$RUNNER_TEMP/google-auth-cohort.json"
+
+      - name: Run the real PKCE, private-media isolation, refresh, and logout journey
+        working-directory: frontend
+        env:
+          RUN_PREVIEW_E2E: '1'
+          PREVIEW_GOOGLE_EMAIL: ${{ secrets.PREVIEW_GOOGLE_EMAIL }}
+          PREVIEW_GOOGLE_STORAGE_STATE_B64: ${{ secrets.PREVIEW_GOOGLE_STORAGE_STATE_B64 }}
+          PREVIEW_GOOGLE_STORAGE_STATE_PATH: ${{ runner.temp }}/google-storage-state.json
+          PREVIEW_SECOND_GOOGLE_EMAIL: ${{ secrets.PREVIEW_SECOND_GOOGLE_EMAIL }}
+          PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64: ${{ secrets.PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64 }}
+          PREVIEW_SECOND_GOOGLE_STORAGE_STATE_PATH: ${{ runner.temp }}/second-google-storage-state.json
+          PREVIEW_PRIVATE_MEDIA_REPORT_PATH: ${{ github.workspace }}/artifacts/preview-identity/private-media-report.json
+          PREVIEW_FAILURE_BOUNDARY: ${{ inputs.failure_boundary }}
+        run: |
+          export PREVIEW_BASE_URL="$PREVIEW_API_DEPLOYMENT_URL"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/preview-identity"
+          printf '%s' "$PREVIEW_GOOGLE_STORAGE_STATE_B64" | base64 --decode > "$PREVIEW_GOOGLE_STORAGE_STATE_PATH"
+          printf '%s' "$PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64" | base64 --decode > "$PREVIEW_SECOND_GOOGLE_STORAGE_STATE_PATH"
+          chmod 600 "$PREVIEW_GOOGLE_STORAGE_STATE_PATH" "$PREVIEW_SECOND_GOOGLE_STORAGE_STATE_PATH"
+          npm run test:e2e -- e2e/google-session-smoke.spec.ts
+
+      - name: Materialize exact Preview PASS and explicit Stage-6 NOT_RUN evidence
+        run: |
+          set -euo pipefail
+          EVIDENCE_ROOT="artifacts/release/${SOURCE_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/${PREVIEW_API_DEPLOYMENT_ID}/02-integration"
+          mkdir -p "$EVIDENCE_ROOT"
+          export EVIDENCE_ROOT
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          contract_hash = hashlib.sha256(Path("release/gates.json").read_bytes()).hexdigest()
+          pass_cases = (
+              "preview_google_session",
+              "preview_private_media_owner_read",
+              "preview_private_media_cross_user",
+              "preview_private_media_delete",
+          )
+          not_run_cases = (
+              "preview_main_journey",
+              "preview_account_export",
+              "preview_account_delete",
+              "preview_partner_invite",
+              "preview_accessibility_visual",
+          )
+          root = Path(os.environ["EVIDENCE_ROOT"])
+          for case_id in pass_cases + not_run_cases:
+              passed = case_id in pass_cases
+              payload = {
+                  "schema": "vowpic.gate-evidence.v1",
+                  "case_id": case_id,
+                  "status": "PASS" if passed else "NOT_RUN",
+                  "source_sha": os.environ["SOURCE_SHA"],
+                  "runtime_bundle_id": os.environ["PREVIEW_RUNTIME_BUNDLE_ID"],
+                  "gate_contract_sha256": contract_hash,
+                  "produced_at": datetime.now(timezone.utc).isoformat(),
+                  "execution": "completed",
+                  "test_count": 1 if passed else 0,
+                  "capability_enabled": passed,
+              }
+              (root / f"{case_id}.json").write_text(
+                  json.dumps(payload, sort_keys=True, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+          PY
+
+      - name: Persist sanitized private-media and gate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-private-media
+          path: |
+            artifacts/preview-identity/private-media-report.json
+            artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/*/02-integration/*.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Remove protected browser material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/google-storage-state.json" "$RUNNER_TEMP/second-google-storage-state.json" "$RUNNER_TEMP/preview-google-subjects.json"
+
+  cleanup:
+    name: Independently restore Preview identity state
+    if: always()
+    needs: [register, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: preview-identity
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - name: Install the cleanup runtime from the trusted commit
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+
+      - name: Authoritatively locate the pre-mutation callback snapshot
+        id: origin_artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/github_artifact_evidence.py lookup \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --name "vowpic-preview-identity-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-origin" \
+            --token-env GITHUB_TOKEN \
+            --job-output "$GITHUB_OUTPUT"
+
+      - name: Download the exact callback snapshot when authoritative lookup found it
+        if: steps.origin_artifact.outputs.state == 'FOUND'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-origin
+          path: artifacts/preview-origin
+
+      - name: Clean from database-owned activation and binding coordinates
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          STORAGE_PROVIDER: s3
+          AWS_S3_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          AWS_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          AWS_S3_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          python scripts/release/cleanup_preview_identity_smoke.py \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --origin-state artifacts/preview-origin/origin-state.json \
+            --actor "github-actions:$GITHUB_RUN_ID" \
+            --reason "protected Preview identity smoke cleanup" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --output "$EVIDENCE_DIR/cleanup-report.json"
+
+      - name: Materialize exact cleanup gate evidence
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          cleanup = json.loads(Path(os.environ["EVIDENCE_DIR"], "cleanup-report.json").read_text(encoding="utf-8"))
+          if cleanup.get("state") != "CLEANED" or cleanup.get("source_sha") != os.environ["SOURCE_SHA"]:
+              raise SystemExit("cleanup report does not prove the exact source activation")
+          root = Path(
+              "artifacts/release",
+              os.environ["SOURCE_SHA"],
+              f'{os.environ["GITHUB_RUN_ID"]}-{os.environ["GITHUB_RUN_ATTEMPT"]}',
+              str(cleanup["api_deployment_id"]),
+              "08-cleanup",
+          )
+          root.mkdir(parents=True, exist_ok=True)
+          payload = {
+              "schema": "vowpic.gate-evidence.v1",
+              "case_id": "preview_cleanup",
+              "status": "PASS",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "runtime_bundle_id": cleanup["runtime_bundle_id"],
+              "gate_contract_sha256": hashlib.sha256(Path("release/gates.json").read_bytes()).hexdigest(),
+              "produced_at": datetime.now(timezone.utc).isoformat(),
+              "execution": "completed",
+              "test_count": 1,
+              "capability_enabled": False,
+          }
+          (root / "preview_cleanup.json").write_text(
+              json.dumps(payload, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Persist cleanup evidence before failure injection
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-cleanup
+          path: |
+            artifacts/preview-identity/cleanup-report.json
+            artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/*/08-cleanup/preview_cleanup.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Prove cleanup-boundary failures remain externally visible
+        run: |
+          if [[ "${{ inputs.failure_boundary }}" == "cleanup" ]]; then exit 98; fi
+
+  commercial:
+    name: Build, bind, exercise, and clean Preview Commercial
+    needs: cleanup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment: preview-commercial
+    env:
+      COMMERCIAL_EVIDENCE_DIR: artifacts/preview-commercial
+      WORKER_CONTAINER_NAME: vowpic-preview-commercial-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: scripts/release-tools/package-lock.json
+
+      - name: Require the isolated Preview Commercial runtime
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_REDIS_URL: ${{ secrets.PREVIEW_REDIS_URL }}
+          PREVIEW_COMMERCIAL_APPROVAL_ID: ${{ secrets.PREVIEW_COMMERCIAL_APPROVAL_ID }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
+          PREVIEW_PROVIDER_OWNER_USER_ID: ${{ secrets.PREVIEW_PROVIDER_OWNER_USER_ID }}
+          PREVIEW_PRIVATE_STORAGE_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          PREVIEW_PRIVATE_STORAGE_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          for name in PREVIEW_MIGRATION_DATABASE_URL PREVIEW_REDIS_URL PREVIEW_COMMERCIAL_APPROVAL_ID \
+            ACCEPTANCE_IDENTITY_HMAC_KEY VERCEL_TOKEN VERCEL_PROJECT_ID VERCEL_ORG_ID \
+            VERCEL_AUTOMATION_BYPASS_SECRET PROVIDER_GRANT_PROBE_SECRET \
+            PREVIEW_PROVIDER_OWNER_USER_ID \
+            PREVIEW_PRIVATE_STORAGE_BUCKET \
+            PREVIEW_PRIVATE_STORAGE_REGION PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID \
+            PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY; do
+            test -n "${!name}"
+          done
+
+      - name: Install pinned release tooling and run the commercial boundary tests
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          test -x "$VERCEL_CLI"
+          test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
+          python -m unittest \
+            backend.tests.test_preview_identity_workflow \
+            backend.tests.test_provider_contract_activation \
+            backend.tests.test_provider_asset_grants \
+            backend.tests.test_worker_heartbeat \
+            backend.tests.test_release_coordinate_resolver -v
+
+      - name: Build the exact Worker archive and runtime ID before deployment
+        run: |
+          set -euo pipefail
+          mkdir -p "$COMMERCIAL_EVIDENCE_DIR"
+          python scripts/release/run_preview_worker.py build \
+            --source-sha "$SOURCE_SHA" \
+            --oci-output "$RUNNER_TEMP/preview-worker.oci" \
+            --report "$COMMERCIAL_EVIDENCE_DIR/worker-build.json" \
+            --job-env "$GITHUB_ENV" \
+            --env-prefix PREVIEW_WORKER_
+          python scripts/release/run_preview_worker.py load \
+            --oci-input "$RUNNER_TEMP/preview-worker.oci"
+          python scripts/release/configure_preview_provider_grant_origin.py plan \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$COMMERCIAL_EVIDENCE_DIR/provider-origin-plan.json" \
+            --job-env "$GITHUB_ENV"
+          python scripts/release/build_runtime_bundle_id.py \
+            --release-role PREVIEW_COMMERCIAL \
+            --source-sha "$SOURCE_SHA" \
+            --schema 20260710_0020 \
+            --worker-image-digest "$PREVIEW_WORKER_IMAGE_DIGEST" \
+            --runtime-contract release/runtime-contracts.json \
+            --preview-contract release/preview-runtime-contract.json \
+            --provider-contract release/provider-contracts.json \
+            --catalog-contract release/catalog/catalog-2026-07-10.json \
+            --flag-contract release/gates.json \
+            --activation-plan release/activation-plan.json \
+            --builder-contract-version preview-commercial.v1 \
+            --output "$RUNNER_TEMP/commercial-runtime-id.txt"
+          echo "COMMERCIAL_RUNTIME_BUNDLE_ID=$(tr -d '\r\n' < "$RUNNER_TEMP/commercial-runtime-id.txt")" >> "$GITHUB_ENV"
+
+      - name: Reserve PREVIEW_COMMERCIAL before either external runtime exists
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_COMMERCIAL_APPROVAL_ID: ${{ secrets.PREVIEW_COMMERCIAL_APPROVAL_ID }}
+        run: |
+          python scripts/release/register_preview_activation.py reserve \
+            --role PREVIEW_COMMERCIAL \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-id-file "$RUNNER_TEMP/commercial-runtime-id.txt" \
+            --worker-build-report "$COMMERCIAL_EVIDENCE_DIR/worker-build.json" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --approval-id-env PREVIEW_COMMERCIAL_APPROVAL_ID \
+            --activation-id-file "$RUNNER_TEMP/commercial-activation-id.txt" \
+            --output "$COMMERCIAL_EVIDENCE_DIR/phase-reserved.json"
+
+      - name: Build once and deploy the exact Preview Commercial API
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_REDIS_URL: ${{ secrets.PREVIEW_REDIS_URL }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PREVIEW_PRIVATE_STORAGE_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          PREVIEW_PRIVATE_STORAGE_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          PREVIEW_PRIVATE_STORAGE_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          "$VERCEL_CLI" pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" build --token="$VERCEL_TOKEN"
+          python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))' > "$RUNNER_TEMP/commercial-manifest-sha256.txt"
+          DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt \
+            --env "RUNTIME_ENVIRONMENT=preview" \
+            --env "RELEASE_ROLE=PREVIEW_COMMERCIAL" \
+            --env "RUNTIME_BUNDLE_ID=$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+            --env "WORKER_IMAGE_DIGEST=$PREVIEW_WORKER_IMAGE_DIGEST" \
+            --env "DATABASE_URL=$PREVIEW_MIGRATION_DATABASE_URL" \
+            --env "CONTROL_PLANE_DATABASE_URL=$PREVIEW_MIGRATION_DATABASE_URL" \
+            --env "REDIS_URL=$PREVIEW_REDIS_URL" \
+            --env "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY" \
+            --env "PROVIDER_GRANT_ORIGIN=$PREVIEW_PROVIDER_GRANT_ORIGIN" \
+            --env "PROVIDER_GRANT_PROBE_SECRET=$PROVIDER_GRANT_PROBE_SECRET" \
+            --env "PROVIDER_ASSET_GRANT_MAX_READS=1" \
+            --env "STORAGE_PROVIDER=s3" \
+            --env "AWS_S3_BUCKET=$PREVIEW_PRIVATE_STORAGE_BUCKET" \
+            --env "AWS_REGION=$PREVIEW_PRIVATE_STORAGE_REGION" \
+            --env "AWS_ACCESS_KEY_ID=$PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID" \
+            --env "AWS_SECRET_ACCESS_KEY=$PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY" \
+            --env "AWS_S3_ENDPOINT=$PREVIEW_PRIVATE_STORAGE_ENDPOINT" \
+            --meta "vowpicSourceSha=$SOURCE_SHA" \
+            --meta "vowpicRuntimeBundleId=$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+            --meta "vowpicReleaseRole=PREVIEW_COMMERCIAL" \
+            --token="$VERCEL_TOKEN")"
+          printf '%s\n' "$DEPLOYMENT_URL" > "$RUNNER_TEMP/commercial-deployment-url.txt"
+
+      - name: Resolve the platform API ID and create the Worker without starting it
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_REDIS_URL: ${{ secrets.PREVIEW_REDIS_URL }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
+          PREVIEW_PRIVATE_STORAGE_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          PREVIEW_PRIVATE_STORAGE_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          PREVIEW_PRIVATE_STORAGE_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import httpx
+          from scripts.release.register_preview_activation import resolve_vercel_deployment, validate_coordinates
+          coords = validate_coordinates(release_role="PREVIEW_COMMERCIAL", source_sha=os.environ["SOURCE_SHA"], runtime_bundle_id=os.environ["COMMERCIAL_RUNTIME_BUNDLE_ID"], worker_image_digest=os.environ["PREVIEW_WORKER_IMAGE_DIGEST"], workflow_run_id=os.environ["GITHUB_RUN_ID"], workflow_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]))
+          with httpx.Client(timeout=30.0) as client:
+              deployment = resolve_vercel_deployment(Path(os.environ["RUNNER_TEMP"], "commercial-deployment-url.txt").read_text().strip(), coordinates=coords, token=os.environ["VERCEL_TOKEN"], project_id=os.environ["VERCEL_PROJECT_ID"], team_id=os.environ["VERCEL_ORG_ID"], client=client)
+          Path(os.environ["RUNNER_TEMP"], "commercial-deployment.json").write_text(json.dumps(deployment, sort_keys=True), encoding="utf-8")
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as handle:
+              handle.write(f'COMMERCIAL_API_DEPLOYMENT_ID={deployment["api_deployment_id"]}\n')
+          PY
+          umask 077
+          printf '%s\n' \
+            "RUNTIME_ENVIRONMENT=preview" \
+            "RELEASE_ROLE=PREVIEW_COMMERCIAL" \
+            "SOURCE_SHA=$SOURCE_SHA" \
+            "RUNTIME_BUNDLE_ID=$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+            "VERCEL_DEPLOYMENT_ID=$COMMERCIAL_API_DEPLOYMENT_ID" \
+            "WORKER_IMAGE_DIGEST=$PREVIEW_WORKER_IMAGE_DIGEST" \
+            "DATABASE_URL=$PREVIEW_MIGRATION_DATABASE_URL" \
+            "CONTROL_PLANE_DATABASE_URL=$PREVIEW_MIGRATION_DATABASE_URL" \
+            "REDIS_URL=$PREVIEW_REDIS_URL" \
+            "TASK_EXECUTION_MODE=arq" \
+            "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY" \
+            "PROVIDER_GRANT_ORIGIN=$PREVIEW_PROVIDER_GRANT_ORIGIN" \
+            "PROVIDER_GRANT_PROBE_SECRET=$PROVIDER_GRANT_PROBE_SECRET" \
+            "PROVIDER_ASSET_GRANT_MAX_READS=1" \
+            "STORAGE_PROVIDER=s3" \
+            "AWS_S3_BUCKET=$PREVIEW_PRIVATE_STORAGE_BUCKET" \
+            "AWS_REGION=$PREVIEW_PRIVATE_STORAGE_REGION" \
+            "AWS_ACCESS_KEY_ID=$PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID" \
+            "AWS_SECRET_ACCESS_KEY=$PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY" \
+            "AWS_S3_ENDPOINT=$PREVIEW_PRIVATE_STORAGE_ENDPOINT" > "$RUNNER_TEMP/commercial-worker.env"
+          python scripts/release/run_preview_worker.py create \
+            --image-reference "$PREVIEW_WORKER_IMAGE_REFERENCE" \
+            --container-name "$WORKER_CONTAINER_NAME" \
+            --env-file "$RUNNER_TEMP/commercial-worker.env" \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$COMMERCIAL_API_DEPLOYMENT_ID" \
+            --report "$COMMERCIAL_EVIDENCE_DIR/worker-created.json"
+
+      - name: Bind API and dormant Worker, then complete the immutable activation
+        id: commercial_activation
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          python scripts/release/register_preview_activation.py deployed \
+            --role PREVIEW_COMMERCIAL --source-sha "$SOURCE_SHA" \
+            --runtime-id-file "$RUNNER_TEMP/commercial-runtime-id.txt" \
+            --worker-build-report "$COMMERCIAL_EVIDENCE_DIR/worker-build.json" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --activation-id-file "$RUNNER_TEMP/commercial-activation-id.txt" \
+            --deployment-url "$(tr -d '\r\n' < "$RUNNER_TEMP/commercial-deployment-url.txt")" \
+            --manifest-sha256 "$(tr -d '\r\n' < "$RUNNER_TEMP/commercial-manifest-sha256.txt")" \
+            --worker-start-report "$COMMERCIAL_EVIDENCE_DIR/worker-created.json" \
+            --activation-report "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
+            --output "$COMMERCIAL_EVIDENCE_DIR/phase-deployed.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: commercial_activation_evidence
+        with:
+          name: vowpic-preview-commercial-${{ github.run_id }}-${{ github.run_attempt }}-activation
+          path: artifacts/preview-commercial/activation-report.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Complete activation, bind all-OFF flags, start Worker, and prove heartbeat
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_REDIS_URL: ${{ secrets.PREVIEW_REDIS_URL }}
+        run: |
+          python scripts/release/github_artifact_evidence.py build-reference \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --artifact-id "${{ steps.commercial_activation_evidence.outputs.artifact-id }}" \
+            --artifact-digest "${{ steps.commercial_activation_evidence.outputs.artifact-digest }}" \
+            --report-name activation-report.json \
+            --output "$RUNNER_TEMP/commercial-evidence-reference.txt"
+          python scripts/release/register_preview_activation.py complete \
+            --role PREVIEW_COMMERCIAL --source-sha "$SOURCE_SHA" \
+            --runtime-id-file "$RUNNER_TEMP/commercial-runtime-id.txt" \
+            --worker-build-report "$COMMERCIAL_EVIDENCE_DIR/worker-build.json" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --activation-id-file "$RUNNER_TEMP/commercial-activation-id.txt" \
+            --activation-report "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
+            --evidence-reference-file "$RUNNER_TEMP/commercial-evidence-reference.txt" \
+            --output "$COMMERCIAL_EVIDENCE_DIR/phase-completed.json"
+          WORKER_ID="$(python -c 'import json; print(json.load(open("artifacts/preview-commercial/worker-created.json"))["container_id"])')"
+          python scripts/release/snapshot_preview_commercial_flags.py \
+            --activation-id "$(tr -d '\r\n' < "$RUNNER_TEMP/commercial-activation-id.txt")" \
+            --source-sha "$SOURCE_SHA" --runtime-bundle-id "$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$COMMERCIAL_API_DEPLOYMENT_ID" --worker-deployment-id "$WORKER_ID" \
+            --worker-image-digest "$PREVIEW_WORKER_IMAGE_DIGEST" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --output "$COMMERCIAL_EVIDENCE_DIR/all-off-snapshot.json" --job-env "$GITHUB_ENV"
+          python scripts/release/run_preview_worker.py resume \
+            --container-name "$WORKER_CONTAINER_NAME" \
+            --report "$COMMERCIAL_EVIDENCE_DIR/worker-running.json"
+          for attempt in {1..12}; do
+            if python scripts/release/run_preview_worker.py heartbeat \
+              --container-name "$WORKER_CONTAINER_NAME" --source-sha "$SOURCE_SHA" \
+              --runtime-bundle-id "$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+              --api-deployment-id "$COMMERCIAL_API_DEPLOYMENT_ID" --worker-deployment-id "$WORKER_ID" \
+              --worker-image-digest "$PREVIEW_WORKER_IMAGE_DIGEST" \
+              --current-snapshot-hash "$PREVIEW_FEATURE_SNAPSHOT_SHA256" \
+              --target-snapshot-hash "$PREVIEW_FEATURE_SNAPSHOT_SHA256" \
+              --redis-url-env PREVIEW_REDIS_URL \
+              --report "$COMMERCIAL_EVIDENCE_DIR/worker-heartbeat.json"; then break; fi
+            test "$attempt" -lt 12
+            sleep 5
+          done
+
+      - name: Lease the exact Provider-grant origin and run the real Provider fetch proof
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_PROVIDER_OWNER_USER_ID: ${{ secrets.PREVIEW_PROVIDER_OWNER_USER_ID }}
+          PREVIEW_PRIVATE_STORAGE_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          PREVIEW_PRIVATE_STORAGE_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          PREVIEW_PRIVATE_STORAGE_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
+          EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
+          EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
+          PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}
+          PREVIEW_COMMERCIAL_APPROVAL_ID: ${{ secrets.PREVIEW_COMMERCIAL_APPROVAL_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
+          RUNTIME_ENVIRONMENT: preview
+          RELEASE_ROLE: PREVIEW_COMMERCIAL
+          SOURCE_SHA: ${{ github.sha }}
+          DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          STORAGE_PROVIDER: s3
+          AWS_S3_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          AWS_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          AWS_S3_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+          PROVIDER_ASSET_GRANT_MAX_READS: '1'
+        run: |
+          set -euo pipefail
+          export RUNTIME_BUNDLE_ID="$COMMERCIAL_RUNTIME_BUNDLE_ID"
+          export VERCEL_DEPLOYMENT_ID="$COMMERCIAL_API_DEPLOYMENT_ID"
+          export WORKER_IMAGE_DIGEST="$PREVIEW_WORKER_IMAGE_DIGEST"
+          export PROVIDER_GRANT_ORIGIN="$PREVIEW_PROVIDER_GRANT_ORIGIN"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from scripts.release.verify_provider_grant_fetch import _git_activation_lineage, _validate_contract
+          document = json.loads(Path("release/provider-contracts.json").read_text())
+          raw = document.get("contracts", {}).get("EVOLINK_SUBMISSION_RECONCILIATION", {})
+          tested = str(raw.get("tested_source_sha") or "")
+          _validate_contract(document, expected_source_sha=os.environ["SOURCE_SHA"], contract_tested_source_sha=tested)
+          _git_activation_lineage(os.environ["SOURCE_SHA"], tested)
+          PY
+          python scripts/release/prepare_preview_provider_case.py \
+            --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --output "$RUNNER_TEMP/provider-input.json"
+          python scripts/release/configure_preview_provider_grant_origin.py snapshot \
+            --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
+            --alias-host "$PREVIEW_PROVIDER_ALIAS_HOST" \
+            --state-output "$RUNNER_TEMP/provider-origin-state.json" \
+            --output "$COMMERCIAL_EVIDENCE_DIR/provider-origin-snapshot.json"
+          python scripts/release/configure_preview_provider_grant_origin.py add \
+            --state-file "$RUNNER_TEMP/provider-origin-state.json" --vercel-cli "$VERCEL_CLI" \
+            --output "$COMMERCIAL_EVIDENCE_DIR/provider-origin-added.json"
+          python scripts/release/prepare_preview_provider_grant.py \
+            --input-reference "$RUNNER_TEMP/provider-input.json" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --output "$RUNNER_TEMP/provider-grant-reference.json"
+          python scripts/release/verify_provider_grant_fetch.py \
+            --contract release/provider-contracts.json \
+            --grant-reference "$RUNNER_TEMP/provider-grant-reference.json" \
+            --expected-source-sha "$SOURCE_SHA" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --output "$COMMERCIAL_EVIDENCE_DIR/provider-fetch.json"
+
+      - name: Revoke any prepared grant and remove the exact temporary alias
+        if: always()
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
+          STORAGE_PROVIDER: s3
+          AWS_S3_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          AWS_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          AWS_S3_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          provider_cleanup_status=0
+          if test -f "$COMMERCIAL_EVIDENCE_DIR/activation-report.json"; then
+            set +e
+            python scripts/release/cleanup_preview_provider_case.py \
+              --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
+              --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+              --output "$COMMERCIAL_EVIDENCE_DIR/provider-case-cleanup.json"
+            provider_cleanup_status=$?
+            set -e
+          fi
+          rm -f "$RUNNER_TEMP/provider-grant-reference.json" "$RUNNER_TEMP/provider-input.json"
+          if test -f "$RUNNER_TEMP/provider-origin-state.json"; then
+            python scripts/release/configure_preview_provider_grant_origin.py remove \
+              --state-file "$RUNNER_TEMP/provider-origin-state.json" --vercel-cli "$VERCEL_CLI" \
+              --output "$COMMERCIAL_EVIDENCE_DIR/provider-origin-removed.json"
+          fi
+          test "$provider_cleanup_status" -eq 0
+
+      - name: Stop the exact Worker and prove its Redis heartbeat is absent
+        if: always()
+        env:
+          PREVIEW_REDIS_URL: ${{ secrets.PREVIEW_REDIS_URL }}
+        run: |
+          if test -f "$COMMERCIAL_EVIDENCE_DIR/worker-created.json"; then
+            WORKER_ID="$(python -c 'import json; print(json.load(open("artifacts/preview-commercial/worker-created.json"))["container_id"])')"
+            SNAPSHOT="$(python -c 'import json; print(json.load(open("artifacts/preview-commercial/all-off-snapshot.json"))["snapshot_sha256"])' 2>/dev/null || printf '%064d' 0)"
+            python scripts/release/run_preview_worker.py stop \
+              --container-name "$WORKER_CONTAINER_NAME" --source-sha "$SOURCE_SHA" \
+              --runtime-bundle-id "$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+              --api-deployment-id "$COMMERCIAL_API_DEPLOYMENT_ID" --worker-deployment-id "$WORKER_ID" \
+              --worker-image-digest "$PREVIEW_WORKER_IMAGE_DIGEST" \
+              --current-snapshot-hash "$SNAPSHOT" --target-snapshot-hash "$SNAPSHOT" \
+              --redis-url-env PREVIEW_REDIS_URL \
+              --report "$COMMERCIAL_EVIDENCE_DIR/worker-stopped.json"
+          fi
+          rm -f "$RUNNER_TEMP/commercial-worker.env"
+
+      - name: Return the database-owned Preview Commercial activation to CLEANED
+        if: always()
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          STORAGE_PROVIDER: s3
+          AWS_S3_BUCKET: ${{ secrets.PREVIEW_PRIVATE_STORAGE_BUCKET }}
+          AWS_REGION: ${{ secrets.PREVIEW_PRIVATE_STORAGE_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_PRIVATE_STORAGE_SECRET_ACCESS_KEY }}
+          AWS_S3_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}
+        run: |
+          python scripts/release/cleanup_preview_identity_smoke.py \
+            --role PREVIEW_COMMERCIAL --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$COMMERCIAL_RUNTIME_BUNDLE_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --actor "github-actions:$GITHUB_RUN_ID" \
+            --reason "protected Preview Commercial cleanup" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --output "$COMMERCIAL_EVIDENCE_DIR/cleanup-report.json"
+
+      - name: Persist only sanitized Commercial evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-preview-commercial-${{ github.run_id }}-${{ github.run_attempt }}-evidence
+          path: |
+            artifacts/preview-commercial/*.json
+            !artifacts/preview-commercial/provider-origin-plan.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+  stage5:
+    name: Aggregate exact multi-runtime Stage-5 evidence
+    if: always()
+    needs: [cleanup, commercial]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - name: Install the hash-locked evidence runtime
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+
+      - name: Download the exact successful PR evidence from the selected CI run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vowpic-pr-gates-${{ inputs.ci_run_id }}-${{ inputs.ci_run_attempt }}
+          path: ${{ runner.temp }}/stage5-pr
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ci_run_id }}
+
+      - name: Download this run's exact Preview Identity evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-private-media
+          path: ${{ runner.temp }}/stage5-identity
+
+      - name: Download this run's exact Preview Identity cleanup
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-cleanup
+          path: ${{ runner.temp }}/stage5-identity-cleanup
+
+      - name: Download this run's exact Preview Commercial evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vowpic-preview-commercial-${{ github.run_id }}-${{ github.run_attempt }}-evidence
+          path: ${{ runner.temp }}/stage5-commercial
+
+      - name: Materialize one content-scoped Stage-5 evidence set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t cleanup_reports < <(find "$RUNNER_TEMP/stage5-identity-cleanup" -type f -path '*/preview-identity/cleanup-report.json' -print)
+          test "${#cleanup_reports[@]}" -eq 1
+          STAGE5_ROOT="artifacts/release/${SOURCE_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/stage5-composite"
+          STAGE5_AGGREGATE="artifacts/stage5-aggregate/${SOURCE_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/stage5-foundation-aggregate.json"
+          echo "STAGE5_ROOT=$STAGE5_ROOT" >> "$GITHUB_ENV"
+          echo "STAGE5_AGGREGATE=$STAGE5_AGGREGATE" >> "$GITHUB_ENV"
+          python scripts/release/materialize_stage5_evidence.py \
+            --source-sha "$SOURCE_SHA" \
+            --pr-root "$RUNNER_TEMP/stage5-pr" \
+            --identity-root "$RUNNER_TEMP/stage5-identity" \
+            --identity-cleanup-report "${cleanup_reports[0]}" \
+            --commercial-root "$RUNNER_TEMP/stage5-commercial" \
+            --output-base "$STAGE5_ROOT" \
+            --job-env "$GITHUB_ENV"
+
+      - name: Aggregate the exact multi-runtime Stage-5 registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_args=()
+          while IFS= read -r path; do evidence_args+=(--evidence "$path"); done < <(find "$STAGE5_ROOT" -type f -name '*.json' -print | sort)
+          test "${#evidence_args[@]}" -gt 0
+          python scripts/release/aggregate_gates.py \
+            --contract release/gates.json \
+            --profile stage5_foundation \
+            "${evidence_args[@]}" \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-runtime-binding pr="$STAGE5_PR_RUNTIME_BUNDLE_ID" \
+            --expected-runtime-binding preview_identity="$STAGE5_PREVIEW_IDENTITY_RUNTIME_BUNDLE_ID" \
+            --expected-runtime-binding preview_commercial="$STAGE5_PREVIEW_COMMERCIAL_RUNTIME_BUNDLE_ID" \
+            --expected-runtime-binding stage5_composite="$STAGE5_STAGE5_COMPOSITE_RUNTIME_BUNDLE_ID" \
+            --output "$STAGE5_AGGREGATE"
+
+      - name: Persist the exact Stage-5 aggregate and source evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vowpic-stage5-${{ github.run_id }}-${{ github.run_attempt }}-evidence
+          path: |
+            artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/stage5-composite/**/*.json
+            artifacts/stage5-aggregate/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/stage5-foundation-aggregate.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9

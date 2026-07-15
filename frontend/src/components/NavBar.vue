@@ -1,5 +1,9 @@
 <template>
-  <view class="navbar shadow-sm">
+  <view
+    class="navbar shadow-sm"
+    role="navigation"
+    :aria-label="i18nStore.locale === 'zh' ? '主导航' : 'Primary navigation'"
+  >
     <view class="navbar-inner">
       <view class="logo-area" @tap="goHome">
         <text class="logo-main heading-serif">{{ t('nav.brand') }}</text>
@@ -60,7 +64,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useI18nStore } from '../stores/i18n';
 import { get } from '../utils/api';
-import { isSupabaseLoggedIn } from '../utils/auth';
+import { ensureSession } from '../utils/auth';
 
 const creditBalance = ref(0);
 const showMenu = ref(false);
@@ -94,7 +98,6 @@ const pushPages = new Set([
   '/pages/legal/privacy',
   '/pages/legal/terms',
   '/pages/legal/refund',
-  '/pages/join/landing',
   '/admin',
   '/admin/users',
   '/admin/orders',
@@ -150,8 +153,10 @@ const fetchProfileRole = async () => {
   }
 };
 
-const refreshAuthState = () => {
-  accountAuthed.value = isSupabaseLoggedIn();
+const refreshAuthState = async () => {
+  const user = await ensureSession();
+  accountAuthed.value = Boolean(user);
+  username.value = user?.nickname || user?.email || '';
 };
 
 const handleAuthTap = async () => {
@@ -170,9 +175,8 @@ const showTopUp = () => {
 const refreshBalance = () => fetchBalance();
 
 onMounted(async () => {
-  refreshAuthState();
+  await refreshAuthState();
   await Promise.all([fetchBalance(), fetchProfileRole()]);
-  refreshAuthState();
 });
 
 defineExpose({ refreshBalance });

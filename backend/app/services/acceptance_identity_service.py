@@ -116,6 +116,7 @@ async def lock_acceptance_binding(
             AcceptanceIdentityBinding.deployment_id == deployment_id,
             AcceptanceIdentityBinding.expires_at > current,
             AcceptanceIdentityBinding.consumed_at.is_(None),
+            AcceptanceIdentityBinding.revoked_at.is_(None),
         )
         .with_for_update()
     )
@@ -139,6 +140,7 @@ async def has_unconsumed_acceptance_binding(
             AcceptanceIdentityBinding.deployment_id == deployment_id,
             AcceptanceIdentityBinding.expires_at > now,
             AcceptanceIdentityBinding.consumed_at.is_(None),
+            AcceptanceIdentityBinding.revoked_at.is_(None),
         )
     )
     return result.scalar_one_or_none() is not None
@@ -151,7 +153,11 @@ async def consume_binding_row(
     now: datetime | None = None,
 ) -> bool:
     current = now or datetime.now(timezone.utc)
-    if binding.consumed_at is not None or binding.consumed_user_id is not None:
+    if (
+        binding.consumed_at is not None
+        or binding.consumed_user_id is not None
+        or getattr(binding, "revoked_at", None) is not None
+    ):
         return False
     if binding.expires_at <= current:
         return False

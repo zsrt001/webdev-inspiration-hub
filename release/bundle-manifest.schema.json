@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vowpic.com/schemas/bundle-manifest.v1.json",
+  "title": "VowPic immutable release bundle manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "release_role", "repository", "project_id", "runtime_bundle_id",
+    "source_sha", "api_build_sha256", "api_deployment_id", "preview_id",
+    "private_compatible_baseline_deployment_id", "staged_target_deployment_id",
+    "worker_image_digest", "worker_deployment_id", "schema_revision",
+    "api_compatibility_version", "worker_compatibility_version", "job_payload_min",
+    "job_payload_max", "contract_hashes", "tool_versions"
+  ],
+  "properties": {
+    "schema": {"const": "vowpic.bundle-manifest.v1"},
+    "release_role": {"enum": ["SAFE_BASELINE", "PREVIEW_IDENTITY", "PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"]},
+    "repository": {"type": "string", "minLength": 1, "maxLength": 160},
+    "project_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "runtime_bundle_id": {"type": "string", "pattern": "^rtb_[0-9a-f]{64}$"},
+    "source_sha": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "api_build_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "api_deployment_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "preview_id": {"type": ["string", "null"], "maxLength": 160},
+    "private_compatible_baseline_deployment_id": {"type": ["string", "null"], "maxLength": 160},
+    "staged_target_deployment_id": {"type": ["string", "null"], "maxLength": 160},
+    "worker_image_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "worker_deployment_id": {"type": ["string", "null"], "maxLength": 160},
+    "schema_revision": {"type": "string", "pattern": "^[0-9]{8}_[0-9]{4}$"},
+    "api_compatibility_version": {"type": "string", "minLength": 1, "maxLength": 160},
+    "worker_compatibility_version": {"type": "string", "minLength": 1, "maxLength": 160},
+    "job_payload_min": {"type": "string", "minLength": 1, "maxLength": 160},
+    "job_payload_max": {"type": "string", "minLength": 1, "maxLength": 160},
+    "contract_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "policy", "catalog", "flag", "pre_activation_off_snapshot", "target_snapshot", "gate", "runtime"],
+      "properties": {
+        "provider": {"$ref": "#/$defs/sha256"},
+        "model": {"$ref": "#/$defs/sha256"},
+        "policy": {"$ref": "#/$defs/sha256"},
+        "catalog": {"$ref": "#/$defs/sha256"},
+        "flag": {"$ref": "#/$defs/sha256"},
+        "pre_activation_off_snapshot": {"$ref": "#/$defs/sha256"},
+        "target_snapshot": {"$ref": "#/$defs/sha256"},
+        "gate": {"$ref": "#/$defs/sha256"},
+        "runtime": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "tool_versions": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 160}
+    }
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

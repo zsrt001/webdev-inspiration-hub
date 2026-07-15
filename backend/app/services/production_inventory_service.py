@@ -199,12 +199,12 @@ def _legacy_user_predicate(user_columns: set[str], *, alias: str = "users") -> s
         return "TRUE"
     conditions = [
         f"{alias}.auth_provider IS NULL",
-        f"{alias}.auth_provider IN ('guest', 'anonymous', 'password', 'wechat', 'weixin', 'mini_program')",
+        f"{alias}.auth_provider <> 'supabase'",
         f"NULLIF({alias}.auth_subject, '') IS NULL",
     ]
     if "openid" in user_columns:
         conditions.extend(
-            f"{alias}.openid LIKE '{prefix}'" for prefix in ("guest_%", "wx_%", "visitor_%", "anon_%")
+            f"{alias}.openid LIKE '{prefix}'" for prefix in ("guest_%", "visitor_%", "anon_%")
         )
     if "username" in user_columns:
         conditions.append(f"{alias}.username IS NOT NULL")
@@ -228,7 +228,8 @@ def build_user_inventory_sql(schema: dict[str, set[str]]) -> str:
         "count(*)::bigint AS total",
         f"count(*) FILTER (WHERE {auth} IN ('guest', 'anonymous') OR users.openid LIKE 'guest_%')::bigint AS guest",
         f"count(*) FILTER (WHERE {' OR '.join(password_conditions)})::bigint AS password",
-        f"count(*) FILTER (WHERE {auth} IN ('wechat', 'weixin', 'mini_program') OR users.openid LIKE 'wx_%')::bigint AS wechat_legacy",
+        f"count(*) FILTER (WHERE {auth} IS NOT NULL AND {auth} <> 'supabase' "
+        f"AND {auth} NOT IN ('guest', 'anonymous', 'password'))::bigint AS other_retired_provider",
         "count(*) FILTER (WHERE users.openid LIKE 'visitor_%' OR users.openid LIKE 'anon_%')::bigint AS visitor",
         f"count(*) FILTER (WHERE {auth} IS NOT NULL AND {auth} NOT IN ('guest', 'anonymous', 'password') "
         f"AND NULLIF({subject}, '') IS NULL)::bigint AS missing_subject",
@@ -391,7 +392,7 @@ async def _order_inventory(db: AsyncSession) -> dict[str, int]:
               count(*) FILTER (
                 WHERE owners.id IS NULL
                   OR owners.auth_provider IS NULL
-                  OR owners.auth_provider IN ('guest', 'anonymous', 'wechat', 'weixin', 'mini_program')
+                  OR owners.auth_provider <> 'supabase'
                   OR (owners.auth_provider = 'supabase' AND NULLIF(owners.auth_subject, '') IS NULL)
               )::bigint AS legacy_unverified,
               count(*) FILTER (WHERE orders.deleted_at IS NOT NULL)::bigint AS deleted,

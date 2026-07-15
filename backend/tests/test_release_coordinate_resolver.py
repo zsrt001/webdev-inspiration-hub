@@ -45,16 +45,19 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
         module = _module()
         now = datetime.now(timezone.utc)
         activation = {
+            "id": "00000000-0000-0000-0000-000000000007",
             "environment": "preview",
             "kind": "PREVIEW_IDENTITY",
             "source_sha": "a" * 40,
             "runtime_bundle_id": "rtb_" + "b" * 64,
             "api_deployment_id": "dpl_preview",
+            "api_deployment_url": "https://preview.vercel.app",
             "phase": "COMPLETED",
             "report_sha256": "c" * 64,
             "updated_at": now.isoformat(),
         }
         report = {
+            "activation_id": activation["id"],
             "environment": "preview",
             "kind": "PREVIEW_IDENTITY",
             "source_sha": activation["source_sha"],
@@ -75,16 +78,19 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
         module = _module()
         now = datetime.now(timezone.utc)
         base = {
+            "id": "00000000-0000-0000-0000-000000000007",
             "environment": "preview",
             "kind": "PREVIEW_IDENTITY",
             "source_sha": "a" * 40,
             "runtime_bundle_id": "rtb_" + "b" * 64,
             "api_deployment_id": "dpl_preview",
+            "api_deployment_url": "https://preview.vercel.app",
             "phase": "COMPLETED",
             "report_sha256": "c" * 64,
             "updated_at": now.isoformat(),
         }
         report = {
+            "activation_id": base["id"],
             "environment": "preview", "kind": "PREVIEW_IDENTITY",
             "source_sha": base["source_sha"], "runtime_bundle_id": base["runtime_bundle_id"],
             "api_deployment_id": base["api_deployment_id"], "phase": "COMPLETED",
@@ -109,11 +115,135 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
                 "preview-identity", [{**base, "caller_pass": True}], report, now=now
             )
 
-    def test_only_initial_coordinate_kinds_are_allowlisted(self) -> None:
+    def test_only_release_role_coordinate_kinds_are_allowlisted(self) -> None:
         module = _module()
-        self.assertEqual(set(module.INITIAL_COORDINATE_KINDS), {"preview-identity", "safe-baseline"})
+        self.assertTrue(hasattr(module, "COORDINATE_KINDS"), "role-bound resolver kinds are missing")
+        self.assertEqual(
+            set(module.COORDINATE_KINDS),
+            {
+                "preview-identity",
+                "preview-commercial",
+                "preview-commercial-cleaned",
+                "safe-baseline",
+                "commercial-7a",
+                "contract-7b",
+            },
+        )
         with self.assertRaises(ValueError):
             module.resolve_records("production", [], {}, now=datetime.now(timezone.utc))
+
+    def test_preview_commercial_requires_manifest_worker_and_active_role_binding(self) -> None:
+        module = _module()
+        self.assertIn("preview-commercial", module.SPEC_BY_KIND)
+        now = datetime.now(timezone.utc)
+        activation = {
+            "id": "00000000-0000-0000-0000-000000000008",
+            "environment": "preview",
+            "kind": "PREVIEW_COMMERCIAL",
+            "source_sha": "a" * 40,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "manifest_sha256": "c" * 64,
+            "api_deployment_id": "dpl_preview_commercial",
+            "api_deployment_url": "https://preview-commercial.vercel.app",
+            "api_role": "PREVIEW_COMMERCIAL_API",
+            "worker_deployment_id": "worker-preview-1",
+            "worker_role": "PREVIEW_COMMERCIAL_WORKER",
+            "worker_image_digest": "sha256:" + "d" * 64,
+            "private_evidence_prefix": "artifacts/release/a/run/dpl/c/",
+            "workflow_run_id": "12345",
+            "workflow_attempt": 1,
+            "phase": "COMPLETED",
+            "report_sha256": "e" * 64,
+            "updated_at": now.isoformat(),
+        }
+        report = {
+            "activation_id": activation["id"],
+            "environment": activation["environment"],
+            "kind": activation["kind"],
+            "source_sha": activation["source_sha"],
+            "runtime_bundle_id": activation["runtime_bundle_id"],
+            "manifest_sha256": activation["manifest_sha256"],
+            "api_deployment_id": activation["api_deployment_id"],
+            "api_role": activation["api_role"],
+            "worker_deployment_id": activation["worker_deployment_id"],
+            "worker_role": activation["worker_role"],
+            "worker_image_digest": activation["worker_image_digest"],
+            "phase": activation["phase"],
+            "sha256": activation["report_sha256"],
+            "created_at": now.isoformat(),
+        }
+
+        resolved = module.resolve_records("preview-commercial", [activation], report, now=now)
+        self.assertEqual(resolved["manifest_sha256"], activation["manifest_sha256"])
+        self.assertEqual(resolved["worker_image_digest"], activation["worker_image_digest"])
+        self.assertEqual(resolved["private_evidence_prefix"], activation["private_evidence_prefix"])
+
+        for changed in (
+            {"phase": "CLEANED"},
+            {"environment": "production"},
+            {"kind": "PREVIEW_IDENTITY"},
+            {"worker_image_digest": "sha256:" + "f" * 64},
+        ):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                module.resolve_records(
+                    "preview-commercial",
+                    [{**activation, **changed}],
+                    report,
+                    now=now,
+                )
+
+    def test_cleaned_preview_commercial_uses_the_original_completed_report(self) -> None:
+        module = _module()
+        now = datetime.now(timezone.utc)
+        activation = {
+            "id": "00000000-0000-0000-0000-000000000018",
+            "environment": "preview",
+            "kind": "PREVIEW_COMMERCIAL",
+            "source_sha": "a" * 40,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "manifest_sha256": "c" * 64,
+            "api_deployment_id": "dpl_preview_commercial",
+            "api_deployment_url": "https://preview-commercial.vercel.app",
+            "api_role": "PREVIEW_COMMERCIAL_API",
+            "worker_deployment_id": "worker-preview-1",
+            "worker_role": "PREVIEW_COMMERCIAL_WORKER",
+            "worker_image_digest": "sha256:" + "d" * 64,
+            "private_evidence_prefix": "artifacts/release/a/run/dpl/c/",
+            "workflow_run_id": "12345",
+            "workflow_attempt": 1,
+            "phase": "CLEANED",
+            "report_sha256": "e" * 64,
+            "updated_at": now.isoformat(),
+        }
+        report = {
+            "activation_id": activation["id"],
+            "environment": activation["environment"],
+            "kind": activation["kind"],
+            "source_sha": activation["source_sha"],
+            "runtime_bundle_id": activation["runtime_bundle_id"],
+            "manifest_sha256": activation["manifest_sha256"],
+            "api_deployment_id": activation["api_deployment_id"],
+            "api_role": activation["api_role"],
+            "worker_deployment_id": activation["worker_deployment_id"],
+            "worker_role": activation["worker_role"],
+            "worker_image_digest": activation["worker_image_digest"],
+            "phase": "COMPLETED",
+            "sha256": activation["report_sha256"],
+            "created_at": now.isoformat(),
+        }
+
+        resolved = module.resolve_records(
+            "preview-commercial-cleaned", [activation], report, now=now
+        )
+        self.assertEqual(resolved["phase"], "CLEANED")
+        self.assertEqual(resolved["activation_id"], activation["id"])
+        with self.assertRaisesRegex(ValueError, "activation phase"):
+            module.resolve_records(
+                "preview-commercial-cleaned",
+                [{**activation, "phase": "COMPLETED"}],
+                report,
+                now=now,
+            )
 
     def test_cli_report_reader_hashes_bytes_and_rejects_tampering(self) -> None:
         module = _module()

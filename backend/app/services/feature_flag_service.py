@@ -29,6 +29,10 @@ from app.models.ops_feature_flag import OpsFeatureFlag
 from app.models.ops_feature_flag_audit import OpsFeatureFlagAudit
 from app.models.release_activation import ReleaseActivation
 from app.services.acceptance_identity_service import has_unconsumed_acceptance_binding
+from app.core.provider_contracts import (
+    EVOLINK_SUBMISSION_RECONCILIATION,
+    require_verified_provider_contract,
+)
 
 
 settings = get_settings()
@@ -297,14 +301,20 @@ async def resolve_request_capability(
 
 
 async def require_request_capability(
-    request: Request,
+    request: Request | None,
     db: AsyncSession,
     capability: Capability | str,
     *,
     verified_user_id: UUID | None = None,
     verified_identity_hash: str | None = None,
 ) -> FeatureFlagDecision:
-    _ = request
+    if verified_user_id is None and request is not None:
+        request_user_id = str(getattr(request.state, "user_id", "") or "").strip()
+        if request_user_id:
+            try:
+                verified_user_id = UUID(request_user_id)
+            except ValueError:
+                verified_user_id = None
     known_capability = coerce_capability(capability)
     try:
         decision = await resolve_request_capability(
@@ -434,6 +444,8 @@ async def set_capability_state(
     elif expires_at is not None:
         raise ValueError("expiry is only valid for ACCEPTANCE_COHORT")
     if new_state is not FeatureFlagState.OFF:
+        if known_capability is Capability.GENERATION:
+            require_verified_provider_contract(EVOLINK_SUBMISSION_RECONCILIATION)
         if not deployment_id or not runtime_bundle_id or release_activation_id is None:
             raise ValueError("non-OFF capability requires activation, deployment, and runtime bundle")
         await _validate_activation_for_state(

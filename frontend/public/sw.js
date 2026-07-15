@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'ai-wedding-pwa-v1';
+const CACHE_VERSION = 'vowpic-pwa-v2';
 const APP_SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 const APP_SHELL = ['/', '/offline.html', '/manifest.webmanifest', '/icons/pwa-icon.svg'];

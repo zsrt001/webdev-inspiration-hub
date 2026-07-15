@@ -1,320 +1,640 @@
-"""Subscription billing model and migration contract tests."""
+"""Normalized subscription invoice and grant behavior."""
 
-from pathlib import Path
-import importlib
-import sys
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
 import unittest
 import uuid
+from unittest.mock import AsyncMock, patch
+
+import httpx
+
+from app.core.provider_contracts import ProviderContract, ProviderContractState
+from app.models.credit_grant_lot import CreditGrantLot
+from app.models.credit_transaction import CreditTransaction, CreditTransactionType
+from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
+from app.models.subscription_cancel_intent import CancelIntentState, SubscriptionCancelIntent
+from app.models.subscription_credit_grant import SubscriptionCreditGrant
+from app.models.subscription_invoice import (
+    SubscriptionInvoice,
+    SubscriptionInvoiceAdjustmentFact,
+)
+from app.models.user_credit import UserCredit
+from app.models.user_subscription import (
+    NormalizedSubscriptionStatus,
+    SubscriptionStatus,
+    UserSubscription,
+)
+from app.services.billing_catalog_service import (
+    BillingProductSnapshot,
+    CheckoutCatalogSelection,
+)
+from app.services.subscription_service import (
+    CancellationReconciliationPending,
+    SubscriptionError,
+    SubscriptionService,
+)
 
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-ROOT_DIR = BACKEND_DIR.parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-from app.models.payment_event import PaymentEvent  # noqa: E402
-from app.models.credit_transaction import CreditTransactionType  # noqa: E402
-from app.models.subscription_credit_grant import SubscriptionCreditGrant  # noqa: E402
-from app.models.subscription_plan import SubscriptionPlan  # noqa: E402
-from app.models.user_subscription import SubscriptionStatus, UserSubscription  # noqa: E402
-from app.models.user_credit import UserCredit  # noqa: E402
-from app.services.credit_service import DEFAULT_CREDITS  # noqa: E402
-from app.services.payment_service import PaymentService, settings as payment_settings  # noqa: E402
-from app.services.subscription_service import SubscriptionService, settings as subscription_settings  # noqa: E402
+NOW = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+PERIOD_END = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
 
 
-MIGRATION_PATH = BACKEND_DIR / "alembic" / "versions" / "20260426_0004_subscription_billing.py"
+def _verified_contract(capability: str) -> ProviderContract:
+    return ProviderContract(
+        provider="creem",
+        capability=capability,
+        state=ProviderContractState.VERIFIED,
+        endpoint_schema_sha256="a" * 64,
+        test_evidence_sha256="b" * 64,
+    )
 
 
-class _ScalarResult:
-    def __init__(self, row):
-        self._row = row
+def _selection(code: str, credits: int, price: int, retention_tier: str) -> CheckoutCatalogSelection:
+    return CheckoutCatalogSelection(
+        catalog_version_id=uuid.UUID("00000000-0000-4000-8000-000000000018"),
+        catalog_version="2026-07-10",
+        release_sha="c" * 40,
+        product=BillingProductSnapshot(
+            product_code=code,
+            product_kind="subscription",
+            pre_tax_minor_units=price,
+            currency="USD",
+            credits=credits,
+            retention_tier=retention_tier,
+            provider_product_id=f"prod_{code}",
+            metadata={},
+        ),
+    )
 
-    def scalar_one_or_none(self):
-        return self._row
 
-    def scalars(self):
-        return self
+def _subscription() -> UserSubscription:
+    return UserSubscription(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        plan_id=uuid.uuid4(),
+        provider="creem",
+        provider_subscription_id="sub_1",
+        status=SubscriptionStatus.ACTIVE,
+        normalized_status=NormalizedSubscriptionStatus.ACTIVE,
+        cancel_at_period_end=False,
+    )
+
+
+def _paid_event(selection: CheckoutCatalogSelection, *, event_id="evt_paid_1", transaction_id="tran_1") -> PaymentEvent:
+    return PaymentEvent(
+        id=uuid.uuid4(),
+        provider="creem",
+        event_id=event_id,
+        event_type="subscription.paid",
+        object_id="sub_1",
+        raw_payload_sha256="d" * 64,
+        occurred_at=NOW,
+        pre_tax_minor_units=selection.product.pre_tax_minor_units,
+        tax_minor_units=152,
+        currency="USD",
+        normalized_status="active",
+        business_metadata={
+            "provider_product_id": selection.product.provider_product_id,
+            "last_transaction_id": transaction_id,
+            "current_period_start_date": NOW.isoformat(),
+            "current_period_end_date": PERIOD_END.isoformat(),
+        },
+        processing_state=PaymentEventProcessingState.RECEIVED,
+    )
+
+
+class _Rows:
+    def __init__(self, values):
+        self.values = list(values)
 
     def all(self):
-        return [] if self._row is None else [self._row]
+        return list(self.values)
 
 
-class _FakeSubscriptionDb:
-    def __init__(self):
-        self.credit_row = None
-        self.transactions = []
+class _GrantDb:
+    def __init__(self, subscription, credit):
+        self.subscription = subscription
+        self.credit = credit
+        self.invoices = []
         self.grants = {}
+        self.added = []
 
-    async def execute(self, statement):
-        text = str(statement)
-        if "subscription_credit_grants" in text:
-            params = getattr(statement, "compile", lambda **_: None)
-            _ = params
-            return _ScalarResult(next(iter(self.grants.values()), None))
-        return _ScalarResult(self.credit_row)
+    async def scalars(self, statement):
+        sql = str(statement)
+        if "subscription_invoices" in sql:
+            return _Rows(self.invoices)
+        if "user_subscriptions" in sql:
+            return _Rows([self.subscription])
+        return _Rows([])
 
-    def add(self, value):
-        if isinstance(value, UserCredit):
-            self.credit_row = value
-        elif isinstance(value, SubscriptionCreditGrant):
-            self.grants[(str(value.subscription_id), value.period_key)] = value
-        else:
-            self.transactions.append(value)
-
-    async def flush(self):
-        for item in [*self.transactions, *self.grants.values()]:
-            if getattr(item, "id", None) is None:
-                item.id = uuid.uuid4()
+    async def scalar(self, statement):
+        sql = str(statement)
+        if "user_credits" in sql:
+            return self.credit
+        if "user_subscriptions" in sql:
+            return self.subscription
+        if "subscription_credit_grants" in sql:
+            return next(iter(self.grants.values()), None)
+        if "subscription_cancel_intents" in sql:
+            return None
+        if "payment_reconciliation_cases" in sql:
+            return None
         return None
 
-
-class _FakeWebhookDb:
-    def __init__(self):
-        self.events = {}
-        self.credit_row = None
-        self.transactions = []
-        self.grants = {}
-        self.plan = SubscriptionPlan(
-            id=uuid.uuid4(),
-            code="starter_monthly",
-            name="Starter",
-            billing_interval="month",
-            price_cents=1900,
-            currency="USD",
-            monthly_credits=80,
-            is_active=True,
-        )
-        self.subscription = UserSubscription(
-            id=uuid.uuid4(),
-            user_id=uuid.uuid4(),
-            plan_id=self.plan.id,
-            provider="creem",
-            provider_subscription_id="sub_1",
-            status=SubscriptionStatus.ACTIVE,
-        )
-        self.subscription.plan = self.plan
-
-    async def execute(self, statement):
-        text = str(statement)
-        if "payment_events" in text:
-            return _ScalarResult(self.events.get(("creem", "evt_sub_1")))
-        if "user_subscriptions" in text:
-            return _ScalarResult(self.subscription)
-        if "subscription_credit_grants" in text:
-            return _ScalarResult(self.grants.get((str(self.subscription.id), "2026-04")))
-        return _ScalarResult(self.credit_row)
-
     def add(self, value):
-        if isinstance(value, PaymentEvent):
-            self.events[(value.provider, value.event_id)] = value
-        elif isinstance(value, UserCredit):
-            self.credit_row = value
-        elif isinstance(value, SubscriptionCreditGrant):
-            self.grants[(str(value.subscription_id), value.period_key)] = value
-        else:
-            self.transactions.append(value)
+        self.added.append(value)
+        if isinstance(value, SubscriptionInvoice):
+            self.invoices.append(value)
+        if isinstance(value, SubscriptionCreditGrant):
+            self.grants[value.id] = value
 
     async def flush(self):
-        for item in [*self.events.values(), *self.transactions, *self.grants.values()]:
-            if getattr(item, "id", None) is None:
-                item.id = uuid.uuid4()
         return None
-
-
-class _SignedWebhookPaymentService(PaymentService):
-    def verify_webhook_signature(self, body, signature_header):
-        return True
-
-
-class SubscriptionBillingModelTest(unittest.TestCase):
-    def test_subscription_status_contract_uses_lowercase_provider_safe_values(self) -> None:
-        self.assertEqual(SubscriptionStatus.TRIALING.value, "trialing")
-        self.assertEqual(SubscriptionStatus.ACTIVE.value, "active")
-        self.assertEqual(SubscriptionStatus.PAST_DUE.value, "past_due")
-        self.assertEqual(SubscriptionStatus.CANCELED.value, "canceled")
-        self.assertEqual(SubscriptionStatus.EXPIRED.value, "expired")
-
-    def test_payment_event_unique_identity(self) -> None:
-        event = PaymentEvent(provider="creem", event_id="evt_1", event_type="subscription.paid")
-
-        self.assertEqual(event.provider, "creem")
-        self.assertEqual(event.event_id, "evt_1")
-        self.assertEqual(event.event_type, "subscription.paid")
-
-    def test_subscription_tables_declare_idempotency_constraints(self) -> None:
-        plan_constraints = {constraint.name for constraint in SubscriptionPlan.__table__.constraints}
-        subscription_constraints = {constraint.name for constraint in UserSubscription.__table__.constraints}
-        grant_constraints = {constraint.name for constraint in SubscriptionCreditGrant.__table__.constraints}
-        event_constraints = {constraint.name for constraint in PaymentEvent.__table__.constraints}
-
-        self.assertIn("uq_subscription_plans_code", plan_constraints)
-        self.assertIn("uq_user_subscriptions_provider_subscription_id", subscription_constraints)
-        self.assertIn("uq_subscription_credit_grant_period", grant_constraints)
-        self.assertIn("uq_payment_events_provider_event_id", event_constraints)
-
-    def test_subscription_migration_seeds_plans_and_applies_rls(self) -> None:
-        self.assertTrue(MIGRATION_PATH.exists())
-        sql = MIGRATION_PATH.read_text(encoding="utf-8").lower()
-
-        for table_name in (
-            "subscription_plans",
-            "user_subscriptions",
-            "subscription_credit_grants",
-            "payment_events",
-        ):
-            self.assertIn(table_name, sql)
-
-        for plan_code in ("starter_monthly", "creator_monthly", "studio_monthly"):
-            self.assertIn(plan_code, sql)
-
-        self.assertIn("enable row level security", sql)
-        self.assertIn("app_current_user_id", sql)
-        self.assertNotIn("credit_card", sql)
-        self.assertNotIn("cvv", sql)
-
-    def test_subscription_api_schema_contract(self) -> None:
-        schema_module = importlib.import_module("app.schemas.subscription")
-
-        plan = schema_module.SubscriptionPlanRead(
-            code="starter_monthly",
-            name="Starter",
-            billing_interval="month",
-            price_cents=1900,
-            currency="USD",
-            monthly_credits=80,
-            feature_flags={"remote_join": True},
-        )
-        current = schema_module.CurrentSubscriptionRead(
-            status="active",
-            plan_code="starter_monthly",
-            current_period_end=None,
-            cancel_at_period_end=False,
-        )
-
-        self.assertEqual(plan.code, "starter_monthly")
-        self.assertEqual(plan.monthly_credits, 80)
-        self.assertEqual(current.status, "active")
-        self.assertEqual(current.plan_code, "starter_monthly")
-
-    def test_creem_subscription_product_ids_map_to_plan_codes(self) -> None:
-        service = SubscriptionService()
-        old_creator = subscription_settings.creem_subscription_creator_product_id
-        subscription_settings.creem_subscription_creator_product_id = "prod_creator"
-        try:
-            self.assertEqual(service._plan_code_for_product_id("prod_creator"), "creator_monthly")
-            self.assertEqual(service._product_id({"product": {"id": "prod_creator"}}), "prod_creator")
-            self.assertEqual(service._provider_customer_id({"customer": {"id": "cust_1"}}), "cust_1")
-        finally:
-            subscription_settings.creem_subscription_creator_product_id = old_creator
-
-    def test_creem_return_urls_upgrade_local_http_to_https_frontend(self) -> None:
-        old_frontend = payment_settings.frontend_base_url
-        old_provider = payment_settings.payment_provider
-        payment_settings.frontend_base_url = "https://frontend.example.test"
-        payment_settings.payment_provider = "creem"
-        try:
-            local_return_url = "http://127.0.0.1:3000/pages/create/index?from=test"
-
-            self.assertEqual(
-                PaymentService()._safe_return_url(local_return_url),
-                "https://frontend.example.test/pages/create/index?from=test",
-            )
-            self.assertEqual(
-                SubscriptionService()._safe_return_url(local_return_url),
-                "https://frontend.example.test/pages/create/index?from=test",
-            )
-        finally:
-            payment_settings.frontend_base_url = old_frontend
-            payment_settings.payment_provider = old_provider
-
-    def test_creem_success_urls_keep_root_path_before_query(self) -> None:
-        self.assertEqual(
-            PaymentService()._append_query("https://frontend.example.test", payment="success"),
-            "https://frontend.example.test/?payment=success",
-        )
-        self.assertEqual(
-            SubscriptionService()._append_query("https://frontend.example.test", subscription="success"),
-            "https://frontend.example.test/?subscription=success",
-        )
-
-    def test_subscription_router_is_registered(self) -> None:
-        routers_module = importlib.import_module("app.routers")
-
-        routes = {route.path for route in routers_module.api_router.routes}
-
-        self.assertIn("/subscriptions/plans", routes)
-        self.assertIn("/subscriptions/me", routes)
-        self.assertIn("/subscriptions/checkout", routes)
-        self.assertIn("/subscriptions/cancel", routes)
 
 
 class SubscriptionBillingServiceTest(unittest.IsolatedAsyncioTestCase):
-    async def test_subscription_period_grant_is_idempotent(self) -> None:
-        db = _FakeSubscriptionDb()
-        user_id = uuid.uuid4()
-        subscription = UserSubscription(
-            id=uuid.uuid4(),
-            user_id=user_id,
-            plan_id=uuid.uuid4(),
-            provider="creem",
-            provider_subscription_id="sub_1",
-            status=SubscriptionStatus.ACTIVE,
+    async def test_exact_catalog_credits_and_double_uniqueness_grant_once(self) -> None:
+        cases = (
+            ("starter_monthly", 80, 1900, "subscription_180d"),
+            ("creator_monthly", 300, 4900, "subscription_180d"),
+            ("studio_monthly", 900, 12900, "studio_365d"),
         )
-        db.credit_row = UserCredit(user_id=user_id, balance=DEFAULT_CREDITS)
+        for code, credits, price, retention in cases:
+            with self.subTest(code=code):
+                selection = _selection(code, credits, price, retention)
+                subscription = _subscription()
+                credit = UserCredit(
+                    user_id=subscription.user_id,
+                    balance=2,
+                    reserved_balance=0,
+                )
+                db = _GrantDb(subscription, credit)
+                service = SubscriptionService()
+                event = _paid_event(selection)
+                with (
+                    patch(
+                        "app.services.subscription_service.CREEM_SUBSCRIPTION_PAID_TRANSACTION",
+                        _verified_contract("subscription_paid_transaction"),
+                    ),
+                    patch(
+                        "app.services.subscription_service.require_subscription_catalog_product",
+                        new=AsyncMock(return_value=selection),
+                    ),
+                ):
+                    first = await service.apply_subscription_paid_transaction(
+                        db,
+                        event=event,
+                        subscription=subscription,
+                    )
+                    second = await service.apply_subscription_paid_transaction(
+                        db,
+                        event=event,
+                        subscription=subscription,
+                    )
+
+                self.assertFalse(first.replayed)
+                self.assertTrue(second.replayed)
+                self.assertEqual(first.grant.id, second.grant.id)
+                roots = [item for item in db.added if isinstance(item, CreditTransaction)]
+                lots = [item for item in db.added if isinstance(item, CreditGrantLot)]
+                self.assertEqual(len(roots), 1)
+                self.assertEqual(roots[0].transaction_type, CreditTransactionType.SUBSCRIPTION_GRANT)
+                self.assertEqual(roots[0].amount, credits)
+                self.assertEqual(len(lots), 1)
+                self.assertEqual(first.invoice.provider_transaction_id, "tran_1")
+                self.assertEqual(first.invoice.period_start, NOW)
+                self.assertEqual(first.invoice.period_end, PERIOD_END)
+                self.assertEqual(credit.balance, 2 + credits)
+                self.assertEqual(subscription.paid_through_at, PERIOD_END)
+
+    async def test_negative_balance_is_permanently_recorded_as_debt_offset(self) -> None:
+        selection = _selection("starter_monthly", 80, 1900, "subscription_180d")
+        subscription = _subscription()
+        credit = UserCredit(user_id=subscription.user_id, balance=-50, reserved_balance=0)
+        db = _GrantDb(subscription, credit)
+        with (
+            patch(
+                "app.services.subscription_service.CREEM_SUBSCRIPTION_PAID_TRANSACTION",
+                _verified_contract("subscription_paid_transaction"),
+            ),
+            patch(
+                "app.services.subscription_service.require_subscription_catalog_product",
+                new=AsyncMock(return_value=selection),
+            ),
+        ):
+            await SubscriptionService().apply_subscription_paid_transaction(
+                db,
+                event=_paid_event(selection),
+                subscription=subscription,
+            )
+        lot = next(item for item in db.added if isinstance(item, CreditGrantLot))
+        self.assertEqual(lot.debt_offset_amount, 50)
+        self.assertEqual(lot.spendable_amount, 30)
+        self.assertEqual(credit.balance, 30)
+
+    async def test_active_and_past_due_status_events_grant_zero_and_do_not_extend_paid_through(self) -> None:
+        subscription = _subscription()
+        subscription.paid_through_at = PERIOD_END
+        credit = UserCredit(user_id=subscription.user_id, balance=2, reserved_balance=0)
+        db = _GrantDb(subscription, credit)
         service = SubscriptionService()
-
-        first = await service.grant_period_credits(
-            db,
-            subscription,
-            period_key="2026-04",
-            credits=80,
+        for event_type, expected in (
+            ("subscription.active", NormalizedSubscriptionStatus.ACTIVE),
+            ("subscription.past_due", NormalizedSubscriptionStatus.PAST_DUE),
+        ):
+            event = PaymentEvent(
+                id=uuid.uuid4(),
+                provider="creem",
+                event_id=f"evt_{event_type}",
+                event_type=event_type,
+                object_id="sub_1",
+                raw_payload_sha256="e" * 64,
+                occurred_at=NOW,
+                normalized_status="active",
+                business_metadata={},
+                processing_state=PaymentEventProcessingState.RECEIVED,
+            )
+            await service.apply_normalized_payment_event(db, event=event)
+            self.assertEqual(subscription.normalized_status, expected)
+            self.assertEqual(event.processing_state, PaymentEventProcessingState.APPLIED)
+        self.assertEqual(
+            [item for item in db.added if isinstance(item, CreditTransaction)],
+            [],
         )
-        second = await service.grant_period_credits(
-            db,
-            subscription,
-            period_key="2026-04",
-            credits=80,
-        )
+        self.assertEqual(subscription.paid_through_at, PERIOD_END)
+        self.assertEqual(credit.balance, 2)
 
+
+class _AdjustmentDb:
+    def __init__(self, invoice, grant, lot):
+        self.invoice = invoice
+        self.grant = grant
+        self.lot = lot
+        self.adjustments = []
+
+    async def scalar(self, statement):
+        sql = str(statement)
+        if "subscription_invoices" in sql:
+            return self.invoice
+        if "subscription_invoice_adjustment_facts" in sql:
+            return next(
+                (
+                    item
+                    for item in self.adjustments
+                    if str(item.payment_event_id) in sql
+                ),
+                None,
+            )
+        if "subscription_credit_grants" in sql:
+            return self.grant
+        if "credit_grant_lots" in sql:
+            return self.lot
+        if "payment_reconciliation_cases" in sql:
+            return None
+        return None
+
+    def add(self, value):
+        if isinstance(value, SubscriptionInvoiceAdjustmentFact):
+            self.adjustments.append(value)
+
+    async def flush(self):
+        return None
+
+
+def _subscription_invoice_fixture():
+    user_id = uuid.uuid4()
+    invoice = SubscriptionInvoice(
+        id=uuid.uuid4(),
+        subscription_id=uuid.uuid4(),
+        user_id=user_id,
+        payment_event_id=uuid.uuid4(),
+        provider="creem",
+        provider_transaction_id="tran_subscription_1",
+        period_start=NOW,
+        period_end=PERIOD_END,
+        pre_tax_minor_units=1900,
+        tax_minor_units=152,
+        currency="USD",
+        provider_status="paid",
+        occurred_at=NOW,
+        raw_payload_sha256="a" * 64,
+        catalog_version_id=uuid.uuid4(),
+        catalog_snapshot={"credits": 80},
+        credit_grant_id=uuid.uuid4(),
+        refunded_minor_units=0,
+        disputed_minor_units=0,
+        dispute_state="NONE",
+    )
+    grant = SubscriptionCreditGrant(
+        id=invoice.credit_grant_id,
+        subscription_id=invoice.subscription_id,
+        user_id=user_id,
+        period_key=NOW.isoformat(),
+        period_start=NOW,
+        period_end=PERIOD_END,
+        credits=80,
+        invoice_id=invoice.id,
+        credit_transaction_id=uuid.uuid4(),
+        grant_lot_id=uuid.uuid4(),
+    )
+    lot = CreditGrantLot(
+        id=grant.grant_lot_id,
+        user_id=user_id,
+        root_transaction_id=grant.credit_transaction_id,
+        source_type="SUBSCRIPTION",
+        source_id=str(invoice.id),
+        original_amount=80,
+        debt_offset_amount=0,
+        reversed_amount=0,
+        frozen_amount=0,
+        consumed_amount=20,
+        retention_tier="subscription_180d",
+    )
+    return invoice, grant, lot
+
+
+def _subscription_adjustment_event(*, event_type, object_id, amount, status):
+    return PaymentEvent(
+        id=uuid.uuid4(),
+        provider="creem",
+        event_id=f"evt_{object_id}_{status}",
+        event_type=event_type,
+        object_id=object_id,
+        raw_payload_sha256="b" * 64,
+        occurred_at=PERIOD_END,
+        currency="USD",
+        normalized_status=status,
+        business_metadata={
+            "provider_payment_id": "tran_subscription_1",
+            "event_minor_units": str(amount),
+            (
+                "provider_refund_id"
+                if event_type == "refund.created"
+                else "provider_dispute_id"
+            ): object_id,
+        },
+        processing_state=PaymentEventProcessingState.RECEIVED,
+    )
+
+
+class SubscriptionAdjustmentTest(unittest.IsolatedAsyncioTestCase):
+    async def test_full_invoice_refund_reverses_exact_subscription_root(self) -> None:
+        invoice, grant, lot = _subscription_invoice_fixture()
+        db = _AdjustmentDb(invoice, grant, lot)
+        event = _subscription_adjustment_event(
+            event_type="refund.created",
+            object_id="refund_subscription_1",
+            amount=2052,
+            status="succeeded",
+        )
+        reversal_transaction = CreditTransaction(
+            id=uuid.uuid4(),
+            user_id=invoice.user_id,
+            transaction_type=CreditTransactionType.SUBSCRIPTION_REVERSAL,
+            amount=-80,
+            balance_after=-20,
+        )
+        reversal = AsyncMock(
+            return_value=SimpleNamespace(
+                transaction=reversal_transaction,
+                debt=20,
+                replayed=False,
+            )
+        )
+        with patch(
+            "app.services.subscription_service.reverse_root_grant",
+            new=reversal,
+        ):
+            applied = await SubscriptionService().apply_subscription_adjustment_event(
+                db,
+                event=event,
+            )
+
+        self.assertTrue(applied)
+        reversal.assert_awaited_once()
+        self.assertEqual(
+            reversal.await_args.kwargs["transaction_type"],
+            CreditTransactionType.SUBSCRIPTION_REVERSAL,
+        )
+        self.assertEqual(invoice.refunded_minor_units, 2052)
+        fact = db.adjustments[0]
+        self.assertEqual(fact.adjustment_kind, "REFUND")
+        self.assertEqual(fact.outcome, "FULL")
+        self.assertEqual(fact.reversal_transaction_id, reversal_transaction.id)
+        self.assertEqual(event.processing_state, PaymentEventProcessingState.APPLIED)
+
+    async def test_partial_invoice_refund_freezes_lineage_and_requires_reconciliation(self) -> None:
+        invoice, grant, lot = _subscription_invoice_fixture()
+        db = _AdjustmentDb(invoice, grant, lot)
+        event = _subscription_adjustment_event(
+            event_type="refund.created",
+            object_id="refund_subscription_partial",
+            amount=500,
+            status="succeeded",
+        )
+        with patch(
+            "app.services.subscription_service.open_payment_reconciliation_case",
+            new=AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4())),
+        ) as open_case:
+            applied = await SubscriptionService().apply_subscription_adjustment_event(
+                db,
+                event=event,
+            )
+
+        self.assertTrue(applied)
+        self.assertEqual(invoice.refunded_minor_units, 500)
+        self.assertEqual(lot.frozen_amount, 60)
+        self.assertEqual(db.adjustments[0].outcome, "PARTIAL_RECONCILIATION_REQUIRED")
+        self.assertEqual(
+            event.processing_state,
+            PaymentEventProcessingState.RECONCILIATION_REQUIRED,
+        )
+        open_case.assert_awaited_once()
+
+    async def test_invoice_dispute_open_win_and_full_loss_are_root_specific(self) -> None:
+        invoice, grant, lot = _subscription_invoice_fixture()
+        db = _AdjustmentDb(invoice, grant, lot)
+        service = SubscriptionService()
+        with patch(
+            "app.services.subscription_service.open_payment_reconciliation_case",
+            new=AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4())),
+        ):
+            opened = _subscription_adjustment_event(
+                event_type="dispute.created",
+                object_id="dispute_subscription_1",
+                amount=2052,
+                status="open",
+            )
+            self.assertTrue(
+                await service.apply_subscription_adjustment_event(db, event=opened)
+            )
+        self.assertEqual(lot.frozen_amount, 60)
+        self.assertEqual(invoice.dispute_state, "OPEN")
+
+        won = _subscription_adjustment_event(
+            event_type="dispute.closed",
+            object_id="dispute_subscription_1",
+            amount=2052,
+            status="won",
+        )
+        self.assertTrue(await service.apply_subscription_adjustment_event(db, event=won))
+        self.assertEqual(lot.frozen_amount, 0)
+        self.assertEqual(invoice.dispute_state, "WON")
+
+        lost = _subscription_adjustment_event(
+            event_type="dispute.closed",
+            object_id="dispute_subscription_2",
+            amount=2052,
+            status="lost",
+        )
+        reversal_transaction = CreditTransaction(
+            id=uuid.uuid4(),
+            user_id=invoice.user_id,
+            transaction_type=CreditTransactionType.SUBSCRIPTION_REVERSAL,
+            amount=-80,
+            balance_after=-20,
+        )
+        reversal = AsyncMock(
+            return_value=SimpleNamespace(
+                transaction=reversal_transaction,
+                debt=20,
+                replayed=False,
+            )
+        )
+        with patch(
+            "app.services.subscription_service.reverse_root_grant",
+            new=reversal,
+        ):
+            self.assertTrue(
+                await service.apply_subscription_adjustment_event(db, event=lost)
+            )
+        self.assertEqual(invoice.dispute_state, "LOST")
+        self.assertEqual(invoice.disputed_minor_units, 2052)
+        self.assertEqual(db.adjustments[-1].reversal_transaction_id, reversal_transaction.id)
+
+
+class _CancelDb:
+    def __init__(self, subscription):
+        self.subscription = subscription
+        self.intent = None
+        self.commit_count = 0
+
+    async def execute(self, _statement, _params=None):
+        return None
+
+    async def scalar(self, statement):
+        sql = str(statement)
+        if "subscription_cancel_intents" in sql:
+            return self.intent
+        if "user_subscriptions" in sql:
+            return self.subscription
+        return None
+
+    def add(self, value):
+        if isinstance(value, SubscriptionCancelIntent):
+            self.intent = value
+
+    async def flush(self):
+        return None
+
+    async def commit(self):
+        self.commit_count += 1
+
+
+class _CancelService(SubscriptionService):
+    def __init__(self, *, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.calls = []
+
+    async def _request(self, method, path, *, json_body=None):
+        self.calls.append((method, path, json_body))
+        if self.error is not None:
+            raise self.error
+        return dict(self.response)
+
+
+class SubscriptionCancellationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmed_cancel_replays_one_provider_call(self) -> None:
+        subscription = _subscription()
+        db = _CancelDb(subscription)
+        service = _CancelService(
+            response={"id": "sub_1", "status": "scheduled_cancel"}
+        )
+        with patch(
+            "app.services.subscription_service.CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION",
+            _verified_contract("subscription_period_end_cancellation"),
+        ):
+            first = await service.request_period_end_cancellation(
+                db,
+                user_id=subscription.user_id,
+                subscription_id=subscription.id,
+                idempotency_key="cancel-1",
+            )
+            second = await service.request_period_end_cancellation(
+                db,
+                user_id=subscription.user_id,
+                subscription_id=subscription.id,
+                idempotency_key="cancel-1",
+            )
         self.assertEqual(first, second)
-        self.assertEqual(first.credit_transaction_id, second.credit_transaction_id)
-        self.assertEqual(len(db.grants), 1)
-        subscription_grants = [
-            tx for tx in db.transactions if tx.transaction_type == CreditTransactionType.SUBSCRIPTION_GRANT
-        ]
-        self.assertEqual(len(subscription_grants), 1)
-        self.assertEqual(subscription_grants[0].amount, 80)
-        self.assertEqual(subscription_grants[0].balance_after, DEFAULT_CREDITS + 80)
+        self.assertEqual(len(service.calls), 1)
+        self.assertEqual(db.intent.state, CancelIntentState.CONFIRMED)
+        self.assertEqual(subscription.normalized_status, NormalizedSubscriptionStatus.CANCEL_REQUESTED)
+        self.assertTrue(subscription.cancel_at_period_end)
 
-    async def test_repeated_subscription_webhook_is_recorded_and_processed_once(self) -> None:
-        db = _FakeWebhookDb()
-        service = _SignedWebhookPaymentService()
-        event = {
-            "id": "evt_sub_1",
-            "type": "subscription.paid",
-            "data": {
-                "subscription_id": "sub_1",
-                "current_period_start": "2026-04-01T00:00:00Z",
-                "current_period_end": "2026-05-01T00:00:00Z",
-            },
-        }
+    async def test_ambiguous_cancel_stays_unknown_and_never_retries(self) -> None:
+        subscription = _subscription()
+        request = httpx.Request("POST", "https://api.creem.io/v1/subscriptions/sub_1/cancel")
+        service = _CancelService(error=httpx.ReadTimeout("timeout", request=request))
+        db = _CancelDb(subscription)
+        with patch(
+            "app.services.subscription_service.CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION",
+            _verified_contract("subscription_period_end_cancellation"),
+        ):
+            with self.assertRaises(CancellationReconciliationPending):
+                await service.request_period_end_cancellation(
+                    db,
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.id,
+                    idempotency_key="cancel-timeout",
+                )
+            self.assertEqual(db.intent.state, CancelIntentState.UNKNOWN)
+            with self.assertRaises(CancellationReconciliationPending):
+                await service.request_period_end_cancellation(
+                    db,
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.id,
+                    idempotency_key="cancel-timeout",
+                )
+        self.assertEqual(len(service.calls), 1)
 
-        await service.process_webhook_event(db, payload=event, body=b"{}", signature_header="ok")
-        await service.process_webhook_event(db, payload=event, body=b"{}", signature_header="ok")
+    async def test_unverified_cancel_has_no_local_or_provider_side_effect(self) -> None:
+        subscription = _subscription()
+        db = _CancelDb(subscription)
+        service = _CancelService(response={})
+        with self.assertRaises(SubscriptionError) as raised:
+            await service.request_period_end_cancellation(
+                db,
+                user_id=subscription.user_id,
+                subscription_id=subscription.id,
+                idempotency_key="cancel-closed",
+            )
+        self.assertEqual(raised.exception.code, "subscription_period_end_cancel_unverified")
+        self.assertIsNone(db.intent)
+        self.assertEqual(service.calls, [])
 
-        self.assertEqual(len(db.events), 1)
-        stored_event = db.events[("creem", "evt_sub_1")]
-        self.assertIsNotNone(stored_event.processed_at)
-        self.assertIsNone(stored_event.error)
-        self.assertEqual(stored_event.event_type, "subscription.paid")
-        self.assertEqual(stored_event.object_id, "sub_1")
-        self.assertEqual(len(db.grants), 1)
-        subscription_grants = [
-            tx for tx in db.transactions if tx.transaction_type == CreditTransactionType.SUBSCRIPTION_GRANT
-        ]
-        self.assertEqual(len(subscription_grants), 1)
-        self.assertEqual(subscription_grants[0].amount, 80)
+
+class SubscriptionRouteContractTest(unittest.TestCase):
+    def test_unsupported_mutation_routes_do_not_exist(self) -> None:
+        from app.routers import api_router
+        from tests.route_contract import effective_paths
+
+        paths = effective_paths(api_router)
+        for suffix in ("trial", "pause", "resume", "upgrade", "downgrade", "proration"):
+            self.assertNotIn(f"/subscriptions/{suffix}", paths)
 
 
 if __name__ == "__main__":

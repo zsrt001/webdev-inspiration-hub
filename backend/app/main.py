@@ -4,27 +4,32 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import get_settings
 from app.core.error_response import (
     error_response,
     http_exception_handler,
+    install_sensitive_path_log_filter,
+    redact_sensitive_path,
+    redact_sentry_event,
     request_id_middleware,
     unhandled_exception_handler,
     validation_exception_handler,
 )
 from app.core.rate_limit import RateLimitMiddleware
+from app.core.security_headers import web_security_middleware
 from app.core.runtime_checks import (
     run_core_readiness_checks,
     run_readiness_checks,
     validate_commercial_config_values,
 )
+from app.services.runtime_bundle_service import public_runtime_bundle_json
 from app.routers import api_router
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+install_sensitive_path_log_filter()
 
 # --- Sentry SDK (production only) ---
 if not settings.debug and settings.sentry_dsn:
@@ -35,6 +40,7 @@ if not settings.debug and settings.sentry_dsn:
             traces_sample_rate=0.1,
             environment=settings.runtime_environment,
             send_default_pii=False,
+            before_send=redact_sentry_event,
         )
         logger.info("Sentry SDK initialized")
     except Exception as exc:
@@ -104,6 +110,7 @@ _RUNTIME_CONFIG_EXEMPT_PATHS = frozenset(
     {
         "/health",
         "/health/ready",
+        "/version",
         "/api/v1/ops/health",
         "/api/v1/ops/readiness",
     }
@@ -120,7 +127,7 @@ async def runtime_config_guard_middleware(request: Request, call_next):
     if runtime_blocked and request.url.path not in _RUNTIME_CONFIG_EXEMPT_PATHS:
         logger.warning(
             "Blocked application request because the hosted runtime is not ready: path=%s",
-            request.url.path,
+            redact_sensitive_path(request.url.path),
         )
         return error_response(
             request=request,
@@ -133,25 +140,10 @@ async def runtime_config_guard_middleware(request: Request, call_next):
         )
     return await call_next(request)
 
-cors_origins = settings.cors_origins
-if settings.debug:
-    local_debug_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-    if not cors_origins:
-        cors_origins = local_debug_origins
-    else:
-        cors_origins = [*cors_origins, *(origin for origin in local_debug_origins if origin not in cors_origins)]
-
-# CORS middleware
 app.middleware("http")(runtime_config_guard_middleware)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins or ["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 app.add_middleware(RateLimitMiddleware)
 app.middleware("http")(request_id_middleware)
+app.middleware("http")(web_security_middleware)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
@@ -186,12 +178,14 @@ async def health_check():
     return {
         "status": "healthy",
         "kind": "liveness",
-        "app": settings.app_name,
         "readiness": "/health/ready",
-        "source_sha": settings.source_sha,
-        "runtime_bundle_id": settings.runtime_bundle_id.strip(),
-        "deployment_id": settings.deployment_id,
     }
+
+
+@app.get("/version")
+async def runtime_version():
+    """Compatibility alias for the versioned public attestation route."""
+    return public_runtime_bundle_json(settings)
 
 
 @app.get("/health/ready")

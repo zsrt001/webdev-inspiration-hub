@@ -1,97 +1,344 @@
-"""Order creation orchestration.
+"""Admission boundary for durable generation orders.
 
-This service keeps the API route thin while preserving the commercial order
-contract: policy checks, photo gatekeeping, credit charging, retention, and
-generation dispatch all succeed or fail as one unit.
+The only accepted identity inputs are owned private MediaAsset IDs. Gatekeeper
+I/O completes before the atomic PostgreSQL order/reservation/job/outbox write;
+no queue, Provider-generation, Redis, or background-task call exists here.
 """
 
-import uuid
-import hashlib
-import json
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+import uuid
 
-from fastapi import BackgroundTasks, HTTPException
-from sqlalchemy import func, select
+from fastapi import HTTPException
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.task_queue import enqueue_generate_order
-from app.models.credit_transaction import CreditTransactionType
+from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
+from app.models.idempotency_record import IdempotencyRecord, IdempotencyState
 from app.models.order import Order, OrderStatus
 from app.models.user import User
-from app.schemas.order import OrderCreate
+from app.models.welcome_grant_claim import WelcomeGrantClaim
+from app.schemas.order import AcceptedOrder, OrderCreate
 from app.services import gatekeeper_service
-from app.services.content_policy_service import build_rejection_message, evaluate_prompt_text
-from app.services.credit_service import (
-    add_credits_async,
-    deduct_credits_async,
-    get_balance_async,
-    get_generation_cost,
+from app.services.billing_catalog_service import (
+    BillingCatalogUnavailable,
+    load_active_catalog,
 )
-from app.services.generation_credit_policy import build_generation_credit_policy
-from app.services.generation_policy import COMMERCIAL_STANDARD_VERSION, commercial_wedding_standard
-from app.services.delivery_asset_service import (
-    DEFAULT_OUTPUT_ASPECT_RATIO,
-    DEFAULT_OUTPUT_ASPECT_RATIO_LABEL,
-    MASTER_IMAGE_KEY,
+from app.services.content_policy_service import evaluate_prompt_text
+from app.services.credit_reservation_service import (
+    FundingPolicyViolation,
+    InsufficientCredits,
+    OrderFundingPolicySnapshot,
 )
-from app.services.generation_service import generation_service
-from app.services.generation_stage_service import merge_generation_stage
-from app.services.identity_reference_service import build_identity_reference_pack
-from app.services.preset_service import (
-    get_outfit_preset,
-    get_scene_preset,
-    random_outfit_preset,
-    random_scene_preset,
-    to_public_url,
+from app.services.credit_service import get_generation_cost
+from app.services.idempotency_service import IdempotencyConflict, canonical_request_hash
+from app.services.media_asset_service import AssetAccessError
+from app.services.order_transaction_service import (
+    CreateOrderCommand,
+    OrderPolicySnapshot,
+    OrderTransactionError,
+    create_order_transaction,
+    require_server_runtime_execution_stamp,
 )
-from app.services.retention_service import apply_order_retention, user_has_paid_credit_history
-from app.services.subscription_service import subscription_service
-from app.services.template_service import get_template_by_id
-from app.services.trial_access_service import (
-    TRIAL_ALLOWED_MAX_CREDITS,
-    _trial_daily_generation_limit,
-    access_tier_for_order,
-    trial_generation_allowed,
-)
-from app.worker_tasks import run_order_generation
+from app.services.template_service import get_template_by_id, template_is_commercial
 
 
 settings = get_settings()
+GATEKEEPER_POLICY_VERSION = "gatekeeper.v1"
 
 
-@dataclass(slots=True)
-class CreditAccessContext:
-    credits_cost: int
-    access_tier: str
-    has_paid_credits: bool
-    retention_plan_code: str | None
+@dataclass(frozen=True, slots=True)
+class OrderAdmissionFacts:
+    catalog_version_id: uuid.UUID
+    catalog_version: str
+    catalog_release_sha: str
+    welcome_claim_id: uuid.UUID | None
+    welcome_spendable_credits: int
+    trial_attempts_in_rolling_24h: int
+    ready_trial_exists: bool
 
 
-@dataclass(slots=True)
-class DirectorDecision:
-    global_style_text: str | None
-    scene_text: str | None
-    outfit_text: str | None
-    legacy_prompt_override: str | None
-    effective_global_style_text: str | None
-    effective_scene_text: str | None
-    effective_outfit_text: str | None
-    effective_scene_source: str | None
-    effective_outfit_source: str | None
-    effective_scene_image_url: str | None
-    effective_clothing_image_url: str | None
-    effective_scene_ip_weight: float | None
-    effective_clothing_ip_weight: float | None
-    effective_scene_preset_id: str | None
-    effective_outfit_preset_id: str | None
-    effective_scene_preset_title: str | None
-    effective_outfit_preset_title: str | None
-    ignored_inputs: list[str]
-    director_decision_hints: list[str]
+def _error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message},
+    )
+
+
+def _validate_idempotency_key(value: str) -> str:
+    key = str(value or "").strip()
+    if not key or len(key) > 128:
+        raise _error(400, "idempotency_key_invalid", "A valid Idempotency-Key is required.")
+    return key
+
+
+def canonical_order_request_hash(request: OrderCreate) -> str:
+    return canonical_request_hash(request.model_dump(mode="json", exclude_none=False))
+
+
+def _validate_request(request: OrderCreate) -> tuple[object, str, str, int, bool]:
+    if request.legal_accepted is not True:
+        raise _error(422, "legal_acceptance_required", "The current legal terms must be accepted.")
+    if len(set(request.asset_ids)) != len(request.asset_ids):
+        raise _error(422, "duplicate_source_asset", "Each source asset must be distinct.")
+
+    template = get_template_by_id(request.template_id)
+    if template is None or not template_is_commercial(template):
+        raise _error(422, "template_not_available", "The selected template is not commercially available.")
+    subject_count = len(request.asset_ids)
+    expected_category = "single" if subject_count == 1 else "couple"
+    if str(template.category).strip().lower() != expected_category:
+        raise _error(
+            422,
+            "template_subject_count_mismatch",
+            "The selected template does not match the number of subjects.",
+        )
+
+    raw_reference_fields = (
+        "scene_image_url",
+        "clothing_image_url",
+        "pose_image_url",
+        "depth_image_url",
+        "normal_image_url",
+    )
+    if any(getattr(request, field) for field in raw_reference_fields):
+        raise _error(
+            422,
+            "legacy_reference_url_forbidden",
+            "Generation references must be uploaded as owned private assets.",
+        )
+    advanced_control_fields = (
+        "scene_ip_weight",
+        "clothing_ip_weight",
+        "face_ip_weight",
+        "pose_cn_weight",
+        "depth_cn_weight",
+        "normal_cn_weight",
+        "pose_cn_start",
+        "pose_cn_end",
+        "depth_cn_start",
+        "depth_cn_end",
+        "normal_cn_start",
+        "normal_cn_end",
+    )
+    if any(getattr(request, field) is not None for field in advanced_control_fields):
+        raise _error(
+            422,
+            "legacy_generation_control_forbidden",
+            "Legacy client-side generation controls are no longer accepted.",
+        )
+    if request.upload_quality is not None:
+        raise _error(
+            422,
+            "client_quality_facts_forbidden",
+            "Image quality facts are computed by the server.",
+        )
+
+    prompt_fields = (
+        request.global_style_text,
+        request.scene_text,
+        request.outfit_text,
+        request.prompt_override,
+    )
+    for value in prompt_fields:
+        if value and len(value) > 1000:
+            raise _error(422, "prompt_too_long", "Prompt text exceeds the supported length.")
+        verdict = evaluate_prompt_text(value)
+        if not verdict.passed:
+            raise _error(
+                422,
+                str(verdict.reason or "prompt_policy_rejected"),
+                "Prompt text violates the generation content policy.",
+            )
+
+    director_mode = bool(request.director_mode)
+    generation_mode = expected_category
+    scene_tier = "premium" if director_mode else "base"
+    credit_cost = get_generation_cost(
+        str(template.category),
+        image_count=subject_count,
+        director_mode=director_mode,
+    )
+    return template, generation_mode, scene_tier, credit_cost, director_mode
+
+
+def build_create_order_command(
+    *,
+    request: OrderCreate,
+    user_id: uuid.UUID,
+    idempotency_key: str,
+    facts: OrderAdmissionFacts,
+) -> CreateOrderCommand:
+    key = _validate_idempotency_key(idempotency_key)
+    _template, generation_mode, scene_tier, credit_cost, director_mode = _validate_request(request)
+    subject_count = len(request.asset_ids)
+    trial_eligible = (
+        generation_mode == "single"
+        and scene_tier == "base"
+        and not director_mode
+        and credit_cost == 2
+        and facts.welcome_claim_id is not None
+        and int(facts.welcome_spendable_credits) >= credit_cost
+        and int(facts.trial_attempts_in_rolling_24h) < 3
+        and facts.ready_trial_exists is False
+    )
+    policy_suffix = "director" if director_mode else "base"
+    product_policy = OrderPolicySnapshot(
+        template_id=request.template_id,
+        product_code=f"generation_{generation_mode}_{policy_suffix}",
+        catalog_version_id=facts.catalog_version_id,
+        catalog_version=facts.catalog_version,
+        catalog_release_sha=facts.catalog_release_sha,
+        generation_mode=generation_mode,
+        scene_tier=scene_tier,
+        subject_count=subject_count,
+        director_mode=director_mode,
+        credit_cost=credit_cost,
+        gatekeeper_policy_version=GATEKEEPER_POLICY_VERSION,
+        gatekeeper_passed=True,
+        global_style_text=request.global_style_text,
+        scene_text=request.scene_text,
+        outfit_text=request.outfit_text,
+        scene_preset_id=request.scene_preset_id,
+        clothing_preset_id=request.clothing_preset_id,
+        prompt_override=request.prompt_override,
+    )
+    funding_policy = OrderFundingPolicySnapshot(
+        generation_mode=generation_mode,
+        subject_count=subject_count,
+        is_trial=trial_eligible,
+        identity_claim_id=facts.welcome_claim_id if trial_eligible else None,
+        attempts_in_rolling_24h=int(facts.trial_attempts_in_rolling_24h),
+        ready_trial_exists=bool(facts.ready_trial_exists),
+        allowed_lot_class="WELCOME_ONLY" if trial_eligible else "PAID_ONLY",
+        scene_tier=scene_tier,
+        director_mode=director_mode,
+    )
+    return CreateOrderCommand(
+        user_id=user_id,
+        idempotency_key=key,
+        request_hash=canonical_order_request_hash(request),
+        asset_ids=tuple(request.asset_ids),
+        product_policy=product_policy,
+        funding_policy=funding_policy,
+        credit_cost=credit_cost,
+    )
+
+
+async def _completed_replay(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    idempotency_key: str,
+    request_hash: str,
+) -> AcceptedOrder | None:
+    record = await db.scalar(
+        select(IdempotencyRecord).where(
+            IdempotencyRecord.user_id == user_id,
+            IdempotencyRecord.endpoint == "orders.create",
+            IdempotencyRecord.idempotency_key == idempotency_key,
+        )
+    )
+    if record is None:
+        return None
+    if record.request_hash != request_hash:
+        raise _error(409, "idempotency_payload_mismatch", "This idempotency key was used for another request.")
+    state = record.state.value if hasattr(record.state, "value") else str(record.state)
+    if (
+        state == IdempotencyState.COMPLETED.value
+        and record.response_status == 202
+        and record.response_json is not None
+    ):
+        return AcceptedOrder.model_validate(record.response_json, strict=False)
+    return None
+
+
+async def _load_admission_facts(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    now: datetime,
+) -> OrderAdmissionFacts:
+    catalog = await load_active_catalog(db, environment=settings.runtime_environment, now=now)
+    claim = await db.scalar(
+        select(WelcomeGrantClaim).where(WelcomeGrantClaim.user_id == user_id)
+    )
+    welcome_lots = list(
+        (
+            await db.scalars(
+                select(CreditGrantLot).where(
+                    CreditGrantLot.user_id == user_id,
+                    CreditGrantLot.source_type == GrantLotSourceType.WELCOME.value,
+                    or_(CreditGrantLot.expires_at.is_(None), CreditGrantLot.expires_at > now),
+                )
+            )
+        ).all()
+    )
+    welcome_spendable = sum(int(lot.spendable_amount) for lot in welcome_lots)
+    trial_expression = Order.funding_policy_snapshot["is_trial"].as_boolean().is_(True)
+    recent_cutoff = now - timedelta(hours=24)
+    recent_attempts = int(
+        await db.scalar(
+            select(func.count(Order.id)).where(
+                Order.user_id == user_id,
+                Order.created_at >= recent_cutoff,
+                trial_expression,
+            )
+        )
+        or 0
+    )
+    ready_trial_exists = bool(
+        await db.scalar(
+            select(func.count(Order.id)).where(
+                Order.user_id == user_id,
+                Order.status == OrderStatus.READY.value,
+                trial_expression,
+            )
+        )
+        or 0
+    )
+    return OrderAdmissionFacts(
+        catalog_version_id=uuid.UUID(catalog.catalog_id),
+        catalog_version=catalog.version,
+        catalog_release_sha=catalog.release_sha,
+        welcome_claim_id=claim.id if claim is not None else None,
+        welcome_spendable_credits=welcome_spendable,
+        trial_attempts_in_rolling_24h=recent_attempts,
+        ready_trial_exists=ready_trial_exists,
+    )
+
+
+async def _run_gatekeeper_checks(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    asset_ids: tuple[uuid.UUID, ...],
+) -> None:
+    for asset_id in asset_ids:
+        try:
+            result = await gatekeeper_service.check_image_quality(
+                db,
+                owner_user_id=user_id,
+                asset_id=asset_id,
+            )
+        except AssetAccessError as exc:
+            status = 404 if exc.code == "asset_not_found" else 409
+            raise _error(status, exc.code, "The source asset is not available for this order.") from exc
+        if result.passed is not True:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "image_gate_rejected",
+                    "message": "One or more source images failed safety or quality checks.",
+                    "asset_id": str(asset_id),
+                    "reasons": list(result.reasons)[:12],
+                    "advice": list(result.advice)[:12],
+                    "risk_flags": list(result.risk_flags)[:12],
+                },
+            )
 
 
 async def create_order_for_user(
@@ -99,915 +346,60 @@ async def create_order_for_user(
     current_user: User,
     db: AsyncSession,
     *,
-    background_tasks: BackgroundTasks | None = None,
-) -> Order:
-    """Validate, charge, persist, and dispatch a generation order."""
-    _validate_runtime_requirements()
-    _validate_request_basics(request)
-    _enforce_prompt_policy(request)
-
-    gatekeeper_results = await _run_gatekeeper_checks(request.user_images)
-    template = get_template_by_id(request.template_id)
-    subject_images = [image for image in request.user_images if image]
-    subject_count = len(subject_images)
-    is_couple_request = subject_count >= 2
-    couple_flow = "remote" if bool(request.remote_join) and is_couple_request else (
-        "local" if is_couple_request else None
-    )
-    if is_couple_request:
-        _validate_distinct_couple_subjects(subject_images)
-    identity_reference_pack = await _build_identity_reference_pack(
-        request.user_images,
-        is_couple_request=is_couple_request,
-        couple_flow=couple_flow,
-    )
-    request_fingerprint = _request_fingerprint(request)
-    await _enforce_active_order_limit(db, current_user.id, request_fingerprint)
-
-    credits_cost = get_generation_cost(
-        template.category if template else None,
-        is_remote_join=bool(request.remote_join),
-        image_count=len(request.user_images or []),
-        director_mode=bool(request.director_mode),
-    )
-    credit_context = await _resolve_credit_access(
+    idempotency_key: str,
+) -> AcceptedOrder:
+    key = _validate_idempotency_key(idempotency_key)
+    request_hash = canonical_order_request_hash(request)
+    replay = await _completed_replay(
         db,
-        current_user.id,
-        request,
-        template.category if template else None,
-        credits_cost,
-    )
-    director_decision = _resolve_director_decision(
-        request,
-        is_couple_request=is_couple_request,
-        couple_flow=couple_flow,
-    )
-
-    charged = False
-    generation_state = {"started": False}
-    order: Order | None = None
-    try:
-        await _charge_generation_credits(db, current_user.id, request, credit_context)
-        charged = True
-        order = _build_order(
-            request=request,
-            current_user=current_user,
-            gatekeeper_results=gatekeeper_results,
-            identity_reference_pack=identity_reference_pack,
-            subject_count=subject_count,
-            is_couple_request=is_couple_request,
-            couple_flow=couple_flow,
-            credit_context=credit_context,
-            director_decision=director_decision,
-        )
-        await _persist_order_with_retention(db, order, credit_context)
-        await _dispatch_generation(db, order, generation_state, background_tasks=background_tasks)
-    except Exception:
-        if charged and not generation_state["started"]:
-            await add_credits_async(
-                db,
-                current_user.id,
-                credit_context.credits_cost,
-                transaction_type=CreditTransactionType.GENERATION_REFUND,
-                source="order",
-                source_id=str(order.id) if order is not None and order.id else None,
-                description="Generation failed before queue start; credits refunded",
-            )
-            await db.commit()
-        raise
-
-    return order
-
-
-def normalize_identity_image_url(image_url: str) -> str:
-    raw = str(image_url or "").strip()
-    if not raw:
-        return ""
-    lower_raw = raw.lower()
-    if lower_raw.startswith("http://") or lower_raw.startswith("https://"):
-        parts = urlsplit(raw)
-        normalized_path = parts.path.rstrip("/") or parts.path
-        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), normalized_path, "", ""))
-    return raw
-
-
-def _request_fingerprint(request: OrderCreate) -> str:
-    payload = {
-        "template_id": request.template_id,
-        "user_images": [normalize_identity_image_url(image) for image in (request.user_images or [])],
-        "director_mode": bool(request.director_mode),
-        "remote_join": bool(request.remote_join),
-        "global_style_text": request.global_style_text or None,
-        "scene_text": request.scene_text or None,
-        "outfit_text": request.outfit_text or None,
-        "scene_preset_id": request.scene_preset_id or None,
-        "clothing_preset_id": request.clothing_preset_id or None,
-        "prompt_override": request.prompt_override or None,
-        "scene_image_url": normalize_identity_image_url(request.scene_image_url or ""),
-        "clothing_image_url": normalize_identity_image_url(request.clothing_image_url or ""),
-    }
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-async def _enforce_active_order_limit(
-    db: AsyncSession,
-    user_id: uuid.UUID,
-    request_fingerprint: str,
-) -> None:
-    limit = max(0, int(settings.order_active_user_limit or 0))
-    if limit <= 0:
-        return
-
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(settings.order_active_window_minutes or 45)))
-    result = await db.execute(
-        select(Order)
-        .where(
-            Order.user_id == user_id,
-            Order.deleted_at.is_(None),
-            Order.status.in_([OrderStatus.CHECKING, OrderStatus.GENERATING]),
-            Order.updated_at >= cutoff,
-        )
-        .order_by(Order.updated_at.desc(), Order.created_at.desc())
-        .limit(limit)
-    )
-    active_orders = result.scalars().all()
-    if not active_orders:
-        return
-
-    existing = active_orders[0]
-    try:
-        await generation_service.refresh_order(str(existing.id))
-        await db.refresh(existing)
-    except Exception:
-        pass
-    if existing.status not in {OrderStatus.CHECKING, OrderStatus.GENERATING}:
-        return
-    if existing.final_image_urls or existing.preview_image_urls:
-        existing.status = OrderStatus.COMPLETED
-        await db.commit()
-        return
-
-    params = dict(existing.generation_params) if isinstance(existing.generation_params, dict) else {}
-    if params.get("request_fingerprint") == request_fingerprint:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "generation_already_in_progress",
-                "message": "This generation is already in progress. Opening the existing order.",
-                "existing_order_id": str(existing.id),
-                "status": existing.status.value if isinstance(existing.status, OrderStatus) else str(existing.status),
-                "reused": True,
-            },
-        )
-
-    raise HTTPException(
-        status_code=409,
-        detail={
-            "error": "generation_already_in_progress",
-            "message": "One generation is already in progress. Please wait for it to finish before starting another.",
-            "existing_order_id": str(existing.id),
-            "status": existing.status.value if isinstance(existing.status, OrderStatus) else str(existing.status),
-            "reused": False,
-        },
-    )
-
-
-def build_director_decision_hints(
-    *,
-    director_mode: bool,
-    effective_scene_source: str | None,
-    effective_outfit_source: str | None,
-    ignored_inputs: list[str],
-    effective_scene_preset_title: str | None,
-    effective_outfit_preset_title: str | None,
-    effective_scene_ip_weight: float | None,
-    effective_outfit_ip_weight: float | None,
-    is_couple_request: bool,
-    couple_flow: str | None,
-) -> list[str]:
-    hints: list[str] = []
-    if director_mode:
-        hints.append("director_mode_enabled")
-    if effective_scene_source:
-        scene_hint = f"scene:{effective_scene_source}"
-        if effective_scene_preset_title and effective_scene_source in {"preset", "random"}:
-            scene_hint += f":{effective_scene_preset_title}"
-        if effective_scene_ip_weight is not None and effective_scene_source in {"upload", "preset", "random"}:
-            scene_hint += f":w={effective_scene_ip_weight:.2f}"
-        hints.append(scene_hint)
-    if effective_outfit_source:
-        outfit_hint = f"outfit:{effective_outfit_source}"
-        if effective_outfit_preset_title and effective_outfit_source in {"preset", "random"}:
-            outfit_hint += f":{effective_outfit_preset_title}"
-        if effective_outfit_ip_weight is not None and effective_outfit_source in {"upload", "preset", "random"}:
-            outfit_hint += f":w={effective_outfit_ip_weight:.2f}"
-        hints.append(outfit_hint)
-    if ignored_inputs:
-        hints.append("ignored:" + ",".join(sorted(set(ignored_inputs))))
-    if is_couple_request:
-        hints.append(f"couple:{couple_flow or 'local'}")
-    return hints
-
-
-def _validate_runtime_requirements() -> None:
-    try:
-        generation_service.validate_runtime_requirements()
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "generation_runtime_invalid",
-                "message": f"Generation runtime invalid: {e}",
-            },
-        ) from e
-
-
-def _validate_request_basics(request: OrderCreate) -> None:
-    if not request.user_images or not request.user_images[0]:
-        raise HTTPException(status_code=400, detail="Missing user image")
-    if not request.legal_accepted:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "legal_consent_required",
-                "message": "Privacy Policy and Terms of Service must be accepted before generation.",
-            },
-        )
-    if request.remote_join and not settings.remote_join_enabled:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "remote_join_disabled",
-                "message": "Remote join is disabled in the current commercial deployment.",
-            },
-        )
-
-
-def _enforce_prompt_policy(request: OrderCreate) -> None:
-    policy_text_segments = [
-        request.prompt_override,
-        request.global_style_text,
-        request.scene_text,
-        request.outfit_text,
-    ]
-    policy_verdict = evaluate_prompt_text("\n".join(segment for segment in policy_text_segments if segment))
-    if not policy_verdict.passed:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "content_policy_reject",
-                "message": build_rejection_message(policy_verdict),
-                "reason": policy_verdict.reason,
-                "category": policy_verdict.category,
-                "categories": policy_verdict.categories,
-                "matched_terms": policy_verdict.matched_terms,
-            },
-        )
-
-
-async def _run_gatekeeper_checks(user_images: list[str]) -> list[dict]:
-    gatekeeper_results: list[dict] = []
-    for idx, image_url in enumerate(user_images):
-        if not image_url:
-            raise HTTPException(status_code=400, detail=f"Missing user image at index {idx}")
-        try:
-            verdict = await gatekeeper_service.check_image_quality(image_url)
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail={"error": "gatekeeper_fetch_failed", "index": idx, "message": str(e)},
-            ) from e
-        gatekeeper_results.append(verdict.model_dump())
-        if not verdict.passed:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": "gatekeeper_reject",
-                    "index": idx,
-                    "reasons": verdict.reasons,
-                    "advice": verdict.advice,
-                    "metrics": verdict.metrics,
-                    "risk_flags": getattr(verdict, "risk_flags", []),
-                },
-            )
-    return gatekeeper_results
-
-
-def _validate_distinct_couple_subjects(subject_images: list[str]) -> None:
-    normalized_subject_images = [normalize_identity_image_url(image) for image in subject_images]
-    if len(set(normalized_subject_images)) < 2:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "duplicate_subject_images",
-                "message": "Couple mode requires two different portrait images.",
-            },
-        )
-
-
-async def _build_identity_reference_pack(
-    user_images: list[str],
-    *,
-    is_couple_request: bool,
-    couple_flow: str | None,
-) -> dict:
-    try:
-        return await build_identity_reference_pack(
-            user_images,
-            is_couple_request=is_couple_request,
-            couple_flow=couple_flow,
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "identity_reference_pack_failed",
-                "message": f"Could not prepare identity reference crops: {e}",
-            },
-        ) from e
-
-
-async def _resolve_credit_access(
-    db: AsyncSession,
-    user_id: uuid.UUID,
-    request: OrderCreate,
-    template_category: str | None,
-    credits_cost: int,
-) -> CreditAccessContext:
-    retention_subscription = await subscription_service.get_current_subscription(db, user_id)
-    retention_plan_code = getattr(getattr(retention_subscription, "plan", None), "code", None)
-    has_paid_credits = bool(retention_plan_code) or await user_has_paid_credit_history(db, user_id)
-    access_tier = access_tier_for_order(has_paid_credits=has_paid_credits)
-    if not has_paid_credits:
-        if not trial_generation_allowed(
-            template_category=template_category,
-            is_remote_join=bool(request.remote_join),
-            image_count=len(request.user_images or []),
-            director_mode=bool(request.director_mode),
-            credits_cost=credits_cost,
-        ):
-            raise HTTPException(
-                status_code=402,
-                detail={
-                    "error": "trial_mode_requires_top_up",
-                    "message": "Starter credits cover one base single portrait only. Please top up for couple, remote, vintage, or director mode.",
-                    "required": credits_cost,
-                    "trial_allowed_max": TRIAL_ALLOWED_MAX_CREDITS,
-                },
-            )
-        await _enforce_trial_generation_limit(db, user_id)
-    return CreditAccessContext(
-        credits_cost=credits_cost,
-        access_tier=access_tier,
-        has_paid_credits=has_paid_credits,
-        retention_plan_code=retention_plan_code,
-    )
-
-
-async def _enforce_trial_generation_limit(db: AsyncSession, user_id: uuid.UUID) -> None:
-    since = datetime.now(timezone.utc) - timedelta(days=1)
-    count = int(
-        await db.scalar(
-            select(func.count(Order.id)).where(
-                Order.user_id == user_id,
-                Order.created_at >= since,
-                Order.generation_params["access_tier"].astext == "trial_preview",
-            )
-        )
-        or 0
-    )
-    if count >= _trial_daily_generation_limit():
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "trial_daily_limit_reached",
-                "message": "Free preview quota reached today. Please top up to continue.",
-                "limit": _trial_daily_generation_limit(),
-            },
-        )
-
-
-async def _charge_generation_credits(
-    db: AsyncSession,
-    user_id: uuid.UUID,
-    request: OrderCreate,
-    credit_context: CreditAccessContext,
-) -> None:
-    if await deduct_credits_async(
-        db,
-        user_id,
-        credit_context.credits_cost,
-        transaction_type=CreditTransactionType.GENERATION_DEBIT,
-        source="order",
-        description=f"Generation debit for template {request.template_id}",
-        metadata={
-            "template_id": request.template_id,
-            "remote_join": bool(request.remote_join),
-            "director_mode": bool(request.director_mode),
-            "credits_cost": credit_context.credits_cost,
-            "access_tier": credit_context.access_tier,
-            "charge_once_per_order": True,
-            "automatic_repair_extra_charge": 0,
-        },
-    ):
-        return
-
-    balance = await get_balance_async(db, user_id)
-    raise HTTPException(
-        status_code=402,
-        detail={
-            "error": "insufficient_credits",
-            "message": "Not enough credits. Please top up to continue.",
-            "required": credit_context.credits_cost,
-            "balance": balance,
-        },
-    )
-
-
-def _resolve_director_decision(
-    request: OrderCreate,
-    *,
-    is_couple_request: bool,
-    couple_flow: str | None,
-) -> DirectorDecision:
-    global_style_text = (request.global_style_text or "").strip() or None
-    scene_text = (request.scene_text or "").strip() or None
-    outfit_text = (request.outfit_text or "").strip() or None
-    legacy_prompt_override = (request.prompt_override or "").strip() or None
-
-    legacy_text_mode = bool(legacy_prompt_override and not any([global_style_text, scene_text, outfit_text]))
-    scene_text_present = bool(scene_text or legacy_text_mode or global_style_text)
-    outfit_text_present = bool(outfit_text or legacy_text_mode or global_style_text)
-    apply_scene_cascade = bool(request.scene_preset_id or request.scene_image_url or scene_text_present)
-    apply_outfit_cascade = bool(request.clothing_preset_id or request.clothing_image_url or outfit_text_present)
-    ignored_inputs: list[str] = []
-
-    effective_scene_source: str | None = "upload" if request.scene_image_url else None
-    effective_outfit_source: str | None = "upload" if request.clothing_image_url else None
-    effective_scene_image_url: str | None = request.scene_image_url
-    effective_clothing_image_url: str | None = request.clothing_image_url
-    effective_scene_ip_weight: float | None = request.scene_ip_weight
-    effective_clothing_ip_weight: float | None = request.clothing_ip_weight
-    effective_scene_preset_id: str | None = None
-    effective_outfit_preset_id: str | None = None
-    effective_scene_preset_title: str | None = None
-    effective_outfit_preset_title: str | None = None
-    effective_global_style_text: str | None = global_style_text
-    effective_scene_text: str | None = None
-    effective_outfit_text: str | None = None
-    compatible_refinements: list[str] = []
-
-    if apply_scene_cascade:
-        if request.scene_image_url:
-            effective_scene_source = "upload"
-            effective_scene_image_url = request.scene_image_url
-            effective_scene_ip_weight = request.scene_ip_weight if request.scene_ip_weight is not None else 0.6
-            if scene_text:
-                compatible_refinements.append(
-                    f"Scene reference refinement, compatible with uploaded scene reference: {scene_text}"
-                )
-            if request.scene_preset_id:
-                ignored_inputs.append("scene_preset_id")
-        elif scene_text_present:
-            effective_scene_source = "text"
-            effective_scene_text = scene_text or legacy_prompt_override or global_style_text
-            effective_scene_image_url = None
-            effective_scene_ip_weight = None
-            if request.scene_preset_id:
-                ignored_inputs.append("scene_preset_id")
-        else:
-            preset = get_scene_preset(request.scene_preset_id) if request.scene_preset_id else None
-            if preset:
-                effective_scene_source = "preset"
-            else:
-                preset = random_scene_preset()
-                effective_scene_source = "random"
-            effective_scene_preset_id = preset["id"]
-            effective_scene_preset_title = preset["title"]
-            effective_scene_image_url = to_public_url(preset["image_url"])
-            effective_scene_ip_weight = request.scene_ip_weight if request.scene_ip_weight is not None else 0.5
-
-    if apply_outfit_cascade:
-        if request.clothing_image_url:
-            effective_outfit_source = "upload"
-            effective_clothing_image_url = request.clothing_image_url
-            effective_clothing_ip_weight = request.clothing_ip_weight if request.clothing_ip_weight is not None else 0.6
-            if outfit_text:
-                compatible_refinements.append(
-                    f"Outfit reference refinement, compatible with uploaded outfit reference: {outfit_text}"
-                )
-            if request.clothing_preset_id:
-                ignored_inputs.append("clothing_preset_id")
-        elif outfit_text_present:
-            effective_outfit_source = "text"
-            effective_outfit_text = outfit_text or legacy_prompt_override or global_style_text
-            effective_clothing_image_url = None
-            effective_clothing_ip_weight = None
-            if request.clothing_preset_id:
-                ignored_inputs.append("clothing_preset_id")
-        else:
-            preset = get_outfit_preset(request.clothing_preset_id) if request.clothing_preset_id else None
-            if preset:
-                effective_outfit_source = "preset"
-            else:
-                preset = random_outfit_preset()
-                effective_outfit_source = "random"
-            effective_outfit_preset_id = preset["id"]
-            effective_outfit_preset_title = preset["title"]
-            effective_clothing_image_url = to_public_url(preset["image_url"])
-            effective_clothing_ip_weight = request.clothing_ip_weight if request.clothing_ip_weight is not None else 0.5
-
-    if compatible_refinements:
-        effective_global_style_text = " ".join(
-            part for part in [global_style_text, *compatible_refinements] if part
-        )
-
-    director_decision_hints = build_director_decision_hints(
-        director_mode=bool(request.director_mode),
-        effective_scene_source=effective_scene_source,
-        effective_outfit_source=effective_outfit_source,
-        ignored_inputs=ignored_inputs,
-        effective_scene_preset_title=effective_scene_preset_title,
-        effective_outfit_preset_title=effective_outfit_preset_title,
-        effective_scene_ip_weight=effective_scene_ip_weight,
-        effective_outfit_ip_weight=effective_clothing_ip_weight,
-        is_couple_request=is_couple_request,
-        couple_flow=couple_flow,
-    )
-    return DirectorDecision(
-        global_style_text=global_style_text,
-        scene_text=scene_text,
-        outfit_text=outfit_text,
-        legacy_prompt_override=legacy_prompt_override,
-        effective_global_style_text=effective_global_style_text,
-        effective_scene_text=effective_scene_text,
-        effective_outfit_text=effective_outfit_text,
-        effective_scene_source=effective_scene_source,
-        effective_outfit_source=effective_outfit_source,
-        effective_scene_image_url=effective_scene_image_url,
-        effective_clothing_image_url=effective_clothing_image_url,
-        effective_scene_ip_weight=effective_scene_ip_weight,
-        effective_clothing_ip_weight=effective_clothing_ip_weight,
-        effective_scene_preset_id=effective_scene_preset_id,
-        effective_outfit_preset_id=effective_outfit_preset_id,
-        effective_scene_preset_title=effective_scene_preset_title,
-        effective_outfit_preset_title=effective_outfit_preset_title,
-        ignored_inputs=ignored_inputs,
-        director_decision_hints=director_decision_hints,
-    )
-
-
-def _build_order(
-    *,
-    request: OrderCreate,
-    current_user: User,
-    gatekeeper_results: list[dict],
-    identity_reference_pack: dict,
-    subject_count: int,
-    is_couple_request: bool,
-    couple_flow: str | None,
-    credit_context: CreditAccessContext,
-    director_decision: DirectorDecision,
-) -> Order:
-    generation_params = _build_generation_params(
-        request=request,
-        gatekeeper_results=gatekeeper_results,
-        identity_reference_pack=identity_reference_pack,
-        subject_count=subject_count,
-        is_couple_request=is_couple_request,
-        couple_flow=couple_flow,
-        credit_context=credit_context,
-        director_decision=director_decision,
-    )
-    return Order(
         user_id=current_user.id,
-        status=OrderStatus.CHECKING,
-        template_id=request.template_id,
-        source_image_urls={"images": request.user_images, "identity_reference_pack": identity_reference_pack},
-        generation_params=generation_params,
-        price_cents=0,
+        idempotency_key=key,
+        request_hash=request_hash,
     )
-
-
-def _upload_quality_summary(upload_quality: list[dict[str, Any]] | None) -> dict[str, Any] | None:
-    if not upload_quality:
-        return None
-    scores = [
-        int(item.get("quality_score", 0))
-        for item in upload_quality
-        if isinstance(item, dict) and isinstance(item.get("quality_score"), int)
-    ]
-    if not scores:
-        return None
-    levels = [
-        str(item.get("quality_level") or "good")
-        for item in upload_quality
-        if isinstance(item, dict)
-    ]
-    risk_flags = sorted(
-        {
-            str(flag)
-            for item in upload_quality
-            if isinstance(item, dict)
-            for flag in (item.get("risk_flags") or [])
-            if str(flag).strip()
-        }
-    )
-    reasons = sorted(
-        {
-            str(reason)
-            for item in upload_quality
-            if isinstance(item, dict)
-            for reason in (item.get("reasons") or [])
-            if str(reason).strip()
-        }
-    )
-    return {
-        "count": len(scores),
-        "avg_score": round(sum(scores) / len(scores), 2),
-        "min_score": min(scores),
-        "warning_count": sum(1 for level in levels if level == "warning"),
-        "poor_count": sum(1 for level in levels if level == "poor"),
-        "risk_flags": risk_flags[:12],
-        "reasons": reasons[:12],
-    }
-
-
-def _build_generation_params(
-    *,
-    request: OrderCreate,
-    gatekeeper_results: list[dict],
-    identity_reference_pack: dict,
-    subject_count: int,
-    is_couple_request: bool,
-    couple_flow: str | None,
-    credit_context: CreditAccessContext,
-    director_decision: DirectorDecision,
-) -> dict:
-    distinct_subject_images = (
-        len({normalize_identity_image_url(image) for image in request.user_images if image})
-        if is_couple_request
-        else subject_count
-    )
-    upload_quality = getattr(request, "upload_quality", None)
-    upload_quality_summary = _upload_quality_summary(upload_quality)
-    params = {
-        "credits_cost": credit_context.credits_cost,
-        "commercial_standard_version": COMMERCIAL_STANDARD_VERSION,
-        "output_aspect_ratio": DEFAULT_OUTPUT_ASPECT_RATIO,
-        "output_aspect_ratio_label": DEFAULT_OUTPUT_ASPECT_RATIO_LABEL,
-        "delivery_layout": "single_3_4_master_with_download_crops",
-        "final_master_image_key": MASTER_IMAGE_KEY,
-        "request_fingerprint": _request_fingerprint(request),
-        "access_tier": credit_context.access_tier,
-        "download_locked": not credit_context.has_paid_credits,
-        "gatekeeper": {"passed": True, "images": gatekeeper_results},
-        "identity_reference_pack": identity_reference_pack,
-        "quality_control": {
-            "commercial_standard": commercial_wedding_standard(),
-            "preflight": {
-                "gatekeeper_required": True,
-                "gatekeeper_passed": True,
-                "identity_reference_count": subject_count,
-                "distinct_identity_reference_count": distinct_subject_images,
-                "identity_reference_pack_required": True,
-                "identity_reference_pack_version": identity_reference_pack.get("version"),
-                "identity_face_crop_count": len(
-                    [
-                        subject
-                        for subject in identity_reference_pack.get("subjects", [])
-                        if isinstance(subject, dict) and subject.get("face_crop_url")
-                    ]
-                ),
-                "identity_upper_body_crop_count": len(
-                    [
-                        subject
-                        for subject in identity_reference_pack.get("subjects", [])
-                        if isinstance(subject, dict) and subject.get("upper_body_crop_url")
-                    ]
-                ),
-                "identity_role_order": identity_reference_pack.get("role_order", []),
-            },
-            "generation": {
-                "identity_edit_required": subject_count > 0,
-                "identity_edit_required_by_code": True,
-                "identity_vision_qa_hard_gate": True,
-                "identity_references_first": True,
-                "style_references_are_not_identities": True,
-                "text_to_image_fallback_allowed": False,
-                "native_generation_fallback_allowed_for_identity": False,
-                "studio_prompt_guardrails": True,
-                "shot_library_director": True,
-                "multi_round_image_edit": True,
-                "candidate_selection": {
-                    "enabled": True,
-                    "customer_visible_candidates": False,
-                    "selection_priority": [
-                        "identity",
-                        "face_readability",
-                        "commercial_canvas_proportion",
-                        "crop_and_gown_integrity",
-                        "studio_lighting",
-                        "couple_relationship",
-                    ],
-                },
-                "image_edit_rounds": [
-                    "primary_generation",
-                    "targeted_repair",
-                    "final_polish",
-                ],
-                "lighting_only_round_2_relight_edit": True,
-                "lighting_only_round_2_no_face_redraw": True,
-                "automatic_lighting_repair_extra_charge": 0,
-                "process_images_customer_visible": False,
-                "best_passing_round_delivery": True,
-                "automatic_repair_extra_charge": 0,
-                "no_extra_debit_for_image_edit_rounds": True,
-            },
-            "postcheck": {
-                "local_qa_required": True,
-                "vision_qa_required_for_identity": bool(settings.qa_require_identity_vision),
-                "vision_provider_error_blocks_delivery": bool(settings.qa_fail_on_vision_error),
-                "qa_retry_max_attempts": settings.generation_max_retries + 1,
-            },
-        },
-        "credit_policy": build_generation_credit_policy(credits_cost=credit_context.credits_cost),
-        "automatic_repair_extra_charge": 0,
-        "remote_join": bool(request.remote_join),
-        "couple_flow": couple_flow,
-        "subject_count": subject_count,
-        "director_mode": bool(request.director_mode),
-        "content_policy": {"passed": True},
-        "upload_quality": upload_quality,
-        "upload_quality_summary": upload_quality_summary,
-        "prompt_override": director_decision.legacy_prompt_override,
-        "global_style_text": director_decision.global_style_text,
-        "scene_text": director_decision.scene_text,
-        "outfit_text": director_decision.outfit_text,
-        "effective_global_style_text": director_decision.effective_global_style_text,
-        "effective_scene_text": director_decision.effective_scene_text,
-        "effective_outfit_text": director_decision.effective_outfit_text,
-        "scene_image_url": request.scene_image_url,
-        "clothing_image_url": request.clothing_image_url,
-        "scene_preset_id": request.scene_preset_id,
-        "clothing_preset_id": request.clothing_preset_id,
-        "effective_scene_source": director_decision.effective_scene_source,
-        "effective_outfit_source": director_decision.effective_outfit_source,
-        "ignored_inputs": sorted(set(director_decision.ignored_inputs)),
-        "effective_scene_preset_id": director_decision.effective_scene_preset_id,
-        "effective_outfit_preset_id": director_decision.effective_outfit_preset_id,
-        "effective_scene_preset_title": director_decision.effective_scene_preset_title,
-        "effective_outfit_preset_title": director_decision.effective_outfit_preset_title,
-        "effective_scene_image_url": director_decision.effective_scene_image_url,
-        "effective_clothing_image_url": director_decision.effective_clothing_image_url,
-        "effective_scene_ip_weight": director_decision.effective_scene_ip_weight,
-        "effective_outfit_ip_weight": director_decision.effective_clothing_ip_weight,
-        "director_decision_hints": director_decision.director_decision_hints,
-        "director_summary": {
-            "scene": {
-                "source": director_decision.effective_scene_source,
-                "preset_id": director_decision.effective_scene_preset_id,
-                "preset_title": director_decision.effective_scene_preset_title,
-                "text_applied": bool(
-                    director_decision.effective_scene_text
-                    or (director_decision.effective_scene_source == "text" and director_decision.global_style_text)
-                    or (director_decision.effective_scene_source == "upload" and director_decision.scene_text)
-                ),
-                "upload_applied": bool(request.scene_image_url),
-                "ip_weight": director_decision.effective_scene_ip_weight,
-            },
-            "outfit": {
-                "source": director_decision.effective_outfit_source,
-                "preset_id": director_decision.effective_outfit_preset_id,
-                "preset_title": director_decision.effective_outfit_preset_title,
-                "text_applied": bool(
-                    director_decision.effective_outfit_text
-                    or (director_decision.effective_outfit_source == "text" and director_decision.global_style_text)
-                    or (director_decision.effective_outfit_source == "upload" and director_decision.outfit_text)
-                ),
-                "upload_applied": bool(request.clothing_image_url),
-                "ip_weight": director_decision.effective_clothing_ip_weight,
-            },
-            "global_style_text_applied": bool(
-                director_decision.global_style_text or director_decision.legacy_prompt_override
-            ),
-            "text_segments": {
-                "global_style_text": director_decision.global_style_text,
-                "scene_text": director_decision.scene_text,
-                "outfit_text": director_decision.outfit_text,
-            },
-        },
-        "couple_guardrails": {
-            "is_couple": is_couple_request,
-            "couple_flow": couple_flow,
-            "dual_face_input": is_couple_request,
-            "remote_join": bool(request.remote_join),
-            "distinct_subject_images": distinct_subject_images,
-        },
-        "pose_image_url": request.pose_image_url,
-        "depth_image_url": request.depth_image_url,
-        "normal_image_url": request.normal_image_url,
-        "scene_ip_weight": director_decision.effective_scene_ip_weight,
-        "clothing_ip_weight": director_decision.effective_clothing_ip_weight,
-        "face_ip_weight": request.face_ip_weight,
-        "pose_cn_weight": request.pose_cn_weight,
-        "depth_cn_weight": request.depth_cn_weight,
-        "normal_cn_weight": request.normal_cn_weight,
-        "pose_cn_start": request.pose_cn_start,
-        "pose_cn_end": request.pose_cn_end,
-        "depth_cn_start": request.depth_cn_start,
-        "depth_cn_end": request.depth_cn_end,
-        "normal_cn_start": request.normal_cn_start,
-        "normal_cn_end": request.normal_cn_end,
-    }
-    params = merge_generation_stage(params, "queued")
-    return merge_generation_stage(params, "identity_refs_ready")
-
-
-async def _persist_order_with_retention(
-    db: AsyncSession,
-    order: Order,
-    credit_context: CreditAccessContext,
-) -> None:
-    apply_order_retention(
-        order,
-        plan_code=credit_context.retention_plan_code,
-        has_paid_credits=credit_context.has_paid_credits,
-    )
-    order.generation_params = {
-        **(order.generation_params or {}),
-        "retention": {
-            "plan_code": credit_context.retention_plan_code,
-            "has_paid_credits": credit_context.has_paid_credits,
-            "source_images_expires_at": order.source_images_expires_at.isoformat()
-            if order.source_images_expires_at
-            else None,
-            "expires_at": order.expires_at.isoformat() if order.expires_at else None,
-        },
-        "entitlement": {
-            "access_tier": credit_context.access_tier,
-            "download_locked": not credit_context.has_paid_credits,
-            "trial_daily_limit": _trial_daily_generation_limit() if not credit_context.has_paid_credits else None,
-        },
-    }
-    db.add(order)
-    await db.flush()
-    await db.commit()
-    await db.refresh(order)
-
-
-async def _dispatch_generation(
-    db: AsyncSession,
-    order: Order,
-    generation_state: dict[str, bool],
-    *,
-    background_tasks: BackgroundTasks | None = None,
-) -> None:
-    base_params = dict(order.generation_params) if isinstance(order.generation_params, dict) else {}
-    if settings.using_inline_generation_execution:
-        inline_task_id = f"inline-{order.id}"
-        if settings.is_vercel_runtime and background_tasks is not None:
-            base_params["queue_job_id"] = inline_task_id
-            base_params["execution_mode"] = "inline_background"
-            base_params["inline_background_started_at"] = datetime.now(timezone.utc).isoformat()
-            order.generation_params = base_params
-            order.task_id = inline_task_id
-            order.status = OrderStatus.GENERATING
-            await db.commit()
-            await db.refresh(order)
-            generation_state["started"] = True
-            background_tasks.add_task(run_order_generation, str(order.id))
-            return
-        base_params["queue_job_id"] = inline_task_id
-        base_params["execution_mode"] = "inline"
-        order.generation_params = base_params
-        order.task_id = inline_task_id
-        order.status = OrderStatus.GENERATING
-        await db.commit()
-        generation_state["started"] = True
-        await run_order_generation(str(order.id))
-        await db.refresh(order)
-        return
+    if replay is not None:
+        return replay
 
     try:
-        queue_job_id = await enqueue_generate_order(str(order.id))
-        generation_state["started"] = True
-    except Exception as e:
-        order.status = OrderStatus.CREATED
-        order.error_message = f"queue_unavailable: {e}"
+        require_server_runtime_execution_stamp()
+        now = datetime.now(timezone.utc)
+        facts = await _load_admission_facts(db, user_id=current_user.id, now=now)
+        command = build_create_order_command(
+            request=request,
+            user_id=current_user.id,
+            idempotency_key=key,
+            facts=facts,
+        )
+        await _run_gatekeeper_checks(
+            db,
+            user_id=current_user.id,
+            asset_ids=command.asset_ids,
+        )
+        accepted = await create_order_transaction(db, command, now=now)
         await db.commit()
+        return accepted
+    except HTTPException:
+        await db.rollback()
+        raise
+    except InsufficientCredits as exc:
+        await db.rollback()
         raise HTTPException(
-            status_code=503,
+            status_code=402,
             detail={
-                "error": "queue_unavailable",
-                "message": "Generation queue unavailable. Please try again later.",
+                "code": "insufficient_credits",
+                "message": "The account does not have enough eligible credits.",
+                "required": exc.required,
             },
-        ) from e
-
-    base_params["queue_job_id"] = queue_job_id
-    base_params["execution_mode"] = "arq"
-    order.generation_params = base_params
-    order.task_id = queue_job_id
-    order.status = OrderStatus.GENERATING
-    await db.commit()
+        ) from exc
+    except BillingCatalogUnavailable as exc:
+        await db.rollback()
+        raise _error(503, exc.code, "The active commercial catalog is unavailable.") from exc
+    except (IdempotencyConflict, FundingPolicyViolation) as exc:
+        await db.rollback()
+        code = getattr(exc, "code", "order_policy_conflict")
+        raise _error(409, code, "The order request conflicts with an existing commercial fact.") from exc
+    except OrderTransactionError as exc:
+        await db.rollback()
+        raise _error(exc.status_code, exc.code, "The order could not enter the durable generation queue.") from exc
+    except Exception:
+        await db.rollback()
+        raise

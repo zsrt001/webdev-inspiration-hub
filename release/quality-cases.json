@@ -1,0 +1,11 @@
+{
+  "schema": "vowpic.quality-cases.v1",
+  "cases": [
+    {"id": "single_template", "subjects": 1, "input_mode": "template", "partner_invite": false},
+    {"id": "single_text", "subjects": 1, "input_mode": "text", "partner_invite": false},
+    {"id": "single_outdoor_text", "subjects": 1, "input_mode": "outdoor_text", "partner_invite": false},
+    {"id": "local_couple", "subjects": 2, "input_mode": "local", "partner_invite": false},
+    {"id": "golden_anniversary", "subjects": 2, "input_mode": "template", "partner_invite": false},
+    {"id": "partner_invite_remote_couple", "subjects": 2, "input_mode": "remote", "partner_invite": true}
+  ]
+}

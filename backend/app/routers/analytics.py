@@ -12,9 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.admin_auth import require_admin_token
+from app.core.admin_auth import require_admin_user
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.models.user import User
 from app.models.click_stat import ClickStat
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ async def get_stats(
     day: date | None = None,
     limit: int = 200,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_admin_token),
+    _: User = Depends(require_admin_user),
 ):
     """Get analytics statistics (admin only in production)."""
     day = day or date.today()

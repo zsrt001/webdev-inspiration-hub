@@ -10,8 +10,6 @@ V3: ML/keypoint face detection and OpenCV fallback keep identity crops face-only
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import logging
 import os
 import shutil
@@ -19,8 +17,9 @@ import tempfile
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
+import uuid
 
-import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
     from PIL import Image, ImageOps
@@ -28,13 +27,17 @@ except Exception:  # pragma: no cover - runtime dependency guard
     Image = None  # type: ignore[assignment]
     ImageOps = None  # type: ignore[assignment]
 
-from app.services.storage import storage_service
+from app.models.media_asset import MediaAssetRole
+from app.services.media_asset_service import (
+    load_owned_asset_bytes,
+    store_private_derivatives,
+    validate_and_reencode_image,
+)
 
 logger = logging.getLogger(__name__)
 
 IDENTITY_REFERENCE_PACK_VERSION = 3
 IDENTITY_CROP_STRATEGY = "mediapipe_face_keypoint_v3"
-IDENTITY_REFERENCE_FOLDER = "identity-references"
 
 # ---------------------------------------------------------------------------
 # ML face detection (mediapipe)
@@ -384,26 +387,6 @@ def _flow_kind(*, is_couple_request: bool, couple_flow: str | None) -> str:
     return "couple_local"
 
 
-async def _fetch_image_bytes(image_url: str) -> tuple[bytes, str]:
-    raw = str(image_url or "").strip()
-    if not raw:
-        raise ValueError("identity_reference_empty_image_url")
-
-    if raw.startswith("data:image/"):
-        header, encoded = raw.split(",", 1)
-        content_type = header[5:].split(";", 1)[0] or "image/jpeg"
-        return base64.b64decode(encoded), content_type
-
-    if not raw.startswith(("http://", "https://")):
-        raise ValueError("identity_reference_requires_remote_image")
-
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, trust_env=False) as client:
-        response = await client.get(raw)
-        response.raise_for_status()
-        content_type = response.headers.get("content-type") or "image/jpeg"
-        return response.content, content_type.split(";", 1)[0].strip() or "image/jpeg"
-
-
 def _clamp_box(
     *,
     width: int,
@@ -528,47 +511,65 @@ def _prepare_identity_crops(content: bytes) -> tuple[dict[str, Any], list[_Prepa
         return metrics, crops
 
 
-async def _upload_crop(crop: _PreparedCrop, *, identity_label: str) -> str:
-    filename = f"{identity_label}-{crop.kind}.jpg"
-    return await asyncio.to_thread(
-        storage_service.upload_file,
-        file_content=BytesIO(crop.content),
-        filename=filename,
-        content_type=crop.content_type,
-        folder=IDENTITY_REFERENCE_FOLDER,
-    )
-
-
 async def build_identity_reference_pack(
-    user_images: list[str],
+    db: AsyncSession,
     *,
+    owner_user_id: uuid.UUID,
+    source_asset_ids: list[uuid.UUID],
     is_couple_request: bool,
     couple_flow: str | None = None,
 ) -> dict[str, Any]:
-    """Build and persist identity references for each uploaded subject image."""
+    """Build owner-checked private derivatives without persisting or returning URLs."""
+
+    expected_count = 2 if is_couple_request else 1
+    normalized_ids = [uuid.UUID(str(asset_id)) for asset_id in source_asset_ids]
+    if len(normalized_ids) != expected_count or len(set(normalized_ids)) != expected_count:
+        raise ValueError("identity_reference_source_count_invalid")
+
     subjects: list[dict[str, Any]] = []
-    source_images = [str(url).strip() for url in (user_images or []) if str(url).strip()]
-    for index, image_url in enumerate(source_images):
-        content, content_type = await _fetch_image_bytes(image_url)
-        metrics, crops = _prepare_identity_crops(content)
+    for index, source_asset_id in enumerate(normalized_ids):
+        source = await load_owned_asset_bytes(
+            db,
+            owner_user_id=owner_user_id,
+            asset_id=source_asset_id,
+        )
+        if MediaAssetRole(source.asset.role) != MediaAssetRole.SOURCE:
+            raise ValueError("identity_reference_requires_source_asset")
+        metrics, crops = _prepare_identity_crops(source.content)
         identity_label = _identity_label(index)
         role = _role_for_subject(index, is_couple_request=is_couple_request)
 
-        crop_urls: dict[str, str] = {}
         crop_boxes: dict[str, dict[str, Any]] = {}
+        derivatives = []
         for crop in crops:
-            crop_urls[crop.kind] = await _upload_crop(crop, identity_label=identity_label)
             crop_boxes[crop.kind] = crop.box
+            derivatives.append(
+                (
+                    MediaAssetRole.INTERMEDIATE,
+                    validate_and_reencode_image(
+                        crop.content,
+                        declared_content_type=crop.content_type,
+                    ),
+                )
+            )
+        stored = await store_private_derivatives(
+            db,
+            owner_user_id=owner_user_id,
+            parent_asset=source.asset,
+            derivatives=derivatives,
+        )
+        if len(stored) != 2:
+            raise RuntimeError("identity_reference_derivative_count_invalid")
 
         subjects.append(
             {
                 "slot": index + 1,
                 "identity_label": identity_label,
                 "role": role,
-                "original_url": image_url,
-                "face_crop_url": crop_urls.get("face"),
-                "upper_body_crop_url": crop_urls.get("upper_body"),
-                "source_content_type": content_type,
+                "source_asset_id": str(source.asset.id),
+                "face_crop_asset_id": str(stored[0].id),
+                "upper_body_crop_asset_id": str(stored[1].id),
+                "source_content_type": source.mime_type,
                 "source_metrics": metrics,
                 "crop_boxes": crop_boxes,
             }
@@ -589,17 +590,27 @@ async def build_identity_reference_pack(
 # Post-generation face verification (lightweight local pre-QA)
 # ---------------------------------------------------------------------------
 
-async def verify_face_presence(generated_url: str, source_face_count: int = 1) -> dict[str, Any]:
+async def verify_face_presence(
+    db: AsyncSession,
+    *,
+    owner_user_id: uuid.UUID,
+    generated_asset_id: uuid.UUID,
+    source_face_count: int = 1,
+) -> dict[str, Any]:
     """Quick local check: does the generated image contain the expected number of faces?
     Runs before the heavy Gemini Vision QA to catch obviously bad outputs early.
     """
     try:
-        content, _ = await _fetch_image_bytes(generated_url)
-        with Image.open(BytesIO(content)) as img:
+        private = await load_owned_asset_bytes(
+            db,
+            owner_user_id=owner_user_id,
+            asset_id=generated_asset_id,
+        )
+        with Image.open(BytesIO(private.content)) as img:
             img_rgb = img.convert("RGB")
             detector = _get_face_detector()
             if not detector:
-                return {"passed": True, "detection_mode": "unavailable"}
+                return {"passed": False, "reason": "face_detector_unavailable"}
 
             import numpy as np
             results = detector.process(np.array(img_rgb))
@@ -613,4 +624,4 @@ async def verify_face_presence(generated_url: str, source_face_count: int = 1) -
             return {"passed": True, "detected": detected, "expected": source_face_count}
     except Exception as exc:
         logger.debug("verify_face_presence: error %s", exc)
-        return {"passed": True, "detection_mode": "error", "detail": str(exc)[:120]}
+        return {"passed": False, "reason": "face_detection_failed"}

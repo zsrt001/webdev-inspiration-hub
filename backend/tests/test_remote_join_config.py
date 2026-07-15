@@ -20,21 +20,7 @@ class RemoteJoinConfigTest(unittest.TestCase):
 
         self.assertFalse(settings.remote_join_enabled)
 
-    def test_public_config_respects_explicit_remote_join_disable(self) -> None:
-        original_settings = ops_config_service.settings
-        original_default = ops_config_service.DEFAULT_OPS_CONFIG["feature_flags"]["remote_join"]
-        try:
-            ops_config_service.settings = Settings(_env_file=None, remote_join_enabled=False)
-            ops_config_service.DEFAULT_OPS_CONFIG["feature_flags"]["remote_join"] = False
-
-            config = ops_config_service.get_public_ops_config()
-
-            self.assertFalse(config["feature_flags"]["remote_join"])
-        finally:
-            ops_config_service.settings = original_settings
-            ops_config_service.DEFAULT_OPS_CONFIG["feature_flags"]["remote_join"] = original_default
-
-    def test_external_ops_config_cannot_enable_retired_or_high_risk_features(self) -> None:
+    def test_external_ops_config_cannot_publish_retired_feature_flags(self) -> None:
         unsafe_config = {
             **ops_config_service.DEFAULT_OPS_CONFIG,
             "feature_flags": {
@@ -48,10 +34,21 @@ class RemoteJoinConfigTest(unittest.TestCase):
         with patch.object(ops_config_service, "get_ops_config", return_value=unsafe_config):
             config = ops_config_service.get_public_ops_config()
 
-        self.assertFalse(config["feature_flags"]["live_portrait"])
-        self.assertFalse(config["feature_flags"]["remote_join"])
-        self.assertFalse(config["feature_flags"]["local_recommendations"])
-        self.assertFalse(config["feature_flags"]["director_mode"])
+        self.assertNotIn("feature_flags", config)
+
+    def test_normalization_drops_retired_config_sections(self) -> None:
+        normalized = ops_config_service._normalize_config(
+            {
+                **ops_config_service.DEFAULT_OPS_CONFIG,
+                "feature_flags": {"remote_join": True},
+                "recommendations": {"manual_boosts": {"retired": 100}},
+                "crm": {"enabled": True},
+            }
+        )
+
+        self.assertNotIn("feature_flags", normalized)
+        self.assertNotIn("recommendations", normalized)
+        self.assertNotIn("crm", normalized)
 
     def test_public_config_hides_google_oauth_until_exchange_is_configured(self) -> None:
         original_settings = ops_config_service.settings
@@ -66,6 +63,8 @@ class RemoteJoinConfigTest(unittest.TestCase):
             config = ops_config_service.get_public_ops_config()
 
             self.assertFalse(config["auth"]["google_oauth_enabled"])
+            self.assertEqual(config["auth"]["supabase_url"], "")
+            self.assertEqual(config["auth"]["supabase_publishable_key"], "")
         finally:
             ops_config_service.settings = original_settings
 
@@ -82,6 +81,8 @@ class RemoteJoinConfigTest(unittest.TestCase):
             config = ops_config_service.get_public_ops_config()
 
             self.assertTrue(config["auth"]["google_oauth_enabled"])
+            self.assertEqual(config["auth"]["supabase_url"], "https://example.supabase.co")
+            self.assertEqual(config["auth"]["supabase_publishable_key"], "anon-key")
         finally:
             ops_config_service.settings = original_settings
 

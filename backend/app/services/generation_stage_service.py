@@ -23,7 +23,7 @@ def merge_generation_stage(params: dict[str, Any] | None, stage: str, *, detail:
     next_params = dict(params) if isinstance(params, dict) else {}
     clean_stage = str(stage or "").strip()
     if clean_stage not in GENERATION_STAGES:
-        clean_stage = "queued"
+        raise ValueError(f"unknown_generation_stage:{clean_stage or '<empty>'}")
     history = next_params.get("generation_stage_history")
     if not isinstance(history, list):
         history = []

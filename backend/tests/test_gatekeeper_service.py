@@ -1,204 +1,165 @@
-"""Gatekeeper degradation contract tests."""
+"""Strict private-asset gatekeeper contract tests."""
+
+from __future__ import annotations
 
 from io import BytesIO
-from pathlib import Path
-import asyncio
-import sys
+import inspect
+from types import SimpleNamespace
 import unittest
+import uuid
+from unittest.mock import ANY, AsyncMock, patch
 
 from PIL import Image, ImageDraw
 
-
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-from app.services import gatekeeper_service  # noqa: E402
+from app.routers import gatekeeper as gatekeeper_router
+from app.services import gatekeeper_service
 
 
-def _sharp_test_image_bytes() -> bytes:
-    image = Image.new("RGB", (800, 800), (175, 175, 175))
+def _sharp_test_image_bytes(*, size: int = 800) -> bytes:
+    image = Image.new("RGB", (size, size), (175, 175, 175))
     draw = ImageDraw.Draw(image)
-    for pos in range(0, 800, 20):
-        draw.line((pos, 0, pos, 799), fill=(35, 35, 35), width=2)
-        draw.line((0, pos, 799, pos), fill=(35, 35, 35), width=2)
-    draw.ellipse((280, 120, 520, 360), fill=(225, 178, 145), outline=(40, 40, 40), width=4)
-    draw.rectangle((240, 360, 560, 720), fill=(245, 245, 245), outline=(45, 45, 45), width=4)
-    buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95)
-    return buf.getvalue()
+    step = max(10, size // 40)
+    for pos in range(0, size, step):
+        draw.line((pos, 0, pos, size - 1), fill=(35, 35, 35), width=2)
+        draw.line((0, pos, size - 1, pos), fill=(35, 35, 35), width=2)
+    draw.ellipse(
+        (int(size * 0.35), int(size * 0.15), int(size * 0.65), int(size * 0.45)),
+        fill=(225, 178, 145),
+        outline=(40, 40, 40),
+        width=4,
+    )
+    draw.rectangle(
+        (int(size * 0.3), int(size * 0.45), int(size * 0.7), int(size * 0.9)),
+        fill=(245, 245, 245),
+        outline=(45, 45, 45),
+        width=4,
+    )
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=95)
+    return buffer.getvalue()
 
 
-def _low_resolution_image_bytes() -> bytes:
-    image = Image.new("RGB", (360, 360), (178, 178, 178))
-    draw = ImageDraw.Draw(image)
-    draw.ellipse((130, 60, 230, 160), fill=(225, 178, 145), outline=(40, 40, 40), width=3)
-    draw.rectangle((105, 160, 255, 330), fill=(245, 245, 245), outline=(45, 45, 45), width=3)
-    buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95)
-    return buf.getvalue()
+def _vision_pass() -> dict:
+    return {
+        "passed": True,
+        "reject_reason": None,
+        "gender": "f",
+        "risk_flags": [],
+    }
 
 
-def _extreme_soft_image_bytes() -> bytes:
-    image = Image.new("RGB", (800, 800), (136, 136, 136))
-    draw = ImageDraw.Draw(image)
-    for y in range(800):
-        value = 122 + int((y / 799) * 32)
-        draw.line((0, y, 799, y), fill=(value, value, value), width=1)
-    buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95)
-    return buf.getvalue()
+def _ocr_pass() -> dict:
+    return {
+        "passed": True,
+        "risk_flags": [],
+        "detected_text": [],
+        "matched_patterns": [],
+        "notes": "checked",
+    }
 
 
-class _FakeResponse:
-    def __init__(self, content: bytes) -> None:
-        self.content = content
+class GatekeeperServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def _run(
+        self,
+        *,
+        vision_result: object = None,
+        ocr_result: object = None,
+        vision_error: Exception | None = None,
+        image_bytes: bytes | None = None,
+        configured: bool = True,
+    ):
+        owner_id = uuid.uuid4()
+        asset_id = uuid.uuid4()
+        asset = SimpleNamespace(id=asset_id)
+        private = SimpleNamespace(
+            asset=asset,
+            content=image_bytes or _sharp_test_image_bytes(),
+            mime_type="image/jpeg",
+        )
+        grant = SimpleNamespace(
+            grant=SimpleNamespace(id=uuid.uuid4()),
+            read_url="https://api.example.com/api/v1/media/grants/secret-token",
+        )
+        analyze = AsyncMock(
+            side_effect=vision_error,
+            return_value=_vision_pass() if vision_result is None else vision_result,
+        )
+        ocr = AsyncMock(return_value=_ocr_pass() if ocr_result is None else ocr_result)
+        revoke = AsyncMock()
+        create = AsyncMock(return_value=grant)
+        load = AsyncMock(return_value=private)
+        with (
+            patch.object(
+                gatekeeper_service.llm_service,
+                "is_vision_provider_configured",
+                return_value=configured,
+            ),
+            patch.object(gatekeeper_service.llm_service, "analyze_face_quality", analyze),
+            patch.object(gatekeeper_service.llm_service, "detect_sensitive_document_ocr", ocr),
+            patch.object(gatekeeper_service, "load_owned_asset_bytes", load),
+            patch.object(gatekeeper_service, "create_provider_grant", create),
+            patch.object(gatekeeper_service, "revoke_provider_grant", revoke),
+        ):
+            verdict = await gatekeeper_service.check_image_quality(
+                object(),
+                owner_user_id=owner_id,
+                asset_id=asset_id,
+            )
+        return verdict, analyze, ocr, create, revoke, load, grant
 
-    def raise_for_status(self) -> None:
-        return None
+    async def test_provider_outage_is_blocking_and_grant_is_revoked(self) -> None:
+        verdict, _analyze, ocr, _create, revoke, _load, grant = await self._run(
+            vision_error=RuntimeError("provider timeout")
+        )
 
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.reasons, ["vision_unavailable"])
+        ocr.assert_not_awaited()
+        revoke.assert_awaited_once_with(ANY, grant.grant)
 
-class _FakeAsyncClient:
-    image_bytes = _sharp_test_image_bytes()
+    async def test_invalid_provider_schema_is_blocking(self) -> None:
+        verdict, *_ = await self._run(
+            vision_result={"passed": "yes", "risk_flags": []},
+        )
 
-    def __init__(self, *args, **kwargs) -> None:
-        pass
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.reasons, ["vision_schema_invalid"])
 
-    async def __aenter__(self):
-        return self
+    async def test_ocr_outage_cannot_pass_through_local_fallback(self) -> None:
+        broken_ocr = {
+            "passed": False,
+            "risk_flags": [],
+            "detected_text": [],
+            "matched_patterns": [],
+            "notes": "ocr_error:TimeoutError",
+        }
+        verdict, *_ = await self._run(ocr_result=broken_ocr)
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
-        return False
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.reasons, ["safety_check_unavailable"])
 
-    async def get(self, url: str) -> _FakeResponse:
-        return _FakeResponse(self.image_bytes)
+    async def test_sensitive_flag_blocks_and_never_returns_pass(self) -> None:
+        vision = _vision_pass()
+        vision.update({"passed": False, "reject_reason": "document", "risk_flags": ["passport"]})
+        verdict, *_ = await self._run(vision_result=vision)
 
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.reasons, ["sensitive_document_upload"])
+        self.assertEqual(verdict.risk_flags, ["passport"])
 
-class GatekeeperServiceTest(unittest.TestCase):
-    def _run_with_patches(self, analyze, ocr=None):
-        original_configured = gatekeeper_service.llm_service.is_vision_provider_configured
-        original_analyze = gatekeeper_service.llm_service.analyze_face_quality
-        original_ocr = gatekeeper_service.llm_service.detect_sensitive_document_ocr
-        original_client = gatekeeper_service.httpx.AsyncClient
-        gatekeeper_service.llm_service.is_vision_provider_configured = lambda: True
-        gatekeeper_service.llm_service.analyze_face_quality = analyze
-        if ocr is not None:
-            gatekeeper_service.llm_service.detect_sensitive_document_ocr = ocr
-        gatekeeper_service.httpx.AsyncClient = _FakeAsyncClient
-        try:
-            return asyncio.run(gatekeeper_service.check_image_quality("https://example.com/upload.jpg"))
-        finally:
-            gatekeeper_service.llm_service.is_vision_provider_configured = original_configured
-            gatekeeper_service.llm_service.analyze_face_quality = original_analyze
-            gatekeeper_service.llm_service.detect_sensitive_document_ocr = original_ocr
-            gatekeeper_service.httpx.AsyncClient = original_client
+    async def test_owner_checked_bytes_and_short_lived_grant_are_the_only_inputs(self) -> None:
+        verdict, analyze, ocr, create, revoke, load, grant = await self._run()
 
-    def _run_local_with_bytes(self, image_bytes: bytes):
-        original_configured = gatekeeper_service.llm_service.is_vision_provider_configured
-        original_client = gatekeeper_service.httpx.AsyncClient
-        original_bytes = _FakeAsyncClient.image_bytes
-        gatekeeper_service.llm_service.is_vision_provider_configured = lambda: False
-        gatekeeper_service.httpx.AsyncClient = _FakeAsyncClient
-        _FakeAsyncClient.image_bytes = image_bytes
-        try:
-            return asyncio.run(gatekeeper_service.check_image_quality("https://example.com/upload.jpg"))
-        finally:
-            gatekeeper_service.llm_service.is_vision_provider_configured = original_configured
-            gatekeeper_service.httpx.AsyncClient = original_client
-            _FakeAsyncClient.image_bytes = original_bytes
-
-    def test_vision_outage_falls_back_to_local_quality_checks(self) -> None:
-        async def analyze(_url: str) -> dict:
-            raise RuntimeError("vision timeout")
-
-        result = self._run_with_patches(analyze)
-
-        self.assertTrue(result.passed)
-        self.assertEqual([], result.reasons)
-        self.assertEqual(1.0, result.metrics.get("vision_degraded"))
-
-    def test_vision_error_reject_reason_falls_back_to_local_quality_checks(self) -> None:
-        async def analyze(_url: str) -> dict:
-            return {"passed": False, "reject_reason": "vision_error: provider unavailable", "risk_flags": []}
-
-        async def ocr(_url: str) -> dict:
-            return {"passed": True, "risk_flags": [], "detected_text": [], "matched_patterns": []}
-
-        result = self._run_with_patches(analyze, ocr)
-
-        self.assertTrue(result.passed)
-        self.assertEqual([], result.reasons)
-        self.assertEqual(1.0, result.metrics.get("vision_degraded"))
-
-    def test_ocr_empty_failure_falls_back_to_local_quality_checks(self) -> None:
-        async def analyze(_url: str) -> dict:
-            return {"passed": True, "risk_flags": []}
-
-        async def ocr(_url: str) -> dict:
-            return {"passed": False, "risk_flags": [], "detected_text": [], "matched_patterns": []}
-
-        result = self._run_with_patches(analyze, ocr)
-
-        self.assertTrue(result.passed)
-        self.assertEqual([], result.reasons)
-        self.assertEqual(1.0, result.metrics.get("ocr_degraded"))
-
-    def test_ocr_text_signal_still_rejects(self) -> None:
-        async def analyze(_url: str) -> dict:
-            return {"passed": True, "risk_flags": []}
-
-        async def ocr(_url: str) -> dict:
-            return {
-                "passed": False,
-                "risk_flags": [],
-                "detected_text": ["Identity card 123456789012345678"],
-                "matched_patterns": ["id_number_pattern"],
-            }
-
-        result = self._run_with_patches(analyze, ocr)
-
-        self.assertFalse(result.passed)
-        self.assertEqual(["ocr_reject"], result.reasons)
-
-    def test_local_quality_issues_are_warnings_not_rejections(self) -> None:
-        result = self._run_local_with_bytes(_low_resolution_image_bytes())
-
-        self.assertTrue(result.passed)
-        self.assertEqual([], result.reasons)
-        self.assertIn("low_resolution", result.warnings)
-        self.assertTrue(result.warning_advice)
-
-    def test_extreme_soft_portrait_region_is_still_rejected(self) -> None:
-        result = self._run_local_with_bytes(_extreme_soft_image_bytes())
-
-        self.assertFalse(result.passed)
-        self.assertIn("too_blurry", result.reasons)
-        self.assertIn("portrait_roi_edge_mean", result.metrics)
-
-    def test_vision_quality_reject_becomes_warning(self) -> None:
-        async def analyze(_url: str) -> dict:
-            return {"passed": False, "reject_reason": "too blurry", "risk_flags": []}
-
-        async def ocr(_url: str) -> dict:
-            return {"passed": True, "risk_flags": [], "detected_text": [], "matched_patterns": []}
-
-        result = self._run_with_patches(analyze, ocr)
-
-        self.assertTrue(result.passed)
-        self.assertEqual([], result.reasons)
-        self.assertEqual(["too_blurry"], result.warnings)
-
-    def test_vision_no_face_still_rejects(self) -> None:
-        async def analyze(_url: str) -> dict:
-            return {"passed": False, "reject_reason": "no face detected", "risk_flags": []}
-
-        async def ocr(_url: str) -> dict:
-            return {"passed": True, "risk_flags": [], "detected_text": [], "matched_patterns": []}
-
-        result = self._run_with_patches(analyze, ocr)
-
-        self.assertFalse(result.passed)
-        self.assertEqual(["no_face_detected"], result.reasons)
+        self.assertTrue(verdict.passed)
+        self.assertEqual(verdict.reasons, [])
+        analyze.assert_awaited_once_with(grant.read_url)
+        ocr.assert_awaited_once_with(grant.read_url)
+        create.assert_awaited_once()
+        revoke.assert_awaited_once()
+        load.assert_awaited_once()
+        self.assertNotIn("image_url", inspect.signature(gatekeeper_service.check_image_quality).parameters)
+        self.assertIn("asset_id", gatekeeper_router.GatekeeperRequest.model_fields)
+        self.assertNotIn("image_url", gatekeeper_router.GatekeeperRequest.model_fields)
 
 
 if __name__ == "__main__":

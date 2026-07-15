@@ -1,0 +1,30 @@
+{
+  "schema": "vowpic.activation-plan.v1",
+  "flag_order": [
+    "google_auth",
+    "authenticated_upload",
+    "credit_pack_checkout",
+    "subscription_billing",
+    "generation",
+    "private_download",
+    "partner_invite"
+  ],
+  "target_snapshot": {
+    "google_auth": "ON",
+    "authenticated_upload": "ON",
+    "credit_pack_checkout": "ON",
+    "subscription_billing": "ON",
+    "generation": "ON",
+    "private_download": "ON",
+    "partner_invite": "ON"
+  },
+  "rollback_snapshot": {
+    "google_auth": "OFF",
+    "authenticated_upload": "OFF",
+    "credit_pack_checkout": "OFF",
+    "subscription_billing": "OFF",
+    "generation": "OFF",
+    "private_download": "OFF",
+    "partner_invite": "OFF"
+  }
+}

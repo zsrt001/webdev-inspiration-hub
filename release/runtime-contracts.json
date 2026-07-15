@@ -1,0 +1,21 @@
+{
+  "schema": "vowpic.runtime-contracts.v1",
+  "schema_revision": "20260710_0020",
+  "api_compatibility_version": "vowpic-api.v1",
+  "worker_compatibility_version": "vowpic-worker.v1",
+  "job_payload_version": "generation-job.v1",
+  "source_sha256": {
+    "backend/app/core/config.py": "44c915a3456bb64faf14f21c534d98bb605289f62b45a013c8c2878aa37bbf80",
+    "backend/app/main.py": "e4f98401845732d09838943a5645249f852d1df61b622b85f7f764982347e228",
+    "backend/app/worker.py": "660a0e87242c24dd3ed8b0711af73a6ed8a86c23fb6a7856a4a42526289d2c1f",
+    "backend/app/models/generation_job.py": "7fb595b3b8b01811af3bc84429f6147623fc730713aed7b3daeaa23375485bcf",
+    "backend/app/services/generation_service.py": "472580c422c6199f2782adeb73f60fd12eb02d9b75f5983613b935e5bec90dce",
+    "backend/app/services/outbox_service.py": "6f701fcc6f2d20139f5b24b8fcaba0a1228cc3cd209f7893ec080c27df964a31",
+    "backend/app/services/job_lease_service.py": "e90e471bf7002f78d84e4df6539e5f8dd0fec4b684d6f4d941726676f591eef0",
+    "backend/app/services/qa_pipeline.py": "06249e77cece17096f84dee8b767f3afebb167cdade7f4b101d4159fd83af3e5",
+    "backend/app/core/provider_contracts.py": "f1248560a1dd2ac6faba97713269774621cdc0e743cfb6d462c6bb1d86606d13",
+    "backend/app/core/security_headers.py": "c808e456c0772506bcf3e1ab26f1593ecb7dcd288843d12b24cf95c685dc447a",
+    "backend/app/core/runtime_checks.py": "09957442f191d510608c8ff929cd3ec396012ed1ea61bfbdd611611120041365",
+    "backend/app/services/media_asset_service.py": "3dfede5e9cd5082c848810c658e31c5f42243462a5a3bc91a747f6f72cce8279"
+  }
+}

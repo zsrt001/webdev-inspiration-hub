@@ -55,10 +55,10 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertFalse(settings.should_auto_create_tables)
 
-    def test_vercel_uses_inline_generation_by_default(self) -> None:
+    def test_vercel_uses_durable_queue_generation_by_default(self) -> None:
         settings = Settings(vercel="1", task_execution_mode="auto")
 
-        self.assertEqual(settings.generation_execution_mode, "inline")
+        self.assertEqual(settings.generation_execution_mode, "arq")
 
     def test_allowed_image_models_cannot_be_widened_by_env(self) -> None:
         settings = Settings(
@@ -106,7 +106,6 @@ class RuntimeConfigTest(unittest.TestCase):
         )
 
         self.assertTrue(settings.using_evolink_generation)
-        self.assertFalse(settings.using_wenwen_generation)
         self.assertEqual(settings.generation_provider_name, "evolink")
         self.assertEqual(settings.generation_poll_timeout, 321)
         self.assertEqual(settings.generation_max_retries, 4)
@@ -115,13 +114,34 @@ class RuntimeConfigTest(unittest.TestCase):
         settings = Settings(_env_file=None)
 
         self.assertTrue(settings.using_evolink_generation)
-        self.assertFalse(settings.using_wenwen_generation)
         self.assertEqual(settings.generation_provider_name, "evolink")
 
     def test_default_postprocess_variants_include_commercial_delivery_crops(self) -> None:
         settings = Settings(_env_file=None)
 
         self.assertEqual(settings.postprocess_variants, "2x3,3x2,3x4,4x5,9x16,1x1")
+
+    def test_provider_grant_origin_requires_a_separate_strong_probe_secret(self) -> None:
+        from app.core import runtime_checks
+
+        missing = Settings(
+            _env_file=None,
+            provider_grant_origin="https://provider-grant-preview.vercel.app",
+            provider_grant_probe_secret="",
+        )
+        valid = Settings(
+            _env_file=None,
+            provider_grant_origin="https://provider-grant-preview.vercel.app",
+            provider_grant_probe_secret="p" * 32,
+        )
+        with patch.object(runtime_checks, "settings", missing):
+            self.assertIn(
+                "PROVIDER_GRANT_PROBE_SECRET must contain at least 32 characters when PROVIDER_GRANT_ORIGIN is configured",
+                runtime_checks.validate_commercial_config_values(),
+            )
+        with patch.object(runtime_checks, "settings", valid):
+            errors = runtime_checks.validate_commercial_config_values()
+        self.assertFalse(any("PROVIDER_GRANT_PROBE_SECRET" in error for error in errors))
 
     def test_control_plane_writer_uses_a_separate_explicit_database_url(self) -> None:
         settings = Settings(
@@ -312,9 +332,12 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
         main.app.dependency_overrides[get_db] = unavailable_database
         main.app.state.runtime_config_blocked = True
         transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=False)
-        allowed_origin = main.cors_origins[0]
+        allowed_origin = preview_settings.effective_frontend_base_url
         try:
-            with patch.object(main, "settings", preview_settings):
+            with (
+                patch.object(main, "settings", preview_settings),
+                patch("app.core.security_headers.get_settings", return_value=preview_settings),
+            ):
                 async with httpx.AsyncClient(
                     transport=transport,
                     base_url="http://testserver",
@@ -341,10 +364,10 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(health.status_code, 200, health.text)
         self.assertEqual(blocked.status_code, 503, blocked.text)
-        self.assertEqual(blocked.json()["detail"]["code"], "runtime_not_ready")
+        self.assertEqual(blocked.json()["code"], "runtime_not_ready")
         self.assertNotIn("preview runtime coordinates are missing", blocked.text)
         self.assertEqual(blocked.headers["access-control-allow-origin"], allowed_origin)
-        self.assertEqual(preflight.status_code, 200, preflight.text)
+        self.assertEqual(preflight.status_code, 204, preflight.text)
         self.assertEqual(preflight.headers["access-control-allow-origin"], allowed_origin)
         self.assertFalse(database_opened)
 
@@ -395,7 +418,7 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
                 delattr(main.app.state, "runtime_config_blocked")
 
         self.assertEqual(blocked.status_code, 503, blocked.text)
-        self.assertEqual(blocked.json()["detail"]["code"], "runtime_not_ready")
+        self.assertEqual(blocked.json()["code"], "runtime_not_ready")
         self.assertFalse(database_opened)
 
     async def test_non_debug_ops_readiness_cannot_disable_strict_mode(self) -> None:
@@ -470,7 +493,7 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
                 delattr(main.app.state, "runtime_config_blocked")
 
         self.assertEqual(blocked.status_code, 503, blocked.text)
-        self.assertEqual(blocked.json()["detail"]["code"], "runtime_not_ready")
+        self.assertEqual(blocked.json()["code"], "runtime_not_ready")
         self.assertFalse(database_opened)
 
 

@@ -4,17 +4,17 @@
 
 **Goal:** Turn the current VowPic repository into the approved overseas Web-only commercial product, stopping the currently exposed high-risk paths first and reaching `Production accepted` only after the linked production evidence gates pass.
 
-**Architecture:** Preserve FastAPI, Vue 3/Uni-app H5, Supabase/PostgreSQL, Redis/ARQ, Creem, Evolink, and private object storage. PostgreSQL owns identity, billing, media, job, consent, and feature-flag facts; Redis only caches flags and wakes durable jobs; a long-running OCI Worker owns Provider, QA, repair, and delivery work. This is one dependency-ordered program split into the authoritative seven stages and two Stage-7 production releases; never implement it as one unreviewable deployment.
+**Architecture:** Preserve FastAPI, Vue 3/Uni-app Web (with the framework-required `h5` compiler target), Supabase/PostgreSQL, Redis/ARQ, Creem, Evolink, and private object storage. PostgreSQL owns identity, billing, media, job, consent, and feature-flag facts; Redis only caches flags and wakes durable jobs; a long-running OCI Worker owns Provider, QA, repair, and delivery work. This is one dependency-ordered program split into the authoritative seven stages and two Stage-7 production releases; never implement it as one unreviewable deployment.
 
-**Tech Stack:** Python 3.11, FastAPI, SQLAlchemy Async, Alembic, PostgreSQL 15, Redis 7, ARQ, Pydantic 2 strict schemas, Pillow/OpenCV, Supabase Google OAuth, Creem, Evolink, Vercel Web/API, Vue 3.4.21, Uni-app H5, Pinia, TypeScript 5.3.3, Vite 5.2.8, Vitest 1.6.1, Playwright 1.61.1.
+**Tech Stack:** Python 3.11, FastAPI 0.139.0, Starlette 1.3.1, SQLAlchemy Async, Alembic, PostgreSQL 15, Redis 7, ARQ, Pydantic 2 strict schemas, Pillow/OpenCV, Supabase Google OAuth, Creem, Evolink, Vercel Web/API, Vue 3.4.21, Uni-app Web (`h5` compiler target), Pinia, TypeScript 5.3.3, Vite 5.2.8, Vitest 3.2.6, Playwright 1.61.1.
 
 ## Global Constraints
 
 - Authority is `docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md`. If an older README, PRD, plan, fallback constant, runtime JSON file, or UI string conflicts with that specification, stop and resolve the conflict in favor of the specification before coding.
-- Product surface is overseas Web/H5 only. Remove WeChat, Mini Program, OpenID ownership, guest generation, public password auth, public external-URL input, Live Portrait, local vendor recommendations, leads/contact forms, transactional-email promises, and unverified subscription perks from the active release.
+- Product surface is overseas Web SaaS only. Remove WeChat, Mini Program, OpenID ownership, guest generation, public password auth, public external-URL input, Live Portrait, local vendor recommendations, leads/contact forms, transactional-email promises, and unverified subscription perks from the active release.
 - Do not create `/v2`, replace the stack, introduce a UI framework, or add a second generation Provider.
 - Work in an isolated worktree created with `superpowers:using-git-worktrees`; suggested branch: `codex/vowpic-commercial-closure`.
-- Start from Alembic head `20260516_0012`; append migrations `20260710_0013` onward and never edit historical migrations.
+- The original program started from Alembic head `20260516_0012`. Stage 1 has since appended `20260710_0013` and the forward-only repair `20260712_0014`; Task 6 revision `20260710_0014` must follow `20260712_0014`, and historical migrations remain immutable.
 - Production identity is Google through Supabase Authorization Code + PKCE. Local access lifetime is 15 minutes; rotating refresh lifetime is 30 days; browser transport is Cookie-only.
 - State-changing Cookie requests require SameSite, exact Origin, and CSRF validation. Browser code must not store local or Supabase bearer tokens in local storage.
 - Upload limits are 10 MiB/file, 5 files/request, 40 MP, 20 requests/hour/user, 200 MiB/day/user, and 2 concurrent uploads/user. Allowed decoded formats are JPEG, PNG, and WebP.
@@ -25,8 +25,8 @@
 - Trial output is one watermarked 3:4 image no larger than 900x1125. Paid output is a private 3:4 master plus 2:3, 3:2, 3:4, 4:5, 9:16, and 1:1 variants.
 - Retention is 24 hours for orphan uploads, 7 days for source/reference images, 30 days free, 90 days credit pack or expired subscription credits, 180 days active ordinary subscription, and 365 days active Studio.
 - Runtime feature flags are PostgreSQL-authoritative and use `OFF | ACCEPTANCE_COHORT | ON`; Redis may cache only `OFF` for at most 30 seconds. `ACCEPTANCE_COHORT`/`ON` require a live authority read, acceptance cohorts expire within 86400 seconds, and every authority/cache failure fails closed.
-- Frontend CI runs on supported Node 24 LTS, pinned to `24.17.0` in the current workflow. Pin `vue@3.4.21`, `typescript@5.3.3`, `vite@5.2.8`, `vue-tsc@1.8.27`, and `sass@1.97.3`; add exact `vitest@1.6.1`, `@vue/test-utils@2.4.6`, `jsdom@24.1.3`, `@playwright/test@1.61.1`, `@axe-core/playwright@4.12.1`, and `openapi-typescript@7.13.0`.
-- Pin Vercel CLI to `55.0.0` through `scripts/release-tools/package.json` and its committed npm lock. Every release block first runs `npm ci --prefix scripts/release-tools --ignore-scripts`, resolves `scripts/release-tools/node_modules/.bin/vercel.cmd` (or the platform equivalent), verifies stdout is exactly `55.0.0`, and invokes that binary as `$vercelCli`; `npx`, global installs, and floating `latest` are forbidden in CI/release workflows.
+- Frontend CI runs on supported Node 24 LTS, pinned to `24.17.0` in the current workflow. Pin `vue@3.4.21`, `typescript@5.3.3`, `vite@5.2.8`, `vue-tsc@2.2.12`, and `sass@1.97.3`; add exact `vitest@3.2.6`, `@vue/test-utils@2.4.6`, `jsdom@24.1.3`, `@playwright/test@1.61.1`, `@axe-core/playwright@4.12.1`, and `openapi-typescript@7.13.0`.
+- Pin Vercel CLI to `56.2.0` through `scripts/release-tools/package.json` and its committed npm lock. Every release block first runs `npm ci --prefix scripts/release-tools --ignore-scripts`, resolves `scripts/release-tools/node_modules/.bin/vercel.cmd` (or the platform equivalent), verifies stdout is exactly `56.2.0`, and invokes that binary as `$vercelCli`; `npx`, global installs, and floating `latest` are forbidden in CI/release workflows.
 - Every production-affecting task adds focused tests first, proves the new test fails for the intended reason, implements the minimum change, reruns the focused tests, updates `docs/ai-worklog.md`, reviews the diff, and commits.
 - Every PowerShell release/migration job begins with `Set-StrictMode -Version Latest`, `$ErrorActionPreference = 'Stop'`, and, on the pinned PowerShell version, `$PSNativeCommandUseErrorActionPreference = $true`; alternatively every native process is invoked through one tested wrapper that throws on a nonzero exit code. A later successful command must never mask a failed Python/Node/npm/npx/Alembic command. Workflow tests inject a native failure immediately before every write, migration, Provider call, Worker transition, domain transition, flag transition, and final CAS, and prove the next command was not invoked.
 - PowerShell interpolation that appends a colon to an environment variable must use `${env:NAME}:suffix`; static tests reject every unbraced environment-variable-plus-colon form because it truncates fencing/idempotency keys.
@@ -862,14 +862,14 @@ class CiReleaseContractTest(unittest.TestCase):
             "vue": "3.4.21",
             "typescript": "5.3.3",
             "vite": "5.2.8",
-            "vue-tsc": "1.8.27",
+            "vue-tsc": "2.2.12",
         }
         merged = {**package["dependencies"], **package["devDependencies"]}
         for name, version in expected.items():
             self.assertEqual(merged[name], version)
 ```
 
-The same test module also parses the resolver and application locks. Every installable line is exact and hash-backed, `fastapi==0.128.0` and `starlette==0.50.0` are present in both resolved application environments, no generated file contains `>=`/floating direct requirements, Linux CI installs `backend/requirements.lock.txt` with `--require-hashes`, Windows CI installs `backend/requirements.windows.lock.txt` with `--require-hashes`, and Vercel continues to consume the root `requirements.txt`. Linux and Windows each regenerate their own resolver and backend lock twice and require byte-identical SHA-256 output; one platform's resolution is not accepted as evidence for the other.
+The same test module also parses the resolver and application locks. Every installable line is exact and hash-backed, `fastapi==0.139.0` and `starlette==1.3.1` are present in both resolved application environments, no generated file contains `>=`/floating direct requirements, Linux CI installs `backend/requirements.lock.txt` with `--require-hashes`, Windows CI installs `backend/requirements.windows.lock.txt` with `--require-hashes`, and Vercel continues to consume the root `requirements.txt`. Linux and Windows each regenerate their own resolver and backend lock twice and require byte-identical SHA-256 output; one platform's resolution is not accepted as evidence for the other.
 
 - [ ] **Step 2: Run tests and baseline commands to capture the current red state**
 
@@ -891,7 +891,7 @@ Use exact package versions; do not upgrade Vue/Uni-app/Vite majors in this task:
 {
   "scripts": {
     "typecheck": "vue-tsc --noEmit",
-    "test:unit": "vitest run --passWithNoTests=false",
+    "test:unit": "vitest run",
     "build:web": "uni build -p h5"
   },
   "dependencies": {
@@ -900,7 +900,7 @@ Use exact package versions; do not upgrade Vue/Uni-app/Vite majors in this task:
   "devDependencies": {
     "typescript": "5.3.3",
     "vite": "5.2.8",
-    "vue-tsc": "1.8.27"
+    "vue-tsc": "2.2.12"
   }
 }
 ```
@@ -915,7 +915,7 @@ lifecycle scripts to typecheck or build. Task 22 adds Vitest and the first real
 test before `test:unit` becomes a mandatory CI command; until then the baseline
 script must report `frontend_unit=NOT_RUN`, not PASS.
 
-In the same task, copy the root API direct requirements into `requirements.in`, pin the audited framework boundary as `fastapi==0.128.0` plus `starlette==0.50.0`, and apply those same two exact framework pins to the existing `backend/requirements.txt` direct input. Put only `pip-tools==7.5.3` in `requirements-resolver.in`, generate a hash-bearing resolver lock for each platform, install that lock with `--require-hashes`, and use it to generate the platform's application locks. The pinned Linux resolver image is `python:3.11.15-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f`:
+In the same task, copy the root API direct requirements into `requirements.in`, pin the audited framework boundary as `fastapi==0.139.0` plus `starlette==1.3.1`, and apply those same two exact framework pins to the existing `backend/requirements.txt` direct input. Pin `build==1.5.0` and `pip-tools==7.5.3` in `requirements-resolver.in`, generate a hash-bearing resolver lock for each platform, install that lock with `--require-hashes`, and use it to generate the platform's application locks. The pinned Linux resolver image is `python:3.11.15-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f`:
 
 ```powershell
 python -m pip install --require-hashes -r requirements-resolver.txt
@@ -1231,7 +1231,7 @@ async def retired_guest_login() -> None:
     )
 ```
 
-Remove guest bootstrap calls, guest/token storage keys, `previous_guest_id`, `_merge_guest_account`, `X-User-OpenID`/`X-Visitor-Id` ownership headers, and Continue-as-guest copy from frontend auth/order/account surfaces. Remove the anonymous join route from `pages.json` until Task 24 installs the authenticated Partner flow. Remove Mini Program and QR packages/config. Remove `openid` from public Pydantic/TypeScript responses; retain internal UUID `user_id`; `_helpers.py`/`_shared.py` retain only non-legacy helpers needed by Task 7. Remove Live Portrait, local recommendation, leads/contact form, and unverified subscription-perk CTAs from the active H5 surface. The centralized tombstones return 410 before query/serialization/mutation and cannot be re-enabled by frontend/config fallback; only later service-authenticated inventory/backfill reads historical rows.
+Remove guest bootstrap calls, guest/token storage keys, `previous_guest_id`, `_merge_guest_account`, `X-User-OpenID`/`X-Visitor-Id` ownership headers, and Continue-as-guest copy from frontend auth/order/account surfaces. Remove the anonymous join route from `pages.json` until Task 24 installs the authenticated Partner flow. Remove Mini Program and QR packages/config. Remove `openid` from public Pydantic/TypeScript responses; retain internal UUID `user_id`; `_helpers.py`/`_shared.py` retain only non-legacy helpers needed by Task 7. Remove Live Portrait, local recommendation, leads/contact form, and unverified subscription-perk CTAs from the active Web SaaS surface. The centralized tombstones return 410 before query/serialization/mutation and cannot be re-enabled by frontend/config fallback; only later service-authenticated inventory/backfill reads historical rows.
 
 Do not globally delete the words “guest” or “WeChat”: content-policy detection of payment QR/WeChat Pay scams and legacy migration documentation remain valid non-product evidence.
 
@@ -1316,7 +1316,7 @@ class IdentitySessionSchemaTest(unittest.TestCase):
     def test_migration_follows_current_head(self) -> None:
         path = Path(__file__).resolve().parents[1] / "alembic/versions/20260710_0014_web_identity_sessions.py"
         text = path.read_text(encoding="utf-8")
-        self.assertIn('down_revision = "20260710_0013"', text)
+        self.assertIn('down_revision = "20260712_0014"', text)
 ```
 
 Add PostgreSQL integration tests for duplicate subject, duplicate legacy merge, merge self-reference, merge cycles, email duplicates, tombstone FK restrictions, session-family uniqueness, and one-time claim-proof consumption bound to exact legacy/canonical IDs. Prove a user delete cannot cascade-delete any credit transaction, purchase, order, subscription grant/projection, user-credit fact, or retained Live Portrait audit row. Every identity/session/refresh/OAuth-intent/claim-proof/merge/email-conflict/tombstone table is service-only under PostgreSQL RLS; ordinary authenticated roles cannot directly SELECT or mutate it. `test_identity_rls.py` connects as a real authenticated PostgreSQL role and proves own-row access, cross-user denial, direct `user_identities` SELECT denial, malicious `search_path` resistance, and the separately authorized service-role path.
@@ -1355,7 +1355,7 @@ class AuthSession(Base):
 
 `IdentityEmailConflict` stores the canonical and legacy user IDs, an HMAC of the normalized conflicting email, `OPEN | RESOLVED_MERGED | RESOLVED_DISTINCT`, discovery source/time, resolution time, and resolution audit ID. Login/claim discovery creates it idempotently; email equality never merges accounts. Resolution requires the Task 8 proof path and remains queryable after resolution.
 
-`OAuthLoginIntent` stores a 128-bit app-intent token hash, browser binding hash, redirect path, 10-minute expiry, and consumed timestamp. It does not store or pretend to validate Supabase's internal OAuth state, Google nonce, or PKCE verifier. `UserIdentity` stores provider=`supabase`, subject, user ID, verified email snapshot, and timestamps. `users.email` becomes non-unique profile data; `users.openid/unionid/username/password/auth_provider/auth_subject` remain nullable legacy fields until Task 30. Migration `0014` changes every existing financial/order/subscription/retained-job user FK represented by the model files in this task from destructive CASCADE to RESTRICT or tombstone-safe behavior. It also replaces `app_current_user_id()` and every affected RLS policy with a 7a dual lookup: prefer `(provider,subject)` in `user_identities`, fall back to legacy `users.auth_provider/auth_subject` only when no normalized row exists. The resolver is a narrowly scoped `SECURITY DEFINER` SQL function owned by a non-login owner, uses `SET search_path = pg_catalog, public`, validates the required JWT provider/subject claim shapes, queries only the indexed identity/legacy keys with no dynamic SQL, has `REVOKE ALL FROM PUBLIC`, and grants EXECUTE only to the authenticated role; that role receives no direct table SELECT. The fallback is read-compatible only and is measured for zero use before Task 30; new writes never populate legacy identity fields. Task 30 replaces it with an identity-only function with the same hardening before dropping legacy fields.
+`OAuthLoginIntent` stores a 128-bit app-intent token hash, browser binding hash, redirect path, 10-minute expiry, and consumed timestamp. It does not store or pretend to validate Supabase's internal OAuth state, Google nonce, or PKCE verifier. `UserIdentity` stores provider=`supabase`, subject, user ID, verified email snapshot, and timestamps. `users.email` becomes non-unique profile data; `users.openid/unionid/username/password/auth_provider/auth_subject` remain nullable legacy fields until Task 30. Migration `0014` has revision ID `20260710_0014` and `down_revision = "20260712_0014"`; it changes every existing financial/order/subscription/retained-job user FK represented by the model files in this task from destructive CASCADE to RESTRICT or tombstone-safe behavior. It also replaces `app_current_user_id()` and every affected RLS policy with a 7a dual lookup: prefer `(provider,subject)` in `user_identities`, fall back to legacy `users.auth_provider/auth_subject` only when no normalized row exists. The resolver is a narrowly scoped `SECURITY DEFINER` SQL function owned by a non-login owner, uses `SET search_path = pg_catalog, public`, validates the required JWT provider/subject claim shapes, queries only the indexed identity/legacy keys with no dynamic SQL, has `REVOKE ALL FROM PUBLIC`, and grants EXECUTE only to the authenticated role; that role receives no direct table SELECT. The fallback is read-compatible only and is measured for zero use before Task 30; new writes never populate legacy identity fields. Task 30 replaces it with an identity-only function with the same hardening before dropping legacy fields.
 
 - [ ] **Step 4: Upgrade a fresh PostgreSQL database and prove constraints**
 
@@ -1440,7 +1440,7 @@ git commit -m "feat: add Web identity and revocable session schema"
 **Interfaces:**
 - Produces: `POST /api/v1/auth/oauth-intents`, `POST /api/v1/auth/supabase/session`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`, and `GET /api/v1/auth/me`.
 - Produces: `get_session_user()` and `get_optional_session_user()`; later routers must use these instead of Bearer/OpenID fallbacks.
-- Cookies: `vowpic_access` (HttpOnly/Secure/SameSite=Lax, Path `/api/v1`, Max-Age 900), `vowpic_refresh` (HttpOnly/Secure/SameSite=Strict, Path `/api/v1/auth/refresh`, Max-Age 2592000), and non-HttpOnly `vowpic_csrf` (Secure/SameSite=Lax, Path `/`) bound by hash to the session so real H5 pages can read it and send `X-CSRF-Token`.
+- Cookies: `vowpic_access` (HttpOnly/Secure/SameSite=Lax, Path `/api/v1`, Max-Age 900), `vowpic_refresh` (HttpOnly/Secure/SameSite=Strict, Path `/api/v1/auth/refresh`, Max-Age 2592000), and non-HttpOnly `vowpic_csrf` (Secure/SameSite=Lax, Path `/`) bound by hash to the session so real Web pages can read it and send `X-CSRF-Token`.
 - Produces: verified TLS/CORS/security-header/Origin contract and separates browser Admin identity from service credentials.
 - Produces: the first protected `.github/workflows/integration.yml` slice and a real Preview Google session smoke with exact-origin/binding/flag cleanup; later tasks may expand this workflow but cannot recreate or replace its fail-closed identity foundation.
 - Produces: the first `PREVIEW_IDENTITY` runtime contract/activation, with no Worker, and consumes the shared resolver created in Task 2; a loose source SHA or unregistered Preview deployment can never enable the smoke.
@@ -3734,8 +3734,8 @@ git commit -m "feat: add authenticated partner consent flow"
 Run from repository root:
 
 ```powershell
-npm --prefix frontend install --save-dev --save-exact vitest@1.6.1 @vue/test-utils@2.4.6 jsdom@24.1.3 @axe-core/playwright@4.12.1 openapi-typescript@7.13.0
-npm --prefix frontend ci
+npm --prefix frontend install --save-dev --save-exact vitest@3.2.6 @vue/test-utils@2.4.6 jsdom@24.1.3 @axe-core/playwright@4.12.1 openapi-typescript@7.13.0
+npm --prefix frontend ci --ignore-scripts
 npm --prefix frontend run playwright:install
 ```
 
@@ -4042,7 +4042,7 @@ Structured events carry available `request_id`, internal/hashed `user_id`, `orde
 
 - [ ] **Step 5: Add serialized build/stage workflow support without running it**
 
-Define a non-reusable manual-only `workflow_dispatch` entry with required exact source SHA, GitHub Production Environment approval, and global `concurrency.cancel-in-progress: false`; explicitly forbid push/PR/schedule/repository dispatch/`workflow_call`. Pin Vercel CLI to `55.0.0`; require the target SHA to equal approved main HEAD and acquire the database release lease before secrets. The workflow can build once and deploy the same prebuilt output twice as distinct, unbound Production deployments, but Task 27 neither reads Production secrets nor runs it:
+Define a non-reusable manual-only `workflow_dispatch` entry with required exact source SHA, GitHub Production Environment approval, and global `concurrency.cancel-in-progress: false`; explicitly forbid push/PR/schedule/repository dispatch/`workflow_call`. Pin Vercel CLI to `56.2.0`; require the target SHA to equal approved main HEAD and acquire the database release lease before secrets. The workflow can build once and deploy the same prebuilt output twice as distinct, unbound Production deployments, but Task 27 neither reads Production secrets nor runs it:
 
 ```powershell
 & $vercelCli pull --yes --environment=production --token=$env:VERCEL_TOKEN
@@ -4123,7 +4123,7 @@ Expected: the sandbox call and activation commit PASS and the committed contract
 
 ## Stage 6 — Web Product And Partner Invite
 
-### Task 23: Refactor The H5 Main Journey Onto Typed Services And Real Server Facts
+### Task 23: Refactor The Web SaaS Main Journey Onto Typed Services And Real Server Facts
 
 **Files:**
 - Create: `backend/app/schemas/account_export.py`
@@ -4249,7 +4249,7 @@ Create `frontend/e2e/main-flow.spec.ts` against the protected Preview workflow e
 
 `cleanup_main_flow_preview.py` waits a bounded reconciliation window, records unresolved test-mode payment facts as a gate failure, restores/removes the exact callback alias and edge rule from the durable pre-change snapshot, verifies no Preview route residue, revokes the cohort/binding, removes only disposable test rows/assets under the case prefix, preserves immutable payment/ledger/audit facts, restores the pre-run flag/origin snapshots, reads back every permitted cleanup, and fails the gate on residue or cancellation cleanup failure. Before enabling Generation for this case, the workflow also reuses Task 27's `configure_preview_provider_grant_origin.py` and `verify_provider_grant_fetch.py` for the exact new Preview deployment/runtime, then includes both Provider-grant and payment-callback objects in the independent cleanup snapshot. Missing the dedicated Creem test callback resource, exact alias authority, real Creem test mode, a signed webhook, or an isolated eligible identity is NOT_RUN/nonzero; the workflow may not substitute fixtures, a forged webhook, or balance injection.
 
-- [ ] **Step 5: Verify unit, type, and H5 build gates**
+- [ ] **Step 5: Verify unit, type, and Web build gates**
 
 ```powershell
 python -m unittest backend.tests.test_account_export backend.tests.test_openapi_contract backend.tests.test_main_flow_preview_workflow -v
@@ -4272,7 +4272,7 @@ npm --prefix frontend run build:web
 
 Expected: unit/type/build/OpenAPI commands PASS locally; the protected Preview E2E PASS only with both bound identities and real isolated resources, otherwise reports NOT_RUN/nonzero and leaves all affected flags OFF. No page-local API duplication or catalog fallback is found by `rg`.
 
-- [ ] **Step 6: Record and commit the real H5 main journey**
+- [ ] **Step 6: Record and commit the real Web SaaS main journey**
 
 ```powershell
 git diff --check
@@ -4280,7 +4280,7 @@ git add backend/app/schemas/account_export.py backend/app/services/account_expor
 git commit -m "feat: rebuild the typed web user journey"
 ```
 
-### Task 24: Implement Partner Invite H5 And Two-Browser Permission Proof
+### Task 24: Implement Partner Invite Web Flow And Two-Browser Permission Proof
 
 **Files:**
 - Create: `frontend/src/services/partnerInvites.ts`
@@ -4320,7 +4320,7 @@ Expected: FAIL because current join flow is anonymous, URL-based, and has no Goo
 
 - [ ] **Step 3: Implement typed Partner Invite pages**
 
-The host receives a copyable HTTPS link, not a platform QR contract. The partner signs in, accepts, consents to the immutable order intent, and uploads through `mediaService`. The host can submit only at CONSENTED and pays current couple pricing through Task 21's single typed `POST /partner-invites/{id}/order` operation; the H5 never performs separate invite/order writes or supplies partner asset, price, trial, or funding facts. Revoke/withdraw actions require confirmation and show actual case/settlement state. Refresh always rehydrates from the authenticated API.
+The host receives a copyable HTTPS link, not a platform QR contract. The partner signs in, accepts, consents to the immutable order intent, and uploads through `mediaService`. The host can submit only at CONSENTED and pays current couple pricing through Task 21's single typed `POST /partner-invites/{id}/order` operation; the Web client never performs separate invite/order writes or supplies partner asset, price, trial, or funding facts. Revoke/withdraw actions require confirmation and show actual case/settlement state. Refresh always rehydrates from the authenticated API.
 
 - [ ] **Step 4: Add mandatory two-context Playwright flow**
 
@@ -4413,7 +4413,7 @@ npm --prefix frontend run test:e2e -- e2e/partner-invite.spec.ts
 
 Expected: unit PASS. Preview E2E PASS only with two real test identities and real sandbox resources; otherwise NOT_RUN/nonzero and flag stays OFF.
 
-- [ ] **Step 6: Record and commit Partner Invite H5**
+- [ ] **Step 6: Record and commit Partner Invite Web flow**
 
 ```powershell
 git diff --check
@@ -4518,7 +4518,7 @@ git add frontend/src/assets/fonts/bodoni-moda-regular.woff2 frontend/src/assets/
 git commit -m "fix: meet web accessibility and truthful policy contracts"
 ```
 
-**Stage 6 exit:** OpenAPI drift, typecheck, all component tests, H5 build, real Preview login/upload/trial/watermarked-preview/Creem-checkout/signed-webhook/exact-entitlement/private-download/account-export/deletion chain, accessibility/responsive/visual tests, and the two-real-browser paid-grant Partner Invite flow all PASS with purchase/grant/reservation/order lineage and no seeded or unrelated credits. If the monitored support channel or real Preview identities/resources are absent, the relevant UI promise stays hidden and Partner Invite stays OFF; build success alone does not satisfy this exit.
+**Stage 6 exit:** OpenAPI drift, typecheck, all component tests, Web build, real Preview login/upload/trial/watermarked-preview/Creem-checkout/signed-webhook/exact-entitlement/private-download/account-export/deletion chain, accessibility/responsive/visual tests, and the two-real-browser paid-grant Partner Invite flow all PASS with purchase/grant/reservation/order lineage and no seeded or unrelated credits. If the monitored support channel or real Preview identities/resources are absent, the relevant UI promise stays hidden and Partner Invite stays OFF; build success alone does not satisfy this exit.
 
 ---
 

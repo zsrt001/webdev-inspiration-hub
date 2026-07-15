@@ -44,12 +44,11 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
     def test_mutating_routes_use_authoritative_request_dependency(self) -> None:
         expected = {
             "routers/auth/google.py",
-            "routers/upload.py",
+            "routers/media.py",
             "routers/gatekeeper.py",
             "routers/orders.py",
             "routers/payments.py",
             "routers/subscriptions.py",
-            "routers/session.py",
             "routers/admin.py",
             "routers/ops.py",
         }
@@ -60,12 +59,12 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
                 missing.append(relative)
         self.assertEqual(missing, [])
 
-    def test_partner_invite_is_flag_guarded_and_not_permanently_retired(self) -> None:
-        source = (APP / "routers" / "session.py").read_text(encoding="utf-8")
-        self.assertIn("Capability.PARTNER_INVITE", source)
-        self.assertIn("require_request_capability", source)
-        self.assertNotIn("partner_invite_retired", source)
-        self.assertNotIn("_raise_partner_invite_retired", source)
+    def test_anonymous_partner_session_is_centralized_and_permanently_retired(self) -> None:
+        self.assertFalse((APP / "routers" / "session.py").exists())
+        source = (APP / "routers" / "retired.py").read_text(encoding="utf-8")
+        self.assertIn('"/session/create"', source)
+        self.assertIn('"/session/{session_id}/bind_order"', source)
+        self.assertIn("partner_session_retired", source)
 
     def test_admin_mutations_use_the_separate_control_plane_connection(self) -> None:
         source = (APP / "routers" / "ops_admin.py").read_text(encoding="utf-8")
@@ -89,22 +88,38 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
 
         identifier = "00000000-0000-0000-0000-000000000000"
         expected_blocked = {
-            ("GET", "/api/v1/auth/supabase/google/start"),
+            ("POST", "/api/v1/auth/oauth-intents"),
             ("POST", "/api/v1/auth/supabase/session"),
-            ("POST", "/api/v1/upload"),
-            ("POST", "/api/v1/upload/multiple"),
-            ("POST", "/api/v1/upload/delete"),
+            ("POST", "/api/v1/media/uploads"),
             ("POST", "/api/v1/gatekeeper/check"),
             ("POST", "/api/v1/orders/create"),
             ("DELETE", f"/api/v1/orders/{identifier}"),
             ("GET", "/api/v1/credits/packages"),
             ("POST", "/api/v1/payments/checkout"),
+            ("POST", "/api/v1/subscriptions/checkout"),
+            ("POST", "/api/v1/subscriptions/cancel"),
+            ("GET", "/api/v1/admin/creem_product_check"),
+            ("POST", "/api/v1/admin/creem_checkout_probe"),
+            ("POST", "/api/v1/admin/generation_probe"),
+            ("POST", "/api/v1/admin/grant_credits"),
+            ("POST", f"/api/v1/admin/orders/{identifier}/regenerate"),
+            ("POST", "/api/v1/admin/cleanup_expired_assets"),
+            ("POST", "/api/v1/ops/poll_pending_orders"),
+        }
+        observed_blocked = {
+            (probe.method, probe.path) for probe in module.GUARDED_ROUTE_PROBES
+        }
+        self.assertEqual(observed_blocked, expected_blocked)
+
+        expected_retired = {
             ("GET", "/api/v1/payments/manual/checkout"),
             ("POST", "/api/v1/payments/manual/submit"),
             ("POST", "/api/v1/payments/manual/admin/complete"),
             ("POST", "/api/v1/payments/manual/admin/fail"),
-            ("POST", "/api/v1/subscriptions/checkout"),
-            ("POST", "/api/v1/subscriptions/cancel"),
+            ("POST", "/api/v1/auth/login"),
+            ("POST", "/api/v1/upload"),
+            ("POST", "/api/v1/upload/multiple"),
+            ("POST", "/api/v1/upload/delete"),
             ("POST", "/api/v1/session/create"),
             ("GET", "/api/v1/session/safe-baseline-probe/status"),
             ("POST", "/api/v1/session/safe-baseline-probe/upload/host"),
@@ -114,22 +129,6 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
             ("POST", "/api/v1/session/safe-baseline-probe/processing"),
             ("POST", "/api/v1/session/safe-baseline-probe/complete"),
             ("POST", "/api/v1/session/safe-baseline-probe/bind_order"),
-            ("GET", "/api/v1/admin/creem_product_check"),
-            ("POST", "/api/v1/admin/creem_checkout_probe"),
-            ("POST", "/api/v1/admin/generation_probe"),
-            ("POST", "/api/v1/admin/grant_credits"),
-            ("POST", f"/api/v1/admin/orders/{identifier}/regenerate"),
-            ("POST", "/api/v1/admin/cleanup_expired_assets"),
-            ("GET", "/api/v1/ops/poll_pending_orders"),
-            ("POST", "/api/v1/ops/poll_pending_orders"),
-        }
-        observed_blocked = {
-            (probe.method, probe.path) for probe in module.GUARDED_ROUTE_PROBES
-        }
-        self.assertEqual(observed_blocked, expected_blocked)
-
-        expected_retired = {
-            ("POST", "/api/v1/auth/login"),
             ("POST", "/api/v1/users/"),
             ("GET", f"/api/v1/users/{identifier}"),
             ("PATCH", f"/api/v1/users/{identifier}"),
@@ -165,21 +164,21 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
 
 
 class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
-    async def test_ops_admin_rejects_backend_token_and_non_google_supabase_identity(self) -> None:
-        ops_admin = importlib.import_module("app.routers.ops_admin")
+    async def test_browser_admin_requires_active_database_role_on_cookie_identity(self) -> None:
+        admin_auth = importlib.import_module("app.core.admin_auth")
         request = SimpleNamespace(state=SimpleNamespace())
-        db = AsyncMock()
-        with self.assertRaises(HTTPException) as missing:
-            await ops_admin.require_google_database_admin(request, db, authorization=None)
-        self.assertEqual(missing.exception.status_code, 401)
-        db.execute.assert_not_awaited()
+        active_admin = SimpleNamespace(id=__import__("uuid").uuid4(), role="admin", status="active")
+        resolved = await admin_auth.require_admin_user(request, active_admin)
+        self.assertIs(resolved, active_admin)
+        self.assertEqual(request.state.admin_actor, f"admin-user:{active_admin.id}")
 
-        claims = SimpleNamespace(provider="email", subject="subject")
-        with patch.object(ops_admin, "verify_supabase_token", new=AsyncMock(return_value=claims)):
-            with self.assertRaises(HTTPException) as wrong_provider:
-                await ops_admin.require_google_database_admin(request, db, authorization="Bearer token")
-        self.assertEqual(wrong_provider.exception.status_code, 403)
-        db.execute.assert_not_awaited()
+        for user in (
+            SimpleNamespace(id=__import__("uuid").uuid4(), role="user", status="active"),
+            SimpleNamespace(id=__import__("uuid").uuid4(), role="admin", status="suspended"),
+        ):
+            with self.subTest(role=user.role, status=user.status), self.assertRaises(HTTPException) as denied:
+                await admin_auth.require_admin_user(SimpleNamespace(state=SimpleNamespace()), user)
+            self.assertEqual(denied.exception.status_code, 403)
 
     async def test_request_guard_returns_structured_503_on_database_failure(self) -> None:
         flags = importlib.import_module("app.core.feature_flags")

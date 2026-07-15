@@ -23,17 +23,39 @@ from scripts.release.github_artifact_evidence import (
     read_report as read_github_artifact_report,
 )
 
-INITIAL_COORDINATE_KINDS = ("preview-identity", "safe-baseline")
+COORDINATE_KINDS = (
+    "preview-identity",
+    "preview-commercial",
+    "preview-commercial-cleaned",
+    "safe-baseline",
+    "commercial-7a",
+    "contract-7b",
+)
+# Backward-compatible name for callers that only use it as argparse choices.
+INITIAL_COORDINATE_KINDS = COORDINATE_KINDS
 SPEC_BY_KIND = {
     "preview-identity": {"environment": "preview", "kind": "PREVIEW_IDENTITY", "phase": "COMPLETED"},
+    "preview-commercial": {
+        "environment": "preview", "kind": "PREVIEW_COMMERCIAL", "phase": "COMPLETED"
+    },
+    "preview-commercial-cleaned": {
+        "environment": "preview",
+        "kind": "PREVIEW_COMMERCIAL",
+        "phase": "CLEANED",
+        "report_phase": "COMPLETED",
+    },
     "safe-baseline": {"environment": "production", "kind": "SAFE_BASELINE_INSTALL", "phase": "COMPLETED"},
+    "commercial-7a": {"environment": "production", "kind": "COMMERCIAL_7A", "phase": "COMPLETED"},
+    "contract-7b": {"environment": "production", "kind": "CONTRACT_7B", "phase": "COMPLETED"},
 }
 FORBIDDEN_ACTIVATION_KEYS = {
     "caller_pass", "caller_deployment_id", "caller_manifest_sha256", "caller_report_sha256"
 }
 OUTPUT_KEYS = (
-    "environment", "kind", "source_sha", "runtime_bundle_id", "api_deployment_id",
-    "worker_deployment_id", "worker_image_digest", "manifest_sha256", "report_sha256", "phase",
+    "activation_id", "environment", "kind", "source_sha", "runtime_bundle_id",
+    "api_deployment_id", "api_deployment_url", "api_role",
+    "worker_deployment_id", "worker_role", "worker_image_digest", "manifest_sha256",
+    "report_sha256", "private_evidence_prefix", "workflow_run_id", "workflow_attempt", "phase",
 )
 
 
@@ -68,6 +90,17 @@ def resolve_records(
         if activation.get(key) != spec[key]:
             raise ValueError(f"activation {key} does not match {coordinate_kind}")
     required = ("source_sha", "runtime_bundle_id", "api_deployment_id", "report_sha256", "updated_at")
+    if coordinate_kind != "safe-baseline":
+        required = (*required, "id", "api_deployment_url")
+    commercial_kinds = {
+        "preview-commercial", "preview-commercial-cleaned", "commercial-7a", "contract-7b"
+    }
+    if coordinate_kind in commercial_kinds:
+        required = (
+            *required,
+            "manifest_sha256", "api_role", "worker_deployment_id", "worker_role",
+            "worker_image_digest", "private_evidence_prefix", "workflow_run_id", "workflow_attempt",
+        )
     missing = [key for key in required if not activation.get(key)]
     if missing:
         raise ValueError(f"activation coordinates are incomplete: {', '.join(missing)}")
@@ -84,21 +117,44 @@ def resolve_records(
         "source_sha": activation["source_sha"],
         "runtime_bundle_id": activation["runtime_bundle_id"],
         "api_deployment_id": activation["api_deployment_id"],
-        "phase": activation["phase"],
+        "phase": spec.get("report_phase", activation["phase"]),
     }
+    if coordinate_kind in commercial_kinds:
+        report_matches.update(
+            {
+                "manifest_sha256": activation["manifest_sha256"],
+                "api_role": activation["api_role"],
+                "worker_deployment_id": activation["worker_deployment_id"],
+                "worker_role": activation["worker_role"],
+                "worker_image_digest": activation["worker_image_digest"],
+            }
+        )
     for key, expected in report_matches.items():
         if report.get(key) != expected:
             raise ValueError(f"create-once report {key} mismatch")
+    if coordinate_kind != "safe-baseline" and str(report.get("activation_id")) != str(activation["id"]):
+        raise ValueError("create-once report activation ID mismatch")
     report_hash = report.get("_content_sha256") or report.get("sha256")
     if report_hash != activation["report_sha256"]:
         raise ValueError("create-once report hash mismatch")
     report_created = _timestamp(report.get("created_at"))
     if report_created > current + timedelta(minutes=5) or current - report_created > maximum_age:
         raise ValueError("create-once report is stale")
-    return {key: activation.get(key) for key in OUTPUT_KEYS if activation.get(key) is not None}
+    resolved = {
+        key: activation.get(key)
+        for key in OUTPUT_KEYS
+        if key != "activation_id" and activation.get(key) is not None
+    }
+    if activation.get("id") is not None:
+        resolved["activation_id"] = str(activation["id"])
+    return resolved
 
 
-def _load_activation(database_url: str, coordinate_kind: str) -> list[dict[str, Any]]:
+def _load_activation(
+    database_url: str,
+    coordinate_kind: str,
+    expected_source_sha: str | None = None,
+) -> list[dict[str, Any]]:
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
@@ -106,18 +162,26 @@ def _load_activation(database_url: str, coordinate_kind: str) -> list[dict[str, 
     with psycopg2.connect(database_url) as connection:
         connection.set_session(readonly=True, autocommit=False)
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT environment, kind, source_sha, runtime_bundle_id, manifest_sha256,
-                       report_sha256, api_deployment_id, worker_deployment_id,
-                       worker_image_digest, phase, private_evidence_prefix, updated_at
+            query = """
+                SELECT id, environment, kind, source_sha, runtime_bundle_id, manifest_sha256,
+                       report_sha256, api_deployment_id, api_deployment_url, worker_deployment_id,
+                       api_role, worker_role, worker_image_digest, phase, private_evidence_prefix,
+                       workflow_run_id, workflow_attempt, updated_at
                 FROM release_activations
                 WHERE environment = %s AND kind = %s AND phase = %s
+                {source_filter}
                 ORDER BY updated_at DESC
                 LIMIT 2
-                """,
-                (spec["environment"], spec["kind"], spec["phase"]),
+                """
+            parameters: tuple[object, ...] = (
+                spec["environment"], spec["kind"], spec["phase"]
             )
+            if expected_source_sha:
+                query = query.format(source_filter="AND source_sha = %s")
+                parameters = (*parameters, expected_source_sha)
+            else:
+                query = query.format(source_filter="")
+            cursor.execute(query, parameters)
             return [dict(row) for row in cursor.fetchall()]
 
 
@@ -149,7 +213,7 @@ def _read_report(
         return {**payload, "_content_sha256": actual_sha256}
     if private_store_root is None:
         raise ValueError("local private evidence root is required")
-    if not prefix or ".." in Path(prefix).parts:
+    if not prefix or ".." in Path(prefix).parts or "latest" in {part.lower() for part in Path(prefix).parts}:
         raise ValueError("activation private evidence prefix is invalid")
     root = private_store_root.resolve()
     report_path = (root / prefix / "activation-report.json").resolve()
@@ -184,7 +248,7 @@ def _reject_inherited_coordinates(prefix: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--coordinate-kind", required=True, choices=INITIAL_COORDINATE_KINDS)
+    parser.add_argument("--coordinate-kind", required=True, choices=COORDINATE_KINDS)
     parser.add_argument("--database-url-env", required=True)
     parser.add_argument("--private-evidence-root-env")
     parser.add_argument("--github-token-env", default="GITHUB_TOKEN")
@@ -197,7 +261,9 @@ def main() -> int:
     if args.database_url_env not in os.environ or not os.environ[args.database_url_env].strip():
         raise ValueError("database URL environment variable is absent")
     _reject_inherited_coordinates(args.env_prefix)
-    activations = _load_activation(os.environ[args.database_url_env], args.coordinate_kind)
+    activations = _load_activation(
+        os.environ[args.database_url_env], args.coordinate_kind, args.source_sha
+    )
     if len(activations) != 1:
         raise ValueError("exactly one activation row is required")
     root_value = (

@@ -1,18 +1,15 @@
-"""Identity embedding hard gate tests."""
+"""Owner-checked private-byte identity embedding tests."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import sys
+import inspect
+from types import SimpleNamespace
 import unittest
+import uuid
+from unittest.mock import AsyncMock, patch
 
-
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-from app.services import qa_service  # noqa: E402
-from app.services.identity_embedding_service import FaceEmbedding, IdentityEmbeddingService  # noqa: E402
+from app.services import identity_embedding_service as module
+from app.services.identity_embedding_service import FaceEmbedding, IdentityEmbeddingService
 
 
 def _face(vector: list[float], *, offset: float = 0.0) -> FaceEmbedding:
@@ -24,110 +21,93 @@ def _face(vector: list[float], *, offset: float = 0.0) -> FaceEmbedding:
 
 
 class IdentityEmbeddingServiceTest(unittest.IsolatedAsyncioTestCase):
-    async def test_single_subject_low_similarity_blocks_delivery(self) -> None:
+    async def _verify(
+        self,
+        *,
+        is_couple: bool,
+        faces_by_content: dict[bytes, list[FaceEmbedding]],
+    ):
         service = IdentityEmbeddingService()
+        owner_id = uuid.uuid4()
+        source_ids = [uuid.uuid4(), uuid.uuid4()] if is_couple else [uuid.uuid4()]
+        generated_id = uuid.uuid4()
+        content_by_id = {
+            source_id: f"source-{index}".encode("ascii")
+            for index, source_id in enumerate(source_ids, start=1)
+        }
+        content_by_id[generated_id] = b"generated"
 
-        async def fake_faces_for_url(url: str):
-            if "source" in url:
-                return [_face([1.0, 0.0, 0.0])]
-            return [_face([0.0, 1.0, 0.0])]
+        async def fake_load(_db, *, owner_user_id, asset_id):
+            self.assertEqual(owner_user_id, owner_id)
+            return SimpleNamespace(content=content_by_id[asset_id])
 
-        service._faces_for_url = fake_faces_for_url  # type: ignore[method-assign]
+        service._detect_faces_from_bytes = lambda content: faces_by_content[content]  # type: ignore[method-assign]
+        load = AsyncMock(side_effect=fake_load)
+        with patch.object(module, "load_owned_asset_bytes", load):
+            verdict = await service.verify_identity_similarity(
+                object(),
+                owner_user_id=owner_id,
+                generated_asset_id=generated_id,
+                source_asset_ids=source_ids,
+                is_couple=is_couple,
+            )
+        return verdict, load
 
-        verdict = await service.verify_identity_similarity(
-            "https://cdn.example.com/generated.jpg",
-            source_image_urls=["https://cdn.example.com/source.jpg"],
+    async def test_single_subject_low_similarity_blocks_delivery(self) -> None:
+        verdict, load = await self._verify(
+            is_couple=False,
+            faces_by_content={
+                b"source-1": [_face([1.0, 0.0, 0.0])],
+                b"generated": [_face([0.0, 1.0, 0.0])],
+            },
         )
 
         self.assertFalse(verdict["passed"])
         self.assertEqual(verdict["reasons"], ["identity_similarity_low"])
         self.assertEqual(verdict["issues"][0]["category"], "identity")
-        self.assertTrue(verdict["issues"][0]["blocking"])
+        self.assertEqual(load.await_count, 2)
 
     async def test_couple_ambiguous_identity_match_blocks_as_averaging(self) -> None:
-        service = IdentityEmbeddingService()
-
-        async def fake_faces_for_url(url: str):
-            if "source-a" in url:
-                return [_face([1.0, 0.0, 0.0])]
-            if "source-b" in url:
-                return [_face([0.0, 1.0, 0.0])]
-            return [
-                _face([0.707, 0.707, 0.0]),
-                _face([0.707, 0.707, 0.0], offset=140.0),
-            ]
-
-        service._faces_for_url = fake_faces_for_url  # type: ignore[method-assign]
-
-        verdict = await service.verify_identity_similarity(
-            "https://cdn.example.com/generated.jpg",
-            source_image_urls=["https://cdn.example.com/source-a.jpg", "https://cdn.example.com/source-b.jpg"],
+        verdict, load = await self._verify(
             is_couple=True,
+            faces_by_content={
+                b"source-1": [_face([1.0, 0.0, 0.0])],
+                b"source-2": [_face([0.0, 1.0, 0.0])],
+                b"generated": [
+                    _face([0.707, 0.707, 0.0]),
+                    _face([0.707, 0.707, 0.0], offset=140.0),
+                ],
+            },
         )
 
         self.assertFalse(verdict["passed"])
         self.assertIn("identity_margin_low", verdict["reasons"])
         self.assertIn("identity_averaging", verdict["reasons"])
+        self.assertEqual(load.await_count, 3)
 
-    async def test_output_verdict_fails_before_vision_when_embedding_gate_fails(self) -> None:
-        original_basic = qa_service.basic_image_verdict
-        original_embedding = qa_service.identity_embedding_service.verify_identity_similarity
-        original_vision = qa_service.verify_with_vision_verdict
-        original_required = qa_service.settings.qa_require_identity_embedding
-        vision_called = False
-
-        async def fake_basic(_url: str) -> dict:
-            return {
-                "passed": True,
-                "reasons": [],
-                "issues": [],
-                "metrics": {},
-                "source": "local",
-                "notes": "",
-            }
-
-        async def fake_embedding(*args, **kwargs) -> dict:
-            return {
-                "passed": False,
-                "reasons": ["identity_similarity_low"],
-                "issues": [
-                    {
-                        "code": "identity_similarity_low",
-                        "category": "identity",
-                        "target": "face_embedding_similarity",
-                        "severity": "critical",
-                        "blocking": True,
-                    }
-                ],
-                "metrics": {"identity_similarity": 0.2},
-                "source": "identity_embedding",
-                "notes": "single_similarity=0.200",
-            }
-
-        async def fake_vision(*args, **kwargs) -> dict:
-            nonlocal vision_called
-            vision_called = True
-            return {"passed": True, "reasons": [], "issues": [], "notes": "", "source": "vision"}
-
-        qa_service.basic_image_verdict = fake_basic
-        qa_service.identity_embedding_service.verify_identity_similarity = fake_embedding
-        qa_service.verify_with_vision_verdict = fake_vision
-        qa_service.settings.qa_require_identity_embedding = True
-        try:
-            verdict = await qa_service.output_verdict(
-                "https://cdn.example.com/generated.jpg",
-                source_image_urls=["https://cdn.example.com/source.jpg"],
+    async def test_missing_or_wrong_source_count_is_blocking_without_fetching(self) -> None:
+        service = IdentityEmbeddingService()
+        load = AsyncMock()
+        with patch.object(module, "load_owned_asset_bytes", load):
+            verdict = await service.verify_identity_similarity(
+                object(),
+                owner_user_id=uuid.uuid4(),
+                generated_asset_id=uuid.uuid4(),
+                source_asset_ids=[],
+                is_couple=False,
             )
-        finally:
-            qa_service.basic_image_verdict = original_basic
-            qa_service.identity_embedding_service.verify_identity_similarity = original_embedding
-            qa_service.verify_with_vision_verdict = original_vision
-            qa_service.settings.qa_require_identity_embedding = original_required
-
         self.assertFalse(verdict["passed"])
-        self.assertEqual(verdict["reasons"], ["identity_similarity_low"])
-        self.assertEqual(verdict["identity_grade"], "major_mismatch")
-        self.assertFalse(vision_called)
+        self.assertEqual(verdict["reasons"], ["identity_source_count_invalid"])
+        load.assert_not_awaited()
+
+    def test_public_url_parameters_are_absent(self) -> None:
+        parameters = inspect.signature(IdentityEmbeddingService.verify_identity_similarity).parameters
+        self.assertIn("generated_asset_id", parameters)
+        self.assertIn("source_asset_ids", parameters)
+        self.assertNotIn("image_url", parameters)
+        self.assertNotIn("source_image_urls", parameters)
+        self.assertFalse(hasattr(IdentityEmbeddingService, "_fetch_image_bytes"))
+        self.assertFalse(hasattr(IdentityEmbeddingService, "_faces_for_url"))
 
 
 if __name__ == "__main__":

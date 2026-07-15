@@ -22,6 +22,12 @@ class CreditTransactionType(str, Enum):
     ADMIN_GRANT = "ADMIN_GRANT"
     ADMIN_DEDUCT = "ADMIN_DEDUCT"
     ADJUSTMENT = "ADJUSTMENT"
+    ROOT_REVERSAL = "ROOT_REVERSAL"
+    PURCHASE_REVERSAL = "PURCHASE_REVERSAL"
+    DISPUTE_REVERSAL = "DISPUTE_REVERSAL"
+    SUBSCRIPTION_REVERSAL = "SUBSCRIPTION_REVERSAL"
+    ACCOUNT_MERGE_OUT = "ACCOUNT_MERGE_OUT"
+    ACCOUNT_MERGE_IN = "ACCOUNT_MERGE_IN"
 
 
 class CreditTransaction(Base):
@@ -32,7 +38,7 @@ class CreditTransaction(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="RESTRICT"),
         index=True,
     )
     transaction_type: Mapped[CreditTransactionType] = mapped_column(String(32), index=True)
@@ -42,6 +48,22 @@ class CreditTransaction(Base):
     source_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    root_transaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("credit_transactions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    reversal_of_transaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("credit_transactions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    provider_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user: Mapped["User"] = relationship("User", lazy="selectin")

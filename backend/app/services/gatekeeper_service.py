@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from io import BytesIO
 from typing import Dict, List
+import uuid
 
-import httpx
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.services import llm_service
+from app.services.media_asset_service import (
+    create_provider_grant,
+    load_owned_asset_bytes,
+    revoke_provider_grant,
+)
 
 try:
     from PIL import Image, ImageFilter, ImageStat
@@ -189,7 +195,7 @@ def _portrait_roi_sharpness_metrics(image) -> dict[str, float]:
 def _compute_colorfulness(image) -> float:
     """Hasler-Suesstrunk colorfulness metric using a small RGB sample."""
     sample = image.resize((96, 96)).convert("RGB")
-    pixels = list(sample.getdata())
+    pixels = list(sample.get_flattened_data())
     if not pixels:
         return 0.0
 
@@ -217,7 +223,7 @@ def _compute_colorfulness(image) -> float:
 def _compute_skin_ratio(image) -> float:
     """Estimate skin-like pixels in YCbCr space as a weak document-risk signal."""
     sample = image.resize((128, 128)).convert("YCbCr")
-    pixels = list(sample.getdata())
+    pixels = list(sample.get_flattened_data())
     if not pixels:
         return 0.0
 
@@ -284,118 +290,155 @@ def _estimate_document_risk(
     return bool(risk_flags), risk_flags, metrics
 
 
-async def check_image_quality(image_url: str) -> GatekeeperResult:
+def _provider_failure(code: str, message: str) -> GatekeeperResult:
+    return GatekeeperResult(
+        passed=False,
+        reasons=[code],
+        advice=[message],
+        metrics={},
+        risk_flags=[],
+    )
+
+
+def _valid_vision_payload(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("passed"), bool):
+        return False
+    if payload.get("reject_reason") is not None and not isinstance(
+        payload.get("reject_reason"), str
+    ):
+        return False
+    if payload.get("gender") not in {"m", "f"}:
+        return False
+    flags = payload.get("risk_flags")
+    return isinstance(flags, list) and all(isinstance(flag, str) for flag in flags)
+
+
+def _valid_ocr_payload(payload: object) -> bool:
+    if not isinstance(payload, dict) or not isinstance(payload.get("passed"), bool):
+        return False
+    for field in ("risk_flags", "detected_text", "matched_patterns"):
+        values = payload.get(field)
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            return False
+    return isinstance(payload.get("notes"), str)
+
+
+async def _strict_provider_payloads(
+    db: AsyncSession,
+    asset,
+) -> tuple[dict, dict] | GatekeeperResult:
+    if not llm_service.is_vision_provider_configured():
+        return _provider_failure(
+            "vision_unavailable",
+            "Image safety checks are temporarily unavailable. Please try again later.",
+        )
+
+    issued = await create_provider_grant(
+        db,
+        asset=asset,
+        provider=settings.llm_provider,
+        purpose="gatekeeper",
+    )
+    try:
+        try:
+            vision = await llm_service.analyze_face_quality(issued.read_url)
+        except Exception:
+            return _provider_failure(
+                "vision_unavailable",
+                "Image safety checks are temporarily unavailable. Please try again later.",
+            )
+        if not _valid_vision_payload(vision):
+            return _provider_failure(
+                "vision_schema_invalid",
+                "Image safety checks returned an invalid result. Please try again later.",
+            )
+        if str(vision.get("reject_reason") or "").startswith("vision_error:"):
+            return _provider_failure(
+                "vision_unavailable",
+                "Image safety checks are temporarily unavailable. Please try again later.",
+            )
+
+        try:
+            ocr = await llm_service.detect_sensitive_document_ocr(issued.read_url)
+        except Exception:
+            return _provider_failure(
+                "safety_check_unavailable",
+                "Sensitive-document checks are temporarily unavailable. Please try again later.",
+            )
+        if not _valid_ocr_payload(ocr):
+            return _provider_failure(
+                "safety_schema_invalid",
+                "Sensitive-document checks returned an invalid result. Please try again later.",
+            )
+        if str(ocr.get("notes") or "").startswith("ocr_error:"):
+            return _provider_failure(
+                "safety_check_unavailable",
+                "Sensitive-document checks are temporarily unavailable. Please try again later.",
+            )
+        return vision, ocr
+    finally:
+        await revoke_provider_grant(db, issued.grant)
+
+
+async def check_image_quality(
+    db: AsyncSession,
+    *,
+    owner_user_id: uuid.UUID,
+    asset_id: uuid.UUID,
+) -> GatekeeperResult:
     """
     Upload gate:
     - blocks explicit safety/document risks
-    - degrades provider instability to local checks
+    - blocks when the required provider or response schema is unavailable
     - applies local resolution, exposure, and sharpness checks
     """
-    risk_flags: list[str] = []
-    ocr_metrics: dict[str, float] = {}
-    vision: dict | None = None
-    if llm_service.is_vision_provider_configured():
-        try:
-            vision = await llm_service.analyze_face_quality(image_url)
-        except Exception:
-            vision = None
-            ocr_metrics["vision_degraded"] = 1.0
+    private_asset = await load_owned_asset_bytes(
+        db,
+        owner_user_id=owner_user_id,
+        asset_id=asset_id,
+    )
+    provider_payloads = await _strict_provider_payloads(db, private_asset.asset)
+    if isinstance(provider_payloads, GatekeeperResult):
+        return provider_payloads
+    vision, ocr = provider_payloads
+    content = private_asset.content
 
-        if not isinstance(vision, dict):
-            if vision is not None:
-                ocr_metrics["vision_invalid"] = 1.0
-        else:
-            vision_flags = vision.get("risk_flags") or []
-            if isinstance(vision_flags, list):
-                risk_flags.extend([str(flag).strip() for flag in vision_flags if str(flag).strip()])
+    risk_flags = [
+        str(flag).strip()
+        for flag in [*(vision.get("risk_flags") or []), *(ocr.get("risk_flags") or [])]
+        if str(flag).strip()
+    ]
+    ocr_text = ocr.get("detected_text") or []
+    ocr_patterns = ocr.get("matched_patterns") or []
+    ocr_metrics: dict[str, float] = {
+        "ocr_text_count": float(len(ocr_text)),
+        "ocr_pattern_count": float(len(ocr_patterns)),
+    }
+    if not ocr["passed"] and not risk_flags:
+        return GatekeeperResult(
+            passed=False,
+            reasons=["ocr_reject"],
+            advice=["Sensitive text was detected. Please upload a regular portrait photo."],
+            metrics=ocr_metrics,
+            risk_flags=[],
+        )
 
-            try:
-                ocr = await llm_service.detect_sensitive_document_ocr(image_url)
-            except Exception:
-                ocr = None
-                ocr_metrics["ocr_degraded"] = 1.0
+    blocked_flags = sorted(set(flag for flag in risk_flags if flag in _BLOCKED_FLAG_RESPONSES))
+    if blocked_flags:
+        return _build_blocked_flag_response(blocked_flags, ocr_metrics)
 
-            if not isinstance(ocr, dict):
-                if ocr is not None:
-                    ocr_metrics["ocr_invalid"] = 1.0
-            else:
-                ocr_flags = ocr.get("risk_flags") or []
-                if isinstance(ocr_flags, list):
-                    risk_flags.extend([str(flag).strip() for flag in ocr_flags if str(flag).strip()])
-
-                ocr_text = ocr.get("detected_text") or []
-                ocr_patterns = ocr.get("matched_patterns") or []
-                ocr_metrics.update(
-                    {
-                        "ocr_text_count": float(len(ocr_text) if isinstance(ocr_text, list) else 0),
-                        "ocr_pattern_count": float(len(ocr_patterns) if isinstance(ocr_patterns, list) else 0),
-                    }
-                )
-
-                if not bool(ocr.get("passed", True)) and not risk_flags:
-                    has_text_signal = bool(ocr_text if isinstance(ocr_text, list) else [])
-                    has_pattern_signal = bool(ocr_patterns if isinstance(ocr_patterns, list) else [])
-                    if has_text_signal or has_pattern_signal:
-                        return GatekeeperResult(
-                            passed=False,
-                            reasons=["ocr_reject"],
-                            advice=["Sensitive text was detected. Please upload a regular portrait photo."],
-                            metrics=ocr_metrics,
-                            risk_flags=sorted(set(risk_flags)),
-                        )
-                    ocr_metrics["ocr_degraded"] = 1.0
-
-        blocked_flags = sorted(set(flag for flag in risk_flags if flag in _BLOCKED_FLAG_RESPONSES))
-        if blocked_flags:
-            return _build_blocked_flag_response(blocked_flags, ocr_metrics)
-
-        if isinstance(vision, dict) and vision.get("passed") is False:
-            reject_reason = str(vision.get("reject_reason") or "gatekeeper_reject")
-            reason_code, advice = _normalize_vision_reject_reason(reject_reason)
-            if reason_code == "vision_unavailable":
-                ocr_metrics["vision_degraded"] = 1.0
-            elif reason_code in {
-                "face_too_dark",
-                "image_overexposed",
-                "image_too_blurry",
-                "side_face_detected",
-                "face_too_small",
-                "low_resolution",
-            }:
-                warning_code = {
-                    "face_too_dark": "too_dark",
-                    "image_overexposed": "overexposed",
-                    "image_too_blurry": "too_blurry",
-                    "side_face_detected": "not_frontal",
-                    "face_too_small": "face_too_small",
-                    "low_resolution": "low_resolution",
-                }[reason_code]
-                warnings: list[str] = []
-                warning_advice: list[str] = []
-                _add_warning(warnings, warning_advice, warning_code)
-                ocr_metrics["vision_quality_warning"] = 1.0
-                return GatekeeperResult(
-                    passed=True,
-                    reasons=[],
-                    advice=[],
-                    metrics=ocr_metrics,
-                    risk_flags=sorted(set(risk_flags)),
-                    warnings=warnings,
-                    warning_advice=warning_advice,
-                )
-            else:
-                return GatekeeperResult(
-                    passed=False,
-                    reasons=[reason_code],
-                    advice=[advice],
-                    metrics=ocr_metrics,
-                    risk_flags=sorted(set(risk_flags)),
-                )
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(image_url)
-        response.raise_for_status()
-        content = response.content
+    if vision["passed"] is False:
+        reject_reason = str(vision.get("reject_reason") or "gatekeeper_reject")
+        reason_code, advice = _normalize_vision_reject_reason(reject_reason)
+        return GatekeeperResult(
+            passed=False,
+            reasons=[reason_code],
+            advice=[advice],
+            metrics=ocr_metrics,
+            risk_flags=sorted(set(risk_flags)),
+        )
 
     if len(content) > 10 * 1024 * 1024:
         return GatekeeperResult(
@@ -407,14 +450,6 @@ async def check_image_quality(image_url: str) -> GatekeeperResult:
         )
 
     if Image is None or ImageStat is None or ImageFilter is None:
-        if settings.gatekeeper_allow_without_pillow:
-            return GatekeeperResult(
-                passed=True,
-                reasons=[],
-                advice=["Local image checks were skipped because Pillow is unavailable."],
-                metrics={},
-                risk_flags=sorted(set(risk_flags)),
-            )
         return GatekeeperResult(
             passed=False,
             reasons=["local_checker_unavailable"],

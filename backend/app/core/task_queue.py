@@ -29,25 +29,22 @@ async def close_pool() -> None:
         _pool = None
 
 
-async def enqueue_generate_order(order_id: str) -> str:
-    """
-    Enqueue generation job.
+async def enqueue_generation_job(job_id: str, payload_version: str) -> str:
+    """Enqueue the only supported IDs-only generation message."""
+    from app.models.generation_job import GENERATION_JOB_PAYLOAD_VERSION
 
-    Returns:
-        job_id
-    """
+    if payload_version != GENERATION_JOB_PAYLOAD_VERSION:
+        raise ValueError("generation_job_payload_version_unsupported")
+    try:
+        normalized_job_id = str(__import__("uuid").UUID(str(job_id)))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("generation_job_id_invalid") from exc
     pool = await get_pool()
-    job = await pool.enqueue_job("generate_order", order_id)
-    return job.job_id
-
-
-async def enqueue_live_portrait(job_id: str) -> str:
-    """
-    Enqueue Live Portrait generation job.
-
-    Returns:
-        job_id
-    """
-    pool = await get_pool()
-    job = await pool.enqueue_job("generate_live_portrait", job_id)
-    return job.job_id
+    redis_job_id = f"generation:v1:{normalized_job_id}"
+    job = await pool.enqueue_job(
+        "generate_order_v1",
+        normalized_job_id,
+        GENERATION_JOB_PAYLOAD_VERSION,
+        _job_id=redis_job_id,
+    )
+    return redis_job_id if job is None else str(job.job_id)

@@ -1,205 +1,80 @@
-"""Credit ledger service tests."""
+"""Commercial credit authority and legacy-mutation retirement tests."""
 
-from pathlib import Path
-import sys
+from __future__ import annotations
+
 import unittest
 import uuid
 
-
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-from app.models.credit_transaction import CreditTransactionType  # noqa: E402
-from app.models.user_credit import UserCredit  # noqa: E402
-from app.services.credit_service import (  # noqa: E402
-    DEFAULT_CREDITS,
-    COST_COUPLE_REMOTE_GENERATION,
-    COST_SINGLE_GENERATION,
+from app.models.credit_transaction import CreditTransactionType
+from app.models.user_credit import UserCredit
+from app.services.credit_service import (
+    CreditAuthorityRequired,
     add_credits_async,
+    add_credits_with_transaction_async,
     deduct_credits_async,
     grant_welcome_bonus,
-    get_balance_async,
     refund_generation_credits_once_async,
+    reset_balance_async,
 )
-from app.services.trial_access_service import trial_generation_allowed  # noqa: E402
 
 
-class _ScalarResult:
-    def __init__(self, row):
-        self._row = row
-
-    def scalar_one_or_none(self):
-        return self._row
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return []
+class _NoTouchDb:
+    def __getattr__(self, name):
+        raise AssertionError(f"retired mutation touched database: {name}")
 
 
-class _FakeDb:
-    def __init__(self):
-        self.credit_row = None
-        self.transactions = []
-
-    async def execute(self, _statement):
-        statement_text = str(_statement)
-        if "credit_transactions" in statement_text:
-            try:
-                params = _statement.compile().params
-            except Exception:
-                params = {}
-            wanted_type = params.get("transaction_type_1")
-            wanted_source = params.get("source_1")
-            wanted_source_id = params.get("source_id_1")
-            for transaction in self.transactions:
-                if wanted_type and transaction.transaction_type != wanted_type:
-                    continue
-                if wanted_source and transaction.source != wanted_source:
-                    continue
-                if wanted_source_id and transaction.source_id != wanted_source_id:
-                    continue
-                if wanted_type or transaction.transaction_type == CreditTransactionType.WELCOME_BONUS:
-                    return _ScalarResult(transaction)
-            return _ScalarResult(None)
-        return _ScalarResult(self.credit_row)
-
-    def add(self, value):
-        if isinstance(value, UserCredit):
-            self.credit_row = value
-        else:
-            self.transactions.append(value)
-
-    async def flush(self):
-        return None
-
-
-class CreditLedgerTest(unittest.IsolatedAsyncioTestCase):
-    async def test_new_credit_account_records_welcome_bonus(self) -> None:
-        db = _FakeDb()
+class CreditLedgerAuthorityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_balance_mutations_fail_before_database_access(self) -> None:
+        db = _NoTouchDb()
         user_id = uuid.uuid4()
-
-        granted = await grant_welcome_bonus(db, user_id)
-        balance = await get_balance_async(db, user_id)
-
-        self.assertTrue(granted)
-        self.assertEqual(balance, DEFAULT_CREDITS)
-        self.assertEqual(len(db.transactions), 1)
-        self.assertEqual(db.transactions[0].transaction_type, CreditTransactionType.WELCOME_BONUS)
-        self.assertEqual(db.transactions[0].amount, DEFAULT_CREDITS)
-        self.assertEqual(db.transactions[0].balance_after, DEFAULT_CREDITS)
-
-    async def test_deduct_records_negative_generation_debit(self) -> None:
-        db = _FakeDb()
-        user_id = uuid.uuid4()
-        await grant_welcome_bonus(db, user_id)
-
-        success = await deduct_credits_async(db, user_id, 2)
-
-        self.assertTrue(success)
-        self.assertEqual(db.credit_row.balance, DEFAULT_CREDITS - 2)
-        self.assertEqual(db.transactions[-1].transaction_type, CreditTransactionType.GENERATION_DEBIT)
-        self.assertEqual(db.transactions[-1].amount, -2)
-        self.assertEqual(db.transactions[-1].balance_after, DEFAULT_CREDITS - 2)
-
-    async def test_failed_deduct_does_not_write_transaction(self) -> None:
-        db = _FakeDb()
-        user_id = uuid.uuid4()
-        await grant_welcome_bonus(db, user_id)
-
-        success = await deduct_credits_async(db, user_id, DEFAULT_CREDITS + 1)
-
-        self.assertFalse(success)
-        self.assertEqual(len(db.transactions), 1)
-        self.assertEqual(db.credit_row.balance, DEFAULT_CREDITS)
-
-    async def test_non_positive_deduct_is_rejected(self) -> None:
-        db = _FakeDb()
-        user_id = uuid.uuid4()
-        await grant_welcome_bonus(db, user_id)
-
-        with self.assertRaises(ValueError):
-            await deduct_credits_async(db, user_id, -10)
-
-        self.assertEqual(len(db.transactions), 1)
-        self.assertEqual(db.credit_row.balance, DEFAULT_CREDITS)
-
-    async def test_add_records_purchase_credit(self) -> None:
-        db = _FakeDb()
-        user_id = uuid.uuid4()
-        await grant_welcome_bonus(db, user_id)
-
-        balance = await add_credits_async(
-            db,
-            user_id,
-            50,
-            transaction_type=CreditTransactionType.PURCHASE,
-            source="credit_purchase",
-            source_id="purchase-1",
+        calls = (
+            grant_welcome_bonus(db, user_id),
+            deduct_credits_async(db, user_id, 2),
+            add_credits_async(
+                db,
+                user_id,
+                50,
+                transaction_type=CreditTransactionType.PURCHASE,
+            ),
+            add_credits_with_transaction_async(
+                db,
+                user_id,
+                50,
+                transaction_type=CreditTransactionType.ADMIN_GRANT,
+            ),
+            refund_generation_credits_once_async(
+                db,
+                user_id,
+                2,
+                order_id=uuid.uuid4(),
+            ),
+            reset_balance_async(db, user_id, 10),
         )
+        for call in calls:
+            with self.subTest(call=call), self.assertRaises(CreditAuthorityRequired):
+                await call
 
-        self.assertEqual(balance, DEFAULT_CREDITS + 50)
-        self.assertEqual(db.transactions[-1].transaction_type, CreditTransactionType.PURCHASE)
-        self.assertEqual(db.transactions[-1].amount, 50)
-        self.assertEqual(db.transactions[-1].source, "credit_purchase")
-        self.assertEqual(db.transactions[-1].source_id, "purchase-1")
-
-    async def test_generation_refund_is_idempotent_by_order(self) -> None:
-        db = _FakeDb()
-        user_id = uuid.uuid4()
-        order_id = uuid.uuid4()
-        await grant_welcome_bonus(db, user_id)
-        await deduct_credits_async(db, user_id, 2)
-
-        balance, applied = await refund_generation_credits_once_async(
-            db,
-            user_id,
-            2,
-            order_id=order_id,
-            failure_code="qa_reject",
-            provider="wenwen",
+    def test_accounting_balance_can_be_debt_but_spendable_never_negative(self) -> None:
+        credit = UserCredit(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            balance=-7,
+            reserved_balance=0,
         )
-        second_balance, second_applied = await refund_generation_credits_once_async(
-            db,
-            user_id,
-            2,
-            order_id=order_id,
-            failure_code="qa_reject",
-            provider="wenwen",
-        )
+        self.assertEqual(credit.accounting_balance, -7)
+        self.assertEqual(credit.debt, 7)
+        self.assertEqual(credit.spendable_balance, 0)
 
-        self.assertTrue(applied)
-        self.assertFalse(second_applied)
-        self.assertEqual(balance, DEFAULT_CREDITS)
-        self.assertEqual(second_balance, DEFAULT_CREDITS)
-        refund_transactions = [
-            transaction
-            for transaction in db.transactions
-            if transaction.transaction_type == CreditTransactionType.GENERATION_REFUND
-        ]
-        self.assertEqual(len(refund_transactions), 1)
-        self.assertEqual(refund_transactions[0].amount, 2)
-        self.assertEqual(refund_transactions[0].source, "order")
-        self.assertEqual(refund_transactions[0].source_id, str(order_id))
+        credit.balance = 10
+        credit.reserved_balance = 4
+        self.assertEqual(credit.accounting_balance, 10)
+        self.assertEqual(credit.spendable_balance, 6)
 
-    async def test_starter_credits_only_allow_base_single_generation(self) -> None:
-        self.assertTrue(
-            trial_generation_allowed(
-                template_category=None,
-                image_count=1,
-                credits_cost=COST_SINGLE_GENERATION,
-            )
-        )
-        self.assertFalse(
-            trial_generation_allowed(
-                template_category=None,
-                image_count=2,
-                is_remote_join=True,
-                credits_cost=COST_COUPLE_REMOTE_GENERATION,
-            )
-        )
+    def test_generation_debit_and_positive_grants_have_distinct_authorities(self) -> None:
+        self.assertEqual(CreditTransactionType.GENERATION_DEBIT.value, "GENERATION_DEBIT")
+        self.assertEqual(CreditTransactionType.WELCOME_BONUS.value, "WELCOME_BONUS")
+        self.assertEqual(CreditTransactionType.PURCHASE.value, "PURCHASE")
+        self.assertEqual(CreditTransactionType.ADMIN_GRANT.value, "ADMIN_GRANT")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 
@@ -101,11 +104,17 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 "catalog": "6" * 64,
                 "flag": "7" * 64,
                 "activation": "8" * 64,
+                "policy": "a" * 64,
+                "runtime": "b" * 64,
+                "gate": "c" * 64,
             },
             "tool_version": "vowpic-release-tools.v1",
         }
         for role in ("PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"):
             role_payload = dict(base)
+            role_payload["contract_hashes"] = dict(base["contract_hashes"])
+            if role == "PREVIEW_COMMERCIAL":
+                role_payload["contract_hashes"]["preview"] = "d" * 64
             if role in {"COMMERCIAL_7A", "CONTRACT_7B"}:
                 role_payload["builder_contract_version"] = role.lower() + ".v1"
             if role == "CONTRACT_7B":
@@ -131,6 +140,105 @@ class RuntimeBundleIdTest(unittest.TestCase):
                     "deployment_id": "dpl",
                 },
             )
+
+    def test_preview_and_production_domains_differ_with_identical_source_and_worker_digest(self) -> None:
+        module = _module()
+        base = {
+            "source_sha": "1" * 40,
+            "schema_revision": "20260710_0020",
+            "migration_checksums": [{"revision": "20260710_0020", "sha256": "2" * 64}],
+            "contract_hashes": {
+                "payload": "3" * 64,
+                "provider": "4" * 64,
+                "model": "5" * 64,
+                "catalog": "6" * 64,
+                "flag": "7" * 64,
+                "activation": "8" * 64,
+                "policy": "a" * 64,
+                "runtime": "b" * 64,
+                "gate": "c" * 64,
+                "preview": "d" * 64,
+            },
+            "tool_version": "vowpic-release-tools.v1",
+            "worker_image_digest": "sha256:" + "9" * 64,
+        }
+        preview = module.compute_runtime_bundle_id("PREVIEW_COMMERCIAL", base)
+        production = module.compute_runtime_bundle_id(
+            "COMMERCIAL_7A",
+            {
+                **base,
+                "contract_hashes": {
+                    key: value for key, value in base["contract_hashes"].items() if key != "preview"
+                },
+                "builder_contract_version": "commercial-7a.v1",
+            },
+        )
+        self.assertNotEqual(preview, production)
+
+    def test_preview_commercial_cli_hashes_the_exact_planned_contract_files(self) -> None:
+        catalog = ROOT / "release" / "catalog" / "catalog-2026-07-10.json"
+        command = [
+            str(ROOT / ".venv" / "Scripts" / "python.exe"),
+            str(SCRIPT),
+            "--release-role", "PREVIEW_COMMERCIAL",
+            "--source-sha", "a" * 40,
+            "--schema", "20260710_0020",
+            "--worker-image-digest", "sha256:" + "b" * 64,
+            "--runtime-contract", str(ROOT / "release" / "runtime-contracts.json"),
+            "--preview-contract", str(ROOT / "release" / "preview-runtime-contract.json"),
+            "--provider-contract", str(ROOT / "release" / "provider-contracts.json"),
+            "--catalog-contract", str(catalog),
+            "--flag-contract", str(ROOT / "release" / "gates.json"),
+            "--activation-plan", str(ROOT / "release" / "activation-plan.json"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "runtime-id.txt"
+            first = subprocess.run(
+                [*command, "--output", str(output)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_id = output.read_text(encoding="utf-8").strip()
+            self.assertRegex(first_id, r"^rtb_[0-9a-f]{64}$")
+
+            second = subprocess.run(
+                [*command, "--output", str(Path(directory) / "runtime-id-2.txt")],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(first.stdout.strip(), second.stdout.strip())
+
+    def test_runtime_contract_rejects_a_stale_source_digest(self) -> None:
+        module = _module()
+        contract_path = ROOT / "release" / "runtime-contracts.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["source_sha256"]["backend/app/core/config.py"] = "0" * 64
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".json",
+            prefix="runtime-contracts-stale-",
+            dir=contract_path.parent,
+            delete=False,
+        ) as handle:
+            json.dump(contract, handle)
+            stale_path = Path(handle.name)
+        try:
+            with self.assertRaisesRegex(ValueError, "source digest is stale"):
+                module._runtime_contract_hashes(
+                    str(stale_path),
+                    schema_revision="20260710_0020",
+                )
+        finally:
+            stale_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

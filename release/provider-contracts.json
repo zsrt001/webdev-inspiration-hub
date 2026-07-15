@@ -1,0 +1,65 @@
+{
+  "schema": "vowpic.provider-contracts.v1",
+  "contracts": {
+    "CREEM_REFUND_CREATION": {
+      "provider": "creem",
+      "capability": "refund_creation",
+      "state": "UNVERIFIED",
+      "official_source_url": null,
+      "official_version": null,
+      "official_contract_sha256": null,
+      "endpoint_schema_sha256": null,
+      "test_evidence_sha256": null,
+      "tested_source_sha": null,
+      "evidence_created_at": null,
+      "approval_ref": null,
+      "correlation_semantics": null,
+      "idempotency_semantics": null
+    },
+    "CREEM_SUBSCRIPTION_PAID_TRANSACTION": {
+      "provider": "creem",
+      "capability": "subscription_paid_transaction",
+      "state": "UNVERIFIED",
+      "official_source_url": "https://docs.creem.io/code/webhooks#subscription-paid",
+      "official_version": null,
+      "official_contract_sha256": null,
+      "endpoint_schema_sha256": "b564ea840d3b8ca64082d1cecbc5c21e89cf27287c9ec90a02b138b785beb1e8",
+      "test_evidence_sha256": null,
+      "tested_source_sha": null,
+      "evidence_created_at": null,
+      "approval_ref": null,
+      "correlation_semantics": null,
+      "idempotency_semantics": null
+    },
+    "CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION": {
+      "provider": "creem",
+      "capability": "subscription_period_end_cancellation",
+      "state": "UNVERIFIED",
+      "official_source_url": "https://docs.creem.io/api-reference/endpoint/cancel-subscription",
+      "official_version": null,
+      "official_contract_sha256": null,
+      "endpoint_schema_sha256": "ea4a1d2fff5ed50afcae40b9a7ff79cba69469c0b4099d872f059d9bccd0a8bf",
+      "test_evidence_sha256": null,
+      "tested_source_sha": null,
+      "evidence_created_at": null,
+      "approval_ref": null,
+      "correlation_semantics": null,
+      "idempotency_semantics": null
+    },
+    "EVOLINK_SUBMISSION_RECONCILIATION": {
+      "provider": "evolink",
+      "capability": "submission_reconciliation",
+      "state": "UNVERIFIED",
+      "official_source_url": null,
+      "official_version": null,
+      "official_contract_sha256": null,
+      "endpoint_schema_sha256": "7bcb2da6a23455af54eb08def88300eeb8c3e474e08a96f22ac4ac0a564d7bc1",
+      "test_evidence_sha256": null,
+      "tested_source_sha": null,
+      "evidence_created_at": null,
+      "approval_ref": null,
+      "correlation_semantics": null,
+      "idempotency_semantics": null
+    }
+  }
+}

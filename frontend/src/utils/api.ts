@@ -1,5 +1,5 @@
-import { ensureSession, getAuthProvider, getClientFingerprint, getGuestUserId, getToken, isJwtToken, logout } from './auth';
-import { API_BASE_URL, isH5Runtime, resolveBackendOrigin } from './apiConfig';
+import { HttpError, httpRequest, httpUpload } from '../services/http';
+import { API_BASE_URL, isWebRuntime, resolveBackendOrigin } from './apiConfig';
 
 function getRuntimeLocale(): 'zh' | 'en' {
     try {
@@ -121,110 +121,31 @@ export function resolvePublicUrl(url: string | null | undefined): string {
     const backendOrigin = resolveBackendOrigin();
     if (backendOrigin) return `${backendOrigin}${withLeadingSlash}`;
 
-    return isH5Runtime() ? withLeadingSlash : `${backendOrigin}${withLeadingSlash}`;
+    return isWebRuntime() ? withLeadingSlash : `${backendOrigin}${withLeadingSlash}`;
 }
 
 interface RequestOptions {
     showLoading?: boolean;
     showError?: boolean;
+    headers?: Record<string, string>;
 }
 
-export interface ApiError extends Error {
-    statusCode?: number;
-    detail?: any;
-    code?: string;
-    requestId?: string;
-}
+export type ApiError = HttpError;
 
-function canRecoverUnauthorized(path: string): boolean {
-    return !path.startsWith('/auth/login');
-}
-
-async function rebootstrapSession(): Promise<boolean> {
-    const provider = getAuthProvider();
-    if (provider === 'password' || provider === 'supabase') {
-        return false;
-    }
-    logout();
-    try {
-        const session = await ensureSession(API_BASE_URL);
-        return !!session?.token && isJwtToken(session.token);
-    } catch {
-        return false;
-    }
-}
-
-function shouldBootstrapSession(path: string): boolean {
-    const publicPrefixes = ['/templates', '/ops/public_config', '/analytics/click', '/health'];
-    return !publicPrefixes.some((prefix) => path.startsWith(prefix));
-}
-
-async function buildHeaders(path: string): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-    };
-
-    let token = getToken();
-    if (!isJwtToken(token) && shouldBootstrapSession(path)) {
-        try {
-            const session = await ensureSession(API_BASE_URL);
-            token = session?.token || getToken();
-        } catch {
-            token = getToken();
+function transportOptions(options: RequestOptions): {
+    headers: Record<string, string>;
+    idempotencyKey?: string;
+} {
+    const headers: Record<string, string> = {};
+    let idempotencyKey: string | undefined;
+    for (const [name, value] of Object.entries(options.headers ?? {})) {
+        if (name.toLowerCase() === 'idempotency-key') {
+            idempotencyKey = value;
+        } else {
+            headers[name] = value;
         }
     }
-
-    const hasJwt = isJwtToken(token);
-    if (hasJwt && token) {
-        headers.Authorization = `Bearer ${token}`;
-    }
-
-    const visitorIdentity = getGuestUserId().trim();
-    headers['X-Device-Id'] = getClientFingerprint();
-    if (!hasJwt && visitorIdentity) {
-        headers['X-Visitor-Id'] = visitorIdentity.slice(0, 64);
-    }
-
-    return headers;
-}
-
-function extractErrorMessage(detail: any, statusCode: number): string {
-    if (typeof detail === 'string' && detail.trim()) {
-        return detail;
-    }
-
-    if (detail && typeof detail === 'object') {
-        if (typeof detail.message === 'string' && detail.message.trim()) {
-            return detail.message;
-        }
-        if (Array.isArray(detail.advice) && detail.advice.length > 0) {
-            return String(detail.advice[0]);
-        }
-        if (typeof detail.error === 'string' && detail.error.trim()) {
-            return detail.error;
-        }
-    }
-
-    if (statusCode === 400) return 'Invalid request parameters';
-    if (statusCode === 401) return 'Authentication expired, please retry';
-    if (statusCode === 402) return 'Insufficient credits';
-    if (statusCode === 403) return 'No permission';
-    if (statusCode === 404) return 'Resource not found';
-    if (statusCode === 422) return 'Validation failed';
-    if (statusCode >= 500) return 'Service unavailable, please try again later';
-    return `Request failed: ${statusCode}`;
-}
-
-function createApiError(statusCode: number, payload: any): ApiError {
-    const detail = payload?.detail ?? payload;
-    const error = new Error(extractErrorMessage(detail, statusCode)) as ApiError;
-    error.statusCode = statusCode;
-    error.detail = detail;
-    error.requestId = String(payload?.request_id || detail?.request_id || '').trim() || undefined;
-    if (detail && typeof detail === 'object' && typeof detail.error === 'string') {
-        error.code = detail.error;
-    }
-    return error;
+    return { headers, idempotencyKey };
 }
 
 async function requestJson<T>(
@@ -241,26 +162,13 @@ async function requestJson<T>(
     }
 
     try {
-        const requestOnce = async () => {
-            const headers = await buildHeaders(path);
-            return uni.request({
-                url: resolveApiUrl(path),
-                method,
-                data,
-                header: headers,
-            });
-        };
-
-        let res = await requestOnce();
-        if (res.statusCode === 401 && canRecoverUnauthorized(path) && await rebootstrapSession()) {
-            res = await requestOnce();
-        }
-
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-            return res.data as T;
-        }
-
-        throw createApiError(res.statusCode, res.data);
+        const transport = transportOptions(options);
+        return await httpRequest<T>(path, {
+            method,
+            body: data,
+            headers: transport.headers,
+            idempotencyKey: transport.idempotencyKey,
+        });
     } catch (error: any) {
         if (showError) {
             uni.showToast({
@@ -324,47 +232,12 @@ export async function uploadFile(
     uni.showLoading({ title: uploadLabel });
 
     try {
-        const headers = await buildHeaders(path);
-        const res = await new Promise<UniNamespace.UploadFileSuccessCallbackResult>((resolve, reject) => {
-            const uploadTask = uni.uploadFile({
-                url: resolveApiUrl(path),
-                filePath,
-                name,
-                header: headers,
-                success: resolve,
-                fail: reject,
-            });
-
-            uploadTask.onProgressUpdate((progress) => {
-                const pct = Math.round(progress.progress);
-                uni.showLoading({ title: `${uploadLabel} ${pct}%`, mask: true });
-                if (options.onProgress) options.onProgress(pct);
-            });
+        return await httpUpload(path, filePath, name, {
+            onProgress(percent) {
+                uni.showLoading({ title: `${uploadLabel} ${percent}%`, mask: true });
+                options.onProgress?.(percent);
+            },
         });
-
-        if (res.statusCode === 401 && canRecoverUnauthorized(path) && await rebootstrapSession()) {
-            const retryTask = uni.uploadFile({
-                url: resolveApiUrl(path),
-                filePath,
-                name,
-                header: await buildHeaders(path),
-            });
-            const retryRes = await retryTask;
-            if (retryRes.statusCode >= 200 && retryRes.statusCode < 300) {
-                return JSON.parse(retryRes.data);
-            }
-            let payload: any = retryRes.data;
-            try { payload = JSON.parse(retryRes.data); } catch {}
-            throw createApiError(retryRes.statusCode, payload);
-        }
-
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-            return JSON.parse(res.data);
-        }
-
-        let payload: any = res.data;
-        try { payload = JSON.parse(res.data); } catch {}
-        throw createApiError(res.statusCode, payload);
     } catch (error: any) {
         uni.showToast({ title: error.message || 'Upload failed', icon: 'none' });
         throw error;

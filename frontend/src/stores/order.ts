@@ -33,7 +33,6 @@ export interface Order {
     refunded_credits?: number | null;
     error_message: string | null;
     director_mode?: boolean | null;
-    remote_join?: boolean | null;
     subject_count?: number | null;
     couple_flow?: string | null;
     effective_scene_source?: string | null;
@@ -63,7 +62,6 @@ interface CreateOrderRequest {
     user_images: string[];
     legal_accepted?: boolean;
     director_mode?: boolean;
-    remote_join?: boolean;
     global_style_text?: string;
     scene_text?: string;
     outfit_text?: string;

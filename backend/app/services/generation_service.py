@@ -1,27 +1,22 @@
-"""Generation provider facade."""
+"""Exact single-Provider image-generation runtime facade."""
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.core.config import get_settings
-from app.services.comfyui_service import comfyui_service
 from app.services.evolink_service import evolink_service
-from app.services.wenwen_service import wenwen_service
+
 
 settings = get_settings()
 
 
 class GenerationService:
-    """Dispatch generation work to the configured provider."""
+    provider_name = "evolink"
 
     @staticmethod
     def _provider():
-        if settings.using_evolink_generation:
-            return evolink_service
-        if settings.using_wenwen_generation:
-            return wenwen_service
-        return comfyui_service
+        if settings.generation_engine != "evolink":
+            raise RuntimeError("generation_engine_must_be_exact_evolink")
+        return evolink_service
 
     def validate_runtime_requirements(self, *, force: bool = False) -> None:
         self._provider().validate_runtime_requirements(force=force)
@@ -30,28 +25,7 @@ class GenerationService:
         return await self._provider().ping_runtime()
 
     async def probe_queue_capability(self) -> tuple[bool, str]:
-        provider = self._provider()
-        probe = getattr(provider, "probe_queue_capability", None)
-        if callable(probe):
-            return await probe()
-        return True, "not_supported"
-
-    async def generate_photo(self, **kwargs: Any) -> None:
-        await self._provider().generate_photo(**kwargs)
-
-    async def refresh_order(self, order_id: str) -> bool:
-        refresh = getattr(self._provider(), "refresh_order_from_provider", None)
-        if not callable(refresh):
-            return False
-        return bool(await refresh(order_id))
-
-    def supports_live_portrait(self) -> bool:
-        return not (settings.using_wenwen_generation or settings.using_evolink_generation)
-
-    async def generate_live_portrait(self, **kwargs: Any) -> None:
-        if not self.supports_live_portrait():
-            raise NotImplementedError("live_portrait_not_supported_for_current_provider")
-        await comfyui_service.generate_live_portrait(**kwargs)
+        return True, "durable_generation_job_v1"
 
 
 generation_service = GenerationService()
