@@ -934,3 +934,33 @@
 - The later cross-runtime closure entry above supersedes this entry's local Firefox and 725-test counts: the exact Playwright Firefox engine was subsequently installed and the six-route Chrome/Firefox gate passed 12/12; the final collected backend count is 729 with 33 explicit skips and zero failures.
 - External protected Preview journeys are still `NOT_RUN`; installing a local browser engine does not supply Preview identities, environments, secrets, or release evidence.
 - Final cleanup removed the task-owned CDP profile/screenshot, security/resolver virtual environments, Vercel candidate directories, checksum-verified OSV scanner/report directory, Playwright result traces, every disposable database/Redis container, and both local Worker validation tags. Readback found no matching file, container, image tag, or running BuildKit residue.
+
+## 2026-07-15 - Support-baseline synchronization and generated-contract repair
+
+### Goal and scope
+
+- Re-review the accumulated overseas Web SaaS implementation, run the complete local engineering baseline, and synchronize only after the source was committed and locally verified.
+- Diagnose the first PR checks without weakening tests or inventing missing Provider, payment, storage, Worker-host, Preview, or Production credentials.
+
+### Changes and decisions
+
+- Committed and pushed the reviewed support baseline as `50563ab3753704288e0222f14775c66b69cead27` on `codex/vowpic-stage1-safe-baseline`; the existing draft PR remains the review boundary and was not merged.
+- Created the missing GitHub `preview-identity` and `preview-commercial` environments with the repository owner as required reviewer and a custom deployment-branch policy restricted to `main`. No environment or repository secret was created, copied, printed, or inferred.
+- The first PR run passed Linux/Windows lock reproduction and the Worker image build. It exposed two independent failures: the committed frontend API type file was stale, while the backend aggregate suite failed only in GitHub's Linux job after its OpenAPI, migration, and four PostgreSQL contract steps had already passed.
+- Regenerated `frontend/src/generated/api.d.ts`; two consecutive OpenAPI type generations were byte-identical and added the current FastAPI `ValidationError.ctx` and `ValidationError.input` fields.
+- Extended `verify_baseline.ps1` to generate the frontend API types twice, require identical hashes, and reject a generated-file diff before typecheck. Added a CI contract assertion for that local guard so this local/PR verification gap cannot silently return.
+- The existing local environment's stale Pillow/FastAPI failures were rejected as dependency-drift evidence. No backend production code or test expectation was changed from that invalid environment.
+
+### Verification
+
+- Focused baseline-contract test passed 1/1. Two consecutive `npm run openapi:generate` executions produced identical bytes; frontend typecheck and Vitest 5/5 passed.
+- The complete updated local baseline exited 0 from a newly created hash-locked Windows environment: `pip check` passed, all 729 backend tests passed with 33 explicit external/environment skips, API type generation was deterministic and matched the staged file, frontend typecheck passed, Vitest passed 5/5, and the Web build completed.
+- The report truthfully recorded `UNCOMMITTED_WORKTREE`, `release_eligible=false`, and `runtime_alignment=NOT_RUN` because the local Windows/Python 3.11.9/Node 24.2.0 runtime is not the protected Linux/Python 3.11.15/Node 24.17.0 release runtime.
+- `git diff --check` passed. No temporary test environment or generated Playwright result was retained.
+
+### External boundary and remaining evidence
+
+- The corrected commit still requires a fresh GitHub PR run. Until that run completes, the Linux backend failure is unresolved rather than relabeled transient or locally passed.
+- GitHub repository/environment secret-name readback was empty. Protected Preview, Vercel authenticated deployment inspection, Provider/payment/storage contracts, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`.
+- Generation and billing remain OFF. No merge, protected Preview workflow, Production workflow, Production data write, payment, email, Provider submission, DNS, or formal-domain mutation occurred.
+- No Subagent was used.

@@ -94,6 +94,17 @@ sys.exit(0 if result.wasSuccessful() else 1)
     Push-Location (Join-Path $root "frontend")
     try {
         Invoke-Checked "frontend locked install" { npm ci --ignore-scripts }
+        Invoke-Checked "frontend generated API types pass 1" { npm run openapi:generate }
+        $apiTypesPath = Join-Path (Get-Location) "src\generated\api.d.ts"
+        $apiTypesFirstSha256 = (Get-FileHash -LiteralPath $apiTypesPath -Algorithm SHA256).Hash
+        Invoke-Checked "frontend generated API types pass 2" { npm run openapi:generate }
+        $apiTypesSecondSha256 = (Get-FileHash -LiteralPath $apiTypesPath -Algorithm SHA256).Hash
+        if ($apiTypesFirstSha256 -ne $apiTypesSecondSha256) {
+            throw "frontend generated API types are not byte-identical"
+        }
+        Invoke-Checked "frontend committed API types" {
+            git diff --exit-code -- src/generated/api.d.ts
+        }
         Invoke-Checked "frontend typecheck" { npm run typecheck }
         Invoke-Checked "frontend unit tests" { npm run test:unit }
         Invoke-Checked "frontend web build" { npm run build:web }
@@ -135,6 +146,7 @@ sys.exit(0 if result.wasSuccessful() else 1)
         }
         backend_lock_install = "PASS"
         backend_tests = "PASS"
+        frontend_api_types = "PASS"
         frontend_typecheck = "PASS"
         frontend_build = "PASS"
         frontend_unit = "PASS"
