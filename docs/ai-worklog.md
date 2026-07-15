@@ -950,17 +950,25 @@
 - Regenerated `frontend/src/generated/api.d.ts`; two consecutive OpenAPI type generations were byte-identical and added the current FastAPI `ValidationError.ctx` and `ValidationError.input` fields.
 - Extended `verify_baseline.ps1` to generate the frontend API types twice, require identical hashes, and reject a generated-file diff before typecheck. Added a CI contract assertion for that local guard so this local/PR verification gap cannot silently return.
 - The existing local environment's stale Pillow/FastAPI failures were rejected as dependency-drift evidence. No backend production code or test expectation was changed from that invalid environment.
+- The second PR run proved the frontend fix: deterministic generated types, typecheck, Vitest, Web build, and the real browser accessibility step all passed. Linux/Windows locks and the Worker image also passed. Downloading the exact backend log then identified two real failures rather than a transient job error.
+- Replaced the runtime-bundle CLI test's Windows-only `.venv/Scripts/python.exe` path with `sys.executable`, binding the subprocess to the already verified test interpreter on Windows and Linux.
+- The public catalog route already mapped catalog-domain, SQLAlchemy, and operating-system failures to its documented 503 response, but a raw asyncpg `PostgresError` escaped as 500. Added that driver boundary explicitly, retained a safe exception-type-only warning, and added a regression for the exact `InvalidCatalogNameError` observed in GitHub.
+- A focused `backend`-directory run then exposed two risk-lockdown tests that imported `scripts.release` only after another test happened to add the repository root to `sys.path`. The module now establishes its own repository-root import boundary, removing that test-order dependency without changing application behavior.
+- Added only `*.actions.githubusercontent.com` to the existing Proxifier development-platform target list after writing `静态.before-actions-log-routing.20260715-1215.ppx`; this enabled authenticated GitHub Actions log retrieval. The existing Docker target already contained `registry-1.docker.io`, so it was not changed.
 
 ### Verification
 
 - Focused baseline-contract test passed 1/1. Two consecutive `npm run openapi:generate` executions produced identical bytes; frontend typecheck and Vitest 5/5 passed.
 - The complete updated local baseline exited 0 from a newly created hash-locked Windows environment: `pip check` passed, all 729 backend tests passed with 33 explicit external/environment skips, API type generation was deterministic and matched the staged file, frontend typecheck passed, Vitest passed 5/5, and the Web build completed.
 - The report truthfully recorded `UNCOMMITTED_WORKTREE`, `release_eligible=false`, and `runtime_alignment=NOT_RUN` because the local Windows/Python 3.11.9/Node 24.2.0 runtime is not the protected Linux/Python 3.11.15/Node 24.17.0 release runtime.
+- After commit `24959d21e6438a4bab2647fad04cd87a0de01f63`, the same complete baseline reran and reported `CLEAN_COMMIT` with the exact same passing counts and checks before the commit was pushed.
+- The four focused CI-failure reproductions passed from the same `backend` working directory used by GitHub: the runtime-bundle subprocess, raw asyncpg catalog unavailability, existing catalog fail-closed case, and retired-route HTTP contract.
+- The first expanded three-module run exposed the two order-dependent imports described above; after the isolation fix, all 43 runtime-bundle, billing-catalog, and risk-lockdown tests passed from the CI working directory.
 - `git diff --check` passed. No temporary test environment or generated Playwright result was retained.
 
 ### External boundary and remaining evidence
 
-- The corrected commit still requires a fresh GitHub PR run. Until that run completes, the Linux backend failure is unresolved rather than relabeled transient or locally passed.
+- The backend fixes still require a fresh GitHub PR run. Until that run completes, the Linux aggregate remains unresolved rather than relabeled locally passed.
 - GitHub repository/environment secret-name readback was empty. Protected Preview, Vercel authenticated deployment inspection, Provider/payment/storage contracts, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`.
 - Generation and billing remain OFF. No merge, protected Preview workflow, Production workflow, Production data write, payment, email, Provider submission, DNS, or formal-domain mutation occurred.
 - No Subagent was used.

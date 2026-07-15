@@ -8,6 +8,7 @@ import unittest
 from uuid import uuid4
 from unittest.mock import patch
 
+from asyncpg.exceptions import InvalidCatalogNameError
 from fastapi import HTTPException
 
 from app.models.billing_catalog import BillingCatalogVersion, BillingProduct
@@ -144,6 +145,22 @@ class BillingCatalogTest(unittest.IsolatedAsyncioTestCase):
             self.assertRaises(HTTPException) as raised,
         ):
             await credits.list_packages(region=None, locale=None, db=_Db([]))
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(raised.exception.detail["code"], "credit_catalog_unavailable")
+
+    async def test_packages_route_maps_raw_postgres_unavailability_to_503(self) -> None:
+        from app.routers import credits
+
+        with (
+            patch.object(
+                credits,
+                "load_active_catalog",
+                side_effect=InvalidCatalogNameError("database is unavailable"),
+            ),
+            self.assertRaises(HTTPException) as raised,
+        ):
+            await credits.list_packages(region=None, locale=None, db=_Db([]))
+
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(raised.exception.detail["code"], "credit_catalog_unavailable")
 

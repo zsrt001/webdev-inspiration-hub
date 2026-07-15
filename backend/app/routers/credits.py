@@ -1,7 +1,9 @@
 """Credits API routes for balance and payments."""
 
+import logging
 from typing import List
 
+from asyncpg import PostgresError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
@@ -26,6 +28,7 @@ from app.services.feature_flag_service import resolve_request_capability
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _raise_credit_catalog_unavailable() -> None:
@@ -117,7 +120,11 @@ async def list_packages(
             environment=settings.runtime_environment,
         )
         localized = localize_catalog_products(catalog.products, locale=locale)
-    except (BillingCatalogUnavailable, SQLAlchemyError, OSError):
+    except (BillingCatalogUnavailable, PostgresError, SQLAlchemyError, OSError) as exc:
+        logger.warning(
+            "credit_catalog_unavailable exception_type=%s",
+            type(exc).__name__,
+        )
         _raise_credit_catalog_unavailable()
 
     return PackagesResponse(

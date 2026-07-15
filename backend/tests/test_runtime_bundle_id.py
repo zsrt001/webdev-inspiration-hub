@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -178,7 +179,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
     def test_preview_commercial_cli_hashes_the_exact_planned_contract_files(self) -> None:
         catalog = ROOT / "release" / "catalog" / "catalog-2026-07-10.json"
         command = [
-            str(ROOT / ".venv" / "Scripts" / "python.exe"),
+            sys.executable,
             str(SCRIPT),
             "--release-role", "PREVIEW_COMMERCIAL",
             "--source-sha", "a" * 40,
