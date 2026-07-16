@@ -2,7 +2,7 @@
   <AdminLayout
     active="overview"
     :title="tr('运营总览', 'Operations overview')"
-    :subtitle="tr('检查后台权限、邮件投递、风控和真实生图链路。', 'Verify admin access, email delivery, risk controls, and the real image generation path.')"
+    :subtitle="tr('检查后台权限、邮件投递、风控与商用质量信号。', 'Verify admin access, email delivery, risk controls, and commercial quality signals.')"
   >
     <view v-if="loading" class="admin-card admin-state">
       <text class="state-title">{{ tr('正在加载后台', 'Loading admin console') }}</text>
@@ -295,60 +295,6 @@
         <view class="admin-card ops-card">
           <view class="section-head compact-head">
             <view>
-              <text class="section-title">{{ tr('真实生图探针', 'Real generation probe') }}</text>
-              <text class="section-copy">{{ tr('创建零成本后台探针订单，并运行当前配置的图像服务商。', 'Creates a zero-cost admin probe order and runs the configured image provider.') }}</text>
-            </view>
-          </view>
-
-          <view class="probe-form">
-            <input v-model="probeImageUrl" class="filter-input" :placeholder="tr('主人物公开图片 URL', 'Primary public portrait image URL')" />
-            <input v-model="probeSecondImageUrl" class="filter-input" :placeholder="tr('双人同机测试的第二人物 URL（可选）', 'Second portrait URL for local couple test (optional)')" />
-            <input v-model="probeTemplateId" class="filter-input" :placeholder="tr(`模板 ID，默认 ${defaultProbeTemplateId}`, `Template ID, default ${defaultProbeTemplateId}`)" />
-            <view class="probe-options">
-              <label class="check-row">
-                <checkbox :checked="probeInline" @tap="probeInline = !probeInline" />
-                <text>{{ tr('立即同步运行', 'Run inline now') }}</text>
-              </label>
-            </view>
-            <button class="primary-action" :disabled="runningProbe" @tap="runGenerationProbe">
-              {{ runningProbe ? tr('探针启动中...', 'Starting probe...') : tr('运行真实探针', 'Run real probe') }}
-            </button>
-          </view>
-
-          <view v-if="currentProbeInputImages.length" class="probe-gallery">
-            <view v-for="item in currentProbeInputImages" :key="item.label" class="probe-gallery-item">
-              <text class="probe-gallery-label">{{ item.label }}</text>
-              <image class="probe-image small" :src="item.url" mode="aspectFill" />
-            </view>
-          </view>
-
-          <view v-if="probeResult" class="probe-result">
-            <view class="diag-row">
-              <text>{{ tr('结果', 'Result') }}</text>
-              <text class="status-pill" :class="{ active: probeResult.ok }">{{ probeResultLabel }}</text>
-            </view>
-            <view class="diag-row">
-              <text>{{ tr('订单', 'Order') }}</text>
-              <text class="mono">{{ probeResult.order_id || '--' }}</text>
-            </view>
-            <text v-if="probeResult.error_message" class="error-copy">{{ probeResult.error_message }}</text>
-            <view v-if="lastProbeInputImages.length || probePreviewUrl" class="probe-gallery">
-              <view v-for="item in lastProbeInputImages" :key="item.label" class="probe-gallery-item">
-                <text class="probe-gallery-label">{{ item.label }}</text>
-                <image class="probe-image small" :src="item.url" mode="aspectFill" />
-              </view>
-              <view v-if="probePreviewUrl" class="probe-gallery-item generated">
-                <text class="probe-gallery-label">{{ tr('生成婚纱图', 'Generated wedding image') }}</text>
-                <image class="probe-image" :src="probePreviewUrl" mode="aspectFill" />
-              </view>
-            </view>
-            <button v-if="probeResult.order_id" class="ghost-action probe-order-action" @tap="goOrders">{{ tr('打开订单', 'Open orders') }}</button>
-          </view>
-        </view>
-
-        <view class="admin-card ops-card">
-          <view class="section-head compact-head">
-            <view>
               <text class="section-title">{{ tr('注册风控', 'Signup risk') }}</text>
               <text class="section-copy">{{ tr('新手积分、验证、设备、IP 和邮箱域名滥用信号。', 'Starter-credit, verification, device, IP, and email-domain abuse signals.') }}</text>
             </view>
@@ -416,7 +362,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import AdminLayout from './AdminLayout.vue';
-import { get, post, resolvePublicUrl } from '../../utils/api';
+import { get, post } from '../../utils/api';
 import { useI18nStore } from '../../stores/i18n';
 
 interface AdminMe {
@@ -501,20 +447,6 @@ interface QualityDashboard {
   repair_modes?: Array<Record<string, any>>;
 }
 
-interface ProbeResponse {
-  ok: boolean;
-  started: boolean;
-  completed: boolean;
-  execution_mode: string;
-  order_id?: string | null;
-  status?: string | null;
-  task_id?: string | null;
-  template_id?: string | null;
-  error_message?: string | null;
-  preview_image_urls?: Record<string, string> | null;
-  final_image_urls?: Record<string, string> | null;
-}
-
 const loading = ref(true);
 const error = ref('');
 const i18nStore = useI18nStore();
@@ -533,13 +465,6 @@ const qualityDashboard = ref<QualityDashboard | null>(null);
 const testEmailTo = ref('');
 const testEmailResult = ref('');
 const sendingTestEmail = ref(false);
-const probeImageUrl = ref('');
-const probeSecondImageUrl = ref('');
-const probeTemplateId = ref('');
-const probeInline = ref(true);
-const runningProbe = ref(false);
-const probeResult = ref<ProbeResponse | null>(null);
-const lastProbeInputs = ref<{ primary: string; second: string }>({ primary: '', second: '' });
 
 const recentOrders = computed(() => (stats.value.recent_activity || []).slice(0, 8));
 const recentRiskEvents = computed(() => (riskOverview.value?.recent_events || []).slice(0, 6));
@@ -551,29 +476,11 @@ const qualityReasons = computed(() => (qualityDashboard.value?.failure_reasons |
 const qualityRepairRounds = computed(() => qualityDashboard.value?.repair_rounds || []);
 const qualityRepairModes = computed(() => qualityDashboard.value?.repair_modes || []);
 const adminRoleLabel = computed(() => (adminMe.value?.admin_roles || []).join(', ') || '--');
-const defaultProbeTemplateId = computed(() => (isHttpImageUrl(probeSecondImageUrl.value) ? 'royal_castle' : 'solo_royal_castle'));
 const dnsSummary = computed(() => {
   const dns = emailDiagnostics.value?.dns || {};
   const ok = tr('正常', 'ok');
   const missing = tr('缺失', 'missing');
   return `SPF ${dns.spf_found ? ok : missing} | DMARC ${dns.dmarc_found ? ok : missing} | MX ${dns.mx_found ? ok : missing}`;
-});
-
-const probeResultLabel = computed(() => {
-  if (!probeResult.value) return '--';
-  if (probeResult.value.completed) return tr('已完成', 'Completed');
-  if (probeResult.value.started && probeResult.value.ok) return `${tr('已启动', 'Started')} (${probeResult.value.execution_mode})`;
-  return tr('失败', 'Failed');
-});
-
-const probePreviewUrl = computed(() => {
-  const result = probeResult.value;
-  if (!result) return '';
-  const finalValues = result.final_image_urls ? Object.values(result.final_image_urls) : [];
-  if (finalValues.length && finalValues[0]) return resolvePublicUrl(finalValues[0]);
-  const previewValues = result.preview_image_urls ? Object.values(result.preview_image_urls) : [];
-  if (previewValues.length && previewValues[0]) return resolvePublicUrl(previewValues[0]);
-  return '';
 });
 
 const funnelCards = computed(() => {
@@ -629,22 +536,6 @@ const qualityKpis = computed(() => {
     },
   ];
 });
-
-const currentProbeInputImages = computed(() => buildProbeInputImages(probeImageUrl.value, probeSecondImageUrl.value));
-const lastProbeInputImages = computed(() => buildProbeInputImages(lastProbeInputs.value.primary, lastProbeInputs.value.second));
-
-function isHttpImageUrl(value: string): boolean {
-  return /^https?:\/\//i.test(String(value || '').trim());
-}
-
-function buildProbeInputImages(primary: string, second: string) {
-  const items: Array<{ label: string; url: string }> = [];
-  const first = String(primary || '').trim();
-  const secondValue = String(second || '').trim();
-  if (isHttpImageUrl(first)) items.push({ label: tr('上传原图 1', 'Uploaded source image 1'), url: first });
-  if (isHttpImageUrl(secondValue)) items.push({ label: tr('上传原图 2', 'Uploaded source image 2'), url: secondValue });
-  return items;
-}
 
 function shortId(value: string): string {
   return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
@@ -768,57 +659,6 @@ async function sendAdminTestEmail() {
   }
 }
 
-async function runGenerationProbe() {
-  const imageUrl = probeImageUrl.value.trim();
-  const secondImageUrl = probeSecondImageUrl.value.trim();
-  if (!isHttpImageUrl(imageUrl)) {
-    probeResult.value = {
-      ok: false,
-      started: false,
-      completed: false,
-      execution_mode: probeInline.value ? 'inline' : 'arq',
-      error_message: tr('请输入公开可访问的 http(s) 人像图片 URL。', 'Enter a public http(s) portrait image URL.'),
-    };
-    return;
-  }
-  if (secondImageUrl && !isHttpImageUrl(secondImageUrl)) {
-    probeResult.value = {
-      ok: false,
-      started: false,
-      completed: false,
-      execution_mode: probeInline.value ? 'inline' : 'arq',
-      error_message: tr('第二张人物图片必须是公开可访问的 http(s) URL。', 'The second portrait must be a public http(s) URL.'),
-    };
-    return;
-  }
-  runningProbe.value = true;
-  probeResult.value = null;
-  lastProbeInputs.value = { primary: imageUrl, second: secondImageUrl };
-  try {
-    probeResult.value = await post<ProbeResponse>(
-      '/admin/generation_probe',
-      {
-        image_url: imageUrl,
-        second_image_url: secondImageUrl || undefined,
-        template_id: probeTemplateId.value.trim() || defaultProbeTemplateId.value,
-        execute_inline: probeInline.value,
-      },
-      { showLoading: false, showError: false },
-    );
-    await loadCoreDashboard();
-  } catch (err: any) {
-    probeResult.value = {
-      ok: false,
-      started: false,
-      completed: false,
-      execution_mode: probeInline.value ? 'inline' : 'arq',
-      error_message: err?.message || tr('生图探针失败。', 'Generation probe failed.'),
-    };
-  } finally {
-    runningProbe.value = false;
-  }
-}
-
 function goLogin() {
   uni.navigateTo({ url: '/pages/auth/login' });
 }
@@ -928,8 +768,7 @@ onMounted(loadDashboard);
 }
 
 .diagnostic-list,
-.mini-log-list,
-.probe-form {
+.mini-log-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -956,65 +795,6 @@ onMounted(loadDashboard);
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   margin: 14px 0;
-}
-
-.probe-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.check-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #374151;
-}
-
-.probe-result {
-  margin-top: 14px;
-  padding-top: 4px;
-}
-
-.probe-gallery {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.probe-gallery-item {
-  min-width: 132px;
-  max-width: 220px;
-}
-
-.probe-gallery-item.generated {
-  max-width: 280px;
-}
-
-.probe-gallery-label {
-  display: block;
-  color: #687180;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.probe-image {
-  margin-top: 12px;
-  width: 180px;
-  height: 180px;
-  border-radius: 8px;
-  background: #edf1f6;
-}
-
-.probe-image.small {
-  width: 132px;
-  height: 132px;
-}
-
-.probe-order-action {
-  margin-top: 12px;
 }
 
 .error-copy {
@@ -1220,16 +1000,5 @@ onMounted(loadDashboard);
     align-items: flex-start;
   }
 
-  .probe-gallery-item,
-  .probe-gallery-item.generated {
-    max-width: none;
-    width: 100%;
-  }
-
-  .probe-image,
-  .probe-image.small {
-    width: 100%;
-    height: 220px;
-  }
 }
 </style>
