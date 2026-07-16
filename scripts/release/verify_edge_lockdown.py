@@ -28,6 +28,10 @@ EDGE_ROUTE_GROUPS = {
     "retired_addons",
     "leads_recommendations",
 }
+# The current Vercel Hobby project permits three custom rules. One slot is
+# reserved for the short-lived runner bypass, leaving at most two physical
+# deny rules. Logical route groups may intentionally share a physical rule ID.
+MAX_PHYSICAL_EDGE_DENY_RULES = 2
 
 
 def _parse_datetime(value: Any, *, name: str) -> datetime:
@@ -159,12 +163,19 @@ def validate_edge_lockdown_report(
     groups = payload.get("route_groups")
     if not isinstance(groups, dict) or set(groups) != EDGE_ROUTE_GROUPS:
         raise ValueError("edge lockdown route-group coverage is incomplete")
+    physical_deny_rule_ids: set[str] = set()
     for name, result in groups.items():
         if not isinstance(result, dict):
             raise ValueError(f"edge lockdown route group {name} is invalid")
-        _bounded_identifier(result.get("rule_id"), name=f"{name} rule ID")
+        physical_deny_rule_ids.add(
+            _bounded_identifier(result.get("rule_id"), name=f"{name} rule ID")
+        )
         if result.get("denied") is not True or result.get("read_back") is not True:
             raise ValueError(f"edge lockdown route group {name} was not denied and read back")
+    if len(physical_deny_rule_ids) > MAX_PHYSICAL_EDGE_DENY_RULES:
+        raise ValueError(
+            "edge lockdown exceeds the Hobby physical-rule limit reserved for deny rules"
+        )
 
     bypass = payload.get("runner_bypass")
     if not isinstance(bypass, dict) or bypass.get("read_back") is not True:
@@ -184,6 +195,7 @@ def validate_edge_lockdown_report(
         "formal_domain": expected_coordinates["formal_domain"],
         "last_known_deployment_id": payload["last_known_deployment_id"],
         "route_groups": sorted(groups),
+        "physical_deny_rule_count": len(physical_deny_rule_ids),
         "before_config_sha256": payload["before_config_sha256"],
         "after_config_sha256": payload["after_config_sha256"],
         "report_expires_at": expires_at.isoformat(),

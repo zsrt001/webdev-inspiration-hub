@@ -196,6 +196,52 @@ must:
    run and attempt, formal domain, rule IDs, and the pre-change configuration
    hash.
 
+### Hobby physical-rule limit and logical packing
+
+The current Vercel team is on Hobby. Read-only dashboard verification on
+2026-07-16 showed zero existing custom rules, while the platform permits at
+most three ([Vercel WAF limits](https://vercel.com/docs/vercel-firewall/vercel-waf)).
+The protected release also needs one short-lived custom bypass
+rule; therefore the seven `EDGE_ROUTE_GROUPS` are logical groups and must fit
+inside at most two physical deny rules. One physical rule ID may back multiple
+logical groups, but the signed report must still list all seven groups
+separately with `denied=true` and `read_back=true`.
+
+Use this deterministic packing; do not use Vercel's natural-language rule
+generator:
+
+| Physical deny | Logical groups |
+| --- | --- |
+| `vowpic-lock-identity-generation` | `auth_upload`, `generation`, `partner_invite` |
+| `vowpic-lock-commercial-retired` | `credit_checkout`, `subscription`, `retired_addons`, `leads_recommendations` |
+
+Each logical group is a separate OR condition group inside its physical rule.
+Scope every condition to the Production hostnames and the exact method/path
+boundary below; a parent-prefix deny is forbidden when it would also cover a
+preserved path.
+
+| Logical group | Required deny boundary |
+| --- | --- |
+| `auth_upload` | Google intent/exchange, private media upload, Gatekeeper, retired `/auth/login`, and retired public `/upload` methods |
+| `generation` | order creation, order deletion while cleanup is paused, retired Admin generation/regeneration, Admin/cron cleanup, and the retired pending-order poller |
+| `credit_checkout` | credit catalog/checkout, user refund initiation, Admin credit grant, retired legacy credit mutation, and removed manual-checkout paths |
+| `subscription` | subscription plan/current reads, checkout/cancel, and Admin Creem product/checkout probes |
+| `partner_invite` | current `/partner-invites` methods and every retired `/session` method |
+| `retired_addons` | legacy user create/read/patch and every retired `/live_portrait` method |
+| `leads_recommendations` | retired local recommendations, lead submit/list/export, and Admin CRM preview/push/history |
+
+Signed Creem webhook, payment reconciliation/status, incident/runtime evidence,
+readiness, and `/auth/logout` are explicit exclusions. The runner bypass is the
+third and final Hobby custom-rule slot. If any unrelated custom rule appears,
+stop before staging rather than deleting it or exceeding capacity.
+
+During handoff, remove one logical OR condition group, publish and read it back,
+then prove the application guard and no-side-effect snapshot. When logical
+groups share a rule ID, remove the physical rule only after its final logical
+group passes. Restore the preceding exact physical-rule version on any mismatch.
+Vercel stages custom-rule changes until an explicit publish, so inspect the
+draft diff before every publish ([Firewall CLI contract](https://vercel.com/docs/cli/firewall)).
+
 The workflow treats a missing or mismatched edge report as `NOT_RUN`. After
 Promote, remove one route-group deny at a time, read it back, and immediately
 prove the un-bypassed request reaches the application `503
