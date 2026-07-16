@@ -11,6 +11,17 @@ VowPic **尚未达到 Production accepted**。仓库已经实现安全基线、�
 
 以上发布流程都必须绑定精确 source SHA、runtime bundle、Vercel deployment、数据库 revision 和 create-once 证据。Preview 验收完成后必须恢复 Supabase 精确回调、关闭全部能力并清理验收业务数据。
 
+## 当前正式域名风险状态
+
+2026-07-16 对 `https://www.vowpic.com` 的只读 GET 核验确认，正式域名仍由旧 Production deployment 提供服务，并且与当前 Web SaaS 安全合同不一致：
+
+- `/api/v1/ops/config` 仍公开报告 `remote_join=true`、`local_recommendations=true` 和 `director_mode=true`。
+- `/api/v1/session/{id}/status`、`/api/v1/live_portrait/list`、`/api/v1/leads/list`、`/api/v1/leads/export.csv` 和 `/api/v1/users/{id}` 没有命中当前先于认证和业务查询返回 `410 Gone` 的永久墓碑合同。
+- `/api/v1/recommendations/local_studios` 可匿名返回三条已退役的本地影楼推荐记录，而当前产品明确不提供本地影楼推荐。
+- `/api/v1/ops/readiness` 仍按旧逻辑报告 `commercial_ready=true`；该结果没有当前 source/runtime、受保护 Preview、私有存储、隔离 Redis、Provider、支付或正式证据绑定，不能视为发布就绪。
+
+这不是当前 `main` 的实现缺口；当前代码和测试已覆盖对应 `410` 墓碑及能力关闭合同。风险来自旧 Production 尚未通过受保护安全基线流程替换。临时 Vercel Firewall 锁定和正式发布都属于外部项目状态变更；在实际锁定、读回、签名留证以及受保护发布完成前，Production 必须标记为 **存在已确认暴露、未 accepted**，不得以普通 Preview Promote 代替。
+
 ## 禁止的验收捷径
 
 - 不得用浏览器 `X-Admin-Token`、通用 Bearer、旧 OpenID、游客身份或硬编码白名单代替普通 Google 用户。
