@@ -20,7 +20,7 @@
             </view>
           </view>
 
-          <view class="hero-actions">
+          <view v-if="creationAvailable" class="hero-actions">
             <button v-if="isGoldenTemplate" class="btn btn-primary action-btn shadow-glow" @tap="goCreate('golden_anniversary')">
               {{ tr('开始金婚重塑', 'Start Golden Anniversary') }}
             </button>
@@ -30,6 +30,9 @@
             <button v-if="!isGoldenTemplate" class="btn btn-outline action-btn" @tap="goCreate('couple_local')">
               {{ tr('双人同机', 'Local Couple') }}
             </button>
+          </view>
+          <view v-else class="availability-notice">
+            {{ tr('当前部署仅开放风格浏览，上传与生成功能暂未开放。', 'This deployment is browse-only. Upload and generation are temporarily unavailable.') }}
           </view>
 
           <view class="logic-card">
@@ -99,6 +102,7 @@ import {
   useTemplateStore,
 } from '../../stores/template';
 import { useI18nStore } from '../../stores/i18n';
+import { useOpsStore } from '../../stores/ops';
 
 interface DetailCopyEntry {
   kickerZh: string;
@@ -186,7 +190,9 @@ const DETAIL_COPY: Record<string, DetailCopyEntry> = {
 
 const templateStore = useTemplateStore();
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
 
 const template = ref<Template | null>(null);
 
@@ -228,6 +234,7 @@ function currentQuery(): Record<string, string> {
 }
 
 function goCreate(mode: 'single' | 'couple_local' | 'golden_anniversary') {
+  if (!creationAvailable.value) return;
   if (!template.value) return;
   uni.navigateTo({
     url: `/pages/create/index?id=${encodeURIComponent(template.value.id)}&mode=${mode}`,
@@ -235,6 +242,7 @@ function goCreate(mode: 'single' | 'couple_local' | 'golden_anniversary') {
 }
 
 onMounted(async () => {
+  await opsStore.fetchPublicConfig();
   if (!templateStore.templates.length) {
     await templateStore.fetchTemplates();
   }
@@ -378,6 +386,18 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 18px;
+}
+
+.availability-notice {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(17, 106, 96, 0.2);
+  border-radius: 8px;
+  background: #eef7f5;
+  color: #0b5e55;
+  font-size: 14px;
+  line-height: 1.65;
+  font-weight: 700;
 }
 
 .action-btn {

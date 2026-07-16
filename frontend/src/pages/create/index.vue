@@ -1,7 +1,20 @@
 ﻿<template>
   <view class="app-container create-page" style="padding-top: 64px;">
-    <NavBar ref="navBarRef" @show-payment="showPaymentModal = true" />
+    <NavBar ref="navBarRef" @show-payment="openPaymentModal" />
     <view class="create-shell">
+      <view v-if="!creationAvailable" class="capability-unavailable">
+        <text class="unavailable-kicker">{{ tr('安全基线', 'Safe baseline') }}</text>
+        <text class="unavailable-title heading-serif" role="heading" aria-level="1">
+          {{ tr('创作功能暂未开放', 'Studio temporarily unavailable') }}
+        </text>
+        <text class="unavailable-copy">
+          {{ tr('当前部署仅开放只读浏览。照片上传和 AI 生成会在私有存储、身份与生成链路完成真实验收后再开放。', 'This deployment is browse-only. Photo upload and AI generation will open only after identity, private storage, and generation pass real acceptance.') }}
+        </text>
+        <button class="btn btn-outline unavailable-action" @tap="goHome">
+          {{ tr('返回风格浏览', 'Browse styles') }}
+        </button>
+      </view>
+      <template v-else>
       <view class="hero-card">
         <view class="hero-main">
           <text class="hero-kicker">{{ tr('AI 婚纱创作台', 'AI Wedding Studio') }}</text>
@@ -218,10 +231,11 @@
           </view>
         </view>
       </view>
+      </template>
     </view>
 
     <LegalFooter />
-    <PaymentModal :visible="showPaymentModal" @close="showPaymentModal = false" @purchase-complete="onPurchaseComplete" />
+    <PaymentModal v-if="billingAvailable" :visible="showPaymentModal" @close="showPaymentModal = false" @purchase-complete="onPurchaseComplete" />
   </view>
 </template>
 <script setup lang="ts">
@@ -233,6 +247,7 @@ import LegalConsentInline from '../../components/LegalConsentInline.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
 import { useOrderStore } from '../../stores/order';
+import { useOpsStore } from '../../stores/ops';
 import { type Template, getLocalizedTemplateMarketingSubtitle, getLocalizedTemplateTitle, getTemplateFamilyKey, useTemplateStore } from '../../stores/template';
 import { resolvePublicUrl, uploadFile, type ApiError } from '../../utils/api';
 import { ensureSession } from '../../utils/auth';
@@ -272,7 +287,10 @@ const STYLE_SUBTITLE: Record<string, { zh: string; en: string }> = {
 const templateStore = useTemplateStore();
 const orderStore = useOrderStore();
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const billingAvailable = computed(() => opsStore.billingAvailable);
 
 const navBarRef = ref<InstanceType<typeof NavBar> | null>(null);
 const showPaymentModal = ref(false);
@@ -547,6 +565,7 @@ function portraitCta(index: number) {
   return index === 0 ? tr('上传第一张照片', 'Upload first portrait') : tr('上传第二张照片', 'Upload second portrait');
 }
 async function pickLocalImage() {
+  if (!creationAvailable.value) return { localPath: '', uploadQuality: null };
   const res = await uni.chooseImage({ count: 1, sizeType: ['original'], sourceType: ['album', 'camera'] });
   const localPath = res.tempFilePaths?.[0];
   if (!localPath) return { localPath: '', uploadQuality: null };
@@ -646,6 +665,7 @@ async function ensurePortraitUploaded(index: number) {
   return url;
 }
 async function submitCreate() {
+  if (!creationAvailable.value) return;
   if (!await ensureSession()) {
     uni.showModal({
       title: i18nStore.locale === 'zh' ? '需要登录' : 'Sign In Required',
@@ -717,7 +737,7 @@ async function submitCreate() {
     uni.navigateTo({ url: `/pages/preview/preview?id=${order.id}` });
   } catch (error: any) {
     const apiError = error as ApiError;
-    if (apiError.statusCode === 402) {
+    if (apiError.statusCode === 402 && billingAvailable.value) {
       showPaymentModal.value = true;
     } else if (apiError.statusCode === 409 && apiError.detail?.existing_order_id) {
       uni.showToast({
@@ -737,6 +757,15 @@ function onPurchaseComplete() {
   navBarRef.value?.refreshBalance();
 }
 
+function openPaymentModal() {
+  if (!billingAvailable.value) return;
+  showPaymentModal.value = true;
+}
+
+function goHome() {
+  uni.reLaunch({ url: '/pages/index/index' });
+}
+
 onLoad((query = {}) => {
   routeQuery.value = Object.fromEntries(
     Object.entries(query as Record<string, unknown>).map(([key, value]) => [key, String(value || '')])
@@ -744,6 +773,8 @@ onLoad((query = {}) => {
 });
 
 onMounted(async () => {
+  await opsStore.fetchPublicConfig();
+  if (!creationAvailable.value) return;
   if (!templateStore.templates.length) await templateStore.fetchTemplates();
   applyRouteQuery(currentQuery());
   applyStoredTemplateIntent();
@@ -761,6 +792,47 @@ onMounted(async () => {
   width: min(1360px, calc(100% - 48px));
   margin: 0 auto;
   padding: 32px 0 80px;
+}
+
+.capability-unavailable {
+  max-width: 720px;
+  margin: 72px auto;
+  padding: 44px;
+  border: 1px solid rgba(17, 106, 96, 0.2);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 20px 50px rgba(23, 25, 31, 0.07);
+  text-align: center;
+}
+
+.unavailable-kicker,
+.unavailable-title,
+.unavailable-copy {
+  display: block;
+}
+
+.unavailable-kicker {
+  color: #116a60;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.unavailable-title {
+  margin-top: 12px;
+  color: #17191f;
+  font-size: 46px;
+  line-height: 1.05;
+}
+
+.unavailable-copy {
+  margin-top: 18px;
+  color: #4c5360;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.unavailable-action {
+  margin-top: 24px;
 }
 
 .hero-card,

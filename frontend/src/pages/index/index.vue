@@ -20,7 +20,8 @@
             {{ tr('无需预约影棚。上传人像、选择风格或描述想法，快速生成适合请柬、头像、纪念日和社交分享的婚纱影像。', 'Upload a portrait, choose a look, and generate polished AI wedding images for invitations, profiles, anniversaries, and keepsakes.') }}
           </text>
           <view class="hero-actions">
-            <view class="btn primary" @tap="goToCustom">{{ tr('开始免费预览', 'Start a Free Preview') }}</view>
+            <view v-if="creationAvailable" class="btn primary" @tap="goToCustom">{{ tr('开始免费预览', 'Start a Free Preview') }}</view>
+            <view v-else class="availability-notice">{{ tr('创作功能暂未开放', 'Studio temporarily unavailable') }}</view>
             <view class="btn secondary" @tap="scrollToGallery">{{ tr('浏览婚纱风格', 'Explore Styles') }}</view>
           </view>
           <view class="hero-proof-grid">
@@ -69,7 +70,7 @@
         </view>
 
         <view class="feature-layout">
-          <view class="feature-panel" @tap="goToCustom">
+          <view class="feature-panel" :class="{ disabled: !creationAvailable }" @tap="goToCustom">
             <img
               src="/static/style-previews/couple_old_money.jpg"
               class="feature-image"
@@ -79,11 +80,12 @@
               <text class="feature-kicker">{{ tr('自由定制', 'Custom Creation') }}</text>
               <text class="feature-title heading-serif">{{ tr('描述你想要的婚纱、场景和氛围', 'Describe the dress, scene, and mood you want') }}</text>
               <text class="feature-desc">{{ tr('上传人物照片后，可以选择模板，也可以补充服装、场景和参考图，让画面更接近你的审美。', 'Upload portraits, choose a style, then add outfit, scene, or reference guidance to bring the result closer to your taste.') }}</text>
-              <view class="feature-action">{{ tr('开始定制', 'Start Customizing') }}</view>
+              <view v-if="creationAvailable" class="feature-action">{{ tr('开始定制', 'Start Customizing') }}</view>
+              <view v-else class="feature-status">{{ tr('暂未开放', 'Temporarily unavailable') }}</view>
             </view>
           </view>
 
-          <view class="feature-panel alt" @tap="goToGoldenCreate">
+          <view class="feature-panel alt" :class="{ disabled: !creationAvailable }" @tap="goToGoldenCreate">
             <img
               src="/static/style-previews/golden_chinese_courtyard.jpg"
               class="feature-image"
@@ -93,7 +95,8 @@
               <text class="feature-kicker">{{ tr('金婚纪念', 'Legacy Series') }}</text>
               <text class="feature-title heading-serif">{{ tr('为父母和长辈重做一组纪念婚纱照', 'Create anniversary portraits for parents and elders') }}</text>
               <text class="feature-desc">{{ tr('适合结婚纪念日、金婚礼物和家庭相册，用更体面的方式留下珍贵关系与家庭记忆。', 'Perfect for anniversaries, legacy gifts, and family albums, with a more polished way to preserve important memories.') }}</text>
-              <view class="feature-action">{{ tr('查看纪念风格', 'View Legacy Styles') }}</view>
+              <view v-if="creationAvailable" class="feature-action">{{ tr('开始纪念创作', 'Start Legacy Creation') }}</view>
+              <view v-else class="feature-status">{{ tr('暂未开放', 'Temporarily unavailable') }}</view>
             </view>
           </view>
         </view>
@@ -169,7 +172,8 @@
         <text class="cta-title heading-serif">{{ tr('从真实照片开始，逐步完成你的婚纱创作', 'Start with your photos and a guided creation flow') }}</text>
         <text class="cta-desc">{{ tr('系统会在提交前显示当前部署可用的能力和所需额度；未启用的付费选项不会提前展示。', 'The app shows available capabilities and required credits before submission. Paid options remain hidden until billing is available on this deployment.') }}</text>
         <view class="hero-actions centered">
-          <view class="btn primary" @tap="goToCustom">{{ tr('立即开始', 'Start Now') }}</view>
+          <view v-if="creationAvailable" class="btn primary" @tap="goToCustom">{{ tr('立即开始', 'Start Now') }}</view>
+          <view v-else class="availability-notice">{{ tr('当前部署仅开放浏览', 'This deployment is browse-only') }}</view>
           <view v-if="billingAvailable" class="btn secondary" @tap="openPaymentModal">{{ tr('查看套餐', 'View Plans') }}</view>
         </view>
       </section>
@@ -228,11 +232,8 @@ const showPaymentModal = ref(false);
 const templateImageAttempts = ref<Record<string, number>>({});
 
 const homeBanner = computed(() => opsStore.publicConfig.placements.home_banner);
-const billingAvailable = computed(
-  () =>
-    opsStore.publicConfig.capabilities.credit_pack_checkout ||
-    opsStore.publicConfig.capabilities.subscription_billing
-);
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const billingAvailable = computed(() => opsStore.billingAvailable);
 const heroBackgroundFallback = '/style-previews/royal_castle.jpg';
 const staleHeroBackgrounds = new Set([
   '/hero_wedding_luxury_bg.jpg',
@@ -348,10 +349,12 @@ const goToRefund = () => {
 };
 
 const goToCustom = () => {
+  if (!creationAvailable.value) return;
   uni.navigateTo({ url: '/pages/create/index' });
 };
 
 const goToGoldenCreate = () => {
+  if (!creationAvailable.value) return;
   const goldenTemplate =
     templates.value.find((item) => item.id === 'golden_vintage_studio_8090') ||
     templateStore.templates.find((item) => item.id === 'golden_vintage_studio_8090');
@@ -631,6 +634,19 @@ onMounted(async () => {
   justify-content: center;
 }
 
+.availability-notice {
+  display: inline-flex;
+  align-items: center;
+  min-height: 46px;
+  padding: 0 18px;
+  border: 1px solid rgba(17, 106, 96, 0.24);
+  border-radius: 8px;
+  background: #eef7f5;
+  color: #0b5e55;
+  font-size: 14px;
+  font-weight: 800;
+}
+
 .btn {
   min-height: 52px;
   padding: 0 28px;
@@ -853,6 +869,10 @@ onMounted(async () => {
   box-shadow: 0 18px 44px rgba(23, 25, 31, 0.06);
 }
 
+.feature-panel.disabled {
+  cursor: default;
+}
+
 .feature-image {
   width: 100%;
   height: 100%;
@@ -896,6 +916,14 @@ onMounted(async () => {
   border-radius: 8px;
   background: #17191f;
   color: #ffffff;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.feature-status {
+  margin-top: 18px;
+  display: inline-flex;
+  color: #0b5e55;
   font-size: 13px;
   font-weight: 900;
 }

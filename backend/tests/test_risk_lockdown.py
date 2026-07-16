@@ -71,11 +71,73 @@ class RiskLockdownTest(unittest.TestCase):
         self.assertNotEqual(env.get("QA_REQUIRE_IDENTITY_EMBEDDING"), "false")
 
     def test_frontend_fallback_hides_every_high_risk_surface(self) -> None:
-        source = (ROOT / "frontend" / "src" / "stores" / "ops.ts").read_text(encoding="utf-8")
+        frontend = ROOT / "frontend" / "src"
+        ops_source = (frontend / "stores" / "ops.ts").read_text(encoding="utf-8")
+        navigation_source = (frontend / "components" / "NavBar.vue").read_text(encoding="utf-8")
+        home_source = (frontend / "pages" / "index" / "index.vue").read_text(encoding="utf-8")
+        detail_source = (frontend / "pages" / "detail" / "detail.vue").read_text(encoding="utf-8")
+        create_source = (frontend / "pages" / "create" / "index.vue").read_text(encoding="utf-8")
+        login_source = (frontend / "pages" / "auth" / "login.vue").read_text(encoding="utf-8")
+        register_source = (frontend / "pages" / "auth" / "register.vue").read_text(encoding="utf-8")
+        account_source = (frontend / "pages" / "account" / "index.vue").read_text(encoding="utf-8")
+        orders_source = (frontend / "pages" / "orders" / "orders.vue").read_text(encoding="utf-8")
+        preview_source = (frontend / "pages" / "preview" / "preview.vue").read_text(encoding="utf-8")
 
-        self.assertNotIn("remote_join: true", source)
-        self.assertNotIn("local_recommendations: true", source)
-        self.assertNotIn("director_mode: true", source)
+        for capability in (
+            "google_auth: false",
+            "authenticated_upload: false",
+            "generation: false",
+            "credit_pack_checkout: false",
+            "subscription_billing: false",
+            "private_download: false",
+            "partner_invite: false",
+        ):
+            self.assertIn(capability, ops_source)
+        self.assertIn("creationAvailable: (state)", ops_source)
+        self.assertIn("googleAuthAvailable: (state)", ops_source)
+        self.assertIn("billingAvailable: (state)", ops_source)
+
+        self.assertGreaterEqual(navigation_source.count('v-if="creationAvailable"'), 2)
+        self.assertIn('v-if="accountAuthed || googleAuthAvailable"', navigation_source)
+        self.assertIn(
+            "if (path === '/pages/create/index' && !creationAvailable.value) return;",
+            navigation_source,
+        )
+        self.assertIn("if (!googleAuthAvailable.value) return;", navigation_source)
+
+        self.assertIn('v-if="creationAvailable" class="btn primary"', home_source)
+        self.assertIn('v-else class="availability-notice"', home_source)
+        self.assertGreaterEqual(home_source.count("if (!creationAvailable.value) return;"), 2)
+
+        self.assertIn('v-if="creationAvailable" class="hero-actions"', detail_source)
+        self.assertIn('v-else class="availability-notice"', detail_source)
+        self.assertIn("if (!creationAvailable.value) return;", detail_source)
+
+        self.assertIn('v-if="!creationAvailable" class="capability-unavailable"', create_source)
+        self.assertIn("<template v-else>", create_source)
+        self.assertGreaterEqual(create_source.count("if (!creationAvailable.value) return"), 2)
+        self.assertIn("await opsStore.fetchPublicConfig();", create_source)
+
+        for auth_source in (login_source, register_source):
+            self.assertIn('v-if="googleAuthAvailable && supabaseEnabled"', auth_source)
+            self.assertIn("if (!googleAuthAvailable.value) return;", auth_source)
+            self.assertIn("await opsStore.fetchPublicConfig();", auth_source)
+
+        self.assertGreaterEqual(account_source.count('v-if="creationAvailable"'), 2)
+        self.assertIn("!accountAuthed && googleAuthAvailable && supabaseEnabled", account_source)
+        self.assertIn("if (!creationAvailable.value) return;", account_source)
+        self.assertIn("if (!googleAuthAvailable.value) return;", account_source)
+
+        self.assertIn('v-if="googleAuthAvailable"', orders_source)
+        self.assertIn('v-if="creationAvailable"', orders_source)
+        self.assertIn("if (!creationAvailable.value) return;", orders_source)
+        self.assertIn("if (!googleAuthAvailable.value) return;", orders_source)
+
+        self.assertIn('v-if="billingAvailable"', preview_source)
+        self.assertIn('v-if="creationAvailable"', preview_source)
+        self.assertIn("privateDownloadAvailable.value", preview_source)
+        self.assertIn("if (!creationAvailable.value) return;", preview_source)
+        self.assertIn("if (!billingAvailable.value) return;", preview_source)
 
     def test_formal_matrix_covers_catalog_cleanup_and_retired_admin_crm(self) -> None:
         from scripts.release import verify_safe_baseline as verify

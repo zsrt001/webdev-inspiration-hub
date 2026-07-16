@@ -1042,3 +1042,31 @@
 - A clean-commit baseline, fresh GitHub CI run, warning-annotation readback, and fresh Vercel Preview deployment are still required before this repair can be called externally verified.
 - Protected Preview identity/commercial, EvoLink lost-response proof, Creem refund/subscription proof, private storage, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation and billing remain OFF.
 - No Subagent, merge, protected workflow, Production deployment, domain/DNS mutation, environment-variable mutation, secret read/write, Production data write, payment, email, or Provider submission occurred.
+
+## 2026-07-15 - Fail-closed frontend capability surfaces
+
+### Goal and evidence
+
+- Recheck the successful Vercel Preview as a real user-facing safe-baseline site after the repository-owned build and GitHub Actions warnings were closed.
+- The deployed backend correctly returned `503 runtime_not_ready` and defaulted every high-risk capability OFF, but the frontend still rendered active-looking Google sign-in, upload, generation, billing unlock, and repeat-generation entry points. This contradicted the authoritative requirement that a public-config failure resolves every high-risk frontend surface hidden or OFF.
+- The old `test_frontend_fallback_hides_every_high_risk_surface` only rejected three obsolete enabled strings and did not inspect any real page or navigation entry point. A replacement regression failed first because the shared capability getters and page guards did not exist.
+
+### Changes
+
+- Added centralized fail-closed getters for Google auth, creation, billing, private download, and Partner Invite to the existing operations store. The existing default and normalization behavior remains all-OFF unless the sanitized public config explicitly enables a capability.
+- Gated the desktop/mobile navigation, homepage CTAs, style details, direct Studio route, login/register, account and order empty states, Preview billing/download/recreate controls, and their event handlers. The direct Studio route now renders a browse-only safe-baseline explanation instead of mounting upload or generation controls.
+- Added client-side early returns before the browser image picker, generation submission, OAuth initiation, payment modal, private download, and create-route navigation. Server-side authorization remains independent and unchanged.
+- Expanded the risk-lockdown regression across the real navigation, home, detail, create, auth, account, orders, and Preview source files. No high-risk capability was enabled and no backend, domain, environment, or Vercel project setting changed.
+
+### Verification
+
+- The new frontend-surface regression failed before implementation on the missing `creationAvailable` contract, then passed after the changes.
+- Focused risk and Web-only regression passed 51/51; frontend typecheck passed; the capability-store and HTTP Vitest suites passed 8/8; and the real Web build completed. The new capability-store suite first exposed an invalid hoisted mock declaration in its own test setup; after switching to Vitest's hoisted factory, all three real fallback assertions passed.
+- The complete local baseline exited 0 from a fresh hash-locked Windows environment: `pip check` passed, all 734 backend tests passed with 33 explicit external/environment skips, generated API types were deterministic, frontend typecheck passed, Vitest passed 8/8, and the Web build completed.
+- The baseline truthfully recorded `UNCOMMITTED_WORKTREE`, `runtime_alignment=NOT_RUN`, and `release_eligible=false` because local Windows/Python 3.11.9/Node 24.2.0 differs from the protected Linux/Python 3.11.15/Node 24.17.0 runtime.
+
+### External boundary
+
+- A clean-commit baseline, GitHub CI, fresh Vercel Preview, and read-only browser verification of the updated controls are still required before this UI closure is externally verified.
+- Protected Preview identity/commercial, Provider/payment/private-storage evidence, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation, authenticated upload, billing, private download, Partner Invite, and Google auth remain OFF.
+- No Subagent, merge, protected workflow, Production deployment, domain/DNS mutation, environment-variable mutation, secret read/write, Production data write, payment, upload, email, or Provider submission occurred.

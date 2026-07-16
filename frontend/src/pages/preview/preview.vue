@@ -1,7 +1,7 @@
 ﻿<template>
   <view class="app-container preview-sanctum" style="padding-top: 64px;">
-    <NavBar ref="navBarRef" @show-payment="showPaymentModal = true" />
-    <PaymentModal :visible="showPaymentModal" @close="showPaymentModal = false" @purchase-complete="onPurchaseComplete" />
+    <NavBar ref="navBarRef" @show-payment="openPaymentModal" />
+    <PaymentModal v-if="billingAvailable" :visible="showPaymentModal" @close="showPaymentModal = false" @purchase-complete="onPurchaseComplete" />
 
     <view v-if="orderStore.isGenerating" class="ritual-loading-view">
       <view class="workflow-ritual-card">
@@ -66,7 +66,7 @@
 
       <view class="preview-desktop-layout">
         <view class="preview-main-col">
-          <view class="secondary-ritual-entry" @tap="regenerate">
+          <view v-if="creationAvailable" class="secondary-ritual-entry" @tap="regenerate">
             <text class="entry-back">→{{ tr('重新选择风格', 'Reselect Aesthetic') }}</text>
           </view>
         </view>
@@ -81,8 +81,11 @@
             <button v-if="canDownload" class="btn btn-primary e-action-btn primary shadow-glow" @tap="downloadHD">
               {{ tr('下载高清图', 'DEVELOP HD PRINT') }}
             </button>
-            <button v-else class="btn btn-primary e-action-btn primary shadow-glow" @tap="requestUnlockDownload">
+            <button v-else-if="billingAvailable" class="btn btn-primary e-action-btn primary shadow-glow" @tap="requestUnlockDownload">
               {{ tr('充值解锁高清下载', 'Unlock HD Download') }}
+            </button>
+            <button v-else class="btn btn-primary e-action-btn primary" disabled>
+              {{ tr('高清下载暂未开放', 'HD download unavailable') }}
             </button>
             <button
               v-for="variant in downloadVariants"
@@ -97,7 +100,7 @@
             </button>
           </view>
 
-          <view v-if="orderStore.isCompleted && abVariantOptions.length" class="ab-compare-card shadow-md">
+          <view v-if="creationAvailable && orderStore.isCompleted && abVariantOptions.length" class="ab-compare-card shadow-md">
             <view class="c-tag">{{ tr('风格对比', 'Style A/B') }}</view>
             <text class="c-title">{{ tr('用同一张图再试 2 个稳定模板', 'Try two stable variants with this photo') }}</text>
             <text class="c-desc">{{ tr('选择会记录到模板排序，后续优先推荐更受欢迎的风格。', 'Your pick feeds future template ranking.') }}</text>
@@ -129,7 +132,7 @@
         <view v-if="failureActionHints.length" class="folio-meta error-meta">
           <text v-for="h in failureActionHints" :key="h" class="meta-chip">{{ h }}</text>
         </view>
-        <button class="btn btn-primary retry-btn" @tap="regenerate">{{ tr('换图或换模板重试', 'Retry with better input') }}</button>
+        <button v-if="creationAvailable" class="btn btn-primary retry-btn" @tap="regenerate">{{ tr('换图或换模板重试', 'Retry with better input') }}</button>
         <button class="btn btn-outline retry-btn secondary-retry" @tap="retry">{{ tr('刷新当前任务', 'Refresh current task') }}</button>
       </view>
     </view>
@@ -176,6 +179,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useOrderStore } from '../../stores/order';
 import { useI18nStore } from '../../stores/i18n';
 import { useTemplateStore } from '../../stores/template';
+import { useOpsStore } from '../../stores/ops';
 import NavBar from '../../components/NavBar.vue';
 import PaymentModal from '../../components/PaymentModal.vue';
 import CompareSlider from '../../components/CompareSlider.vue';
@@ -184,7 +188,11 @@ import { trackEvent } from '../../utils/analytics';
 const orderStore = useOrderStore();
 const i18nStore = useI18nStore();
 const templateStore = useTemplateStore();
+const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const billingAvailable = computed(() => opsStore.billingAvailable);
+const privateDownloadAvailable = computed(() => opsStore.privateDownloadAvailable);
 const navBarRef = ref<InstanceType<typeof NavBar> | null>(null);
 const showPaymentModal = ref(false);
 const showPosterModal = ref(false);
@@ -286,7 +294,9 @@ const hdImageUrl = computed(() => {
 });
 
 const afterImageUrl = computed(() => (orderStore.isCompleted ? hdImageUrl.value : previewImageUrl.value));
-const canDownload = computed(() => orderStore.currentOrder?.can_download === true);
+const canDownload = computed(
+  () => privateDownloadAvailable.value && orderStore.currentOrder?.can_download === true
+);
 const downloadLocked = computed(() => orderStore.currentOrder?.download_locked !== false || !canDownload.value);
 const downloadVariantLabels: Record<string, string> = {
   portrait_2x3: tr('2:3 下载裁切', '2:3 Download crop'),
@@ -788,6 +798,7 @@ const openPosterModal = async () => {
 
 const closePosterModal = () => showPosterModal.value = false;
 const goCreateWithTemplate = (templateId?: string | null, ab = false) => {
+  if (!creationAvailable.value) return;
   const id = String(templateId || orderStore.currentOrder?.template_id || '').trim();
   const query = id ? `?id=${encodeURIComponent(id)}${ab ? '&ab=1' : ''}` : '';
   uni.navigateTo({ url: `/pages/create/index${query}` });
@@ -795,12 +806,18 @@ const goCreateWithTemplate = (templateId?: string | null, ab = false) => {
 const regenerate = () => goCreateWithTemplate(orderStore.currentOrder?.template_id || null);
 
 const requestUnlockDownload = async () => {
+  if (!billingAvailable.value) return;
   await trackEvent({
     eventType: 'download_locked_clicked',
     sourcePage: 'preview',
     templateId: orderStore.currentOrder?.template_id || null,
     meta: { order_id: orderStore.currentOrder?.id || null, entry: 'unlock_button' },
   });
+  showPaymentModal.value = true;
+};
+
+const openPaymentModal = () => {
+  if (!billingAvailable.value) return;
   showPaymentModal.value = true;
 };
 
@@ -866,7 +883,8 @@ const retry = () => {
   if (orderStore.currentOrder?.id) orderStore.startPolling(orderStore.currentOrder.id);
 };
 
-onMounted(() => {
+onMounted(async () => {
+  await opsStore.fetchPublicConfig();
   if (!templateStore.templates.length) {
     void templateStore.fetchTemplates();
   }

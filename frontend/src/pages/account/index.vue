@@ -13,7 +13,7 @@
         </view>
 
         <view class="hero-actions">
-          <button v-if="!accountAuthed && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
+          <button v-if="!accountAuthed && googleAuthAvailable && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
           <button v-if="accountAuthed && adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">{{ tr('后台控制台', 'Admin console') }}</button>
@@ -77,7 +77,7 @@
             </view>
             <text class="credit-copy">{{ tr('基础单人生成', 'Base single generation') }} {{ balance?.cost_per_generation || 2 }} {{ tr('积分起', 'credits and up') }}</text>
             <view class="credit-actions">
-              <button class="btn btn-primary compact-btn" @tap="goCreate">{{ tr('开始创作', 'Create') }}</button>
+              <button v-if="creationAvailable" class="btn btn-primary compact-btn" @tap="goCreate">{{ tr('开始创作', 'Create') }}</button>
               <button class="btn btn-outline compact-btn" @tap="goOrders">{{ tr('查看订单', 'Orders') }}</button>
             </view>
           </view>
@@ -151,7 +151,7 @@
 
             <view v-if="orders.length === 0" class="empty-panel">
               <text>{{ tr('还没有生成记录', 'No generation records yet') }}</text>
-              <button class="btn btn-primary state-action" @tap="goCreate">{{ tr('创建第一组照片', 'Create first set') }}</button>
+              <button v-if="creationAvailable" class="btn btn-primary state-action" @tap="goCreate">{{ tr('创建第一组照片', 'Create first set') }}</button>
             </view>
             <view v-else class="order-list">
               <view v-for="order in orders" :key="order.id" class="order-row" @tap="viewOrder(order.id)">
@@ -206,6 +206,7 @@ import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
+import { useOpsStore } from '../../stores/ops';
 import { useSubscriptionStore } from '../../stores/subscription';
 import { get, post, resolvePublicUrl } from '../../utils/api';
 import { clearCachedSession, ensureSession, logout, signInWithGoogle } from '../../utils/auth';
@@ -270,8 +271,11 @@ interface LegalPolicies {
 }
 
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const subscriptionStore = useSubscriptionStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const googleAuthAvailable = computed(() => opsStore.googleAuthAvailable);
 
 const loading = ref(true);
 const error = ref('');
@@ -462,6 +466,7 @@ async function refresh(): Promise<void> {
 }
 
 async function signIn(): Promise<void> {
+  if (!googleAuthAvailable.value) return;
   try {
     await signInWithGoogle();
   } catch (err: any) {
@@ -549,6 +554,7 @@ async function closeAccount(): Promise<void> {
 }
 
 function goCreate(): void {
+  if (!creationAvailable.value) return;
   uni.navigateTo({ url: '/pages/create/index' });
 }
 
@@ -566,6 +572,7 @@ function viewOrder(orderId: string): void {
 
 onMounted(async () => {
   await Promise.all([
+    opsStore.fetchPublicConfig(),
     loadAccount(),
     refreshSupabaseConfig().then((enabled) => {
       supabaseEnabled.value = enabled;

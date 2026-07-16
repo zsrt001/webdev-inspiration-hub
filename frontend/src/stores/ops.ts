@@ -69,6 +69,18 @@ export const useOpsStore = defineStore('ops', {
     loaded: false,
   }),
 
+  getters: {
+    googleAuthAvailable: (state) => state.publicConfig.capabilities.google_auth,
+    creationAvailable: (state) =>
+      state.publicConfig.capabilities.authenticated_upload &&
+      state.publicConfig.capabilities.generation,
+    billingAvailable: (state) =>
+      state.publicConfig.capabilities.credit_pack_checkout ||
+      state.publicConfig.capabilities.subscription_billing,
+    privateDownloadAvailable: (state) => state.publicConfig.capabilities.private_download,
+    partnerInviteAvailable: (state) => state.publicConfig.capabilities.partner_invite,
+  },
+
   actions: {
     async fetchPublicConfig(force = false) {
       if (this.loaded && !force) return this.publicConfig;

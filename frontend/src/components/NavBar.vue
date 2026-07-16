@@ -13,7 +13,7 @@
         <view class="nav-link" :class="{ active: currentPath === '/pages/index/index' }" @tap="navigate('/pages/index/index')">
           {{ t('nav.home') }}
         </view>
-        <view class="nav-link" :class="{ active: currentPath === '/pages/create/index' || currentPath === '/pages/detail/detail' }" @tap="navigate('/pages/create/index')">
+        <view v-if="creationAvailable" class="nav-link" :class="{ active: currentPath === '/pages/create/index' || currentPath === '/pages/detail/detail' }" @tap="navigate('/pages/create/index')">
           {{ t('nav.studio') }}
         </view>
         <view class="nav-link" :class="{ active: currentPath === '/pages/orders/orders' }" @tap="navigate('/pages/orders/orders')">
@@ -32,11 +32,11 @@
           <text class="lang-text">{{ localeButtonText }}</text>
         </view>
 
-        <view class="auth-chip" @tap.stop="handleAuthTap">
+        <view v-if="accountAuthed || googleAuthAvailable" class="auth-chip" @tap.stop="handleAuthTap">
           <text class="auth-text">{{ authLabel }}</text>
         </view>
 
-        <view v-if="accountAuthed" class="balance-chip" @tap="showTopUp">
+        <view v-if="accountAuthed" class="balance-chip" :class="{ disabled: !billingAvailable }" @tap="showTopUp">
           <text class="chip-icon">CR</text>
           <text class="chip-val">{{ creditBalance }}</text>
         </view>
@@ -50,10 +50,10 @@
 
       <view v-if="showMenu" class="dropdown-menu-mobile" @tap="showMenu = false">
         <view class="menu-item" @tap="navigate('/pages/index/index')">{{ t('nav.home') }}</view>
-        <view class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
+        <view v-if="creationAvailable" class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
         <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
         <view v-if="isAdmin" class="menu-item" @tap="navigate('/admin')">{{ adminLabel }}</view>
-        <view class="menu-item" @tap="handleAuthTap">{{ authLabel }}</view>
+        <view v-if="accountAuthed || googleAuthAvailable" class="menu-item" @tap="handleAuthTap">{{ authLabel }}</view>
         <view class="menu-item" @tap="navigate('/pages/legal/refund')">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</view>
       </view>
     </view>
@@ -63,6 +63,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useI18nStore } from '../stores/i18n';
+import { useOpsStore } from '../stores/ops';
 import { get } from '../utils/api';
 import { ensureSession } from '../utils/auth';
 
@@ -72,10 +73,14 @@ const accountAuthed = ref(false);
 const username = ref('');
 const isAdmin = ref(false);
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const t = i18nStore.t;
 const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
 const accountLabel = computed(() => (i18nStore.locale === 'zh' ? '账户' : 'Account'));
 const adminLabel = computed(() => (i18nStore.locale === 'zh' ? '后台' : 'Admin'));
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const googleAuthAvailable = computed(() => opsStore.googleAuthAvailable);
+const billingAvailable = computed(() => opsStore.billingAvailable);
 
 const authLabel = computed(() => {
   if (accountAuthed.value) return username.value || accountLabel.value;
@@ -119,6 +124,8 @@ const toggleMenu = () => {
 };
 
 const navigate = (path: string) => {
+  if (path === '/pages/create/index' && !creationAvailable.value) return;
+  if (path === '/pages/auth/login' && !googleAuthAvailable.value) return;
   if (currentPath.value === path) return;
   if (pushPages.has(path)) {
     uni.navigateTo({ url: path });
@@ -165,16 +172,19 @@ const handleAuthTap = async () => {
     navigate('/pages/account/index');
     return;
   }
+  if (!googleAuthAvailable.value) return;
   navigate('/pages/auth/login');
 };
 
 const showTopUp = () => {
+  if (!billingAvailable.value) return;
   emit('show-payment');
 };
 
 const refreshBalance = () => fetchBalance();
 
 onMounted(async () => {
+  await opsStore.fetchPublicConfig();
   await refreshAuthState();
   await Promise.all([fetchBalance(), fetchProfileRole()]);
 });
