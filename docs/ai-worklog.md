@@ -1228,3 +1228,26 @@
 - The repository fix, PR, merge, and post-merge CI are complete. Automatic Preview proves the current Web artifact only; it is not Stage 5 evidence. Production remains intentionally unchanged because `vercel.json` disables automatic `main` deployment and the protected staged release prerequisites are absent.
 - Protected Stage 5 identity/commercial, Stage 6, Creem Test Mode, Provider lost-response reconciliation, private storage, isolated Redis, production staged deployment, and formal-domain acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation, authenticated upload, billing, private download, Partner Invite, and Google auth remain OFF.
 - No secret value, browser session state, customer record, storage object, Provider request, payment, email, database, domain, Vercel setting, GitHub environment, or Production deployment was changed during this audit. No Subagent was used.
+
+## 2026-07-16 - Formal-domain legacy exposure audit
+
+### Goal and evidence
+
+- Continue the Production read-only verification after confirming that the formal domain still served an older deployment, and distinguish a stale visual artifact from an active contract exposure.
+- Safe GET requests only were sent to `https://www.vowpic.com`; no POST, PATCH, DELETE, authenticated customer request, payment, Provider call, or state-changing probe was used.
+- `/api/v1/ops/config` returned HTTP 200 with legacy capability state including `remote_join=true`, `local_recommendations=true`, and `director_mode=true`. `/api/v1/ops/readiness` returned HTTP 200 with `commercial_ready=true` under the retired readiness model rather than the current release-bound evidence contract.
+- `/api/v1/session/safe-baseline-probe/status` returned HTTP 200 instead of the required 410; `/api/v1/live_portrait/list`, `/api/v1/leads/list`, and `/api/v1/leads/export.csv` returned 401 instead of 410; and a synthetic nonexistent `/api/v1/users/{id}` request returned 404 instead of 410.
+- `/api/v1/recommendations/local_studios` returned HTTP 200 with three public legacy local-vendor recommendation records. The current overseas Web SaaS excludes this product surface and requires the route to be a side-effect-free 410 tombstone.
+
+### Repository result
+
+- Updated the Production acceptance truth document to record the confirmed exposure and prevent the legacy `commercial_ready=true` response from being treated as current acceptance evidence.
+- Rechecked the current tombstone source, safe-baseline verifier, regression tests, and risk-lockdown runbook. Current `main` already owns the retired routes and requires the affected permanent routes to return 410 before authentication or business lookup; no Production code patch is missing for this finding.
+- The runbook requires seven Vercel Firewall route groups (`auth_upload`, `generation`, `credit_checkout`, `subscription`, `partner_invite`, `retired_addons`, and `leads_recommendations`), exact configuration snapshot/readback, a short-lived runner bypass, signed source/run/project/domain-bound evidence, and preservation of signed Creem webhook, incident evidence, reconciliation, and logout paths.
+
+### External boundary and required disposition
+
+- The old Production must not be replaced by directly promoting the ordinary browse-only Preview: that deployment is not API-ready and lacks the protected runtime identity, control-plane database, private storage, Redis, Provider, payment, and evidence inputs.
+- The protected `production` GitHub environment has none of the 22 workflow-required secrets, so dispatching the production workflow now would be an expected `NOT_RUN`/failure rather than containment or release.
+- No Vercel Firewall, deployment, alias, domain, environment variable, secret, database, storage, Redis, Provider, or payment state was changed. External containment remains unapplied pending explicit authorization for the exact firewall mutation; the safe next disposition is to apply and read back the seven bounded deny groups, then provision the protected release inputs and execute the one-time safe-baseline sequence.
+- No Subagent was used.
