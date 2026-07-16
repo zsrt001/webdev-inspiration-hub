@@ -1100,3 +1100,29 @@
 - A clean-commit baseline, fresh GitHub CI audit gate, and fresh Vercel Preview build are required before this dependency closure is externally verified.
 - Protected Preview identity/commercial, Provider/payment/private-storage evidence, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation, authenticated upload, billing, private download, Partner Invite, and Google auth remain OFF.
 - No Subagent, merge, protected workflow, Production deployment, domain/DNS mutation, environment-variable mutation, secret read/write, Production data write, payment, upload, email, or Provider submission occurred.
+
+## 2026-07-16 - Protected Preview runtime-role wiring closure
+
+### Goal and evidence
+
+- Re-audit the already-created Vercel, GitHub environment, Supabase-facing, Redis, private-storage, and EvoLink Preview path before any protected execution; repair repository-owned wiring defects without exposing or copying secret plaintext.
+- The latest automatic Vercel Preview was build-ready but `/health/ready` returned `503` because the automatic deployment lacked a canonical runtime bundle, approved Preview role, acceptance HMAC, and control-plane database URL. GitHub readback confirmed the protected `preview-identity` and `preview-commercial` environments existed and were restricted to `main`, but each contained zero secrets and zero variables; no protected Preview workflow had run.
+- Repository inspection found a separate defect in the protected workflow: `PREVIEW_MIGRATION_DATABASE_URL` was injected as both application `DATABASE_URL` and `CONTROL_PLANE_DATABASE_URL`, contradicting runtime configuration and the control-plane role contract that requires distinct logins on one database. Identity deployment also omitted both role URLs and the acceptance HMAC.
+
+### Changes
+
+- Added fail-fast protected inputs for `PREVIEW_RUNTIME_DATABASE_URL` and `PREVIEW_CONTROL_PLANE_DATABASE_URL`; identity API, commercial API, Worker, and Provider proof now receive only those two application-role URLs. `PREVIEW_MIGRATION_DATABASE_URL` remains available solely to explicit workflow administration and migration commands.
+- Identity deployment now receives the acceptance HMAC. Commercial preflight now requires the private-storage endpoint and all EvoLink/provider-evidence inputs before any deployment or Provider effect, rather than discovering missing configuration after mutation starts.
+- Added a closed workflow regression covering identity, commercial API, Worker, Provider-proof, and preflight blocks, including rejection of migration-credential reuse. Updated the operational runbook with the three-role Preview secret contract and the separate read-only resolver input.
+
+### Verification
+
+- The pre-change workflow regression failed on eight missing or unsafe bindings, then passed after the repair. The affected runtime/workflow/release suites passed 117/117 tests; the workflow parsed successfully as YAML; and `git diff --check` passed.
+- `powershell.exe -ExecutionPolicy Bypass -File scripts/release/verify_baseline.ps1` exited 0 from a fresh hash-locked environment: `pip check` passed; all 736 backend tests passed with 33 explicit external/environment skips; generated API types were deterministic; frontend typecheck passed; Vitest passed 8/8; and the real Web build completed.
+- The baseline truthfully recorded `UNCOMMITTED_WORKTREE`, `release_eligible=false`, and `runtime_alignment=NOT_RUN` because local Windows/Python 3.11.9/Node 24.2.0 differs from the protected Linux/Python 3.11.15/Node 24.17.0 release runtime.
+
+### External boundary
+
+- No secret plaintext was read, printed, persisted, or copied between Vercel and GitHub. The protected Preview workflows remain `NOT_RUN` until their existing environment entries receive the required protected inputs; the automatic browse-only Preview is not substituted for protected Stage 5 acceptance.
+- Supabase dashboard project/bucket state was not authenticated in the inspected Chrome profile, so no exact project or bucket claim is made from that session. EvoLink lost-submit-response reconciliation remains `UNVERIFIED`; no Provider request was sent and Generation remains OFF.
+- No Subagent, protected workflow, Production workflow, domain/DNS mutation, Production data write, payment, email, Provider submission, or customer-data operation occurred in this change.
