@@ -108,6 +108,15 @@ the real PostgreSQL RLS test proving the runtime login can read flags but cannot
 mutate them and the writer can perform only trigger/CAS-constrained control
 updates.
 
+Protected Preview deployments therefore require three separate database
+secrets: `PREVIEW_RUNTIME_DATABASE_URL` for the application runtime login,
+`PREVIEW_CONTROL_PLANE_DATABASE_URL` for the control-writer login, and
+`PREVIEW_MIGRATION_DATABASE_URL` for workflow-only administration. The
+identity API, commercial API, Worker, and Provider-proof process must receive
+only the first two application URLs. `PREVIEW_CONTROL_READ_DATABASE_URL`
+remains a fourth, read-only resolver input and does not replace either runtime
+role.
+
 The workflow uses create-once, digest-bound sanitized artifacts as checkpoints, not one best-
 effort upload at job end. Sanitized reservation evidence is uploaded before
 `RESERVED` or deploy, staged verification before Promote, formal verification

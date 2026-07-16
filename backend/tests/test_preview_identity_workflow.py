@@ -1261,6 +1261,80 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             workflow.index("configure_preview_provider_grant_origin.py add", provider_job),
         )
 
+    def test_preview_runtime_uses_distinct_non_migration_database_logins(self) -> None:
+        workflow = (ROOT / ".github/workflows/integration.yml").read_text(encoding="utf-8")
+        for required in (
+            "PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}",
+            "PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}",
+            "PREVIEW_PRIVATE_STORAGE_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}",
+            "EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}",
+            "EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}",
+            "EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}",
+            "PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}",
+            'test -n "$PREVIEW_RUNTIME_DATABASE_URL"',
+            'test -n "$PREVIEW_CONTROL_PLANE_DATABASE_URL"',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, workflow)
+
+        identity_deploy = workflow[
+            workflow.index("Build and deploy the exact Vercel Preview output") :
+            workflow.index("Read back Vercel and register DEPLOYED")
+        ]
+        commercial_deploy = workflow[
+            workflow.index("Build once and deploy the exact Preview Commercial API") :
+            workflow.index("Resolve the platform API ID and create the Worker without starting it")
+        ]
+        worker_create = workflow[
+            workflow.index("Resolve the platform API ID and create the Worker without starting it") :
+            workflow.index("Bind API and dormant Worker, then complete the immutable activation")
+        ]
+        provider_case = workflow[
+            workflow.index("Lease the exact Provider-grant origin") :
+            workflow.index("Revoke any prepared grant and remove the exact temporary alias")
+        ]
+        commercial_preflight = workflow[
+            workflow.index("Require the isolated Preview Commercial runtime") :
+            workflow.index("Install pinned release tooling and run the commercial boundary tests")
+        ]
+        for required_name in (
+            "PREVIEW_RUNTIME_DATABASE_URL",
+            "PREVIEW_CONTROL_PLANE_DATABASE_URL",
+            "PREVIEW_REDIS_URL",
+            "PREVIEW_PRIVATE_STORAGE_ENDPOINT",
+            "EVOLINK_API_KEY",
+            "EVOLINK_API_BASE_URL",
+            "EVOLINK_IMAGE_MODEL",
+            "PROVIDER_EVIDENCE_HMAC_KEY",
+        ):
+            with self.subTest(preflight=required_name):
+                self.assertIn(required_name, commercial_preflight)
+        for runtime_block in (identity_deploy, commercial_deploy, worker_create):
+            with self.subTest(block=runtime_block.splitlines()[0]):
+                self.assertIn("DATABASE_URL=$PREVIEW_RUNTIME_DATABASE_URL", runtime_block)
+                self.assertIn(
+                    "CONTROL_PLANE_DATABASE_URL=$PREVIEW_CONTROL_PLANE_DATABASE_URL",
+                    runtime_block,
+                )
+                self.assertNotIn("DATABASE_URL=$PREVIEW_MIGRATION_DATABASE_URL", runtime_block)
+        self.assertIn(
+            "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY",
+            identity_deploy,
+        )
+
+        self.assertIn(
+            "DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}",
+            provider_case,
+        )
+        self.assertIn(
+            "CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}",
+            provider_case,
+        )
+        self.assertNotIn(
+            "\n          DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}",
+            provider_case,
+        )
+
     def test_preview_worker_commands_are_digest_pinned_ephemeral_and_shell_free(self) -> None:
         worker = _load(
             "run_preview_worker",
