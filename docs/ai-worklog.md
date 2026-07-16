@@ -1126,3 +1126,28 @@
 - No secret plaintext was read, printed, persisted, or copied between Vercel and GitHub. The protected Preview workflows remain `NOT_RUN` until their existing environment entries receive the required protected inputs; the automatic browse-only Preview is not substituted for protected Stage 5 acceptance.
 - Supabase dashboard project/bucket state was not authenticated in the inspected Chrome profile, so no exact project or bucket claim is made from that session. EvoLink lost-submit-response reconciliation remains `UNVERIFIED`; no Provider request was sent and Generation remains OFF.
 - No Subagent, protected workflow, Production workflow, domain/DNS mutation, Production data write, payment, email, Provider submission, or customer-data operation occurred in this change.
+
+## 2026-07-16 - Retired launcher and historical architecture cleanup
+
+### Goal and evidence
+
+- Continue the post-merge risk audit beyond external credentials and remove active-tree artifacts that still contradicted the overseas Web SaaS contract.
+- `start_dev.bat` had no caller, invoked the removed `dev:h5` script, and labelled the Worker as a retired ComfyUI queue. `DOCUMENTATION_STUDIO_3_0.md` was an unreadable historical archive that still described Mini Program and ComfyUI product paths; the authoritative design already marked it non-authoritative and directed readers to Git history.
+
+### Changes
+
+- Deleted both obsolete artifacts instead of preserving broken compatibility launchers or misleading product documentation.
+- Extended the closed Web-only deletion contract so either file reappearing fails CI.
+
+### Verification
+
+- Before modification, the current Web-only and release-contract suites passed 30/30 tests in the repository environment. The first command used an unprovisioned global Python and referenced one already-deleted test module; its two import errors were treated as an invalid test environment, not a product result.
+- After deletion, the same 30 current tests passed; the wider Web-only, CI, security, release, and protected-Preview contract run passed 137/137; and `git diff --check` passed.
+- The complete fresh hash-locked baseline exited 0: `pip check` passed, all 736 backend tests passed with 33 explicit external/environment skips, generated API types were deterministic, frontend typecheck passed, Vitest passed 8/8, and the real Web build completed. It correctly recorded `UNCOMMITTED_WORKTREE`, `runtime_alignment=NOT_RUN`, and `release_eligible=false` for the local Windows/runtime mismatch.
+- The newly advertised DCloud 5.21 package line was checked rather than blindly upgraded. Its current `@dcloudio/vite-plugin-uni@3.0.0-alpha-5020120260710001` still requires exact Vite `5.2.8`, so it does not resolve the already bounded upstream Vite advisory. A local npm-audit refresh through the configured mirror was unavailable because that mirror does not implement the advisory endpoint; an explicit npmjs retry was blocked by the current proxy route. Neither failed lookup is counted as a security PASS, and dependencies were unchanged.
+
+### External boundary
+
+- GitHub environment readback still shows only the generated approval/HMAC/project coordinates and EvoLink public variables; no user-managed runtime, storage, Google, Redis, Vercel, Supabase, or Provider secret was added.
+- EvoLink's current official documentation exposes only task lookup by known task ID and contains no documented idempotency key, client request ID, correlation field, metadata field, or task-list endpoint. The lost-response contract therefore remains `UNVERIFIED`, the sandbox proof remains `NOT_RUN`, and Generation remains OFF.
+- No Subagent, protected workflow, Production workflow, domain/DNS mutation, secret read/write, database mutation, payment, email, Provider submission, or customer-data operation occurred.

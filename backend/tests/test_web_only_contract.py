@@ -337,6 +337,8 @@ class WebOnlyStaticContractTest(unittest.TestCase):
 
     def test_dead_runtime_router_modules_are_deleted(self) -> None:
         for relative_path in (
+            "start_dev.bat",
+            "DOCUMENTATION_STUDIO_3_0.md",
             "backend/app/routers/auth/guest.py",
             "backend/app/routers/auth/merge.py",
             "backend/app/routers/live_portrait.py",
