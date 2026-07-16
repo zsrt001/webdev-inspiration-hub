@@ -126,6 +126,20 @@ class SecurityHardeningTest(unittest.TestCase):
                     )
         self.assertEqual([], offenders)
 
+    def test_frontend_build_tool_advisories_have_enforced_boundaries(self) -> None:
+        root = BACKEND_DIR.parent
+        frontend_root = root / "frontend"
+        package = json.loads((frontend_root / "package.json").read_text(encoding="utf-8"))
+        vite_config = (frontend_root / "vite.config.ts").read_text(encoding="utf-8")
+        ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        self.assertNotIn("vite", package["dependencies"])
+        self.assertEqual("5.2.8", package["devDependencies"]["vite"])
+        self.assertEqual("7.29.6", package["overrides"]["@babel/core"])
+        self.assertIn("FORBIDDEN_BROWSER_CODE_PATTERNS", vite_config)
+        self.assertIn("'document.currentScript'", vite_config)
+        self.assertIn("npm audit --omit=dev --audit-level=low", ci)
+
     def test_rate_limiter_blocks_after_configured_limit(self) -> None:
         from app.core.rate_limit import InMemoryRateLimiter
 

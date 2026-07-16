@@ -18,6 +18,9 @@ const FORBIDDEN_BROWSER_ASSET_HOSTS = [
     'fonts.googleapis.com',
     'fonts.gstatic.com',
 ];
+const FORBIDDEN_BROWSER_CODE_PATTERNS = [
+    'document.currentScript',
+];
 const UNI_REMOTE_SHADOW_URL = /https:\/\/cdn\.dcloud\.net\.cn\/img\/shadow-[a-z]+\.png/gi;
 const INLINE_TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
@@ -88,6 +91,9 @@ function webAssetPolicyPlugin(): Plugin {
                     : output.code;
                 for (const host of FORBIDDEN_BROWSER_ASSET_HOSTS) {
                     if (source.includes(host)) violations.push(`${fileName}:${host}`);
+                }
+                for (const pattern of FORBIDDEN_BROWSER_CODE_PATTERNS) {
+                    if (source.includes(pattern)) violations.push(`${fileName}:${pattern}`);
                 }
             }
             if (violations.length > 0) {

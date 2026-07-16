@@ -1070,3 +1070,33 @@
 - A clean-commit baseline, GitHub CI, fresh Vercel Preview, and read-only browser verification of the updated controls are still required before this UI closure is externally verified.
 - Protected Preview identity/commercial, Provider/payment/private-storage evidence, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation, authenticated upload, billing, private download, Partner Invite, and Google auth remain OFF.
 - No Subagent, merge, protected workflow, Production deployment, domain/DNS mutation, environment-variable mutation, secret read/write, Production data write, payment, upload, email, or Provider submission occurred.
+
+## 2026-07-15 - Frontend dependency audit and build-tool advisory boundary
+
+### Goal and evidence
+
+- Read the successful Vercel Preview deploy log after the fail-closed UI commit and investigate every reported dependency warning instead of treating a Ready deployment as risk-free.
+- The authenticated log for deployment `dpl_DTiBZRGgNKYfVBPvJ14jcXy2Z5AW` at source `90882ba4b2446af4462125f149f7beb95231453d` reported 12 audit findings: 10 low, 1 moderate, and 1 high. A direct advisory audit reproduced the exact graph.
+- The ten low findings all originated from DCloud's exact nested `@babel/core@7.25.2`. The remaining two audit nodes originate from DCloud's exact Vite 5.2.8 peer contract. The high Vite advisory requires a Windows development server exposed to the network; VowPic's enforced development and Preview scripts bind only to `127.0.0.1`, while Vercel serves the generated static Web output and does not deploy the Vite server. The bundled-script DOM-clobbering advisory applies to CJS/IIFE/UMD output containing a `document.currentScript` gadget; the generated VowPic output did not contain that gadget.
+- Vite 5.4.21 was tested as a same-major candidate and rejected: it still matched the newly published Vite advisories and contradicted DCloud's exact 5.2.8 peer contract. The latest published DCloud alpha checked during this review still declares that exact peer, so no unsupported Vite override or framework migration was retained.
+
+### Changes
+
+- Overrode DCloud's nested Babel compiler to the patched `@babel/core@7.29.6`. The lock now deduplicates both vulnerable 7.25.2 copies to 7.29.6 without an invalid peer or dependency tree.
+- Added a CI gate that runs `npm audit --omit=dev --audit-level=low`; every deployable production dependency must have zero audit findings.
+- Extended the existing post-bundle Web asset policy to fail the build if any emitted browser asset contains `document.currentScript`, preventing the affected Vite non-ES gadget from silently entering a release artifact.
+- Added a security contract covering the dev-only Vite boundary, patched Babel override, bundle gadget rejection, and production audit gate. The existing loopback-only server and raw-HTML-sink regression remains in force.
+
+### Verification
+
+- The new security contract failed first because the output-pattern guard and production audit gate did not exist, then passed after implementation.
+- A clean locked frontend install completed and `npm ls @babel/core vite --all` exited 0: every Babel node resolves to 7.29.6 and the DCloud/Vite 5.2.8 peer tree remains valid.
+- `npm audit --omit=dev --audit-level=low` reported `found 0 vulnerabilities`; frontend typecheck passed, Vitest passed 8/8, and the real Web build completed while enforcing the new bundle policy.
+- The first complete baseline correctly failed one exact dependency-contract test because its closed override allowlist did not yet include the new Babel security override. After synchronizing that contract, a new isolated baseline passed `pip check`, all 735 backend tests with 33 explicit external/environment skips, deterministic generated API types, frontend typecheck, Vitest 8/8, and the real Web build. Its report truthfully recorded `UNCOMMITTED_WORKTREE`, local runtime mismatch, and `release_eligible=false`.
+- The full development graph still reports the two DCloud/Vite build-tool nodes. They are not relabeled as fixed or production vulnerabilities: they remain an upstream exact-peer constraint with enforced exploit-precondition boundaries until DCloud publishes a supported patched Vite line.
+
+### External boundary
+
+- A clean-commit baseline, fresh GitHub CI audit gate, and fresh Vercel Preview build are required before this dependency closure is externally verified.
+- Protected Preview identity/commercial, Provider/payment/private-storage evidence, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation, authenticated upload, billing, private download, Partner Invite, and Google auth remain OFF.
+- No Subagent, merge, protected workflow, Production deployment, domain/DNS mutation, environment-variable mutation, secret read/write, Production data write, payment, upload, email, or Provider submission occurred.

@@ -350,6 +350,7 @@ class CiReleaseContractTest(unittest.TestCase):
             self.assertEqual(lock["packages"][f"node_modules/{name}"]["version"], version)
 
         expected_overrides = {
+            "@babel/core": "7.29.6",
             "@babel/plugin-transform-modules-systemjs": "7.29.4",
             "@intlify/core-base": "9.14.5",
             "@intlify/message-resolver": "9.1.11",
