@@ -26,6 +26,11 @@
         <button v-if="googleAuthAvailable" class="btn btn-primary state-action" @tap="goLogin">{{ t('orders.signin') }}</button>
       </view>
 
+      <view v-else-if="error" class="inline-error">
+        <text>{{ error }}</text>
+        <button class="btn btn-outline retry-btn" @tap="refresh">{{ t('orders.retry') }}</button>
+      </view>
+
       <view v-else-if="orders.length === 0" class="state-card">
         <text class="state-title">{{ t('orders.empty') }}</text>
         <button v-if="creationAvailable" class="btn btn-primary state-action" @tap="goToCreate">{{ t('orders.start') }}</button>
@@ -53,10 +58,6 @@
         </view>
       </view>
 
-      <view v-if="error && !loading" class="inline-error">
-        <text>{{ error }}</text>
-        <button class="btn btn-outline retry-btn" @tap="refresh">{{ t('orders.retry') }}</button>
-      </view>
     </view>
     <LegalFooter />
   </view>
@@ -70,6 +71,7 @@ import { useI18nStore } from '../../stores/i18n';
 import { useOpsStore } from '../../stores/ops';
 import { getLocalizedTemplateTitle, useTemplateStore } from '../../stores/template';
 import { get, resolvePublicUrl } from '../../utils/api';
+import { resolveOrderLoadFailure } from './orderLoadState';
 
 interface Order {
   id: string;
@@ -190,7 +192,6 @@ async function fetchOrders() {
   loading.value = true;
   error.value = '';
   authRequired.value = false;
-  const hadExistingOrders = orders.value.length > 0;
 
   try {
     if (!templateStore.templates.length) {
@@ -205,16 +206,10 @@ async function fetchOrders() {
       previewUrl: pickPrimaryImage(order),
       createdAt: formatDate(order.created_at),
     }));
-  } catch (err: any) {
-    const statusCode = Number(err?.statusCode || 0);
-    if (statusCode === 401 || statusCode === 403) {
-      authRequired.value = true;
-      error.value = '';
-    } else if (hadExistingOrders) {
-      error.value = err?.message || t('orders.load_failed');
-    } else {
-      error.value = '';
-    }
+  } catch (err: unknown) {
+    const failure = resolveOrderLoadFailure(err, t('orders.load_failed'));
+    authRequired.value = failure.authRequired;
+    error.value = failure.message;
     orders.value = [];
   } finally {
     loading.value = false;

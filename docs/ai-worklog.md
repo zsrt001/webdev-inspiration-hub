@@ -1270,3 +1270,24 @@
 
 - The updated contract test was run red first because the verifier did not expose or enforce physical-rule capacity. After implementation, the focused edge-lockdown report test passed and `git diff --check` passed.
 - No Firewall draft, rule, bypass, publish, audit-log restore, domain, deployment, environment variable, secret, database, payment, Provider request, or customer data was changed. No Subagent was used.
+
+## 2026-07-16 - Production deployment readback and honest order failure state
+
+### Goal and Production evidence
+
+- Build and deploy exact merged `main` source `3a21556e2baa1838bde75acdca7be23425306ff9`, then verify the formal VowPic domain without treating a static Web success as commercial acceptance.
+- Vercel deployment `Gtm6HjfeEXzkcrpxKE4WMPYD8Dmq` built from exact source `3a21556` in the Production environment and reached `Ready`. The staged deployment was then explicitly aliased to `webdev-inspiration-hub.vercel.app` and `www.vowpic.com` after the dashboard displayed the exact target deployment, source, and domains.
+- Public readback proved `https://vowpic.com/` returns `307` to `https://www.vowpic.com/`, the formal homepage returns `200`, and the new JS/CSS assets return `200` with immutable caching. The prior asset name is absent from the new HTML.
+- `/health` returns `200` liveness, while `/api/v1/ops/readiness` correctly returns `503`. Deployment logs bind that failure to missing protected runtime inputs: canonical runtime bundle, approved Production release role, acceptance-identity HMAC, and distinct control-plane database URL. The GitHub `production` environment still has zero protected secrets, so the formal protected release remains `NOT_RUN` rather than being relabeled complete.
+- Both published compound Firewall deny rules remain active. One unbypassed representative request for each of the seven logical risk groups returned `403` with `X-Vercel-Mitigated: deny`; the homepage, assets, liveness, and readiness paths were not denied.
+
+### Changes
+
+- Fixed the public order gallery so a non-authentication API failure is rendered as an explicit retryable error before the empty-gallery state. A `401` or `403` remains the distinct sign-in-required state.
+- Added a focused pure-state test for authentication failures, the observed `503` runtime failure, and the localized fallback message. The test was run red first before the resolver existed.
+
+### Verification and boundary
+
+- Focused Vitest passed 3/3. Full frontend Vitest passed 11/11, `vue-tsc --noEmit` passed, the real Uni-app Web build completed, and `git diff --check` passed. The known upstream Dart Sass legacy-JavaScript-API warnings remain visible.
+- Browser verification on the formal domain confirmed Home and Create render the browse-only safety state, Account reports the deployment-not-ready error, and Login reports Google auth unavailable. Before this fix, Orders incorrectly rendered an empty gallery during the same `503`; the new bundle has not yet been merged or redeployed.
+- No environment variable, secret, database role/schema/data, Supabase object, Redis instance, Provider request, payment, email, or customer record was changed. No rollback to the unsafe pre-kill-switch deployment occurred. No Subagent was used.
