@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
 from typing import Awaitable, Callable
 import uuid
 
@@ -31,6 +32,7 @@ from app.services.storage import PrivateObjectStore, storage_service
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 _CANDIDATE_NAMESPACE = uuid.UUID("9e4d42e3-03f8-4f29-967f-70d1ba5fa3f1")
 
 
@@ -264,7 +266,7 @@ async def persist_evolink_candidate(
             validated.mime_type,
         )
     except FileExistsError:
-        pass
+        logger.debug("Generation candidate already exists; verifying exact stored bytes")
     stored = await asyncio.to_thread(object_store.read_private, candidate.object_key)
     if (
         len(stored) != validated.byte_size

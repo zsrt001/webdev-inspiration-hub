@@ -1,5 +1,7 @@
 # Supabase Auth And Credit Ledger Implementation Plan
 
+> **Historical — not execution authority.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the commercial MVP identity foundation by connecting Supabase Google OAuth to the existing backend user model and introducing an auditable credit ledger.

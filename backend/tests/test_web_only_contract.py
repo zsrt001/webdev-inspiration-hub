@@ -331,6 +331,7 @@ class WebOnlyStaticContractTest(unittest.TestCase):
             "password-based sign-in",
             "WeChat UnionID",
             "WeChat payment transaction ID",
+            "InstantID generation parameters",
         ):
             with self.subTest(stale_product_claim=stale_product_claim):
                 self.assertNotIn(stale_product_claim, user_model + order_model)
@@ -339,6 +340,7 @@ class WebOnlyStaticContractTest(unittest.TestCase):
         for relative_path in (
             "start_dev.bat",
             "DOCUMENTATION_STUDIO_3_0.md",
+            "STUDIO_3_0_HANDBOOK.md",
             "backend/app/routers/auth/guest.py",
             "backend/app/routers/auth/merge.py",
             "backend/app/routers/live_portrait.py",
@@ -352,6 +354,125 @@ class WebOnlyStaticContractTest(unittest.TestCase):
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertFalse((ROOT / relative_path).exists())
+
+    def test_retired_provider_docs_and_change_impact_entries_are_deleted(self) -> None:
+        for relative_path in (
+            "docs/ComfyUI_生产依赖清单.md",
+            "docs/Liblib接入说明.md",
+            "docs/上线部署商业化运营清单.md",
+            "docs/实施任务清单.md",
+            "docs/执行完善计划_2026-02-14.md",
+            "docs/现有功能梳理.md",
+            "docs/生产预检与部署辅助.md",
+            "backend/download_placeholders.py",
+            "backend/setup_assets.py",
+            "scripts/make_legacy_promo.ps1",
+            "backend/static/styles/custom_placeholder.jpg",
+            "backend/static/styles/kor_canvas.jpg",
+            "backend/static/styles/out_beach.jpg",
+            "backend/static/styles/out_sunset.jpg",
+            "backend/static/styles/vintage_bw.jpg",
+            "backend/static/styles/west_classic.jpg",
+            "backend/static/styles/west_manor.jpg",
+            "backend/static/custom_free.jpg",
+            "backend/static/styles/kor_white.jpg",
+            "backend/static/styles/out_forest.jpg",
+            "backend/static/styles/west_castle.jpg",
+        ):
+            with self.subTest(relative_path=relative_path):
+                self.assertFalse((ROOT / relative_path).exists())
+
+        impact = json.loads((ROOT / "release/change-impact.json").read_text(encoding="utf-8"))
+        self.assertNotIn("backend/comfyui_workflows/**", impact["full_quality_globs"])
+        llm_source = (ROOT / "backend/app/services/llm_service.py").read_text(encoding="utf-8")
+        self.assertNotIn("Jiekou + ComfyUI", llm_source)
+
+    def test_current_documentation_layer_matches_the_verified_web_saas(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        docs_index = (ROOT / "docs/README.md").read_text(encoding="utf-8")
+        acceptance = (ROOT / "docs/PRODUCTION_ACCEPTANCE.md").read_text(encoding="utf-8")
+        supabase_setup = (ROOT / "docs/SUPABASE_SETUP.md").read_text(encoding="utf-8")
+        vercel_guide = (ROOT / "docs/VERCEL_DEPLOYMENT.md").read_text(encoding="utf-8")
+        self.assertIn("npm run test:unit", readme)
+        self.assertIn("npm run test:a11y", readme)
+        self.assertNotIn("尚未配置可运行的组件/单元测试框架", readme)
+        self.assertIn("Stage 5", acceptance)
+        self.assertIn("NOT_RUN", acceptance)
+        self.assertIn("PREVIEW_RUNTIME_DATABASE_URL", supabase_setup)
+        self.assertIn("PREVIEW_CONTROL_PLANE_DATABASE_URL", supabase_setup)
+        self.assertIn("PREVIEW_MIGRATION_DATABASE_URL", supabase_setup)
+        self.assertIn("npm run test:unit", vercel_guide)
+        self.assertIn("npm run test:a11y", vercel_guide)
+
+        for relative_path in (
+            "docs/ARCHITECTURE.md",
+            "docs/SECURITY.md",
+            "docs/OPERATIONS_RUNBOOK.md",
+        ):
+            with self.subTest(relative_path=relative_path):
+                content = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn("overseas Web SaaS", content)
+                self.assertIn("NOT_RUN", content)
+                self.assertIn(relative_path, docs_index)
+
+        for retired_name in (
+            "实施任务清单.md",
+            "实施任务清单_清洁版.md",
+            "商用闭环打通说明.md",
+            "生产预检与部署辅助.md",
+            "现有功能梳理.md",
+        ):
+            with self.subTest(retired_name=retired_name):
+                self.assertNotIn(retired_name, docs_index)
+
+        for relative_path in (
+            "docs/superpowers/plans/2026-04-25-commercial-mvp-production-saas.md",
+            "docs/superpowers/plans/2026-04-25-supabase-auth-credit-ledger.md",
+            "docs/superpowers/plans/2026-04-26-hybrid-payg-subscription.md",
+            "docs/实施任务清单_清洁版.md",
+            "docs/商用切换待办清单_2026-04-10.md",
+            "docs/商用闭环打通说明.md",
+        ):
+            with self.subTest(relative_path=relative_path):
+                first_lines = (ROOT / relative_path).read_text(encoding="utf-8").splitlines()[:5]
+                self.assertIn("Historical — not execution authority", "\n".join(first_lines))
+
+    def test_operational_failures_are_not_silently_swallowed(self) -> None:
+        main_source = (ROOT / "backend/app/main.py").read_text(encoding="utf-8")
+        analytics_source = (ROOT / "backend/app/routers/analytics.py").read_text(encoding="utf-8")
+        identity_source = (
+            ROOT / "backend/app/services/identity_reference_service.py"
+        ).read_text(encoding="utf-8")
+        policy_source = (ROOT / "backend/app/services/generation_policy.py").read_text(
+            encoding="utf-8"
+        )
+        subscription_source = (
+            ROOT / "backend/app/services/subscription_service.py"
+        ).read_text(encoding="utf-8")
+        bootstrap_source = "\n".join(
+            (ROOT / relative_path).read_text(encoding="utf-8")
+            for relative_path in (
+                "backend/app/__init__.py",
+                "backend/run_api.py",
+                "backend/run_worker.py",
+            )
+        )
+        idempotent_storage_source = "\n".join(
+            (ROOT / relative_path).read_text(encoding="utf-8")
+            for relative_path in (
+                "backend/app/services/delivery_asset_service.py",
+                "backend/app/services/generation_candidate_service.py",
+            )
+        )
+
+        self.assertNotIn("using InstantID", main_source)
+        self.assertNotIn("except Exception:\n        pass", main_source)
+        self.assertNotIn("except Exception:\n            pass", analytics_source)
+        self.assertNotIn("except Exception:\n                pass", identity_source)
+        self.assertNotIn("except Exception:\n            pass", policy_source)
+        self.assertNotIn("except SubscriptionFactInvalid:\n            pass", subscription_source)
+        self.assertNotIn("except OSError:\n            pass", bootstrap_source)
+        self.assertNotIn("except FileExistsError:\n        pass", idempotent_storage_source)
 
     def test_identity_docs_do_not_restore_retired_bearer_or_admin_auth(self) -> None:
         supabase = (ROOT / "docs/SUPABASE_SETUP.md").read_text(encoding="utf-8")

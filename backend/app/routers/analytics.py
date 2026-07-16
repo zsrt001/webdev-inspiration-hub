@@ -1,4 +1,4 @@
-"""Analytics API routes for ad tracking."""
+"""Product analytics and operational metrics routes."""
 
 from __future__ import annotations
 
@@ -115,8 +115,8 @@ async def track_click(event: ClickEvent, db: AsyncSession = Depends(get_db)) -> 
     except Exception as e:
         try:
             await db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_exc:
+            logger.warning("Analytics rollback failed: %s", type(rollback_exc).__name__)
         if _allow_memory_fallback():
             logger.warning(f"[Analytics] DB unavailable, using memory fallback: {e}")
             return ClickResponse(success=True, total_clicks=click_counts.get(key, 0))
@@ -154,8 +154,8 @@ async def get_stats(
     except Exception as e:
         try:
             await db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_exc:
+            logger.warning("Analytics rollback failed: %s", type(rollback_exc).__name__)
         if _allow_memory_fallback():
             logger.warning(f"[Analytics] Stats DB unavailable, using memory fallback: {e}")
             return {

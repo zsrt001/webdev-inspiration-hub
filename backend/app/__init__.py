@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -19,8 +20,10 @@ if _ENABLE_VENDORED_DEPS:
             rel = open(_VENDOR_STATE, "r", encoding="utf-8").read().strip()
             if rel:
                 _VENDOR_CANDIDATES.append(os.path.abspath(os.path.join(_APP_DIR, rel.replace("/", os.sep))))
-        except OSError:
-            pass
+        except OSError as exc:
+            logging.getLogger(__name__).debug(
+                "Optional vendor state could not be read: %s", type(exc).__name__
+            )
 
     _VENDOR_CANDIDATES.append(os.path.join(_APP_DIR, "_vendor"))
 

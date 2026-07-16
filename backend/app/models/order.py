@@ -82,7 +82,7 @@ class Order(Base):
     generation_params: Mapped[dict | None] = mapped_column(
         JSONB,
         nullable=True,
-        comment="InstantID generation parameters",
+        comment="Versioned generation request parameters",
     )
 
     # Image URLs (stored in S3)

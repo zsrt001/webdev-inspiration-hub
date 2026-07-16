@@ -1,5 +1,7 @@
 # Commercial MVP Production SaaS Implementation Plan
 
+> **Historical — not execution authority.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the AI Wedding web SaaS as a commercial MVP with Supabase Auth, credits, payments, generation records, admin operations, and production-grade deployment foundations.

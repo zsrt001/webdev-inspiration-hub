@@ -115,7 +115,9 @@ Pop-Location
 Push-Location frontend
 npm ci --ignore-scripts
 npm run typecheck
+npm run test:unit
 npm run build:web
+npm run test:a11y
 Pop-Location
 
 .\.venv\Scripts\python.exe scripts/release/verify_safe_baseline.py

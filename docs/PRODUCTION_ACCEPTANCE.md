@@ -1,14 +1,15 @@
 # Production acceptance status
 
-VowPic **尚未达到 Production accepted**。当前已实现的安全基线和 Preview 身份验收只证明受控范围内的工程合同，不能替代正式域名上的真实商业主链路验收。
+VowPic **尚未达到 Production accepted**。仓库已经实现安全基线、受保护 Preview 和分层证据工具，但真实 Stage 5/6 验收尚未执行；工具存在不能替代正式域名上的真实商业主链路证据。
 
 ## 当前可验证范围
 
-- `safe-baseline-release.yml` 验证生产安全基线、全能力关闭、部署坐标、零运行时 DDL 和无业务数据副作用。
-- `integration.yml` 在受保护的 Vercel Preview 上验证一次真实 Google PKCE 登录、本地 Cookie 会话、刷新轮换、退出和独立清理。
-- 本地单元、集成和构建检查只能作为前置证据，不能把项目标记为生产可用。
+- PR CI 已验证锁定依赖、PostgreSQL migration/RLS/并发、后端、OpenAPI、前端类型/单测/真实 Web 构建/无障碍和 Worker 镜像。
+- `safe-baseline-release.yml` 已实现生产安全基线、全能力关闭、部署坐标、零运行时 DDL 和无业务数据副作用的受保护验证合同；没有对应的受保护运行证据时状态仍是 `NOT_RUN`。
+- `integration.yml` 已实现真实 Google PKCE、私有媒体、隔离 Worker/Redis、Provider fetch、运行时绑定和取消安全清理；当前 GitHub 环境仍缺少隔离数据库角色、Google 状态、私有存储、Redis、Vercel、Supabase 和 Provider secret，因此 Stage 5 是 `NOT_RUN`。
+- 普通 Vercel Preview 只证明 browse-only Web/API 构建可部署，不得替代受保护 Preview。
 
-以上两条发布流程都必须绑定精确 source SHA、runtime bundle、Vercel deployment、数据库 revision 和 create-once 证据。Preview 身份验收完成后必须恢复 Supabase 精确回调、关闭全部能力并清理验收业务数据。
+以上发布流程都必须绑定精确 source SHA、runtime bundle、Vercel deployment、数据库 revision 和 create-once 证据。Preview 验收完成后必须恢复 Supabase 精确回调、关闭全部能力并清理验收业务数据。
 
 ## 禁止的验收捷径
 

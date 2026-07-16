@@ -4366,7 +4366,7 @@
     }
   },
   "info": {
-    "description": "API for AI Wedding Photo generation using InstantID",
+    "description": "VowPic Web SaaS API for identity, billing, generation, and private delivery",
     "title": "AI Wedding Photo API",
     "version": "0.1.0"
   },

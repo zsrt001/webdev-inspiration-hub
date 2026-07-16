@@ -690,7 +690,7 @@ class SubscriptionService:
         try:
             _grant, lot = await self._invoice_lineage(db, invoice)
         except SubscriptionFactInvalid:
-            pass
+            reconciliation_user_id = invoice.user_id
         else:
             reconciliation_user_id = lot.user_id
         await open_payment_reconciliation_case(

@@ -196,8 +196,8 @@ def has_couple_subjects(subject_count: int | None = None, user_images: list[str]
     if subject_count is not None:
         try:
             return int(subject_count) >= 2
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            subject_count = None
     return len([url for url in (user_images or []) if str(url or "").strip()]) >= 2
 
 

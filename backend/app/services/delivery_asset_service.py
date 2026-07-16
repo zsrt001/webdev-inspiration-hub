@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 from io import BytesIO
+import logging
 from typing import Sequence
 import uuid
 
@@ -49,6 +50,7 @@ from app.services.trial_access_service import (
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 DELIVERY_POLICY_VERSION = "private-delivery.v1"
 PAID_ACCESS_TIER = "paid_download"
 _DELIVERY_NAMESPACE = uuid.UUID("39cd48f1-19de-4809-bc6f-8d5c743daef9")
@@ -440,7 +442,7 @@ async def _store_one_artifact(
             payload.asset.mime_type,
         )
     except FileExistsError:
-        pass
+        logger.debug("Delivery object already exists; verifying exact stored bytes")
     stored = await asyncio.to_thread(object_store.read_private, payload.asset.object_key)
     await asyncio.to_thread(_validate_stored_image, payload.asset, stored)
     await _load_delivery_context(

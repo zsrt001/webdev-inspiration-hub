@@ -9,7 +9,6 @@
     "backend/app/services/identity_embedding_service.py",
     "backend/app/services/delivery_asset_service.py",
     "backend/app/worker.py",
-    "backend/comfyui_workflows/**",
     "frontend/src/stores/order.ts",
     "frontend/src/pages/create/**",
     "frontend/src/pages/preview/**",
