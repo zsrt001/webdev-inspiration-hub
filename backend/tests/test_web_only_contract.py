@@ -267,6 +267,28 @@ class WebOnlyStaticContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, combined)
 
+    def test_active_admin_frontend_has_no_retired_generation_actions(self) -> None:
+        admin_home = (ROOT / "frontend/src/pages/admin/index.vue").read_text(encoding="utf-8")
+        admin_orders = (ROOT / "frontend/src/pages/admin/orders.vue").read_text(encoding="utf-8")
+
+        for forbidden in (
+            "/admin/generation_probe",
+            "runGenerationProbe",
+            "Real generation probe",
+            "real image generation path",
+        ):
+            with self.subTest(surface="admin_home", forbidden=forbidden):
+                self.assertNotIn(forbidden, admin_home)
+        for forbidden in (
+            "/regenerate",
+            "regenerateOrder",
+            "manual_admin_regenerate",
+            "重启失败生成",
+            "restart a failed generation",
+        ):
+            with self.subTest(surface="admin_orders", forbidden=forbidden):
+                self.assertNotIn(forbidden, admin_orders)
+
     def test_signed_out_account_does_not_default_to_success_states(self) -> None:
         account_source = (ROOT / "frontend/src/pages/account/index.vue").read_text(encoding="utf-8")
         self.assertNotIn("profile?.status || 'active'", account_source)

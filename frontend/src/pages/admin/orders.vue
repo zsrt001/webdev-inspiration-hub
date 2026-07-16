@@ -2,7 +2,7 @@
   <AdminLayout
     active="orders"
     :title="tr('订单运营', 'Order operations')"
-    :subtitle="tr('查看生成轮次、QA 结论、失败原因、退款，并可不重复扣费地重启失败生成。', 'Inspect generation rounds, QA verdicts, failure reasons, refunds, and restart a failed generation without charging again.')"
+    :subtitle="tr('查看生成轮次、QA 结论、失败原因与退款状态。', 'Inspect generation rounds, QA verdicts, failure reasons, and refund status.')"
   >
     <view class="admin-card admin-toolbar">
       <view class="filter-field">
@@ -94,13 +94,6 @@
           <text class="section-copy mono">{{ detail.id }}</text>
         </view>
         <view class="detail-actions">
-          <button
-            class="primary-action"
-            :disabled="regenerating || !detail.can_regenerate"
-            @tap="regenerateOrder"
-          >
-            {{ regenerating ? tr('启动中...', 'Starting...') : tr('重新生成', 'Regenerate') }}
-          </button>
           <button class="ghost-action" @tap="viewDetail(detail.id)">{{ tr('刷新', 'Refresh') }}</button>
           <button class="ghost-action" @tap="detail = null">{{ tr('关闭', 'Close') }}</button>
         </view>
@@ -325,7 +318,6 @@ interface AdminOrderDetail extends AdminOrder {
   final_image_urls?: Record<string, any> | null;
   generation_rounds?: GenerationRound[];
   qa_summary?: QaSummary | null;
-  can_regenerate?: boolean;
   payment_id?: string | null;
   task_id?: string | null;
   error_message?: string | null;
@@ -343,14 +335,6 @@ interface OrdersResponse {
   page_size: number;
 }
 
-interface RegenerateResponse {
-  ok: boolean;
-  started: boolean;
-  execution_mode: string;
-  task_id?: string | null;
-  order: AdminOrderDetail;
-}
-
 const orderStatusOptions = ['CREATED', 'CHECKING', 'GENERATING', 'COMPLETED', 'FAILED'];
 const statusFilterValues = ['', ...orderStatusOptions];
 const i18nStore = useI18nStore();
@@ -363,7 +347,6 @@ const detail = ref<AdminOrderDetail | null>(null);
 const total = ref(0);
 const page = ref(1);
 const pageSize = ref(20);
-const regenerating = ref(false);
 const filters = ref({ search: '', status: '' });
 const statusFilterLabels = computed(() => [tr('全部状态', 'All statuses'), ...orderStatusOptions]);
 
@@ -478,26 +461,6 @@ async function viewDetail(orderId: string) {
     detail.value = await get<AdminOrderDetail>(`/admin/orders/${orderId}`, { showLoading: true, showError: false });
   } catch (err: any) {
     uni.showToast({ title: err?.message || tr('详情加载失败', 'Detail load failed'), icon: 'none' });
-  }
-}
-
-async function regenerateOrder() {
-  const current = detail.value;
-  if (!current || regenerating.value || !current.can_regenerate) return;
-  regenerating.value = true;
-  try {
-    const response = await post<RegenerateResponse>(
-      `/admin/orders/${current.id}/regenerate`,
-      { reason: 'manual_admin_regenerate' },
-      { showLoading: false, showError: false },
-    );
-    detail.value = response.order;
-    uni.showToast({ title: tr('已开始重新生成', 'Regeneration started'), icon: 'success' });
-    await fetchOrders();
-  } catch (err: any) {
-    uni.showToast({ title: err?.message || tr('重新生成失败', 'Regenerate failed'), icon: 'none' });
-  } finally {
-    regenerating.value = false;
   }
 }
 

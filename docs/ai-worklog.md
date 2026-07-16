@@ -1181,3 +1181,29 @@
 - Protected Stage 5 identity/commercial execution remains `NOT_RUN`. EvoLink lost-response reconciliation and the three Creem commercial contracts remain `UNVERIFIED`; protected private-storage, Redis, database-role, Google-account, Worker-host, and formal-domain evidence has not been substituted with local tests. Generation and billing remain OFF, and Stage 6 remains `NOT_RUN`.
 - The formal `www.vowpic.com` deployment observed before this change still served the older runtime shape; this cleanup does not claim a Production deployment or formal-domain acceptance.
 - No Subagent, protected workflow, Production workflow, domain/DNS mutation, environment-variable mutation, secret read/write, database mutation, payment, email, Provider submission, or customer-data operation occurred.
+
+## 2026-07-16 - Retired Admin generation-action cleanup
+
+### Goal and evidence
+
+- Remove active Admin UI controls that still called permanently retired generation endpoints and therefore could only produce a `410 Gone` response in the overseas Web SaaS.
+- The central retired-route contract confirms `POST /api/v1/admin/generation_probe` and `POST /api/v1/admin/orders/{order_id}/regenerate` are side-effect-free compatibility tombstones, while the Admin overview and order detail pages still exposed their controls and client calls.
+
+### Changes
+
+- Removed the real-generation probe form, result gallery, state, request code, and probe-only styles from the Admin overview. Replaced its stale subtitle with the remaining verified operational scope.
+- Removed the disabled regenerate control, response type, state, and request code from Admin order detail. Replaced the order-page subtitle that still promised a failed-generation restart with the remaining read-only inspection scope. The backend tombstones and response compatibility fields remain unchanged.
+- Added a closed Web-only regression that prevents either retired endpoint, its client handler, or its stale product copy from returning to active Admin pages.
+
+### Verification
+
+- The new regression failed before implementation on all retired Admin markers and passed after cleanup.
+- The Web-only and Admin management suites passed 31/31; frontend typecheck passed; Vitest passed 8/8; and the real Web build completed.
+- Local browser rendering verified `/admin` and `/admin/orders` use the corrected operational copy, retain the normal Admin layout, and no longer advertise either retired generation action. The browser check found and drove removal of the stale order-page restart claim before final verification.
+- The fresh hash-locked baseline exited 0: `pip check` passed; all 740 backend tests completed with 707 passing and 33 explicit external/environment skips; generated API types were byte-deterministic; frontend typecheck passed; Vitest passed 8/8; and the real Web build completed. The shared project virtual environment's Pillow 11.0.0 produced three unrelated errors before the locked run; the repository locks Pillow 12.3.0, and the isolated locked environment passed those tests.
+- The baseline correctly recorded `UNCOMMITTED_WORKTREE`, `runtime_alignment=NOT_RUN`, and `release_eligible=false` because local Windows/Python 3.11.9/Node 24.2.0 differs from the protected Linux/Python 3.11.15/Node 24.17.0 release runtime.
+
+### External boundary
+
+- This change does not activate, call, or verify EvoLink, Creem, Supabase, Redis, Google, protected Preview, or Production. Existing external Stage 5/6 gates remain unchanged and are not represented as locally complete.
+- No Subagent, protected workflow, Production workflow, domain/DNS mutation, environment-variable mutation, secret read/write, database mutation, payment, email, Provider submission, or customer-data operation occurred.
