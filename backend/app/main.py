@@ -83,25 +83,25 @@ async def lifespan(app: FastAPI):
     try:
         from app.core.task_queue import close_pool
         await close_pool()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Task queue shutdown failed: %s", type(exc).__name__)
 
     try:
         from app.core.redis_client import close_redis
         await close_redis()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Redis shutdown failed: %s", type(exc).__name__)
 
     try:
         from app.core.database import engine
         await engine.dispose()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Database engine shutdown failed: %s", type(exc).__name__)
 
 
 app = FastAPI(
     title=settings.app_name,
-    description="API for AI Wedding Photo generation using InstantID",
+    description="VowPic Web SaaS API for identity, billing, generation, and private delivery",
     version="0.1.0",
     lifespan=lifespan,
 )

@@ -1151,3 +1151,33 @@
 - GitHub environment readback still shows only the generated approval/HMAC/project coordinates and EvoLink public variables; no user-managed runtime, storage, Google, Redis, Vercel, Supabase, or Provider secret was added.
 - EvoLink's current official documentation exposes only task lookup by known task ID and contains no documented idempotency key, client request ID, correlation field, metadata field, or task-list endpoint. The lost-response contract therefore remains `UNVERIFIED`, the sandbox proof remains `NOT_RUN`, and Generation remains OFF.
 - No Subagent, protected workflow, Production workflow, domain/DNS mutation, secret read/write, database mutation, payment, email, Provider submission, or customer-data operation occurred.
+
+## 2026-07-16 - Residual documentation, provider tooling, and asset cleanup
+
+### Goal and evidence
+
+- Continue the post-merge audit against the authoritative 2026-07-10 commercial-closure plan and the overseas Web SaaS runtime, then remove active-tree material that could still restore retired product or Provider paths.
+- Repository reference scans found eight misleading or superseded operational documents, nine unused cover/asset generation launchers, three additional placeholder/promo utilities, eleven unreferenced duplicate or placeholder static images, one stale ComfyUI change-impact path, and stale InstantID/ComfyUI descriptions in otherwise active files.
+- The retained April planning and commercial-closure documents are required historical evidence by the current plan, so they were preserved and marked `Historical — not execution authority` instead of being presented as current instructions.
+
+### Changes
+
+- Added the current `ARCHITECTURE`, `SECURITY`, and `OPERATIONS_RUNBOOK` documents and reduced the documentation index to the verified Web SaaS authority layer. Updated README verification commands, Preview acceptance truth, Vercel verification, and the four-role Supabase/Preview database boundary.
+- Deleted superseded Studio 3.0, ComfyUI, Liblib, deployment, implementation-plan, feature-inventory, and preflight documents. Deleted the unused multi-provider image generator, eight legacy generation wrappers, placeholder/setup utilities, the legacy promo script, and eleven static images with no tracked caller.
+- Removed the nonexistent ComfyUI path from change-impact policy; replaced stale InstantID/ComfyUI descriptions with the current EvoLink/Web SaaS boundary; and replaced operational exception swallowing with sanitized logs or explicit bounded fallbacks.
+- Added closed regressions that keep the deleted artifacts absent, require the current document layer and exact Preview role documentation, reject stale Provider comments/change-impact paths, reject silent operational swallowing, and require every remaining static asset to have a caller.
+- Synchronized the deterministic OpenAPI snapshot and the exact runtime hash contract after the corresponding active source descriptions changed. No validation or release gate was weakened.
+
+### Verification
+
+- The new deletion/documentation regressions were run red before implementation and passed afterward. Focused affected suites passed 98/98, delivery/runtime/Web-only suites passed 72/72, and the final focused release/provider/Web-only set passed 131/131 after the exact runtime source hash was refreshed.
+- The first isolated full baseline correctly failed 1 of 739 backend tests because the committed OpenAPI snapshot still contained the retired InstantID description. After updating that one deterministic snapshot field, the OpenAPI contract passed 5/5 and a new complete baseline exited 0.
+- The final fresh hash-locked baseline passed `pip check`; all 739 backend tests completed with 706 passing and 33 explicit external/environment skips; generated API types were byte-deterministic; frontend typecheck passed; Vitest passed 8/8; and the real Web build completed. Current-document Markdown path validation reported zero missing local references, and every remaining tracked static image has a tracked caller.
+- The baseline truthfully recorded `UNCOMMITTED_WORKTREE`, `runtime_alignment=NOT_RUN`, and `release_eligible=false` because local Windows/Python 3.11.9/Node 24.2.0 differs from the protected Linux/Python 3.11.15/Node 24.17.0 release runtime.
+
+### External boundary
+
+- Readback of the protected GitHub environments confirmed the generated approval/HMAC/project coordinates remain present. `preview-identity` still lacks 17 required secret inputs plus the Supabase project variable, and `preview-commercial` still lacks 13 required secret inputs. No plaintext secret or credential value was read, printed, persisted, copied, or changed.
+- Protected Stage 5 identity/commercial execution remains `NOT_RUN`. EvoLink lost-response reconciliation and the three Creem commercial contracts remain `UNVERIFIED`; protected private-storage, Redis, database-role, Google-account, Worker-host, and formal-domain evidence has not been substituted with local tests. Generation and billing remain OFF, and Stage 6 remains `NOT_RUN`.
+- The formal `www.vowpic.com` deployment observed before this change still served the older runtime shape; this cleanup does not claim a Production deployment or formal-domain acceptance.
+- No Subagent, protected workflow, Production workflow, domain/DNS mutation, environment-variable mutation, secret read/write, database mutation, payment, email, Provider submission, or customer-data operation occurred.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -14,8 +15,10 @@ def _get_vendor_path(backend_dir: str) -> str | None:
                 cand = os.path.abspath(os.path.join(app_dir, rel.replace("/", os.sep)))
                 if os.path.isdir(cand):
                     return cand
-        except OSError:
-            pass
+        except OSError as exc:
+            logging.getLogger(__name__).debug(
+                "Optional vendor state could not be read: %s", type(exc).__name__
+            )
     cand = os.path.join(app_dir, "_vendor")
     if os.path.isdir(cand):
         return cand
@@ -56,4 +59,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

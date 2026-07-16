@@ -1069,7 +1069,7 @@ async def verify_image_quality(image_url: str) -> str:
 async def refine_flux_prompt(user_input: str) -> str:
     """
     Step A (The Brain): Converts user input into professional photography prompts
-    for the current Jiekou + ComfyUI generation pipeline.
+    for the current EvoLink image-generation pipeline.
     """
     payload = {
         "model": _active_vision_model(),

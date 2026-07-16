@@ -167,8 +167,11 @@ def _opencv_face_box(image: Any) -> tuple[int, int, int, int] | None:
             try:
                 if "temp_path" in locals():
                     os.unlink(temp_path)
-            except Exception:
-                pass
+            except OSError as cleanup_exc:
+                logger.warning(
+                    "Temporary identity-reference cleanup failed: %s",
+                    type(cleanup_exc).__name__,
+                )
 
     try:
         rgb = image.convert("RGB")

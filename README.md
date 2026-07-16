@@ -25,6 +25,9 @@ VowPic 是面向海外用户的响应式 Web SaaS，用于生成、购买和私�
 - 当前产品需求：`docs/PRD.md`
 - 获批商业闭环设计：`docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md`
 - 分阶段实施计划：`docs/superpowers/plans/2026-07-10-vowpic-commercial-closure-implementation.md`
+- 当前架构：`docs/ARCHITECTURE.md`
+- 安全边界：`docs/SECURITY.md`
+- 运维与发布：`docs/OPERATIONS_RUNBOOK.md`
 - 风险锁定运行手册：`docs/operations/risk-lockdown-runbook.md`
 - 工程留痕：`docs/ai-worklog.md`
 
@@ -45,10 +48,12 @@ Set-Location backend
 Set-Location frontend
 npm ci --ignore-scripts
 npm run typecheck
+npm run test:unit
 npm run build:web
+npm run test:a11y
 ```
 
-前端当前尚未配置可运行的组件/单元测试框架，因此不能把不存在的前端单元测试计入通过项。浏览器主流程仍需单独验证。
+Vitest 单元/组件测试和基于真实 Web 构建的 Playwright 无障碍测试都是 CI 必跑项。受保护 Preview 的 Google、私有媒体、Provider、支付和完整浏览器主流程仍需使用隔离资源单独验收；本地通过不能替代这些外部证据。
 
 ## 配置与发布
 

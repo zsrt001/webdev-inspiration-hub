@@ -6,7 +6,7 @@
   "job_payload_version": "generation-job.v1",
   "source_sha256": {
     "backend/app/core/config.py": "44c915a3456bb64faf14f21c534d98bb605289f62b45a013c8c2878aa37bbf80",
-    "backend/app/main.py": "e4f98401845732d09838943a5645249f852d1df61b622b85f7f764982347e228",
+    "backend/app/main.py": "de890e4b17e03aa437d5c69568a7888232582da6d857f6020751e9ab0ddca3af",
     "backend/app/worker.py": "660a0e87242c24dd3ed8b0711af73a6ed8a86c23fb6a7856a4a42526289d2c1f",
     "backend/app/models/generation_job.py": "7fb595b3b8b01811af3bc84429f6147623fc730713aed7b3daeaa23375485bcf",
     "backend/app/services/generation_service.py": "472580c422c6199f2782adeb73f60fd12eb02d9b75f5983613b935e5bec90dce",

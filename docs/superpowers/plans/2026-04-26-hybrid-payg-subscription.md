@@ -1,5 +1,7 @@
 # Hybrid PAYG And Subscription Implementation Plan
 
+> **Historical — not execution authority.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a commercial hybrid billing model where users can buy credit packs on demand and subscribe to monthly plans that grant credits and product entitlements.

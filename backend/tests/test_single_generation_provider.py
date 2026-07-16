@@ -43,6 +43,7 @@ class SingleGenerationProviderTest(unittest.TestCase):
 
     def test_dead_image_provider_modules_and_workflows_are_deleted(self) -> None:
         forbidden = (
+            "generate_assets.py",
             "app/services/comfyui_service.py",
             "app/services/wenwen_service.py",
             "app/workflows/comfyui_base.zip",
@@ -52,6 +53,14 @@ class SingleGenerationProviderTest(unittest.TestCase):
             "app/workflows/comfyui_cloud_couple_minimal.json",
             "app/workflows/comfyui_live_portrait.json",
             "scripts/validate_comfyui_workflows.py",
+            "scripts/generate_all_assets.py",
+            "scripts/launch_studio.py",
+            "scripts/regenerate_covers.py",
+            "scripts/regenerate_covers_v2.py",
+            "scripts/regenerate_hero_v2.py",
+            "scripts/regenerate_one.py",
+            "scripts/regenerate_production_v3.py",
+            "scripts/regenerate_realism_covers.py",
         )
         self.assertEqual([path for path in forbidden if (BACKEND_DIR / path).exists()], [])
 
