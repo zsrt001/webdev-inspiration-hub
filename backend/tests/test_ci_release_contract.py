@@ -60,6 +60,52 @@ def _hashed_requirement_blocks(content: str) -> list[str]:
 
 
 class CiReleaseContractTest(unittest.TestCase):
+    def test_first_party_actions_pin_verified_node24_release_commits(self) -> None:
+        expected_actions = {
+            "actions/checkout": (
+                "df4cb1c069e1874edd31b4311f1884172cec0e10",
+                "v6.0.3",
+            ),
+            "actions/setup-python": (
+                "ece7cb06caefa5fff74198d8649806c4678c61a1",
+                "v6.3.0",
+            ),
+            "actions/setup-node": (
+                "249970729cb0ef3589644e2896645e5dc5ba9c38",
+                "v6.5.0",
+            ),
+            "actions/upload-artifact": (
+                "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "v7.0.1",
+            ),
+            "actions/download-artifact": (
+                "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "v8.0.1",
+            ),
+        }
+        action_pattern = re.compile(
+            r"uses:\s*(actions/[a-z-]+)@([0-9a-f]{40})\s*#\s*(v[0-9.]+)"
+        )
+        seen_actions: set[str] = set()
+
+        for workflow_path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+            workflow = workflow_path.read_text(encoding="utf-8")
+            action_lines = [
+                line for line in workflow.splitlines() if "uses: actions/" in line
+            ]
+            matches = action_pattern.findall(workflow)
+            self.assertEqual(len(matches), len(action_lines), workflow_path.name)
+            for action_name, commit_sha, version in matches:
+                with self.subTest(workflow=workflow_path.name, action=action_name):
+                    self.assertIn(action_name, expected_actions)
+                    self.assertEqual(
+                        (commit_sha, version),
+                        expected_actions[action_name],
+                    )
+                    seen_actions.add(action_name)
+
+        self.assertEqual(seen_actions, set(expected_actions))
+
     def test_backend_ci_runs_the_real_control_plane_rls_postgresql_test(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
         backend_job = workflow[
@@ -256,6 +302,18 @@ class CiReleaseContractTest(unittest.TestCase):
         config = json.loads(_read("vercel.json"))
 
         self.assertNotIn("RUNTIME_ENVIRONMENT", config.get("env", {}))
+
+    def test_vercel_upload_context_keeps_required_frontend_build_script(self) -> None:
+        ignore_lines = {
+            line.strip()
+            for line in _read(".vercelignore").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+        self.assertIn("/scripts", ignore_lines)
+        self.assertNotIn("scripts", ignore_lines)
+        clean_script = ROOT / "frontend" / "scripts" / "clean-web-output.mjs"
+        self.assertTrue(clean_script.is_file())
 
     def test_frontend_core_tool_versions_and_scripts_are_exact(self) -> None:
         package = json.loads(_read("frontend/package.json"))

@@ -23,7 +23,7 @@ jobs:
           test "${VERSION_CODENAME:-}" = "bookworm"
       - name: Install Git and byte-comparison tools
         run: apt-get update && apt-get install --yes --no-install-recommends git diffutils && rm -rf /var/lib/apt/lists/*
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install the hash-locked resolver
         run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-resolver.txt
       - name: Reproduce the resolver lock itself
@@ -66,7 +66,7 @@ jobs:
           test "${VERSION_CODENAME:-}" = "bookworm"
       - name: Install Git and byte-comparison tools
         run: apt-get update && apt-get install --yes --no-install-recommends git diffutils && rm -rf /var/lib/apt/lists/*
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install the hash-locked resolver
         run: python -m pip install --disable-pip-version-check --require-hashes --index-url=https://pypi.org/simple -r requirements-resolver.txt
       - name: Resolve the Vercel API lock twice and require byte-identical output
@@ -91,8 +91,8 @@ jobs:
   windows-dependency-locks:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11.9"
           cache: pip
@@ -153,8 +153,8 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11.15"
           cache: pip
@@ -235,8 +235,8 @@ jobs:
   frontend-check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
           cache: npm
@@ -275,7 +275,7 @@ jobs:
   worker-image:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Build the production Worker image from the locked backend context
         run: docker build --file backend/Dockerfile.worker --tag vowpic-worker:pr-${GITHUB_SHA} backend
 
@@ -291,7 +291,7 @@ jobs:
       FRONTEND_RESULT: ${{ needs.frontend-check.result }}
       WORKER_IMAGE_RESULT: ${{ needs.worker-image.result }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Materialize exact secret-free PR evidence from required job results
         shell: bash
         run: |
@@ -368,7 +368,7 @@ jobs:
             --expected-runtime-bundle-id "$(tr -d '\r\n' < "$RUNNER_TEMP/pr-runtime-bundle-id.txt")" \
             --output "$RUNNER_TEMP/pr-gate-aggregate.json"
       - name: Persist exact PR gate evidence after successful aggregation
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vowpic-pr-gates-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/pr/01-ci/*.json

@@ -1007,3 +1007,38 @@
 - The failed Vercel deployment is not reclassified as passed. A new GitHub/Vercel Preview run against the corrected committed source is still required.
 - Protected Preview identity/commercial workflows, Provider/payment/private-storage proof, Worker-host execution, formal-domain acceptance, and human quality acceptance remain external `NOT_RUN`/`UNVERIFIED` gates. Generation and billing remain OFF.
 - No Subagent, authenticated Vercel session, merge, Production workflow, domain/DNS mutation, Production data write, payment, email, or Provider submission was used.
+
+## 2026-07-15 - Vercel upload-context repair and GitHub Actions Node 24 migration
+
+### Goal and scope
+
+- Use the explicitly authorized logged-in Chrome session only to read the failed Vercel Preview build log for source `a902dd429d47f9a61a5efc9d35597d600f5793e5`.
+- Repair the repository-owned deployment failure and remove all GitHub Actions Node 20 deprecation warnings without changing Vercel project settings, environment variables, domains, Production, or high-risk capability flags.
+
+### Evidence and root cause
+
+- Vercel deployment `dpl_HVBgqCwk9vtK1LRwJ5zNoGxMsu2x` reached the frontend build and failed after 39 seconds. Its authenticated deploy log reported `Error: Cannot find module '/vercel/path0/frontend/scripts/clean-web-output.mjs'` while running `cd frontend && npm run build:web` under Node 24.15.0.
+- The exact source commit contains `frontend/scripts/clean-web-output.mjs`, and local/CI builds use it successfully. The root `.vercelignore` nevertheless contained the unanchored pattern `scripts`; Vercel documents `.vercelignore` as gitignore-like, so that pattern excluded the nested `frontend/scripts` directory from the deployment upload context.
+- GitHub run `29434740863` passed every job but its annotations identified Node 20 action runtimes for `actions/checkout`, `actions/setup-python`, `actions/setup-node`, and `actions/upload-artifact`. The protected workflows also referenced the Node 20 `actions/download-artifact` release.
+- Exact official release tags were resolved to immutable commit SHAs. The checked-in `action.yml` at each selected SHA was read from the official `actions/*` repository and declared `runs.using: node24`.
+
+### Changes
+
+- Anchored the repository-level Vercel exclusion as `/scripts`, retaining the intended root tooling exclusion while allowing the required `frontend/scripts/clean-web-output.mjs` into the deployment context.
+- Updated all first-party JavaScript actions in `ci.yml`, `integration.yml`, `safe-baseline-release.yml`, and `production-release.yml` to immutable Node 24 release commits: checkout 6.0.3, setup-python 6.3.0, setup-node 6.5.0, upload-artifact 7.0.1, and download-artifact 8.0.1.
+- Added one closed action-pin contract covering every `uses: actions/*` line and one Vercel upload-context contract that rejects a future unanchored `scripts` pattern while requiring the frontend cleanup script.
+- Updated the Vercel deployment guide with the nested build-script upload requirement. No runtime application code, capability flag, domain, environment variable, secret, or Vercel project setting changed.
+
+### Verification
+
+- Before modification, the two affected test modules passed 72/72 tests in the repository `.venv`. An earlier invocation with the unprovisioned global Python was invalid and failed during import because `httpx` and `asyncpg` were absent; no code conclusion was drawn from it.
+- The two new regression tests failed first against the unanchored Vercel ignore rule and Node 20 action pins, then passed after the implementation. All four workflow files parsed successfully, and the focused CI/deployment plus Web-security run passed 74/74 tests.
+- A direct local call into the installed `@vercel/build-utils` ignore helper was unusable because that published package path could not resolve its external `ignore` module, including after a clean pinned release-tool install. This check is not counted as PASS and was not used to override the real Vercel log, committed source tree, official Vercel rule, or regression contract.
+- `git diff --check` passed. The complete local baseline then exited 0 from a fresh hash-locked Windows environment: `pip check` passed; all 734 backend tests passed with 33 explicit external/environment skips; generated API types were deterministic; frontend typecheck passed; Vitest passed 5/5; and the real Web build completed through `frontend/scripts/clean-web-output.mjs`.
+- The baseline correctly recorded `UNCOMMITTED_WORKTREE`, `runtime_alignment=NOT_RUN`, and `release_eligible=false` because local Windows/Python 3.11.9/Node 24.2.0 is not the protected Linux/Python 3.11.15/Node 24.17.0 runtime.
+
+### External boundary
+
+- A clean-commit baseline, fresh GitHub CI run, warning-annotation readback, and fresh Vercel Preview deployment are still required before this repair can be called externally verified.
+- Protected Preview identity/commercial, EvoLink lost-response proof, Creem refund/subscription proof, private storage, Worker-host execution, formal-domain acceptance, and human quality acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation and billing remain OFF.
+- No Subagent, merge, protected workflow, Production deployment, domain/DNS mutation, environment-variable mutation, secret read/write, Production data write, payment, email, or Provider submission occurred.

@@ -27,6 +27,12 @@ with hashes, dependency-checked, and entry-point imported in an exact Python
 the Python 3.11 Worker/backend lock so version-conditional dependencies cannot
 be hidden by the wrong resolver runtime.
 
+The root [`.vercelignore`](../.vercelignore) must keep its repository-level
+`scripts` exclusion anchored as `/scripts`. The Web build invokes
+`frontend/scripts/clean-web-output.mjs`; an unanchored `scripts` pattern also
+excludes that nested directory from Vercel's upload context even though the
+file remains present in Git and local CI.
+
 The `/api/*` and `/health*` routes are rewritten to FastAPI; all other paths
 fall back to the Web application. Production deployment from `main` remains
 disabled in `vercel.json` while the protected release workflow is in force.
