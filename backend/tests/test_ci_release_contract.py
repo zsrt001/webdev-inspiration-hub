@@ -694,6 +694,15 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "scripts/release/verify_edge_lockdown.py",
             "verify_edge_lockdown_contract",
         )
+        physical_rule_by_group = {
+            "auth_upload": "rule_identity_generation",
+            "generation": "rule_identity_generation",
+            "partner_invite": "rule_identity_generation",
+            "credit_checkout": "rule_commercial_retired",
+            "subscription": "rule_commercial_retired",
+            "retired_addons": "rule_commercial_retired",
+            "leads_recommendations": "rule_commercial_retired",
+        }
         now = datetime.now(timezone.utc)
         source_sha = "a" * 40
         payload = {
@@ -712,8 +721,12 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "before_config_sha256": "b" * 64,
             "after_config_sha256": "c" * 64,
             "route_groups": {
-                name: {"rule_id": f"rule_{index}", "denied": True, "read_back": True}
-                for index, name in enumerate(sorted(verify.EDGE_ROUTE_GROUPS), 1)
+                name: {
+                    "rule_id": physical_rule_by_group[name],
+                    "denied": True,
+                    "read_back": True,
+                }
+                for name in sorted(verify.EDGE_ROUTE_GROUPS)
             },
             "runner_bypass": {
                 "rule_id": "rule_runner_bypass",
@@ -734,6 +747,14 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             now=now,
         )
         self.assertEqual(verified["route_groups"], sorted(verify.EDGE_ROUTE_GROUPS))
+        self.assertEqual(verified["physical_deny_rule_count"], 2)
+        self.assertEqual(verify.MAX_PHYSICAL_EDGE_DENY_RULES, 2)
+        runbook = _read("docs/operations/risk-lockdown-runbook.md")
+        self.assertIn("Hobby physical-rule limit", runbook)
+        self.assertIn(
+            "one physical rule id may back multiple logical groups",
+            re.sub(r"\s+", " ", runbook.lower()),
+        )
         tampered = dict(payload, source_sha="d" * 40)
         with self.assertRaises(ValueError):
             verify.validate_edge_lockdown_report(
@@ -755,6 +776,32 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 expected_workflow_attempt=2,
                 expected_project_id="prj_vowpic",
                 expected_formal_domain="https://www.vowpic.com?unexpected=1",
+                now=now,
+            )
+        too_many_physical_rules = {
+            **payload,
+            "route_groups": {
+                name: {
+                    "rule_id": f"rule_{index % 3}",
+                    "denied": True,
+                    "read_back": True,
+                }
+                for index, name in enumerate(sorted(verify.EDGE_ROUTE_GROUPS))
+            },
+        }
+        too_many_physical_rules["signature_hmac_sha256"] = verify.compute_report_hmac(
+            too_many_physical_rules,
+            key,
+        )
+        with self.assertRaisesRegex(ValueError, "physical-rule limit"):
+            verify.validate_edge_lockdown_report(
+                too_many_physical_rules,
+                hmac_key=key,
+                expected_source_sha=source_sha,
+                expected_workflow_run_id="12345",
+                expected_workflow_attempt=2,
+                expected_project_id="prj_vowpic",
+                expected_formal_domain="www.vowpic.com",
                 now=now,
             )
         short_lease = {

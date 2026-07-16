@@ -1251,3 +1251,22 @@
 - The protected `production` GitHub environment has none of the 22 workflow-required secrets, so dispatching the production workflow now would be an expected `NOT_RUN`/failure rather than containment or release.
 - No Vercel Firewall, deployment, alias, domain, environment variable, secret, database, storage, Redis, Provider, or payment state was changed. External containment remains unapplied pending explicit authorization for the exact firewall mutation; the safe next disposition is to apply and read back the seven bounded deny groups, then provision the protected release inputs and execute the one-time safe-baseline sequence.
 - No Subagent was used.
+
+## 2026-07-16 - Hobby-compatible Firewall evidence contract
+
+### Goal and evidence
+
+- Continue preparing the authorized-risk boundary without mutating Production, and verify whether the seven logical edge-lockdown groups can actually be installed on the current Vercel account.
+- Read-only Vercel dashboard inspection confirmed the project is owned by a Hobby team, has zero existing custom Firewall rules, has no system bypass rule, and offers the normal custom-rule creation surface. Vercel's current official WAF documentation limits Hobby to three custom rules.
+- The release requires a short-lived custom WAF bypass because a system-mitigation bypass does not bypass project custom rules. Seven separate deny rules plus that bypass were therefore impossible under the current plan.
+
+### Changes
+
+- Kept the seven security boundaries as independently reported logical groups, but deterministically packed them into at most two physical deny rules and reserved the third Hobby slot for the release runner bypass.
+- Added exact logical group boundaries and explicit preserved webhook/reconciliation/status/evidence/readiness/logout paths to the risk-lockdown runbook. Shared physical rules must remove and publish one logical OR condition group at a time; the physical rule is removed only after its final group passes application-guard and no-side-effect verification.
+- Updated the authenticated edge-report verifier to count unique deny rule IDs and reject more than two. A repeated physical rule ID across logical groups is intentional, while all seven logical groups remain mandatory and independently read back.
+
+### Verification and boundary
+
+- The updated contract test was run red first because the verifier did not expose or enforce physical-rule capacity. After implementation, the focused edge-lockdown report test passed and `git diff --check` passed.
+- No Firewall draft, rule, bypass, publish, audit-log restore, domain, deployment, environment variable, secret, database, payment, Provider request, or customer data was changed. No Subagent was used.

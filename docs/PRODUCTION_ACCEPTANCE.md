@@ -22,6 +22,8 @@ VowPic **尚未达到 Production accepted**。仓库已经实现安全基线、�
 
 这不是当前 `main` 的实现缺口；当前代码和测试已覆盖对应 `410` 墓碑及能力关闭合同。风险来自旧 Production 尚未通过受保护安全基线流程替换。临时 Vercel Firewall 锁定和正式发布都属于外部项目状态变更；在实际锁定、读回、签名留证以及受保护发布完成前，Production 必须标记为 **存在已确认暴露、未 accepted**，不得以普通 Preview Promote 代替。
 
+当前 Vercel 团队为 Hobby，2026-07-16 只读核验时自定义规则为 0、套餐上限为 3。安全发布必须预留其中一条给短期 runner bypass，因此七个逻辑阻断组已被约束为最多两条复合物理 deny；若出现任何无关自定义规则，发布必须停止，而不是删除用户规则或超额创建。
+
 ## 禁止的验收捷径
 
 - 不得用浏览器 `X-Admin-Token`、通用 Bearer、旧 OpenID、游客身份或硬编码白名单代替普通 Google 用户。
