@@ -1207,3 +1207,24 @@
 
 - This change does not activate, call, or verify EvoLink, Creem, Supabase, Redis, Google, protected Preview, or Production. Existing external Stage 5/6 gates remain unchanged and are not represented as locally complete.
 - No Subagent, protected workflow, Production workflow, domain/DNS mutation, environment-variable mutation, secret read/write, database mutation, payment, email, Provider submission, or customer-data operation occurred.
+
+## 2026-07-16 - Post-merge Preview and external-state audit
+
+### Goal and evidence
+
+- Verify the merged Admin cleanup on GitHub, the latest Vercel Preview, the formal domain, and the protected GitHub environment inventories without reading or changing secret plaintext.
+- PR #7 merged reviewed source `6391ed6863fed40342d5a75c089cd088aaacbc52` into `main` as `eb185a98b14fd48a7593d7862763b816226326a4`. All nine PR checks passed, and the independent post-merge `main` CI run `29493316104` completed successfully.
+- Vercel Preview deployment `FJ5wDLg13zb1nL6xxkPLp5DNbimG` is READY for source `6391ed6`. Browser verification confirmed the current `VowPic` title and corrected Admin overview/order copy. Its `/health/ready` correctly remains not ready because the browse-only deployment lacks a canonical runtime bundle, approved Preview role, acceptance HMAC, and control-plane database URL.
+
+### External readback
+
+- Vercel Production remains deployment `8ryc7dh5XjocPnPjyw1Yq9ZkqGTA` from source `52208b66fda5ab1a327c3af7d3840eabe74016fd`, not the merged source. `vowpic.com` has a valid `307` redirect to `www.vowpic.com`, and `www.vowpic.com` remains the valid Production domain. The formal Admin order page still served the old failed-generation restart claim, proving Production has not been synchronized.
+- The Vercel project still exposes a public Blob store, `webdev-inspiration-hub-blob`; it is not the private Supabase/S3-compatible acceptance store required by the current architecture. Existing project variables include legacy Production/Preview EvoLink and Blob settings, but they do not satisfy the protected Preview runtime-role contract.
+- `preview-identity`, `preview-commercial`, and `production` are protected GitHub environments restricted to `main` with required review. Inventory comparison against the workflow source found `preview-identity` missing 17 of 21 required secrets plus `SUPABASE_PROJECT_REF`, `preview-commercial` missing 13 of 19 required secrets, and `production` missing all 22 required secrets. The identity, commercial, safe-baseline, and Production protected workflows have never run.
+- EvoLink's current official quickstart returns a generated task ID and the task API can query only `GET /v1/tasks/{task_id}`. The official pages expose no idempotency key, client request ID, correlation field, or account task-list lookup. A submission whose response is lost therefore cannot be safely rediscovered from the published contract; `EVOLINK_SUBMISSION_RECONCILIATION` remains `UNVERIFIED`.
+
+### Result and boundary
+
+- The repository fix, PR, merge, and post-merge CI are complete. Automatic Preview proves the current Web artifact only; it is not Stage 5 evidence. Production remains intentionally unchanged because `vercel.json` disables automatic `main` deployment and the protected staged release prerequisites are absent.
+- Protected Stage 5 identity/commercial, Stage 6, Creem Test Mode, Provider lost-response reconciliation, private storage, isolated Redis, production staged deployment, and formal-domain acceptance remain `NOT_RUN`/`UNVERIFIED`. Generation, authenticated upload, billing, private download, Partner Invite, and Google auth remain OFF.
+- No secret value, browser session state, customer record, storage object, Provider request, payment, email, database, domain, Vercel setting, GitHub environment, or Production deployment was changed during this audit. No Subagent was used.
