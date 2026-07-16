@@ -28,16 +28,28 @@ class LivePortraitJob(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="RESTRICT"),
         index=True,
     )
 
     status: Mapped[LivePortraitStatus] = mapped_column(String(32), default=LivePortraitStatus.CREATED, index=True)
 
     source_image_url: Mapped[str] = mapped_column(String(1024))
+    source_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("media_assets.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     seconds: Mapped[int] = mapped_column(Integer, default=5)
 
     video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    video_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("media_assets.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     generation_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     credits_cost: Mapped[int] = mapped_column(Integer, default=0)
@@ -51,4 +63,3 @@ class LivePortraitJob(Base):
 
     def __repr__(self) -> str:
         return f"<LivePortraitJob {self.id} status={self.status}>"
-

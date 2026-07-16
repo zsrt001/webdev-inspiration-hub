@@ -1,0 +1,14 @@
+{
+  "schema_version": "billing-catalog.v1",
+  "catalog_version": "2026-07-10",
+  "effective_at": "2026-07-10T00:00:00Z",
+  "currency": "USD",
+  "products": [
+    {"product_code": "pack_50", "product_kind": "credit_pack", "pre_tax_minor_units": 1290, "credits": 50, "retention_tier": "paid_90d"},
+    {"product_code": "pack_120", "product_kind": "credit_pack", "pre_tax_minor_units": 2490, "credits": 120, "retention_tier": "paid_90d"},
+    {"product_code": "pack_300", "product_kind": "credit_pack", "pre_tax_minor_units": 4990, "credits": 300, "retention_tier": "paid_90d"},
+    {"product_code": "starter_monthly", "product_kind": "subscription", "pre_tax_minor_units": 1900, "credits": 80, "retention_tier": "subscription_180d"},
+    {"product_code": "creator_monthly", "product_kind": "subscription", "pre_tax_minor_units": 4900, "credits": 300, "retention_tier": "subscription_180d"},
+    {"product_code": "studio_monthly", "product_kind": "subscription", "pre_tax_minor_units": 12900, "credits": 900, "retention_tier": "studio_365d"}
+  ]
+}

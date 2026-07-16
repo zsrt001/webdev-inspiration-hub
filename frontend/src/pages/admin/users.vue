@@ -10,7 +10,7 @@
         <input
           v-model="filters.search"
           class="filter-input"
-          :placeholder="tr('输入姓名、邮箱、用户名、openid 或 UUID', 'Type a name, email, username, openid, or UUID')"
+          :placeholder="tr('输入姓名、邮箱、用户名或 UUID', 'Type a name, email, username, or UUID')"
           confirm-type="search"
           @confirm="applyFilters"
         />
@@ -185,8 +185,8 @@ async function fetchUsers() {
     page.value = response.page || page.value;
     pageSize.value = response.page_size || pageSize.value;
   } catch (err: any) {
-    error.value = err?.statusCode === 401
-      ? tr('当前账号没有后台权限。请使用 owner/admin/operator 账号，或配置 ADMIN_EMAILS / ADMIN_USER_IDS。', 'This account is not authorized for admin access. Use an owner/admin/operator account or configure ADMIN_EMAILS / ADMIN_USER_IDS.')
+    error.value = err?.statusCode === 401 || err?.statusCode === 403
+      ? tr('当前账号没有后台权限。请确认已登录，并由数据库管理员授予 owner、admin 或 operator 角色。', 'This account is not authorized for admin access. Sign in and ask a database administrator to grant the owner, admin, or operator role.')
       : (err?.message || tr('用户加载失败。', 'Unable to load users.'));
   } finally {
     loading.value = false;
@@ -284,7 +284,7 @@ onMounted(fetchUsers);
 </script>
 
 <style lang="scss" scoped>
-@import './admin.scss';
+@use './admin.scss';
 
 .user-table-grid {
   grid-template-columns: 170px minmax(180px, 1.2fr) minmax(220px, 1.3fr) 150px 130px 150px;

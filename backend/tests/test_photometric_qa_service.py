@@ -15,7 +15,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.services import qa_service  # noqa: E402
 from app.services.photometric_qa_service import PhotometricQAService  # noqa: E402
-from app.services.wenwen_service import WenwenService  # noqa: E402
+from app.services import repair_policy  # noqa: E402
 
 
 class PhotometricQAServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -108,10 +108,10 @@ class PhotometricQAServiceTest(unittest.IsolatedAsyncioTestCase):
         reasons = ["face_underexposed", "background_brighter_than_face", "oily_skin_highlight"]
 
         self.assertEqual(
-            WenwenService._image_edit_repair_mode(round_number=2, qa_reasons=reasons),
+            repair_policy.image_edit_repair_mode(round_number=2, qa_reasons=reasons),
             "relight_edit_only",
         )
-        self.assertTrue(WenwenService._should_include_previous_edit_result(reasons))
+        self.assertTrue(repair_policy.should_include_previous_edit_result(reasons))
 
 
 if __name__ == "__main__":

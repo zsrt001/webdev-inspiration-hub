@@ -18,7 +18,7 @@ docker-compose.yml
 docs
 artifacts
 logs
-scripts
+/scripts
 frontend/node_modules
 frontend/dist
 frontend/unpackage

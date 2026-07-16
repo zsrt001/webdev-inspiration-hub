@@ -1,0 +1,1296 @@
+#!/usr/bin/env python3
+"""Reserve and CAS-advance the one-time Production safe-baseline install."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+from typing import Any
+from urllib.parse import quote, urlsplit
+import uuid
+
+
+ROOT = Path(__file__).resolve().parents[2]
+BACKEND = ROOT / "backend"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
+import httpx  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
+from scripts.release.github_artifact_evidence import parse_reference  # noqa: E402
+
+from app.services.production_inventory_service import (  # noqa: E402
+    ProductionInventoryReport,
+    validate_read_only_proof,
+)
+
+
+NOT_RUN_EXIT = 3
+OLD_SCHEMA = "20260516_0012"
+TARGET_SCHEMA = "20260712_0014"
+ACTIVATION_KIND = "SAFE_BASELINE_INSTALL"
+RESERVATION_TTL_MINUTES = 120
+BUILD_ARTIFACT_RECOVERY_DAYS = 90
+PHASE_RANK = {
+    "RESERVED": 0,
+    "STAGED": 10,
+    "PROMOTION_ARMED": 15,
+    "PROMOTED": 20,
+    "FORMAL_VERIFIED": 30,
+    "COMPLETED": 40,
+}
+PHASE_SEQUENCE = tuple(PHASE_RANK)
+RETRIABLE_STATES = {f"RETRY_{phase}" for phase in PHASE_SEQUENCE if phase != "COMPLETED"}
+MAX_DEPLOYMENT_PAGES = 100
+MIGRATION_LOCK_TIMEOUT = "15s"
+MIGRATION_STATEMENT_TIMEOUT = "5min"
+
+
+class SafeBaselineRegistrationError(RuntimeError):
+    pass
+
+
+def _activation_value(activation: dict[str, Any], name: str) -> Any:
+    return activation.get(name)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def reservation_is_expired(
+    activation: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if activation is None:
+        return False
+    expiry = _parse_datetime(_activation_value(activation, "reservation_expires_at"))
+    return expiry is not None and expiry <= (now or datetime.now(timezone.utc))
+
+
+def build_artifact_recovery_is_expired(
+    activation: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if activation is None:
+        return False
+    created_at = _parse_datetime(_activation_value(activation, "created_at"))
+    if created_at is None:
+        return True
+    recovery_deadline = created_at + timedelta(days=BUILD_ARTIFACT_RECOVERY_DAYS)
+    return recovery_deadline <= (now or datetime.now(timezone.utc))
+
+
+def validate_resume_coordinates(
+    activation: dict[str, Any],
+    *,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+) -> None:
+    if (
+        str(_activation_value(activation, "source_sha") or "") != source_sha
+        or str(_activation_value(activation, "workflow_run_id") or "") != workflow_run_id
+    ):
+        raise SafeBaselineRegistrationError(
+            "safe-baseline coordinates do not match the reserving run"
+        )
+    current_attempt = int(_activation_value(activation, "workflow_attempt") or 1)
+    if workflow_attempt < current_attempt:
+        raise ValueError("workflow attempt cannot move backwards")
+
+
+def classify_install_state(
+    *,
+    current_revision: str,
+    activation: dict[str, Any] | None,
+    source_sha: str,
+    workflow_run_id: str,
+    now: datetime | None = None,
+) -> str:
+    """Classify without mutating; terminal or inconsistent states fail closed."""
+    if current_revision not in {OLD_SCHEMA, TARGET_SCHEMA}:
+        return "UNSUPPORTED_SCHEMA"
+    if activation is None:
+        return "FRESH_INSTALL" if current_revision == OLD_SCHEMA else "ORPHANED_SCHEMA"
+    phase = str(_activation_value(activation, "phase") or "")
+    if current_revision == OLD_SCHEMA:
+        return "INVALID_RESERVATION_WITH_OLD_SCHEMA"
+    if phase == "COMPLETED":
+        return "ALREADY_COMPLETED"
+    if (
+        str(_activation_value(activation, "source_sha") or "") != source_sha
+        or str(_activation_value(activation, "workflow_run_id") or "") != workflow_run_id
+    ):
+        return "CONFLICTING_INSTALL"
+    if phase not in PHASE_RANK:
+        return "UNKNOWN_PHASE"
+    # Expiry is an audit deadline, not permission for another run to take over.
+    # The exact source/run owner can resume through the same fail-closed recovery
+    # path after fresh protected-environment and edge evidence checks.
+    reservation_is_expired(activation, now=now)
+    return f"RETRY_{phase}"
+
+
+def validate_phase_transition(current_phase: str, target_phase: str) -> None:
+    if current_phase not in PHASE_RANK or target_phase not in PHASE_RANK:
+        raise ValueError("unknown safe-baseline phase")
+    current_index = PHASE_SEQUENCE.index(current_phase)
+    if current_index + 1 >= len(PHASE_SEQUENCE) or PHASE_SEQUENCE[current_index + 1] != target_phase:
+        raise ValueError(f"invalid safe-baseline phase transition: {current_phase} -> {target_phase}")
+
+
+def recovery_decision(
+    phase: str,
+    *,
+    candidate_count: int,
+    formal_domain_matches: bool = False,
+) -> str:
+    if candidate_count < 0:
+        raise ValueError("candidate count cannot be negative")
+    if phase == "RESERVED":
+        if candidate_count == 0:
+            return "DEPLOY_ONCE"
+        if candidate_count == 1:
+            return "BIND_ONLY_CANDIDATE"
+        return "MANUAL_FORWARD_DISPOSITION"
+    if phase in {"STAGED", "PROMOTION_ARMED"}:
+        return "REUSE_RECORDED_DEPLOYMENT"
+    if phase == "PROMOTED":
+        return "ADVANCE_FORMAL_VERIFICATION" if formal_domain_matches else "KEEP_EDGE_DENY"
+    if phase in {"FORMAL_VERIFIED", "COMPLETED"}:
+        return "ADVANCE_WITHOUT_REBUILD" if phase == "FORMAL_VERIFIED" else "STOP_COMPLETED"
+    raise ValueError("unknown safe-baseline phase")
+
+
+def promotion_recovery_decision(
+    phase: str,
+    *,
+    formal_deployment_id: str | None,
+    target_deployment_id: str,
+) -> str:
+    target = str(target_deployment_id or "").strip()
+    if not target:
+        raise ValueError("target deployment ID is required")
+    matches = str(formal_deployment_id or "").strip() == target
+    if phase == "PROMOTION_ARMED":
+        return "ADVANCE_PROMOTED_WITHOUT_PROMOTE" if matches else "PROMOTE_ONCE"
+    if phase == "PROMOTED":
+        return "ADVANCE_FORMAL_VERIFICATION" if matches else "KEEP_EDGE_DENY"
+    if phase == "FORMAL_VERIFIED":
+        return "COMPLETE_WITHOUT_PROMOTE" if matches else "KEEP_EDGE_DENY"
+    raise ValueError(
+        "promotion recovery requires PROMOTION_ARMED, PROMOTED, or FORMAL_VERIFIED"
+    )
+
+
+def _validate_sha(value: str, *, name: str, lengths: tuple[int, ...] = (64,)) -> str:
+    clean = str(value or "").strip().lower()
+    if len(clean) not in lengths or not re.fullmatch(r"[0-9a-f]+", clean):
+        raise ValueError(f"{name} must be a lowercase hexadecimal digest")
+    return clean
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _directory_sha256(path: Path) -> str:
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError("build output directory does not exist")
+    root_metadata = path.lstat()
+    entries: list[dict[str, str]] = [
+        {
+            "path": ".",
+            "type": "directory",
+            "mode": f"{stat.S_IMODE(root_metadata.st_mode):04o}",
+        }
+    ]
+    children = sorted(
+        path.rglob("*"),
+        key=lambda candidate: candidate.relative_to(path).as_posix(),
+    )
+    if not children:
+        raise ValueError("build output directory is empty")
+    for item in children:
+        metadata = item.lstat()
+        entry = {
+            "path": item.relative_to(path).as_posix(),
+            "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
+        }
+        if stat.S_ISLNK(metadata.st_mode):
+            entry.update({"type": "symlink", "target": os.readlink(item)})
+        elif stat.S_ISDIR(metadata.st_mode):
+            entry["type"] = "directory"
+        elif stat.S_ISREG(metadata.st_mode):
+            entry.update({"type": "file", "sha256": _file_sha256(item)})
+        else:
+            raise ValueError(f"unsupported build output entry: {entry['path']}")
+        entries.append(entry)
+    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _read_manifest_sidecar(path: Path) -> str:
+    raw = path.read_bytes()
+    if not re.fullmatch(rb"[0-9a-f]{64}\n", raw):
+        raise ValueError("build manifest sidecar must contain one lowercase SHA-256 line")
+    return raw[:-1].decode("ascii")
+
+
+def _sha256_value(value: Any, *, name: str) -> str:
+    clean = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", clean):
+        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    return clean
+
+
+def validate_reservation_evidence(
+    inventory: dict[str, Any],
+    restore: dict[str, Any],
+) -> None:
+    inventory_report = ProductionInventoryReport.model_validate(inventory)
+    if inventory_report.schema_revision != OLD_SCHEMA:
+        raise ValueError("reservation inventory must describe the exact pre-safe-baseline schema")
+    if restore.get("passed") is not True:
+        raise ValueError("backup/restore rehearsal is not a PASS report")
+    _sha256_value(restore.get("archive_sha256"), name="restore archive hash")
+    source_read_only = restore.get("source_read_only")
+    if not isinstance(source_read_only, dict):
+        raise ValueError("restore source read-only proof is missing")
+    validate_read_only_proof(source_read_only)
+    comparison = restore.get("comparison")
+    if not isinstance(comparison, dict) or comparison.get("matches") is not True:
+        raise ValueError("restored database does not match the source snapshot")
+    if comparison.get("schema_revision") != OLD_SCHEMA:
+        raise ValueError("restore rehearsal must describe the exact pre-safe-baseline schema")
+    if int(comparison.get("table_count", 0)) < 1:
+        raise ValueError("restore rehearsal contains no tables")
+    row_counts = comparison.get("row_counts")
+    if not isinstance(row_counts, dict) or not row_counts:
+        raise ValueError("restore rehearsal row counts are missing")
+    if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in row_counts.values()):
+        raise ValueError("restore rehearsal row counts are invalid")
+    for field in ("row_counts_sha256", "url_inventory_sha256"):
+        _sha256_value(comparison.get(field), name=f"restore {field}")
+    for field in ("fk_orphans", "ledger_mismatch_users"):
+        value = comparison.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"restore {field} is invalid")
+    cleanup = restore.get("cleanup")
+    if not isinstance(cleanup, dict) or cleanup.get("database_dropped") is not True or cleanup.get("role_dropped") is not True:
+        raise ValueError("restore rehearsal did not prove disposable database and role cleanup")
+
+
+def _evidence_pair_sha256(inventory_report: Path, restore_report: Path) -> str:
+    inventory = json.loads(inventory_report.read_text(encoding="utf-8"))
+    restore = json.loads(restore_report.read_text(encoding="utf-8"))
+    validate_reservation_evidence(inventory, restore)
+    evidence = {
+        "inventory_sha256": _file_sha256(inventory_report),
+        "restore_sha256": _file_sha256(restore_report),
+    }
+    canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _sync_database_url(value: str) -> str:
+    clean = value.strip()
+    if clean.startswith("postgresql+asyncpg://"):
+        return "postgresql+psycopg2://" + clean.removeprefix("postgresql+asyncpg://")
+    if clean.startswith("postgres://"):
+        return "postgresql+psycopg2://" + clean.removeprefix("postgres://")
+    if clean.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + clean.removeprefix("postgresql://")
+    if clean.startswith("postgresql+psycopg2://"):
+        return clean
+    raise ValueError("safe-baseline database URL must use PostgreSQL")
+
+
+def _current_revision(connection) -> str:
+    value = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+    return str(value or "unknown")
+
+
+def _database_identity(connection) -> tuple[str, str, str]:
+    row = connection.execute(
+        text(
+            """
+            SELECT system_identifier::text,
+                   current_database(),
+                   (SELECT oid::text FROM pg_database WHERE datname = current_database())
+            FROM pg_control_system()
+            """
+        )
+    ).one()
+    return str(row[0]), str(row[1]), str(row[2])
+
+
+def validate_database_identity(
+    inventory_identity: tuple[str, str, str],
+    migration_identity: tuple[str, str, str],
+) -> None:
+    if len(inventory_identity) != 3 or len(migration_identity) != 3:
+        raise ValueError("database identity proof is incomplete")
+    if any(not str(value).strip() for value in (*inventory_identity, *migration_identity)):
+        raise ValueError("database identity proof contains an empty coordinate")
+    if inventory_identity != migration_identity:
+        raise ValueError("read-only inventory and migration URLs target different PostgreSQL databases")
+
+
+def _read_only_database_identity(database_url: str) -> tuple[str, str, str]:
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            with connection.begin():
+                connection.execute(text("SET TRANSACTION READ ONLY"))
+                transaction_read_only = str(
+                    connection.execute(text("SHOW transaction_read_only")).scalar_one()
+                ).lower()
+                default_read_only = str(
+                    connection.execute(text("SHOW default_transaction_read_only")).scalar_one()
+                ).lower()
+                if transaction_read_only != "on" or default_read_only != "on":
+                    raise SafeBaselineRegistrationError(
+                        "inventory database identity must be read through the protected read-only role"
+                    )
+                return _database_identity(connection)
+    finally:
+        engine.dispose()
+
+
+def _read_activation(connection, *, for_update: bool = False) -> dict[str, Any] | None:
+    table_exists = connection.execute(text("SELECT to_regclass('public.release_activations')")).scalar_one()
+    if table_exists is None:
+        return None
+    suffix = " FOR UPDATE" if for_update else ""
+    rows = connection.execute(
+        text(
+            """
+            SELECT id::text, source_sha, workflow_run_id, workflow_attempt, phase,
+                   phase_rank, version, reservation_expires_at, runtime_bundle_id,
+                   manifest_sha256, build_artifact_id, build_artifact_digest,
+                   report_sha256, api_deployment_id,
+                   api_deployment_url, api_role, current_snapshot_hash,
+                   target_snapshot_hash, private_evidence_prefix, created_at
+            FROM release_activations
+            WHERE environment = 'production' AND kind = 'SAFE_BASELINE_INSTALL'
+            """ + suffix
+        )
+    ).mappings().all()
+    if len(rows) > 1:
+        raise SafeBaselineRegistrationError("multiple Production SAFE_BASELINE_INSTALL rows exist")
+    return dict(rows[0]) if rows else None
+
+
+def _alembic_upgrade_on_connection(connection) -> None:
+    config = Config(str(BACKEND / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND / "alembic"))
+    config.attributes["connection"] = connection
+    command.upgrade(config, TARGET_SCHEMA)
+
+
+def _advisory_lock(connection) -> None:
+    connection.execute(text("SELECT pg_advisory_xact_lock(1448037459, 1)"))
+
+
+def _configure_migration_timeouts(connection) -> None:
+    connection.execute(text(f"SET LOCAL lock_timeout = '{MIGRATION_LOCK_TIMEOUT}'"))
+    connection.execute(
+        text(f"SET LOCAL statement_timeout = '{MIGRATION_STATEMENT_TIMEOUT}'")
+    )
+
+
+def _preflight(
+    database_url: str,
+    *,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+) -> dict[str, Any]:
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            with connection.begin():
+                connection.execute(text("SET TRANSACTION READ ONLY"))
+                transaction_read_only = str(
+                    connection.execute(text("SHOW transaction_read_only")).scalar_one()
+                ).lower() == "on"
+                default_read_only = str(
+                    connection.execute(text("SHOW default_transaction_read_only")).scalar_one()
+                ).lower() == "on"
+                if not transaction_read_only or not default_read_only:
+                    raise SafeBaselineRegistrationError("preflight role and transaction must both be read-only")
+                revision = _current_revision(connection)
+                activation = _read_activation(connection)
+        state = classify_install_state(
+            current_revision=revision,
+            activation=activation,
+            source_sha=source_sha,
+            workflow_run_id=workflow_run_id,
+        )
+        if activation is not None and state in RETRIABLE_STATES:
+            validate_resume_coordinates(
+                activation,
+                source_sha=source_sha,
+                workflow_run_id=workflow_run_id,
+                workflow_attempt=workflow_attempt,
+            )
+        if state not in {"FRESH_INSTALL", *RETRIABLE_STATES}:
+            raise SafeBaselineRegistrationError(f"safe-baseline preflight rejected state: {state}")
+        if state == "RETRY_FORMAL_VERIFIED":
+            parse_reference(str(activation.get("private_evidence_prefix") or ""))
+            _validate_sha(
+                str(activation.get("report_sha256") or ""),
+                name="stored formal report SHA-256",
+            )
+        return {
+            "action": "preflight",
+            "state": state,
+            "schema_revision": revision,
+            "activation_phase": activation.get("phase") if activation else None,
+            "activation": {
+                key: activation.get(key)
+                for key in (
+                    "runtime_bundle_id",
+                    "manifest_sha256",
+                    "workflow_attempt",
+                    "api_deployment_id",
+                    "api_deployment_url",
+                    "private_evidence_prefix",
+                    "report_sha256",
+                    "phase",
+                    "version",
+                )
+            } if activation else None,
+            "source_sha": source_sha,
+            "workflow_run_id": workflow_run_id,
+            "reservation_expired": reservation_is_expired(activation),
+            "build_artifact_recovery_expired": build_artifact_recovery_is_expired(
+                activation
+            ),
+        }
+    finally:
+        engine.dispose()
+
+
+def _reserve(
+    database_url: str,
+    *,
+    inventory_database_url: str,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    approval: str,
+    inventory_report: Path,
+    restore_report: Path,
+    evidence_prefix: str,
+    inject_failure: str | None,
+) -> dict[str, Any]:
+    evidence_hash = _evidence_pair_sha256(inventory_report, restore_report)
+    inventory_database_identity = _read_only_database_identity(inventory_database_url)
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _configure_migration_timeouts(connection)
+            _advisory_lock(connection)
+            validate_database_identity(
+                inventory_database_identity,
+                _database_identity(connection),
+            )
+            revision = _current_revision(connection)
+            activation = _read_activation(connection, for_update=revision == TARGET_SCHEMA)
+            state = classify_install_state(
+                current_revision=revision,
+                activation=activation,
+                source_sha=source_sha,
+                workflow_run_id=workflow_run_id,
+            )
+            if state == "RETRY_RESERVED":
+                validate_resume_coordinates(
+                    activation,
+                    source_sha=source_sha,
+                    workflow_run_id=workflow_run_id,
+                    workflow_attempt=workflow_attempt,
+                )
+                return {"action": "reserve", "state": state, "activation_id": activation["id"]}
+            if state != "FRESH_INSTALL":
+                raise SafeBaselineRegistrationError(f"reservation rejected state: {state}")
+            if inject_failure == "BEFORE_MIGRATION":
+                raise SafeBaselineRegistrationError("injected failure before migration")
+            os.environ["DATABASE_URL"] = database_url
+            _alembic_upgrade_on_connection(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError("Alembic did not reach the exact safe-baseline schema")
+            if inject_failure == "AFTER_MIGRATION_BEFORE_RESERVATION":
+                raise SafeBaselineRegistrationError("injected failure after migration")
+            activation_id = str(uuid.uuid4())
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO release_activations (
+                      id, environment, kind, source_sha, workflow_run_id, workflow_attempt,
+                      phase, phase_rank, version, approval, reservation_expires_at,
+                      current_snapshot_hash, private_evidence_prefix
+                    ) VALUES (
+                      CAST(:id AS uuid), 'production', 'SAFE_BASELINE_INSTALL', :source_sha,
+                      :workflow_run_id, :workflow_attempt, 'RESERVED', 0, 1, :approval,
+                      CURRENT_TIMESTAMP + make_interval(mins => :reservation_ttl_minutes),
+                      :evidence_hash, :evidence_prefix
+                    )
+                    """
+                ),
+                {
+                    "id": activation_id,
+                    "source_sha": source_sha,
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_attempt": workflow_attempt,
+                    "approval": approval,
+                    "reservation_ttl_minutes": RESERVATION_TTL_MINUTES,
+                    "evidence_hash": evidence_hash,
+                    "evidence_prefix": evidence_prefix,
+                },
+            )
+            if inject_failure == "AFTER_RESERVATION_BEFORE_COMMIT":
+                raise SafeBaselineRegistrationError("injected failure before reservation commit")
+        return {
+            "action": "reserve",
+            "state": "RESERVED",
+            "activation_id": activation_id,
+            "schema_revision": TARGET_SCHEMA,
+            "evidence_pair_sha256": evidence_hash,
+        }
+    finally:
+        engine.dispose()
+
+
+def _advance_phase(database_url: str, args: argparse.Namespace) -> dict[str, Any]:
+    target_phase = args.phase
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _advisory_lock(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError("safe-baseline activation requires schema 0014")
+            activation = _read_activation(connection, for_update=True)
+            if activation is None:
+                raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
+            if activation["phase"] == "COMPLETED":
+                raise SafeBaselineRegistrationError("completed safe-baseline install is immutable")
+            validate_resume_coordinates(
+                activation,
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+            )
+            reservation_expired = reservation_is_expired(activation)
+            if activation["phase"] == target_phase:
+                if target_phase == "FORMAL_VERIFIED":
+                    raise SafeBaselineRegistrationError(
+                        "FORMAL_VERIFIED evidence is immutable; verify the stored reference before completion"
+                    )
+                return {
+                    "action": "advance",
+                    "state": f"ALREADY_{target_phase}",
+                    "activation_id": activation["id"],
+                    "reservation_expired": reservation_is_expired(activation),
+                }
+            validate_phase_transition(str(activation["phase"]), target_phase)
+
+            updates: dict[str, Any] = {
+                "phase": target_phase,
+                "phase_rank": PHASE_RANK[target_phase],
+                "workflow_attempt": args.workflow_attempt,
+            }
+            if target_phase == "STAGED":
+                runtime_bundle_id = str(args.runtime_bundle_id or "").strip()
+                deployment_id = str(args.deployment_id or "").strip()
+                deployment_url = str(args.deployment_url or "").strip()
+                if not re.fullmatch(r"rtb_[0-9a-f]{64}", runtime_bundle_id):
+                    raise ValueError("STAGED requires the canonical SAFE_BASELINE runtime bundle ID")
+                if not deployment_id or len(deployment_id) > 160 or any(char.isspace() for char in deployment_id):
+                    raise ValueError("STAGED requires an exact Vercel deployment ID")
+                if not re.fullmatch(r"https://[^\s]+", deployment_url):
+                    raise ValueError("STAGED requires an HTTPS deployment URL")
+                if args.manifest_sha256:
+                    manifest_sha256 = _validate_sha(args.manifest_sha256, name="build manifest SHA-256")
+                elif args.build_output:
+                    manifest_sha256 = _directory_sha256(Path(args.build_output))
+                else:
+                    raise ValueError("STAGED requires --build-output or --manifest-sha256")
+                if (
+                    activation.get("manifest_sha256")
+                    and activation["manifest_sha256"] != manifest_sha256
+                ):
+                    raise ValueError(
+                        "STAGED manifest does not match the build bound while RESERVED"
+                    )
+                updates.update(
+                    runtime_bundle_id=runtime_bundle_id,
+                    manifest_sha256=manifest_sha256,
+                    api_deployment_id=deployment_id,
+                    api_deployment_url=deployment_url,
+                    api_role="SAFE_BASELINE",
+                )
+            elif target_phase in {
+                "PROMOTION_ARMED",
+                "PROMOTED",
+                "FORMAL_VERIFIED",
+                "COMPLETED",
+            }:
+                if args.deployment_url and args.deployment_url != activation["api_deployment_url"]:
+                    raise ValueError("deployment URL does not match the immutable STAGED activation")
+                if args.deployment_id and args.deployment_id != activation["api_deployment_id"]:
+                    raise ValueError("deployment ID does not match the immutable STAGED activation")
+            if target_phase == "FORMAL_VERIFIED":
+                report_path = Path(args.formal_report)
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+                if payload.get("passed") is not True:
+                    raise ValueError("formal report is not a PASS report")
+                updates["report_sha256"] = _file_sha256(report_path)
+                evidence_reference = str(args.evidence_prefix or "").strip()
+                parse_reference(evidence_reference)
+                updates["private_evidence_prefix"] = evidence_reference
+                snapshot_hash = str(payload.get("after_snapshot_sha256") or "")
+                updates["target_snapshot_hash"] = _validate_sha(
+                    snapshot_hash,
+                    name="formal after-snapshot hash",
+                )
+
+            assignments = ["phase = :phase", "phase_rank = :phase_rank", "workflow_attempt = :workflow_attempt"]
+            for column in (
+                "runtime_bundle_id",
+                "manifest_sha256",
+                "api_deployment_id",
+                "api_deployment_url",
+                "api_role",
+                "report_sha256",
+                "target_snapshot_hash",
+                "private_evidence_prefix",
+            ):
+                if column in updates:
+                    assignments.append(f"{column} = :{column}")
+            updates.update(
+                activation_id=activation["id"],
+                expected_version=activation["version"],
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+            )
+            result = connection.execute(
+                text(
+                    f"""
+                    UPDATE release_activations
+                    SET {', '.join(assignments)}, version = version + 1
+                    WHERE id = CAST(:activation_id AS uuid)
+                      AND version = :expected_version
+                      AND source_sha = :source_sha
+                      AND workflow_run_id = :workflow_run_id
+                    RETURNING id::text, version
+                    """
+                ),
+                updates,
+            ).mappings().one_or_none()
+            if result is None:
+                raise SafeBaselineRegistrationError("safe-baseline phase CAS lost")
+        return {
+            "action": "advance",
+            "state": target_phase,
+            "activation_id": result["id"],
+            "version": result["version"],
+            "reservation_expired": reservation_expired,
+        }
+    finally:
+        engine.dispose()
+
+
+def _required_env(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def _vercel_deployment_url(value: Any) -> str | None:
+    clean = str(value or "").strip().lower()
+    parsed = urlsplit(clean if "://" in clean else f"https://{clean}")
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.path not in {"", "/"}
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+        or not parsed.hostname.endswith(".vercel.app")
+    ):
+        return None
+    return f"https://{parsed.hostname}"
+
+
+def _bind_build_manifest(
+    database_url: str,
+    *,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    build_artifact_attempt: int,
+    build_artifact_id: str,
+    build_artifact_digest: str,
+    manifest_sha256: str,
+) -> dict[str, Any]:
+    manifest_sha256 = _validate_sha(
+        manifest_sha256,
+        name="build manifest SHA-256",
+    )
+    if build_artifact_attempt < 1 or build_artifact_attempt > workflow_attempt:
+        raise ValueError(
+            "build artifact attempt must be positive and no newer than the caller"
+        )
+    clean_artifact_id = str(build_artifact_id or "").strip()
+    clean_artifact_digest = str(build_artifact_digest or "").strip().lower()
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", clean_artifact_id):
+        raise ValueError("build artifact ID must be a positive decimal ID")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", clean_artifact_digest):
+        raise ValueError("build artifact digest must be sha256:<64 lowercase hex>")
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _advisory_lock(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError("build binding requires schema 0014")
+            activation = _read_activation(connection, for_update=True)
+            if activation is None:
+                raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
+            state = classify_install_state(
+                current_revision=TARGET_SCHEMA,
+                activation=activation,
+                source_sha=source_sha,
+                workflow_run_id=workflow_run_id,
+            )
+            if state != "RETRY_RESERVED":
+                raise SafeBaselineRegistrationError(
+                    "build manifest can be bound only while RESERVED"
+                )
+            validate_resume_coordinates(
+                activation,
+                source_sha=source_sha,
+                workflow_run_id=workflow_run_id,
+                workflow_attempt=workflow_attempt,
+            )
+            activation_attempt = int(activation.get("workflow_attempt") or 1)
+            if build_artifact_attempt != activation_attempt:
+                raise SafeBaselineRegistrationError(
+                    "build artifact attempt does not match the RESERVED fence"
+                )
+            existing = str(activation.get("manifest_sha256") or "").strip().lower()
+            if existing:
+                if existing != manifest_sha256:
+                    raise SafeBaselineRegistrationError(
+                        "RESERVED build manifest is immutable once assigned"
+                    )
+                if (
+                    str(activation.get("build_artifact_id") or "") != clean_artifact_id
+                    or str(activation.get("build_artifact_digest") or "").lower()
+                    != clean_artifact_digest
+                ):
+                    raise SafeBaselineRegistrationError(
+                        "RESERVED build artifact coordinates do not match the bound manifest"
+                    )
+                return {
+                    "action": "bind-build",
+                    "state": "BUILD_ALREADY_BOUND",
+                    "activation_id": activation["id"],
+                    "version": activation["version"],
+                    "workflow_attempt": activation_attempt,
+                    "manifest_sha256": existing,
+                    "build_artifact_id": clean_artifact_id,
+                    "build_artifact_digest": clean_artifact_digest,
+                }
+            result = connection.execute(
+                text(
+                    """
+                    UPDATE release_activations
+                    SET manifest_sha256 = :manifest_sha256,
+                        build_artifact_id = :build_artifact_id,
+                        build_artifact_digest = :build_artifact_digest,
+                        version = version + 1
+                    WHERE id = CAST(:activation_id AS uuid)
+                      AND version = :expected_version
+                      AND phase = 'RESERVED'
+                      AND manifest_sha256 IS NULL
+                      AND build_artifact_id IS NULL
+                      AND build_artifact_digest IS NULL
+                      AND source_sha = :source_sha
+                      AND workflow_run_id = :workflow_run_id
+                    RETURNING id::text, version
+                    """
+                ),
+                {
+                    "manifest_sha256": manifest_sha256,
+                    "build_artifact_id": clean_artifact_id,
+                    "build_artifact_digest": clean_artifact_digest,
+                    "activation_id": activation["id"],
+                    "expected_version": activation["version"],
+                    "source_sha": source_sha,
+                    "workflow_run_id": workflow_run_id,
+                },
+            ).mappings().one_or_none()
+            if result is None:
+                raise SafeBaselineRegistrationError("build manifest CAS lost")
+        return {
+            "action": "bind-build",
+            "state": "BUILD_BOUND",
+            "activation_id": result["id"],
+            "version": result["version"],
+            "workflow_attempt": build_artifact_attempt,
+            "manifest_sha256": manifest_sha256,
+            "build_artifact_id": clean_artifact_id,
+            "build_artifact_digest": clean_artifact_digest,
+        }
+    finally:
+        engine.dispose()
+
+
+def _recover_deployment(
+    database_url: str,
+    *,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    runtime_bundle_id: str,
+    manifest_sha256: str,
+    token: str,
+    project_id: str,
+    team_id: str,
+) -> dict[str, Any]:
+    manifest_sha256 = _validate_sha(
+        manifest_sha256,
+        name="build manifest SHA-256",
+    )
+    preflight = _preflight(
+        database_url,
+        source_sha=source_sha,
+        workflow_run_id=workflow_run_id,
+        workflow_attempt=workflow_attempt,
+    )
+    if preflight["state"] != "RETRY_RESERVED":
+        raise SafeBaselineRegistrationError("deployment recovery is allowed only from RESERVED")
+    base_params = {"projectId": project_id, "limit": "100", "target": "production"}
+    if team_id:
+        base_params["teamId"] = team_id
+    exact_matches_by_id: dict[str, dict[str, str]] = {}
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    for _page_number in range(1, MAX_DEPLOYMENT_PAGES + 1):
+        params = dict(base_params)
+        if cursor is not None:
+            params["until"] = cursor
+        response = httpx.get(
+            "https://api.vercel.com/v6/deployments",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("deployments"), list):
+            raise SafeBaselineRegistrationError("Vercel deployment recovery returned an invalid page")
+        for item in payload["deployments"]:
+            if not isinstance(item, dict):
+                continue
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            if (
+                meta.get("vowpicSourceSha") == source_sha
+                and meta.get("vowpicRuntimeBundleId") == runtime_bundle_id
+                and meta.get("vowpicBuildSha256") == manifest_sha256
+                and meta.get("vowpicReleaseRole") == "SAFE_BASELINE"
+            ):
+                deployment_id = str(item.get("uid") or item.get("id") or "").strip()
+                deployment_url = _vercel_deployment_url(item.get("url"))
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", deployment_id) or not deployment_url:
+                    raise SafeBaselineRegistrationError(
+                        "Vercel returned an exact deployment with invalid coordinates"
+                    )
+                reported_states = {
+                    str(value).strip().upper()
+                    for value in (item.get("state"), item.get("readyState"))
+                    if str(value or "").strip()
+                }
+                if len(reported_states) > 1:
+                    raise SafeBaselineRegistrationError(
+                        "Vercel returned conflicting states for one exact deployment"
+                    )
+                exact_match = {
+                    "deployment_id": deployment_id,
+                    "deployment_url": deployment_url,
+                    "manifest_sha256": manifest_sha256,
+                    "state": next(iter(reported_states), "UNKNOWN"),
+                }
+                previous = exact_matches_by_id.setdefault(deployment_id, exact_match)
+                if previous != exact_match:
+                    raise SafeBaselineRegistrationError(
+                        "Vercel returned conflicting coordinates for one deployment"
+                    )
+        pagination = payload.get("pagination")
+        next_value = pagination.get("next") if isinstance(pagination, dict) else None
+        if next_value is None or next_value == "":
+            break
+        next_cursor = str(next_value).strip()
+        if (
+            not re.fullmatch(r"[0-9]{1,20}", next_cursor)
+            or next_cursor in seen_cursors
+        ):
+            raise SafeBaselineRegistrationError("Vercel deployment pagination cursor is invalid or repeated")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    else:
+        raise SafeBaselineRegistrationError(
+            f"Vercel deployment recovery exceeded {MAX_DEPLOYMENT_PAGES} pages"
+        )
+    exact_matches = list(exact_matches_by_id.values())
+    if len(exact_matches) > 1:
+        raise SafeBaselineRegistrationError("ambiguous exact deployment recovery candidates")
+    if exact_matches and exact_matches[0]["state"] != "READY":
+        raise SafeBaselineRegistrationError(
+            "the exact staged deployment is not READY; refusing a duplicate deploy"
+        )
+    candidates = [
+        {key: value for key, value in match.items() if key != "state"}
+        for match in exact_matches
+    ]
+    decision = recovery_decision("RESERVED", candidate_count=len(candidates))
+    return {
+        "action": "recover-deployment",
+        "decision": decision,
+        "candidate_count": len(candidates),
+        "candidate": candidates[0] if candidates else None,
+        "manifest_sha256": manifest_sha256,
+        "runtime_bundle_id": runtime_bundle_id,
+    }
+
+
+def _recover_promotion(
+    database_url: str,
+    *,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    token: str,
+    project_id: str,
+    team_id: str,
+    formal_domain: str,
+) -> dict[str, Any]:
+    preflight = _preflight(
+        database_url,
+        source_sha=source_sha,
+        workflow_run_id=workflow_run_id,
+        workflow_attempt=workflow_attempt,
+    )
+    state = str(preflight["state"])
+    if state not in {
+        "RETRY_PROMOTION_ARMED",
+        "RETRY_PROMOTED",
+        "RETRY_FORMAL_VERIFIED",
+    }:
+        raise SafeBaselineRegistrationError(
+            "promotion recovery requires an armed, PROMOTED, or FORMAL_VERIFIED activation"
+        )
+    activation = preflight.get("activation") or {}
+    target_id = str(activation.get("api_deployment_id") or "").strip()
+    target_url = str(activation.get("api_deployment_url") or "").strip()
+    if not target_id or not target_url:
+        raise SafeBaselineRegistrationError("recorded STAGED deployment coordinates are incomplete")
+    parsed = urlsplit(
+        formal_domain.strip()
+        if "://" in formal_domain
+        else f"https://{formal_domain.strip()}"
+    )
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.path not in {"", "/"}
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+    ):
+        raise ValueError("formal domain must be one HTTPS hostname without a path")
+    params = {"teamId": team_id} if team_id else {}
+    response = httpx.get(
+        f"https://api.vercel.com/v13/deployments/{quote(parsed.hostname, safe='')}",
+        params=params,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    if response.status_code == 404:
+        raise SafeBaselineRegistrationError(
+            "formal domain lookup cannot prove whether Promote already completed"
+        )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise SafeBaselineRegistrationError(
+            "Vercel formal-domain recovery returned invalid JSON"
+        )
+    response_project_id = str(
+        payload.get("projectId")
+        or ((payload.get("project") or {}).get("id") if isinstance(payload.get("project"), dict) else "")
+        or ""
+    ).strip()
+    if response_project_id != project_id:
+        raise SafeBaselineRegistrationError("formal domain resolved outside the protected Vercel project")
+    ready_state = str(payload.get("readyState") or payload.get("state") or "").upper()
+    if ready_state != "READY":
+        raise SafeBaselineRegistrationError("formal domain deployment is not READY")
+    formal_id = str(payload.get("uid") or payload.get("id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", formal_id):
+        raise SafeBaselineRegistrationError("formal domain deployment ID is missing or invalid")
+    project_response = httpx.get(
+        f"https://api.vercel.com/v9/projects/{quote(project_id, safe='')}",
+        params={"teamId": team_id, "rollbackInfo": "true"},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    project_response.raise_for_status()
+    project_payload = project_response.json()
+    if not isinstance(project_payload, dict):
+        raise SafeBaselineRegistrationError("Vercel project recovery returned invalid JSON")
+    if (
+        str(project_payload.get("id") or "").strip() != project_id
+        or str(project_payload.get("accountId") or "").strip() != team_id
+    ):
+        raise SafeBaselineRegistrationError(
+            "promotion status resolved outside the protected Vercel project and org"
+        )
+    rolling_release = project_payload.get("rollingRelease")
+    if rolling_release is not None and rolling_release is not False:
+        raise SafeBaselineRegistrationError(
+            "safe-baseline promotion forbids a Vercel rolling release"
+        )
+
+    last_request = project_payload.get("lastAliasRequest")
+    if last_request == {}:
+        last_request = None
+    if last_request is not None and not isinstance(last_request, dict):
+        raise SafeBaselineRegistrationError("Vercel last alias request is malformed")
+    target_promotion_succeeded = False
+    if isinstance(last_request, dict):
+        request_type = str(last_request.get("type") or "").strip()
+        request_status = str(last_request.get("jobStatus") or "").strip()
+        request_target = str(last_request.get("toDeploymentId") or "").strip()
+        requested_at = last_request.get("requestedAt")
+        if (
+            request_type not in {"promote", "rollback"}
+            or request_status
+            not in {"pending", "in-progress", "failed", "skipped", "succeeded"}
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", request_target)
+            or isinstance(requested_at, bool)
+            or not isinstance(requested_at, (int, float))
+            or requested_at <= 0
+        ):
+            raise SafeBaselineRegistrationError("Vercel last alias request is incomplete")
+        if request_target == target_id:
+            if request_type != "promote" or request_status != "succeeded" or formal_id != target_id:
+                raise SafeBaselineRegistrationError(
+                    "the staged deployment already has a promotion request; refusing a second Promote"
+                )
+            target_promotion_succeeded = True
+        elif request_status in {"pending", "in-progress"}:
+            raise SafeBaselineRegistrationError(
+                "another Vercel alias request is still active"
+            )
+    if formal_id == target_id and not target_promotion_succeeded:
+        raise SafeBaselineRegistrationError(
+            "formal-domain target is visible but Vercel promotion success proof is missing"
+        )
+    phase = state.removeprefix("RETRY_")
+    decision = promotion_recovery_decision(
+        phase,
+        formal_deployment_id=formal_id,
+        target_deployment_id=target_id,
+    )
+    return {
+        "action": "recover-promotion",
+        "decision": decision,
+        "activation_phase": phase,
+        "target_deployment_id": target_id,
+        "target_deployment_url": target_url,
+        "formal_deployment_id": formal_id,
+        "formal_domain": parsed.hostname,
+    }
+
+
+def _write_create_once(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8", newline="\n") as handle:
+        json.dump(payload, handle, sort_keys=True, indent=2)
+        handle.write("\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--action",
+        choices=("preflight", "bind-build", "recover-deployment", "recover-promotion"),
+    )
+    parser.add_argument("--phase", choices=PHASE_SEQUENCE)
+    parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
+    parser.add_argument(
+        "--inventory-database-url-env",
+        default="PRODUCTION_READ_ONLY_DATABASE_URL",
+    )
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--workflow-run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
+    parser.add_argument("--workflow-attempt", type=int, default=int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")))
+    parser.add_argument("--approval-id-env", default="SAFE_BASELINE_APPROVAL_ID")
+    parser.add_argument("--inventory-report")
+    parser.add_argument("--restore-report")
+    parser.add_argument("--evidence-prefix", default="artifacts/security-baseline")
+    parser.add_argument("--runtime-bundle-id")
+    parser.add_argument("--deployment-id")
+    parser.add_argument("--deployment-url")
+    parser.add_argument("--build-output")
+    parser.add_argument("--manifest-sha256")
+    parser.add_argument("--build-artifact-attempt", type=int)
+    parser.add_argument("--build-artifact-id")
+    parser.add_argument("--build-artifact-digest")
+    parser.add_argument("--formal-report")
+    parser.add_argument("--vercel-token-env", default="VERCEL_TOKEN")
+    parser.add_argument("--vercel-project-id-env", default="VERCEL_PROJECT_ID")
+    parser.add_argument("--vercel-team-id-env", default="VERCEL_ORG_ID")
+    parser.add_argument("--formal-domain")
+    parser.add_argument(
+        "--inject-failure",
+        choices=("BEFORE_MIGRATION", "AFTER_MIGRATION_BEFORE_RESERVATION", "AFTER_RESERVATION_BEFORE_COMMIT"),
+    )
+    parser.add_argument("--output")
+    args = parser.parse_args()
+    try:
+        args.source_sha = _validate_sha(args.source_sha, name="source SHA", lengths=(40, 64))
+        if not args.workflow_run_id.strip() or args.workflow_attempt < 1:
+            raise ValueError("workflow run ID and positive attempt are required")
+        if bool(args.action) == bool(args.phase):
+            raise ValueError("choose exactly one of --action or --phase")
+        database_url = _required_env(args.database_url_env)
+        if not database_url:
+            print(f"NOT_RUN: protected database variable {args.database_url_env} is missing", file=sys.stderr)
+            return NOT_RUN_EXIT
+        if args.action == "preflight":
+            result = _preflight(
+                database_url,
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+            )
+        elif args.action == "bind-build":
+            result = _bind_build_manifest(
+                database_url,
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                build_artifact_attempt=args.build_artifact_attempt or 0,
+                build_artifact_id=args.build_artifact_id or "",
+                build_artifact_digest=args.build_artifact_digest or "",
+                manifest_sha256=args.manifest_sha256 or "",
+            )
+        elif args.action == "recover-deployment":
+            token = _required_env(args.vercel_token_env)
+            project_id = _required_env(args.vercel_project_id_env)
+            team_id = _required_env(args.vercel_team_id_env)
+            runtime_bundle_id = str(args.runtime_bundle_id or "").strip()
+            manifest_sha256 = _validate_sha(
+                args.manifest_sha256 or "",
+                name="build manifest SHA-256",
+            )
+            if not token or not project_id or not team_id or not re.fullmatch(r"rtb_[0-9a-f]{64}", runtime_bundle_id):
+                print("NOT_RUN: Vercel recovery coordinates are incomplete", file=sys.stderr)
+                return NOT_RUN_EXIT
+            result = _recover_deployment(
+                database_url,
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                runtime_bundle_id=runtime_bundle_id,
+                manifest_sha256=manifest_sha256,
+                token=token,
+                project_id=project_id,
+                team_id=team_id,
+            )
+        elif args.action == "recover-promotion":
+            token = _required_env(args.vercel_token_env)
+            project_id = _required_env(args.vercel_project_id_env)
+            team_id = _required_env(args.vercel_team_id_env)
+            if not token or not project_id or not team_id or not args.formal_domain:
+                print(
+                    "NOT_RUN: protected Vercel coordinates and formal domain are required",
+                    file=sys.stderr,
+                )
+                return NOT_RUN_EXIT
+            result = _recover_promotion(
+                database_url,
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                token=token,
+                project_id=project_id,
+                team_id=team_id,
+                formal_domain=args.formal_domain,
+            )
+        elif args.phase == "RESERVED":
+            approval = _required_env(args.approval_id_env)
+            inventory_database_url = _required_env(args.inventory_database_url_env)
+            if not approval or not inventory_database_url or not args.inventory_report or not args.restore_report:
+                print(
+                    "NOT_RUN: approval, read-only database, and inventory/restore evidence are required",
+                    file=sys.stderr,
+                )
+                return NOT_RUN_EXIT
+            result = _reserve(
+                database_url,
+                inventory_database_url=inventory_database_url,
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                approval=approval,
+                inventory_report=Path(args.inventory_report),
+                restore_report=Path(args.restore_report),
+                evidence_prefix=args.evidence_prefix,
+                inject_failure=args.inject_failure,
+            )
+        else:
+            result = _advance_phase(database_url, args)
+        if args.output:
+            _write_create_once(Path(args.output), result)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except (OSError, ValueError, SafeBaselineRegistrationError, json.JSONDecodeError, httpx.HTTPError) as exc:
+        print(f"FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

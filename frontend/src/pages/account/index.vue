@@ -13,10 +13,10 @@
         </view>
 
         <view class="hero-actions">
-          <button v-if="!accountAuthed && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
+          <button v-if="!accountAuthed && googleAuthAvailable && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
-          <button v-if="adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">{{ tr('后台控制台', 'Admin console') }}</button>
+          <button v-if="accountAuthed && adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">{{ tr('后台控制台', 'Admin console') }}</button>
           <button class="btn btn-outline hero-btn" @tap="refresh">{{ tr('刷新', 'Refresh') }}</button>
         </view>
       </view>
@@ -41,7 +41,7 @@
               <view>
                 <text class="card-eyebrow">{{ tr('登录状态', 'Sign-in Status') }}</text>
                 <text class="profile-name">{{ displayName }}</text>
-                <text class="profile-email">{{ profile?.email || tr('访客账号', 'Guest account') }}</text>
+                <text class="profile-email">{{ profile?.email || tr('尚未登录', 'Not signed in') }}</text>
               </view>
             </view>
 
@@ -52,7 +52,7 @@
               </view>
               <view class="meta-row">
                 <text>{{ tr('账户状态', 'Status') }}</text>
-                <text>{{ profile?.status || 'active' }}</text>
+                <text>{{ profile?.status || '--' }}</text>
               </view>
               <view class="meta-row">
                 <text>{{ tr('最近登录', 'Last Login') }}</text>
@@ -71,13 +71,13 @@
 
           <view class="credits-card panel">
             <text class="card-eyebrow">{{ tr('当前积分', 'Current Credits') }}</text>
-            <text class="credit-value heading-serif">{{ balance?.balance ?? 0 }}</text>
-            <view class="credit-status" :class="{ blocked: !balance?.can_generate }">
-              <text>{{ balance?.can_generate ? tr('可立即生成', 'Ready to generate') : tr('积分不足', 'Insufficient credits') }}</text>
+            <text class="credit-value heading-serif">{{ accountCreditValue }}</text>
+            <view class="credit-status" :class="{ blocked: !canGenerate }">
+              <text>{{ creditStatusLabel }}</text>
             </view>
             <text class="credit-copy">{{ tr('基础单人生成', 'Base single generation') }} {{ balance?.cost_per_generation || 2 }} {{ tr('积分起', 'credits and up') }}</text>
             <view class="credit-actions">
-              <button class="btn btn-primary compact-btn" @tap="goCreate">{{ tr('开始创作', 'Create') }}</button>
+              <button v-if="creationAvailable" class="btn btn-primary compact-btn" @tap="goCreate">{{ tr('开始创作', 'Create') }}</button>
               <button class="btn btn-outline compact-btn" @tap="goOrders">{{ tr('查看订单', 'Orders') }}</button>
             </view>
           </view>
@@ -92,7 +92,7 @@
               </view>
               <view class="meta-row">
                 <text>{{ tr('每月积分', 'Monthly credits') }}</text>
-                <text>{{ subscriptionStore.current?.monthly_credits || 0 }}</text>
+                <text>{{ subscriptionStore.current?.credits_per_paid_period || 0 }}</text>
               </view>
               <view class="meta-row">
                 <text>{{ tr('到期时间', 'Period end') }}</text>
@@ -100,11 +100,11 @@
               </view>
               <view class="meta-row">
                 <text>{{ tr('自动续订', 'Renewal') }}</text>
-                <text>{{ subscriptionStore.current?.cancel_at_period_end ? tr('已设置取消', 'Cancel scheduled') : tr('开启', 'Active') }}</text>
+                <text>{{ renewalStatus }}</text>
               </view>
             </view>
             <button
-              v-if="subscriptionStore.current?.plan_code && !subscriptionStore.current?.cancel_at_period_end"
+              v-if="subscriptionStore.current?.product_code && !subscriptionStore.current?.cancel_at_period_end"
               class="btn btn-outline logout-btn"
               @tap="cancelSubscription"
             >
@@ -151,7 +151,7 @@
 
             <view v-if="orders.length === 0" class="empty-panel">
               <text>{{ tr('还没有生成记录', 'No generation records yet') }}</text>
-              <button class="btn btn-primary state-action" @tap="goCreate">{{ tr('创建第一组照片', 'Create first set') }}</button>
+              <button v-if="creationAvailable" class="btn btn-primary state-action" @tap="goCreate">{{ tr('创建第一组照片', 'Create first set') }}</button>
             </view>
             <view v-else class="order-list">
               <view v-for="order in orders" :key="order.id" class="order-row" @tap="viewOrder(order.id)">
@@ -162,9 +162,37 @@
                   <text class="row-subtitle">{{ tr('图片保留至', 'Images kept until') }} {{ formatDate(order.expires_at) }}</text>
                 </view>
                 <view class="order-status" :class="statusClass(order.status)">{{ statusText(order.status) }}</view>
-                <button class="mini-link danger-link" @tap.stop="deleteOrder(order.id)">{{ tr('删除', 'Delete') }}</button>
+                <text class="paused-delete">{{ tr('删除暂不可用', 'Deletion temporarily paused') }}</text>
               </view>
             </view>
+          </view>
+        </view>
+
+        <view v-if="accountAuthed" class="account-controls-grid">
+          <view class="panel account-control-card">
+            <text class="section-kicker">{{ tr('旧账户恢复', 'Legacy Account Recovery') }}</text>
+            <text class="section-title">{{ tr('合并空的旧账户', 'Merge an empty legacy account') }}</text>
+            <text class="control-copy">
+              {{ tr('只有不含订单、积分、支付、订阅或图片的旧账户可以在此合并。付款记录仅用于服务端核验所有权。', 'Only a legacy account with no orders, credits, payments, subscriptions, or images can be merged here. A payment reference is verified server-side and is never treated as ownership by itself.') }}
+            </text>
+            <input v-model.trim="legacyAccountId" class="control-input" :placeholder="tr('旧账户 UUID', 'Legacy account UUID')" />
+            <input v-model.trim="paymentReference" class="control-input" :placeholder="tr('已支付的付款参考号', 'Verified paid payment reference')" />
+            <button class="btn btn-outline control-button" :disabled="claimBusy" @tap="recoverLegacyAccount">
+              {{ claimBusy ? tr('正在核验...', 'Verifying...') : tr('核验并合并', 'Verify and merge') }}
+            </button>
+            <text v-if="claimMessage" class="control-status">{{ claimMessage }}</text>
+          </view>
+
+          <view class="panel account-control-card danger-card">
+            <text class="section-kicker danger-kicker">{{ tr('账户关闭', 'Account Closure') }}</text>
+            <text class="section-title">{{ tr('撤销登录并软关闭账户', 'Revoke sign-in and soft-close the account') }}</text>
+            <text class="control-copy">
+              {{ tr('关闭会立即撤销身份和所有会话，并去标识可删除的个人资料。财务记录会保留，媒体清理仍处于待处理状态。', 'Closure immediately revokes identity and every session and anonymizes removable profile data. Financial records remain, and media cleanup remains pending.') }}
+            </text>
+            <input v-model.trim="closeConfirmation" class="control-input" placeholder="CLOSE MY ACCOUNT" />
+            <button class="btn danger-button control-button" :disabled="closeBusy || closeConfirmation !== 'CLOSE MY ACCOUNT'" @tap="closeAccount">
+              {{ closeBusy ? tr('正在关闭...', 'Closing...') : tr('关闭账户', 'Close account') }}
+            </button>
           </view>
         </view>
       </template>
@@ -178,16 +206,14 @@ import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
+import { useOpsStore } from '../../stores/ops';
 import { useSubscriptionStore } from '../../stores/subscription';
-import { del, get, resolvePublicUrl } from '../../utils/api';
-import { getAuthProvider, isSupabaseLoggedIn, logout, signInWithGoogle } from '../../utils/auth';
+import { get, post, resolvePublicUrl } from '../../utils/api';
+import { clearCachedSession, ensureSession, logout, signInWithGoogle } from '../../utils/auth';
 import { refreshSupabaseConfig } from '../../utils/supabase';
 
 interface UserProfile {
   id: string;
-  openid: string;
-  auth_provider?: string | null;
-  auth_subject?: string | null;
   email?: string | null;
   nickname?: string | null;
   avatar_url?: string | null;
@@ -245,8 +271,11 @@ interface LegalPolicies {
 }
 
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const subscriptionStore = useSubscriptionStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const googleAuthAvailable = computed(() => opsStore.googleAuthAvailable);
 
 const loading = ref(true);
 const error = ref('');
@@ -256,28 +285,45 @@ const transactions = ref<CreditTransaction[]>([]);
 const orders = ref<Order[]>([]);
 const legalPolicies = ref<LegalPolicies | null>(null);
 const supabaseAuthed = ref(false);
-const passwordAuthed = ref(false);
 const supabaseEnabled = ref(false);
 const adminAccess = ref(false);
+const legacyAccountId = ref('');
+const paymentReference = ref('');
+const claimBusy = ref(false);
+const claimMessage = ref('');
+const closeConfirmation = ref('');
+const closeBusy = ref(false);
 
 const accountAuthed = computed(() => supabaseAuthed.value);
-const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('访客用户', 'Guest user'));
+const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('尚未登录', 'Not signed in'));
 const profileInitial = computed(() => (displayName.value || 'A').slice(0, 1).toUpperCase());
-const activePlanName = computed(() => subscriptionStore.activePlan?.name || tr('未订阅', 'No subscription'));
+const activePlanName = computed(() => subscriptionStore.activePlan?.code || tr('未订阅', 'No subscription'));
+const accountCreditValue = computed(() => (accountAuthed.value ? (balance.value?.balance ?? '--') : '--'));
+const canGenerate = computed(() => accountAuthed.value && !!balance.value?.can_generate);
+const creditStatusLabel = computed(() => {
+  if (!accountAuthed.value) return tr('登录后查看', 'Sign in required');
+  return balance.value?.can_generate
+    ? tr('可立即生成', 'Ready to generate')
+    : tr('积分不足', 'Insufficient credits');
+});
+const renewalStatus = computed(() => {
+  const current = subscriptionStore.current;
+  if (!current?.product_code) return tr('不适用', 'Not applicable');
+  return current.cancel_at_period_end
+    ? tr('已设置取消', 'Cancel scheduled')
+    : tr('开启', 'Active');
+});
 const retentionNotice = computed(() => {
   const retention = legalPolicies.value?.retention || {};
   return tr(
-    `原图 ${retention.source_images_days || 7} 天后删除；免费作品 ${retention.free_generated_days || 30} 天，付费积分包 ${retention.paid_generated_days || 90} 天，订阅用户 ${retention.subscription_generated_days || 180} 天。`,
-    `Source images are deleted after ${retention.source_images_days || 7} days. Generated images: free ${retention.free_generated_days || 30} days, paid packs ${retention.paid_generated_days || 90} days, subscriptions ${retention.subscription_generated_days || 180} days.`,
+    `计划保留期：原图 ${retention.source_images_days || 7} 天，免费作品 ${retention.free_generated_days || 30} 天，付费积分包 ${retention.paid_generated_days || 90} 天，订阅用户 ${retention.subscription_generated_days || 180} 天。可审计删除流程上线前，自动删除和账户内删除均已暂停。`,
+    `Scheduled retention: source images ${retention.source_images_days || 7} days, free images ${retention.free_generated_days || 30} days, paid packs ${retention.paid_generated_days || 90} days, subscriptions ${retention.subscription_generated_days || 180} days. Automated and in-account deletion are temporarily paused until the audited cleanup flow is available.`,
   );
 });
 
 const providerLabel = computed(() => {
   if (supabaseAuthed.value) return 'Google';
-  if (passwordAuthed.value) return tr('用户名密码', 'Username/password');
-  const provider = getAuthProvider() || profile.value?.auth_provider || 'local';
-  if (provider === 'password') return tr('用户名密码', 'Username/password');
-  return provider === 'local' ? tr('访客会话', 'Guest session') : provider;
+  return tr('尚未登录', 'Not signed in');
 });
 
 function shortId(value?: string | null): string {
@@ -368,10 +414,19 @@ function statusClass(status: string): string {
 async function loadAccount(): Promise<void> {
   loading.value = true;
   error.value = '';
-  supabaseAuthed.value = isSupabaseLoggedIn();
   adminAccess.value = false;
 
   try {
+    const sessionUser = await ensureSession();
+    supabaseAuthed.value = Boolean(sessionUser);
+    profile.value = sessionUser;
+    if (!sessionUser) {
+      balance.value = null;
+      transactions.value = [];
+      orders.value = [];
+      legalPolicies.value = await get<LegalPolicies>('/legal/policies', { showLoading: false, showError: false });
+      return;
+    }
     const [
       profileResult,
       balanceResult,
@@ -398,7 +453,7 @@ async function loadAccount(): Promise<void> {
       : [];
     legalPolicies.value = legalResult.status === 'fulfilled' ? legalResult.value : null;
     adminAccess.value = adminResult.status === 'fulfilled';
-    supabaseAuthed.value = isSupabaseLoggedIn();
+    supabaseAuthed.value = profile.value !== null;
   } catch (err: any) {
     error.value = err?.message || tr('账户暂时无法刷新，请稍后重试。', 'Account details are temporarily unavailable. Please try again shortly.');
   } finally {
@@ -411,6 +466,7 @@ async function refresh(): Promise<void> {
 }
 
 async function signIn(): Promise<void> {
+  if (!googleAuthAvailable.value) return;
   try {
     await signInWithGoogle();
   } catch (err: any) {
@@ -419,7 +475,7 @@ async function signIn(): Promise<void> {
 }
 
 async function signOut(): Promise<void> {
-  logout();
+  await logout();
   uni.showToast({ title: tr('已退出登录', 'Signed out'), icon: 'none' });
   await loadAccount();
 }
@@ -433,24 +489,72 @@ async function cancelSubscription(): Promise<void> {
   }
 }
 
-async function deleteOrder(orderId: string): Promise<void> {
-  uni.showModal({
-    title: tr('删除作品', 'Delete image'),
-    content: tr('删除后图片文件会被移除，订单记录不再展示。', 'Image files will be removed and this order will no longer be shown.'),
-    success: async (res) => {
-      if (!res.confirm) return;
-      try {
-        await del(`/orders/${orderId}`, { showLoading: true, showError: false });
-        orders.value = orders.value.filter((order) => order.id !== orderId);
-        uni.showToast({ title: tr('已删除', 'Deleted'), icon: 'success' });
-      } catch (err: any) {
-        uni.showToast({ title: err?.message || tr('删除失败', 'Delete failed'), icon: 'none' });
-      }
-    },
+async function recoverLegacyAccount(): Promise<void> {
+  if (!legacyAccountId.value || !paymentReference.value) {
+    uni.showToast({ title: tr('请填写旧账户 ID 和付款参考号', 'Enter the legacy account ID and payment reference'), icon: 'none' });
+    return;
+  }
+  claimBusy.value = true;
+  claimMessage.value = '';
+  try {
+    const proof = await post<{ proof_id: string; expires_at: string }>(
+      '/auth/account-claims/payment-proof',
+      { legacy_user_id: legacyAccountId.value, payment_reference: paymentReference.value },
+      { showLoading: false },
+    );
+    await post(
+      '/auth/account-claims/merge',
+      { legacy_user_id: legacyAccountId.value, proof_id: proof.proof_id },
+      { showLoading: false },
+    );
+    claimMessage.value = tr('空账户已安全合并。', 'The empty legacy account was merged safely.');
+    legacyAccountId.value = '';
+    paymentReference.value = '';
+    await loadAccount();
+  } catch (err: any) {
+    claimMessage.value = err?.code === 'commercial_lineage_not_ready'
+      ? tr('该账户含商业或媒体记录，当前不会自动改绑。', 'This account contains commercial or media facts and will not be rebound automatically.')
+      : (err?.message || tr('账户无法合并。', 'The account could not be merged.'));
+  } finally {
+    claimBusy.value = false;
+  }
+}
+
+async function closeAccount(): Promise<void> {
+  if (closeConfirmation.value !== 'CLOSE MY ACCOUNT') return;
+  const confirmation = await uni.showModal({
+    title: tr('确认关闭账户', 'Confirm account closure'),
+    content: tr('登录会立即失效；财务记录保留，媒体清理仍处于待处理状态。', 'Sign-in ends immediately. Financial records remain, and media cleanup remains pending.'),
+    confirmText: tr('确认关闭', 'Close account'),
+    cancelText: tr('取消', 'Cancel'),
   });
+  if (!confirmation.confirm) return;
+  closeBusy.value = true;
+  try {
+    await post<{ closed_at: string; media_cleanup_pending: boolean }>(
+      '/users/me/close',
+      { confirmation: 'CLOSE MY ACCOUNT' },
+      { showLoading: false },
+    );
+    clearCachedSession();
+    supabaseAuthed.value = false;
+    profile.value = null;
+    closeConfirmation.value = '';
+    await uni.showModal({
+      title: tr('账户已关闭', 'Account closed'),
+      content: tr('身份与会话已撤销。财务记录会保留，媒体清理仍处于待处理状态。', 'Identity and sessions are revoked. Financial records remain, and media cleanup remains pending.'),
+      showCancel: false,
+    });
+    await loadAccount();
+  } catch (err: any) {
+    uni.showToast({ title: err?.message || tr('账户关闭失败', 'Account closure failed'), icon: 'none' });
+  } finally {
+    closeBusy.value = false;
+  }
 }
 
 function goCreate(): void {
+  if (!creationAvailable.value) return;
   uni.navigateTo({ url: '/pages/create/index' });
 }
 
@@ -468,6 +572,7 @@ function viewOrder(orderId: string): void {
 
 onMounted(async () => {
   await Promise.all([
+    opsStore.fetchPublicConfig(),
     loadAccount(),
     refreshSupabaseConfig().then((enabled) => {
       supabaseEnabled.value = enabled;
@@ -554,6 +659,62 @@ onMounted(async () => {
 
 .content-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.account-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.account-control-card {
+  padding: 24px;
+}
+
+.control-copy,
+.control-status {
+  display: block;
+  margin-top: 12px;
+  color: #4c5360;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.control-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 0 12px;
+  border: 1px solid #cfd5dd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #17191f;
+}
+
+.control-button {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 14px;
+}
+
+.danger-card {
+  border-color: #efc7c2;
+}
+
+.danger-kicker {
+  color: #b42318;
+}
+
+.danger-button {
+  border: 1px solid #b42318;
+  background: #b42318;
+  color: #ffffff;
+}
+
+.danger-button[disabled] {
+  opacity: 0.5;
 }
 
 .panel,
@@ -806,8 +967,10 @@ onMounted(async () => {
   font-weight: 900;
 }
 
-.danger-link {
-  color: #b42318;
+.paused-delete {
+  color: #8a5b12;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 @media (max-width: 980px) {
@@ -817,7 +980,8 @@ onMounted(async () => {
   }
 
   .overview-grid,
-  .content-grid {
+  .content-grid,
+  .account-controls-grid {
     grid-template-columns: 1fr;
   }
 }

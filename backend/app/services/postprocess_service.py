@@ -4,14 +4,60 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Iterable
-
-import httpx
+from hashlib import sha256 as sha256_digest
+from types import MappingProxyType
+import uuid
 
 from app.core.config import get_settings
-from app.services.storage import storage_service
 
 settings = get_settings()
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedPrivateImage:
+    """Validated image bytes tied to a private MediaAsset identity."""
+
+    asset_id: uuid.UUID
+    image_bytes: bytes
+    mime_type: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.asset_id, uuid.UUID):
+            raise TypeError("private image asset_id must be a UUID")
+        payload = bytes(self.image_bytes)
+        if not payload or len(payload) > 50 * 1024 * 1024:
+            raise ValueError("private image bytes are empty or exceed the safety limit")
+        if self.mime_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise ValueError("unsupported private image mime type")
+        checksum = sha256_digest(payload).hexdigest()
+        if self.sha256 != checksum:
+            raise ValueError("private image checksum mismatch")
+        object.__setattr__(self, "image_bytes", payload)
+
+
+class PrivatePostprocessError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class PostprocessedPrivateImage:
+    parent_asset_id: uuid.UUID
+    image_bytes: bytes
+    mime_type: str
+    sha256: str
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        payload = bytes(self.image_bytes)
+        if not payload or self.mime_type != "image/jpeg":
+            raise ValueError("invalid private postprocess payload")
+        if sha256_digest(payload).hexdigest() != self.sha256:
+            raise ValueError("private postprocess checksum mismatch")
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError("private postprocess dimensions are invalid")
+        object.__setattr__(self, "image_bytes", payload)
 
 
 @dataclass(frozen=True)
@@ -42,6 +88,66 @@ VARIANT_MAP: dict[str, DeliveryVariant] = {
     "9x16": DeliveryVariant("wallpaper_9x16", 9 / 16, "9:16 wallpaper"),
     "1x1": DeliveryVariant("square_1x1", 1, "1:1 square"),
 }
+
+PAID_VARIANT_RATIOS: dict[str, tuple[int, int]] = {
+    "2:3": (2, 3),
+    "3:2": (3, 2),
+    "3:4": (3, 4),
+    "4:5": (4, 5),
+    "9:16": (9, 16),
+    "1:1": (1, 1),
+}
+_PAID_VARIANT_INTERNAL_KEYS = MappingProxyType(
+    {
+        "2:3": "2x3",
+        "3:2": "3x2",
+        "3:4": "3x4",
+        "4:5": "4x5",
+        "9:16": "9x16",
+        "1:1": "1x1",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedPrivateArtifact:
+    name: str
+    role: "MediaAssetRole"
+    image_bytes: bytes
+    mime_type: str
+    sha256: str
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        from app.models.media_asset import MediaAssetRole
+
+        payload = bytes(self.image_bytes)
+        if (
+            not self.name
+            or self.role not in {MediaAssetRole.FINAL_MASTER, MediaAssetRole.DELIVERY_VARIANT}
+            or self.mime_type != "image/jpeg"
+            or not payload
+            or sha256_digest(payload).hexdigest() != self.sha256
+            or self.width <= 0
+            or self.height <= 0
+        ):
+            raise ValueError("delivery_artifact_invalid")
+        object.__setattr__(self, "image_bytes", payload)
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedPrivateDeliverySet:
+    master: RenderedPrivateArtifact
+    variants: dict[str, RenderedPrivateArtifact]
+
+    @property
+    def is_complete(self) -> bool:
+        return (
+            self.master.role.value == "final_master"
+            and set(self.variants) == set(PAID_VARIANT_RATIOS)
+            and all(item.role.value == "delivery_variant" for item in self.variants.values())
+        )
 
 
 def resolve_postprocess_profile(template_id: str | None = None) -> PostprocessProfile:
@@ -95,62 +201,40 @@ def resolve_postprocess_profile(template_id: str | None = None) -> PostprocessPr
     return PostprocessProfile(name="balanced_bridal_finish")
 
 
-async def postprocess_delivery_assets(delivered_urls: Iterable[str], *, template_id: str | None = None) -> tuple[dict[str, str], dict]:
-    """Create enhanced HD assets and common crop variants for delivery."""
-    raw_urls = [str(url).strip() for url in delivered_urls if str(url).strip()]
-    if not raw_urls:
-        return {}, {"postprocess_policy": "no_outputs"}
-    if not settings.postprocess_enabled:
-        return {f"image_{idx + 1}": url for idx, url in enumerate(raw_urls)}, {"postprocess_policy": "disabled"}
+def postprocess_private_candidate(
+    candidate: ValidatedPrivateImage,
+    *,
+    template_id: str | None = None,
+) -> PostprocessedPrivateImage:
+    """Enhance validated private bytes; failures never return input bytes."""
 
-    final_urls: dict[str, str] = {}
-    failures: list[str] = []
-    selected_variants = _selected_variants()
-    profile = resolve_postprocess_profile(template_id)
-
-    for index, url in enumerate(raw_urls):
-        base_key = f"image_{index + 1}"
-        try:
-            image = await _download_image(url)
-            enhanced = _enhance_master(image, profile=profile)
-            final_urls[base_key] = _upload_image(enhanced, f"{base_key}_hd.jpg")
-
-            for variant in selected_variants:
-                cropped = _crop_to_variant(enhanced, variant)
-                final_urls[f"{base_key}_{variant.suffix}"] = _upload_image(
-                    cropped,
-                    f"{base_key}_{variant.suffix}.jpg",
-                )
-        except Exception as exc:
-            final_urls[base_key] = url
-            failures.append(f"{base_key}:{type(exc).__name__}")
-
-    return final_urls, {
-        "postprocess_policy": "commercial_hd_face_tone_grain_smart_crop",
-        "postprocess_profile": profile.name,
-        "template_id": template_id or "",
-        "profile_parameters": {
-            "highlight_protection": profile.highlight_protection,
-            "face_sharpen": profile.face_sharpen,
-            "skin_tone_unify": profile.skin_tone_unify,
-            "shadow_denoise": profile.shadow_denoise,
-            "grain": profile.grain,
-            "contrast": profile.contrast,
-        },
-        "upscale_factor": max(1, int(settings.postprocess_upscale_factor)),
-        "max_long_edge": max(900, int(settings.postprocess_max_long_edge)),
-        "variants": [variant.suffix for variant in selected_variants],
-        "failures": failures,
-    }
-
-
-async def _download_image(image_url: str):
     from PIL import Image
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(image_url)
-        response.raise_for_status()
-    return Image.open(io.BytesIO(response.content)).convert("RGB")
+    if not isinstance(candidate, ValidatedPrivateImage):
+        raise TypeError("candidate must be validated private image bytes")
+    try:
+        with Image.open(io.BytesIO(candidate.image_bytes)) as source:
+            source.load()
+            enhanced = _enhance_master(
+                source.convert("RGB"),
+                profile=resolve_postprocess_profile(template_id),
+            )
+        output = io.BytesIO()
+        quality = max(75, min(96, int(settings.postprocess_jpeg_quality)))
+        enhanced.save(output, format="JPEG", quality=quality, optimize=True)
+        payload = output.getvalue()
+    except Exception as exc:
+        raise PrivatePostprocessError("private_postprocess_failed") from exc
+    if not payload or sha256_digest(payload).hexdigest() == candidate.sha256:
+        raise PrivatePostprocessError("private_postprocess_failed")
+    return PostprocessedPrivateImage(
+        parent_asset_id=candidate.asset_id,
+        image_bytes=payload,
+        mime_type="image/jpeg",
+        sha256=sha256_digest(payload).hexdigest(),
+        width=enhanced.width,
+        height=enhanced.height,
+    )
 
 
 def _enhance_master(image, *, profile: PostprocessProfile | None = None):
@@ -473,24 +557,70 @@ def _smart_crop_centering(variant: DeliveryVariant) -> tuple[float, float]:
     return (0.5, 0.43)
 
 
-def _upload_image(image, filename: str) -> str:
+def _encode_delivery_jpeg(image) -> tuple[bytes, int, int]:
     output = io.BytesIO()
     quality = max(75, min(96, int(settings.postprocess_jpeg_quality)))
-    image.save(output, format="JPEG", quality=quality, optimize=True)
-    output.seek(0)
-    return storage_service.upload_file(
-        output,
-        filename=filename,
-        content_type="image/jpeg",
-        folder="finals",
+    image.convert("RGB").save(output, format="JPEG", quality=quality, optimize=True)
+    payload = output.getvalue()
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(payload)) as decoded:
+            decoded.verify()
+            width, height = decoded.size
+    except Exception as exc:
+        raise PrivatePostprocessError("delivery_artifact_technical_qa_failed") from exc
+    if not payload or width <= 0 or height <= 0:
+        raise PrivatePostprocessError("delivery_artifact_technical_qa_failed")
+    return payload, width, height
+
+
+def render_private_delivery_set(
+    candidate: ValidatedPrivateImage,
+    *,
+    template_id: str | None = None,
+) -> RenderedPrivateDeliverySet:
+    """Render one 3:4 master and the complete six-variant private set."""
+
+    from PIL import Image
+    from app.models.media_asset import MediaAssetRole
+
+    processed = postprocess_private_candidate(candidate, template_id=template_id)
+    try:
+        with Image.open(io.BytesIO(processed.image_bytes)) as decoded:
+            decoded.load()
+            source = decoded.convert("RGB")
+    except Exception as exc:
+        raise PrivatePostprocessError("delivery_master_decode_failed") from exc
+
+    master_image = _crop_to_variant(source, VARIANT_MAP["3x4"])
+    master_bytes, master_width, master_height = _encode_delivery_jpeg(master_image)
+    master = RenderedPrivateArtifact(
+        name="master_3x4",
+        role=MediaAssetRole.FINAL_MASTER,
+        image_bytes=master_bytes,
+        mime_type="image/jpeg",
+        sha256=sha256_digest(master_bytes).hexdigest(),
+        width=master_width,
+        height=master_height,
     )
-
-
-def _selected_variants() -> list[DeliveryVariant]:
-    raw = [item.strip().lower() for item in (settings.postprocess_variants or "").split(",")]
-    variants: list[DeliveryVariant] = []
-    for key in raw:
-        variant = VARIANT_MAP.get(key)
-        if variant and variant not in variants:
-            variants.append(variant)
-    return variants
+    variants: dict[str, RenderedPrivateArtifact] = {}
+    for ratio_name, internal_key in _PAID_VARIANT_INTERNAL_KEYS.items():
+        variant_image = _crop_to_variant(source, VARIANT_MAP[internal_key])
+        payload, width, height = _encode_delivery_jpeg(variant_image)
+        expected_width, expected_height = PAID_VARIANT_RATIOS[ratio_name]
+        if width * expected_height != height * expected_width:
+            raise PrivatePostprocessError("delivery_variant_ratio_invalid")
+        variants[ratio_name] = RenderedPrivateArtifact(
+            name=f"variant_{internal_key}",
+            role=MediaAssetRole.DELIVERY_VARIANT,
+            image_bytes=payload,
+            mime_type="image/jpeg",
+            sha256=sha256_digest(payload).hexdigest(),
+            width=width,
+            height=height,
+        )
+    result = RenderedPrivateDeliverySet(master=master, variants=variants)
+    if not result.is_complete:
+        raise PrivatePostprocessError("delivery_artifact_set_incomplete")
+    return result

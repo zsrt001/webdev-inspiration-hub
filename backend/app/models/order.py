@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 from enum import Enum
-from sqlalchemy import String, DateTime, ForeignKey, Text, Integer, func
+from sqlalchemy import CheckConstraint, String, DateTime, ForeignKey, Text, Integer, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,12 +23,34 @@ class OrderStatus(str, Enum):
     GENERATING = "GENERATING"  # AI is generating preview images
     COMPLETED = "COMPLETED"  # Order completed, final images ready
     FAILED = "FAILED"  # Terminal failure after refund/retry protection
+    QUEUED = "QUEUED"
+    QA_PENDING = "QA_PENDING"
+    REPAIRING = "REPAIRING"
+    READY = "READY"
+    CANCELLED = "CANCELLED"
+    UNKNOWN_EXTERNAL_STATE = "UNKNOWN_EXTERNAL_STATE"
+    CONSENT_REVIEW_REQUIRED = "CONSENT_REVIEW_REQUIRED"
+    DELETED = "DELETED"
 
 
 class Order(Base):
     """Order model for AI wedding photo generation."""
 
     __tablename__ = "orders"
+    __table_args__ = (
+        CheckConstraint(
+            "source_asset_ids IS NULL OR jsonb_typeof(source_asset_ids) = 'array'",
+            name="ck_orders_source_asset_ids_array",
+        ),
+        CheckConstraint(
+            "preview_asset_ids IS NULL OR jsonb_typeof(preview_asset_ids) = 'array'",
+            name="ck_orders_preview_asset_ids_array",
+        ),
+        CheckConstraint(
+            "final_asset_ids IS NULL OR jsonb_typeof(final_asset_ids) = 'array'",
+            name="ck_orders_final_asset_ids_array",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -37,7 +59,7 @@ class Order(Base):
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="RESTRICT"),
         index=True,
     )
     status: Mapped[OrderStatus] = mapped_column(
@@ -79,6 +101,21 @@ class Order(Base):
         nullable=True,
         comment="Final high-resolution image URLs",
     )
+    source_asset_ids: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Canonical private source asset UUIDs; legacy URL fields are read-only compatibility",
+    )
+    preview_asset_ids: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Canonical private preview asset UUIDs",
+    )
+    final_asset_ids: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Canonical private final/delivery asset UUIDs",
+    )
     source_images_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -114,7 +151,7 @@ class Order(Base):
     payment_id: Mapped[str | None] = mapped_column(
         String(128),
         nullable=True,
-        comment="WeChat payment transaction ID",
+        comment="Legacy/provider payment transaction identifier",
     )
     paid_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -126,6 +163,26 @@ class Order(Base):
         String(128),
         nullable=True,
         comment="ARQ/Celery task ID for tracking",
+    )
+    reservation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("credit_reservations.id", ondelete="RESTRICT", use_alter=True),
+        nullable=True,
+        unique=True,
+    )
+    generation_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("generation_jobs.id", ondelete="RESTRICT", use_alter=True),
+        nullable=True,
+        unique=True,
+    )
+    product_policy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    funding_policy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    settlement_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="UNSETTLED", server_default="UNSETTLED"
+    )
+    delivery_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="PENDING", server_default="PENDING"
     )
     error_message: Mapped[str | None] = mapped_column(
         Text,
@@ -156,10 +213,45 @@ class Order(Base):
     def can_transition_to(self, new_status: OrderStatus) -> bool:
         """Check if status transition is valid according to state machine."""
         valid_transitions = {
-            OrderStatus.CREATED: [OrderStatus.CHECKING],
-            OrderStatus.CHECKING: [OrderStatus.GENERATING, OrderStatus.CREATED, OrderStatus.FAILED],
-            OrderStatus.GENERATING: [OrderStatus.COMPLETED, OrderStatus.CREATED, OrderStatus.FAILED],
-            OrderStatus.COMPLETED: [],
-            OrderStatus.FAILED: [OrderStatus.CREATED, OrderStatus.GENERATING],
+            OrderStatus.CREATED: {OrderStatus.CHECKING, OrderStatus.QUEUED},
+            OrderStatus.CHECKING: {OrderStatus.GENERATING, OrderStatus.FAILED, OrderStatus.CANCELLED},
+            OrderStatus.QUEUED: {
+                OrderStatus.GENERATING,
+                OrderStatus.CANCELLED,
+                OrderStatus.CONSENT_REVIEW_REQUIRED,
+            },
+            OrderStatus.GENERATING: {
+                OrderStatus.QA_PENDING,
+                OrderStatus.FAILED,
+                OrderStatus.CANCELLED,
+                OrderStatus.UNKNOWN_EXTERNAL_STATE,
+                OrderStatus.CONSENT_REVIEW_REQUIRED,
+            },
+            OrderStatus.QA_PENDING: {
+                OrderStatus.REPAIRING,
+                OrderStatus.READY,
+                OrderStatus.FAILED,
+                OrderStatus.CANCELLED,
+                OrderStatus.CONSENT_REVIEW_REQUIRED,
+            },
+            OrderStatus.REPAIRING: {
+                OrderStatus.QA_PENDING,
+                OrderStatus.FAILED,
+                OrderStatus.CANCELLED,
+                OrderStatus.UNKNOWN_EXTERNAL_STATE,
+                OrderStatus.CONSENT_REVIEW_REQUIRED,
+            },
+            OrderStatus.UNKNOWN_EXTERNAL_STATE: {
+                OrderStatus.GENERATING,
+                OrderStatus.FAILED,
+                OrderStatus.CANCELLED,
+            },
+            OrderStatus.CONSENT_REVIEW_REQUIRED: {OrderStatus.CANCELLED, OrderStatus.DELETED},
+            OrderStatus.READY: {OrderStatus.DELETED, OrderStatus.CONSENT_REVIEW_REQUIRED},
+            OrderStatus.COMPLETED: {OrderStatus.DELETED},
+            OrderStatus.FAILED: {OrderStatus.DELETED},
+            OrderStatus.CANCELLED: {OrderStatus.DELETED},
+            OrderStatus.DELETED: set(),
         }
-        return new_status in valid_transitions.get(self.status, [])
+        current = OrderStatus(self.status)
+        return OrderStatus(new_status) in valid_transitions.get(current, set())

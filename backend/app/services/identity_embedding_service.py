@@ -7,13 +7,13 @@ real person closely enough.
 
 from __future__ import annotations
 
-import base64
 import logging
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
+import uuid
 
-import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
     import numpy as np
@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover
     ImageOps = None  # type: ignore[assignment]
 
 from app.core.config import get_settings
+from app.services.media_asset_service import load_owned_asset_bytes
 from app.services.qa_rules import build_structured_qa_issues
 
 logger = logging.getLogger(__name__)
@@ -96,19 +97,6 @@ class IdentityEmbeddingService:
             logger.warning("Identity embedding model unavailable: %s", exc)
             raise IdentityEmbeddingUnavailable(self._init_error) from exc
 
-    async def _fetch_image_bytes(self, image_url: str) -> bytes:
-        raw = str(image_url or "").strip()
-        if not raw:
-            raise ValueError("identity_embedding_empty_image_url")
-        if raw.startswith("data:image/") and ";base64," in raw:
-            return base64.b64decode(raw.split(",", 1)[1])
-        if not raw.startswith(("http://", "https://")):
-            raise ValueError("identity_embedding_requires_remote_or_data_url")
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, trust_env=False) as client:
-            response = await client.get(raw)
-            response.raise_for_status()
-            return response.content
-
     def _detect_faces_from_bytes(self, content: bytes) -> list[FaceEmbedding]:
         app = self._get_app()
         if Image is None or ImageOps is None or np is None:
@@ -133,43 +121,47 @@ class IdentityEmbeddingService:
             faces.append(FaceEmbedding(embedding=embedding, bbox=tuple(bbox_values), det_score=score))
         return sorted(faces, key=lambda item: (item.area, item.det_score), reverse=True)
 
-    async def _faces_for_url(self, image_url: str) -> list[FaceEmbedding]:
-        content = await self._fetch_image_bytes(image_url)
-        return self._detect_faces_from_bytes(content)
-
     async def verify_identity_similarity(
         self,
-        image_url: str,
+        db: AsyncSession,
         *,
-        source_image_urls: list[str],
+        owner_user_id: uuid.UUID,
+        generated_asset_id: uuid.UUID,
+        source_asset_ids: list[uuid.UUID],
         is_couple: bool = False,
     ) -> dict[str, Any]:
-        sources = [str(url).strip() for url in (source_image_urls or []) if str(url or "").strip()]
-        if not sources:
-            return {
-                "passed": True,
-                "reasons": [],
-                "issues": [],
-                "metrics": {},
-                "notes": "no_source_images",
-                "source": "identity_embedding",
-            }
-
         expected_count = 2 if is_couple else 1
         reasons: list[str] = []
         metrics: dict[str, float] = {}
+        sources = [uuid.UUID(str(asset_id)) for asset_id in source_asset_ids]
+        if len(sources) != expected_count or len(set(sources)) != expected_count:
+            return self._verdict(
+                ["identity_source_count_invalid"],
+                metrics,
+                "source_count_invalid",
+            )
 
         try:
             source_faces: list[FaceEmbedding] = []
-            for index, source_url in enumerate(sources[:expected_count], start=1):
-                faces = await self._faces_for_url(source_url)
+            for index, source_asset_id in enumerate(sources, start=1):
+                source = await load_owned_asset_bytes(
+                    db,
+                    owner_user_id=owner_user_id,
+                    asset_id=source_asset_id,
+                )
+                faces = self._detect_faces_from_bytes(source.content)
                 metrics[f"source_{index}_face_count"] = float(len(faces))
                 if not faces:
                     reasons.append("identity_face_missing")
                     continue
                 source_faces.append(faces[0])
 
-            generated_faces = await self._faces_for_url(image_url)
+            generated = await load_owned_asset_bytes(
+                db,
+                owner_user_id=owner_user_id,
+                asset_id=uuid.UUID(str(generated_asset_id)),
+            )
+            generated_faces = self._detect_faces_from_bytes(generated.content)
             metrics["generated_face_count"] = float(len(generated_faces))
             if len(source_faces) < expected_count or len(generated_faces) < expected_count:
                 reasons.append("identity_face_missing")

@@ -1,0 +1,24 @@
+FROM python:3.11.15-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.lock.txt ./requirements.lock.txt
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock.txt
+
+COPY app ./app
+COPY scripts/worker_entrypoint.py ./scripts/worker_entrypoint.py
+
+RUN useradd --create-home --uid 10001 vowpic \
+    && chown -R vowpic:vowpic /app
+USER vowpic
+
+CMD ["python", "scripts/worker_entrypoint.py"]

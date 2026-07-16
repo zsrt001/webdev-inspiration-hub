@@ -3,26 +3,179 @@
 from __future__ import annotations
 
 import io
-from typing import Iterable
-
-import httpx
+from dataclasses import dataclass
+from hashlib import sha256
+from typing import Callable
+import uuid
 
 from app.core.config import get_settings
-from app.services.delivery_asset_service import MASTER_IMAGE_KEY, pick_master_image_url
-from app.services.postprocess_service import postprocess_delivery_assets
-from app.services.storage import storage_service
+from app.services.postprocess_service import ValidatedPrivateImage
 
-TRIAL_ACCESS_TIER = "trial_preview"
-PAID_ACCESS_TIER = "paid_download"
-TRIAL_ALLOWED_MAX_CREDITS = 2
-
-
-def _trial_welcome_credits() -> int:
-    return max(0, int(get_settings().trial_welcome_credits))
+class TrialWatermarkError(RuntimeError):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
 
 
-def _trial_daily_generation_limit() -> int:
-    return max(1, int(get_settings().trial_daily_generation_limit))
+@dataclass(frozen=True, slots=True)
+class WatermarkedTrialImage:
+    parent_asset_id: uuid.UUID
+    image_bytes: bytes
+    mime_type: str
+    sha256: str
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        payload = bytes(self.image_bytes)
+        if not payload or self.mime_type != "image/jpeg":
+            raise ValueError("invalid watermarked trial image payload")
+        if sha256(payload).hexdigest() != self.sha256:
+            raise ValueError("watermarked trial image checksum mismatch")
+        if self.width <= 0 or self.height <= 0 or self.width * 4 != self.height * 3:
+            raise ValueError("watermarked trial image must be exactly 3:4")
+        if self.width > 900 or self.height > 1125:
+            raise ValueError("watermarked trial image exceeds preview bounds")
+        object.__setattr__(self, "image_bytes", payload)
+
+
+def _decode_trial_candidate(payload: bytes):
+    from PIL import Image
+
+    with Image.open(io.BytesIO(payload)) as decoded:
+        decoded.load()
+        return decoded.convert("RGB")
+
+
+def _resize_trial_candidate(image):
+    from PIL import Image, ImageOps
+
+    configured_width, configured_height = _trial_preview_max_size()
+    max_width = min(900, configured_width)
+    max_height = min(1125, configured_height)
+    ratio_unit = min(
+        max_width // 3,
+        max_height // 4,
+        image.width // 3,
+        image.height // 4,
+    )
+    if ratio_unit < 1:
+        raise ValueError("candidate is too small for a 3:4 preview")
+    target = (ratio_unit * 3, ratio_unit * 4)
+    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", 1)
+    return ImageOps.fit(image.convert("RGB"), target, method=resample, centering=(0.5, 0.44))
+
+
+def _load_trial_watermark_font(image):
+    from PIL import ImageFont
+
+    size = max(18, min(36, image.width // 18))
+    for font_name in ("arial.ttf", "DejaVuSans-Bold.ttf"):
+        try:
+            return ImageFont.truetype(font_name, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _render_trial_watermark(image, font, text: str):
+    from PIL import Image, ImageDraw
+
+    if not text:
+        raise ValueError("trial watermark text is empty")
+    overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(overlay)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = max(1, bbox[2] - bbox[0])
+    text_height = max(1, bbox[3] - bbox[1])
+    step_x = max(text_width + 48, image.width // 2)
+    step_y = max(text_height + 52, image.height // 5)
+    for y in range(-step_y, image.height + step_y, step_y):
+        for x in range(-step_x, image.width + step_x, step_x):
+            draw.text((x, y), text, fill=(255, 255, 255, 104), font=font)
+    return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+
+
+def _encode_trial_watermark(image) -> bytes:
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=82, optimize=True)
+    return output.getvalue()
+
+
+def _trial_watermark_technical_qa(payload: bytes) -> bool:
+    from PIL import Image
+
+    with Image.open(io.BytesIO(payload)) as image:
+        image.verify()
+        width, height = image.size
+        return (
+            image.format == "JPEG"
+            and width > 0
+            and height > 0
+            and width * 4 == height * 3
+            and width <= 900
+            and height <= 1125
+        )
+
+
+def build_trial_watermark_bytes(
+    candidate: ValidatedPrivateImage,
+    *,
+    decoder: Callable[[bytes], object] = _decode_trial_candidate,
+    resizer: Callable[[object], object] = _resize_trial_candidate,
+    font_loader: Callable[[object], object] = _load_trial_watermark_font,
+    renderer: Callable[[object, object, str], object] = _render_trial_watermark,
+    encoder: Callable[[object], bytes] = _encode_trial_watermark,
+    technical_qa: Callable[[bytes], bool] = _trial_watermark_technical_qa,
+) -> WatermarkedTrialImage:
+    """Create a new bounded preview; no failure path returns candidate bytes."""
+
+    if not isinstance(candidate, ValidatedPrivateImage):
+        raise TypeError("candidate must be validated private image bytes")
+    try:
+        image = decoder(candidate.image_bytes)
+    except Exception as exc:
+        raise TrialWatermarkError("watermark_decode_failed") from exc
+    try:
+        resized = resizer(image)
+    except Exception as exc:
+        raise TrialWatermarkError("watermark_resize_failed") from exc
+    try:
+        font = font_loader(resized)
+    except Exception as exc:
+        raise TrialWatermarkError("watermark_font_failed") from exc
+    try:
+        rendered = renderer(resized, font, _trial_watermark_text())
+    except Exception as exc:
+        raise TrialWatermarkError("watermark_render_failed") from exc
+    try:
+        encoded = bytes(encoder(rendered))
+    except Exception as exc:
+        raise TrialWatermarkError("watermark_encode_failed") from exc
+    if not encoded or sha256(encoded).hexdigest() == candidate.sha256:
+        raise TrialWatermarkError("watermark_encode_failed")
+    try:
+        qa_passed = technical_qa(encoded)
+    except Exception as exc:
+        raise TrialWatermarkError("watermark_post_qa_failed") from exc
+    if qa_passed is not True:
+        raise TrialWatermarkError("watermark_post_qa_failed")
+    try:
+        with _decode_trial_candidate(encoded) as decoded:
+            width, height = decoded.size
+    except TypeError:
+        decoded = _decode_trial_candidate(encoded)
+        width, height = decoded.size
+    except Exception as exc:
+        raise TrialWatermarkError("watermark_post_qa_failed") from exc
+    return WatermarkedTrialImage(
+        parent_asset_id=candidate.asset_id,
+        image_bytes=encoded,
+        mime_type="image/jpeg",
+        sha256=sha256(encoded).hexdigest(),
+        width=width,
+        height=height,
+    )
 
 
 def _trial_preview_max_size() -> tuple[int, int]:
@@ -32,131 +185,3 @@ def _trial_preview_max_size() -> tuple[int, int]:
 
 def _trial_watermark_text() -> str:
     return (get_settings().trial_watermark_text or "AI WEDDING STUDIO PREVIEW").strip()
-
-
-def access_tier_for_order(*, has_paid_credits: bool) -> str:
-    return PAID_ACCESS_TIER if has_paid_credits else TRIAL_ACCESS_TIER
-
-
-def trial_generation_allowed(
-    *,
-    template_category: str | None,
-    is_remote_join: bool = False,
-    image_count: int = 1,
-    director_mode: bool = False,
-    credits_cost: int = 0,
-) -> bool:
-    """Free starter credits are limited to one base single-subject generation."""
-    if int(credits_cost or 0) > TRIAL_ALLOWED_MAX_CREDITS:
-        return False
-    if str(template_category or "").strip().lower() == "vintage":
-        return False
-    if bool(is_remote_join):
-        return False
-    if int(image_count or 0) >= 2:
-        return False
-    if bool(director_mode):
-        return False
-    return True
-
-
-def can_download_order(generation_params: dict | None, *, has_paid_credits: bool) -> bool:
-    params = generation_params if isinstance(generation_params, dict) else {}
-    tier = str(params.get("access_tier") or "").strip()
-    if tier == PAID_ACCESS_TIER:
-        return True
-    return bool(has_paid_credits)
-
-
-def is_trial_order(generation_params: dict | None) -> bool:
-    params = generation_params if isinstance(generation_params, dict) else {}
-    return str(params.get("access_tier") or "").strip() == TRIAL_ACCESS_TIER
-
-
-async def prepare_delivered_image_urls(
-    delivered_urls: Iterable[str],
-    *,
-    trial_preview: bool,
-    template_id: str | None = None,
-) -> tuple[dict, dict, dict]:
-    """Return preview/final URL dicts plus metadata for generated assets."""
-    final_urls, postprocess_meta = await postprocess_delivery_assets(delivered_urls, template_id=template_id)
-    master_url = pick_master_image_url(final_urls)
-    delivery_meta = {
-        **postprocess_meta,
-        "final_master_image_key": MASTER_IMAGE_KEY,
-        "final_master_image_url": master_url,
-    }
-    if not trial_preview:
-        return final_urls, final_urls, {
-            "preview_policy": "paid_original",
-            "preview_master_image_url": master_url,
-            **delivery_meta,
-        }
-
-    preview_urls: dict[str, str] = {}
-    failures: list[str] = []
-    for key, url in final_urls.items():
-        try:
-            preview_urls[key] = await _create_watermarked_preview(url, key=key)
-        except Exception as exc:
-            preview_urls[key] = url
-            failures.append(f"{key}:{type(exc).__name__}")
-
-    return preview_urls, final_urls, {
-        "preview_policy": "trial_watermarked_lowres",
-        "preview_watermark": _trial_watermark_text(),
-        "preview_failures": failures,
-        "preview_master_image_url": pick_master_image_url(preview_urls),
-        **delivery_meta,
-    }
-
-
-async def _create_watermarked_preview(image_url: str, *, key: str) -> str:
-    from PIL import Image, ImageDraw, ImageFont
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(image_url)
-        response.raise_for_status()
-        image_bytes = response.content
-
-    with Image.open(io.BytesIO(image_bytes)) as image:
-        image = image.convert("RGB")
-        image.thumbnail(_trial_preview_max_size())
-        overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
-        draw = ImageDraw.Draw(overlay)
-        font = _load_watermark_font(image)
-        text = _trial_watermark_text()
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = max(1, bbox[2] - bbox[0])
-        text_height = max(1, bbox[3] - bbox[1])
-        step_x = max(text_width + 90, image.width // 2)
-        step_y = max(text_height + 90, image.height // 4)
-
-        for y in range(-step_y, image.height + step_y, step_y):
-            for x in range(-step_x, image.width + step_x, step_x):
-                draw.text((x, y), text, fill=(255, 255, 255, 82), font=font)
-
-        watermarked = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
-        output = io.BytesIO()
-        watermarked.save(output, format="JPEG", quality=82, optimize=True)
-        output.seek(0)
-
-    return storage_service.upload_file(
-        output,
-        filename=f"{key}_preview.jpg",
-        content_type="image/jpeg",
-        folder="previews",
-    )
-
-
-def _load_watermark_font(image) -> object:
-    from PIL import ImageFont
-
-    size = max(18, min(34, image.width // 22))
-    for font_name in ("arial.ttf", "DejaVuSans-Bold.ttf"):
-        try:
-            return ImageFont.truetype(font_name, size=size)
-        except Exception:
-            continue
-    return ImageFont.load_default()

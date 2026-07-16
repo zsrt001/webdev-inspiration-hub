@@ -615,7 +615,7 @@ onMounted(fetchOrders);
 </script>
 
 <style lang="scss" scoped>
-@import './admin.scss';
+@use './admin.scss';
 
 .order-table-grid {
   grid-template-columns: 170px minmax(180px, 1.1fr) 110px 140px minmax(180px, 1fr) 110px;

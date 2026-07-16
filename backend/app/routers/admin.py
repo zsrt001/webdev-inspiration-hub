@@ -1,26 +1,29 @@
 """Admin API routes for dashboard and management."""
 
-from typing import Any, List
+from typing import Any, List, Literal
 
 from datetime import datetime, timedelta, timezone
 import uuid
 import httpx
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.admin_auth import require_admin_token
+from app.core.admin_auth import require_admin_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.feature_flags import Capability
 from app.models.order import Order, OrderStatus
 from app.models.user import User
 from app.models.user_credit import UserCredit
 from app.services.admin_service import (
     get_dashboard_stats,
-    grant_credits_to_user,
+    adjust_user_credits_by_admin,
     get_all_users,
 )
+from app.services.feature_flag_service import require_request_capability
 from app.services.account_risk_service import get_account_risk_summary
 from app.services.admin_audit_service import list_admin_audit_logs, log_admin_action
 from app.services.analytics_reporting_service import (
@@ -29,19 +32,14 @@ from app.services.analytics_reporting_service import (
     get_quality_dashboard,
     get_template_ranking,
 )
-from app.services.lead_crm_service import build_crm_payload, list_crm_push_history, push_leads_to_crm, query_leads_for_crm
 from app.services.ops_alert_service import get_ops_alerts
 from app.services.ops_config_service import get_ops_config, save_ops_config
 from app.services.ops_monitoring_service import get_ops_monitoring_summary
-from app.services.retention_service import apply_order_retention, cleanup_expired_orders, cleanup_expired_source_images
 from app.services.email_service import get_email_diagnostics, list_email_logs, send_test_email
-from app.services.template_service import get_template_by_id
-from app.services.generation_service import generation_service
 from app.services.schema_guard_service import ensure_user_account_columns
-from app.core.task_queue import enqueue_generate_order
-from app.worker_tasks import run_order_generation
 
-router = APIRouter(dependencies=[Depends(require_admin_token)])
+router = APIRouter(dependencies=[Depends(require_admin_user)])
+logger = logging.getLogger(__name__)
 
 
 class DashboardStats(BaseModel):
@@ -109,10 +107,42 @@ class CreemCheckoutProbeResponse(BaseModel):
     error: str | None = None
 
 
+class PositiveGrantPolicy(BaseModel):
+    policy_code: Literal["support_compensation", "service_recovery"]
+    source_reference: str = Field(min_length=1, max_length=128)
+    retention_days: Literal[90]
+
+
+class AdminReversalRoot(BaseModel):
+    root_transaction_id: uuid.UUID
+    amount: int = Field(gt=0, le=10000)
+
+
 class GrantCreditsRequest(BaseModel):
-    """Request to grant credits."""
+    """Audited root grant or exact named-root reversal."""
+
     user_id: str
-    amount: int
+    amount: int = Field(ge=-10000, le=10000)
+    idempotency_key: str = Field(min_length=1, max_length=80)
+    approval_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=8, max_length=500)
+    positive_grant_policy: PositiveGrantPolicy | None = None
+    reversal_roots: list[AdminReversalRoot] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def _lineage_matches_direction(self) -> "GrantCreditsRequest":
+        if self.amount == 0:
+            raise ValueError("amount_must_be_nonzero")
+        if self.amount > 0:
+            if self.positive_grant_policy is None or self.reversal_roots:
+                raise ValueError("positive_grant_policy_required")
+        elif (
+            self.positive_grant_policy is not None
+            or not self.reversal_roots
+            or sum(item.amount for item in self.reversal_roots) != abs(self.amount)
+        ):
+            raise ValueError("exact_reversal_roots_required")
+        return self
 
 
 class GrantCreditsResponse(BaseModel):
@@ -139,35 +169,7 @@ class AdminMeResponse(BaseModel):
     actor: str
     admin_roles: list[str]
     entry_url: str
-    remote_join_enabled: bool
-    remote_join_session_store: str
     generation_execution_mode: str
-
-
-class GenerationProbeRequest(BaseModel):
-    image_url: str
-    second_image_url: str | None = None
-    template_id: str | None = None
-    global_style_text: str | None = None
-    scene_text: str | None = None
-    outfit_text: str | None = None
-    prompt_override: str | None = None
-    remote_join: bool = False
-    execute_inline: bool | None = None
-
-
-class GenerationProbeResponse(BaseModel):
-    ok: bool
-    started: bool
-    completed: bool
-    execution_mode: str
-    order_id: str | None = None
-    status: str | None = None
-    task_id: str | None = None
-    template_id: str | None = None
-    error_message: str | None = None
-    preview_image_urls: dict[str, Any] | None = None
-    final_image_urls: dict[str, Any] | None = None
 
 
 class AdminUserItem(BaseModel):
@@ -192,11 +194,6 @@ class AdminUsersResponse(BaseModel):
 
 class UpdateStatusRequest(BaseModel):
     status: str
-
-
-class RegenerateOrderRequest(BaseModel):
-    execute_inline: bool | None = None
-    reason: str | None = None
 
 
 class AdminOrderUser(BaseModel):
@@ -282,21 +279,10 @@ class AdminOrderDetail(AdminOrderItem):
     updated_at: datetime | None = None
 
 
-class RegenerateOrderResponse(BaseModel):
-    ok: bool
-    started: bool
-    execution_mode: str
-    task_id: str | None = None
-    order: AdminOrderDetail
-
-
 class OpsConfigResponse(BaseModel):
     template_overrides: dict[str, dict[str, Any]]
     pricing: dict[str, Any]
     placements: dict[str, Any]
-    feature_flags: dict[str, Any]
-    recommendations: dict[str, Any]
-    crm: dict[str, Any]
 
 
 class AnalyticsOverviewResponse(BaseModel):
@@ -321,23 +307,6 @@ class OpsAlertResponse(BaseModel):
     title: str
     detail: str
     metric: dict[str, Any]
-
-
-class CrmPushResponse(BaseModel):
-    pushed: bool
-    reason: str
-    status_code: int | None = None
-    payload: dict[str, Any]
-    response_text: str | None = None
-
-
-class CrmPushHistoryItem(BaseModel):
-    created_at: str
-    pushed: bool
-    reason: str
-    status_code: int | None = None
-    count: int = 0
-    filters: dict[str, Any] = {}
 
 
 class CleanupAssetsResponse(BaseModel):
@@ -392,7 +361,6 @@ def _user_display_name(user: User | None) -> str:
         (user.nickname or "").strip()
         or (user.username or "").strip()
         or (user.email or "").strip()
-        or (user.openid or "").strip()
         or str(user.id)
     )
 
@@ -400,7 +368,7 @@ def _user_display_name(user: User | None) -> str:
 def _user_item(user: User, balance: int | None = None) -> AdminUserItem:
     return AdminUserItem(
         id=str(user.id),
-        user_id=user.openid or str(user.id),
+        user_id=str(user.id),
         name=_user_display_name(user),
         username=user.username,
         email=user.email,
@@ -484,19 +452,9 @@ def _admin_qa_summary(order: Order, params: dict[str, Any]) -> AdminOrderQaSumma
     )
 
 
-def _source_images(order: Order) -> list[str]:
-    source = order.source_image_urls if isinstance(order.source_image_urls, dict) else {}
-    images = source.get("images") if isinstance(source, dict) else None
-    if not isinstance(images, list):
-        return []
-    return [str(image) for image in images if str(image or "").strip()]
-
-
 def _can_admin_regenerate(order: Order) -> bool:
-    status_value = _order_status_value(order)
-    if status_value in {OrderStatus.CHECKING.value, OrderStatus.GENERATING.value}:
-        return False
-    return bool(order.template_id and _source_images(order))
+    _ = order
+    return False
 
 
 def _order_item(order: Order, user: User | None) -> AdminOrderItem:
@@ -573,56 +531,6 @@ async def _get_admin_order(db: AsyncSession, order_id: str) -> Order:
     return order
 
 
-def _validate_public_image_url(value: str, *, field_name: str) -> str:
-    raw = (value or "").strip()
-    if not raw:
-        raise HTTPException(status_code=422, detail=f"{field_name} is required")
-    try:
-        parsed = httpx.URL(raw)
-    except Exception:
-        raise HTTPException(status_code=422, detail=f"{field_name} must be an http(s) URL")
-    if parsed.scheme not in {"http", "https"} or not parsed.host:
-        raise HTTPException(status_code=422, detail=f"{field_name} must be an http(s) URL")
-    return raw
-
-
-async def _get_or_create_generation_probe_user(db: AsyncSession) -> User:
-    await ensure_user_account_columns(db)
-    result = await db.execute(select(User).where(User.openid == "admin_generation_probe"))
-    user = result.scalar_one_or_none()
-    if user is not None:
-        return user
-
-    user = User(
-        openid="admin_generation_probe",
-        nickname="Admin Generation Probe",
-        role="user",
-        status="active",
-    )
-    db.add(user)
-    await db.flush()
-    return user
-
-
-def _probe_response(order: Order, *, execution_mode: str, started: bool) -> GenerationProbeResponse:
-    status_value = _order_status_value(order)
-    completed = status_value == OrderStatus.COMPLETED.value
-    error_message = order.error_message
-    return GenerationProbeResponse(
-        ok=bool(started and (completed or not error_message)),
-        started=started,
-        completed=completed,
-        execution_mode=execution_mode,
-        order_id=str(order.id),
-        status=status_value,
-        task_id=order.task_id,
-        template_id=order.template_id,
-        error_message=error_message,
-        preview_image_urls=order.preview_image_urls,
-        final_image_urls=order.final_image_urls,
-    )
-
-
 @router.get("/me", response_model=AdminMeResponse)
 async def get_admin_me(request: Request):
     """Return the currently accepted admin session and operator-facing entry details."""
@@ -630,8 +538,6 @@ async def get_admin_me(request: Request):
         actor=str(getattr(request.state, "admin_actor", "unknown-admin")),
         admin_roles=["owner", "admin", "operator"],
         entry_url="/admin",
-        remote_join_enabled=bool(settings.remote_join_enabled),
-        remote_join_session_store="redis_with_database_persistence",
         generation_execution_mode=settings.generation_execution_mode,
     )
 
@@ -698,8 +604,9 @@ async def get_payment_config_summary():
 
 
 @router.get("/creem_product_check", response_model=CreemProductCheckResponse)
-async def check_creem_products():
+async def check_creem_products(request: Request, db: AsyncSession = Depends(get_db)):
     """Verify configured Creem products using the configured API key."""
+    await require_request_capability(request, db, Capability.CREDIT_PACK_CHECKOUT)
     api_key = (settings.creem_api_key or "").strip()
     if api_key.startswith("creem_test_"):
         api_key_mode = "test"
@@ -769,7 +676,7 @@ async def check_creem_products():
                         name=str(name) if name else None,
                         status=str(status_value) if status_value else None,
                         price_cents=int(price_value) if isinstance(price_value, int) else None,
-                        error=None if response.status_code == 200 else response.text[:240],
+                        error=None if response.status_code == 200 else f"provider_http_{response.status_code}",
                     )
                 )
             except Exception as exc:  # pragma: no cover - network diagnostics only
@@ -779,7 +686,7 @@ async def check_creem_products():
                         configured=True,
                         ok=False,
                         product_id_suffix=suffix,
-                        error=f"{type(exc).__name__}: {exc}",
+                        error=f"provider_request_failed:{type(exc).__name__}",
                     )
                 )
 
@@ -792,8 +699,9 @@ async def check_creem_products():
 
 
 @router.post("/creem_checkout_probe", response_model=CreemCheckoutProbeResponse)
-async def probe_creem_checkout():
+async def probe_creem_checkout(request: Request, db: AsyncSession = Depends(get_db)):
     """Create a provider-only checkout session to validate outbound live checkout."""
+    await require_request_capability(request, db, Capability.CREDIT_PACK_CHECKOUT)
     api_key = (settings.creem_api_key or "").strip()
     product_id = (settings.creem_product_pack_50 or "").strip()
     if not api_key or not product_id:
@@ -819,7 +727,8 @@ async def probe_creem_checkout():
             )
         data = response.json() if response.content else {}
     except Exception as exc:  # pragma: no cover - network diagnostics only
-        return CreemCheckoutProbeResponse(ok=False, error=f"{type(exc).__name__}: {exc}")
+        logger.warning("Creem checkout probe failed exception_type=%s", type(exc).__name__)
+        return CreemCheckoutProbeResponse(ok=False, error=f"provider_request_failed:{type(exc).__name__}")
 
     checkout_url = str(data.get("checkout_url") or "")
     return CreemCheckoutProbeResponse(
@@ -829,160 +738,56 @@ async def probe_creem_checkout():
         checkout_status=str(data.get("status")) if data.get("status") else None,
         checkout_id=str(data.get("id")) if data.get("id") else None,
         checkout_url_prefix=checkout_url[:32] if checkout_url else None,
-        error=None if response.status_code == 200 else response.text[:240],
+        error=None if response.status_code == 200 else f"provider_http_{response.status_code}",
     )
-
-
-@router.post("/generation_probe", response_model=GenerationProbeResponse)
-async def probe_generation(
-    payload: GenerationProbeRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Start a real admin-only image generation probe without charging a customer."""
-    image_url = _validate_public_image_url(payload.image_url, field_name="image_url")
-    images = [image_url]
-    if payload.second_image_url and payload.second_image_url.strip():
-        images.append(_validate_public_image_url(payload.second_image_url, field_name="second_image_url"))
-
-    is_couple = len(images) >= 2
-    if payload.remote_join and not is_couple:
-        raise HTTPException(status_code=422, detail="remote_join probes require second_image_url")
-    if payload.remote_join and not settings.remote_join_enabled:
-        raise HTTPException(status_code=409, detail="Remote join is disabled in runtime configuration")
-
-    template_id = (payload.template_id or "").strip() or ("royal_castle" if is_couple else "solo_royal_castle")
-    template = get_template_by_id(template_id)
-    if template is None:
-        raise HTTPException(status_code=422, detail="Unknown template_id")
-
-    try:
-        generation_service.validate_runtime_requirements(force=True)
-    except Exception as exc:
-        await log_admin_action(
-            db,
-            action="generation_probe",
-            request=request,
-            details={
-                "template_id": template_id,
-                "started": False,
-                "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            },
-        )
-        return GenerationProbeResponse(
-            ok=False,
-            started=False,
-            completed=False,
-            execution_mode=settings.generation_execution_mode,
-            template_id=template_id,
-            error_message=f"{type(exc).__name__}: {exc}",
-        )
-
-    probe_user = await _get_or_create_generation_probe_user(db)
-    couple_flow = "remote" if payload.remote_join and is_couple else ("local" if is_couple else None)
-    execution_mode = "inline" if (
-        settings.using_inline_generation_execution if payload.execute_inline is None else bool(payload.execute_inline)
-    ) else "arq"
-
-    order = Order(
-        user_id=probe_user.id,
-        status=OrderStatus.CHECKING,
-        template_id=template_id,
-        style_template=template_id,
-        source_image_urls={"images": images},
-        generation_params={
-            "admin_probe": True,
-            "admin_actor": str(getattr(request.state, "admin_actor", "unknown-admin")),
-            "credits_cost": 0,
-            "access_tier": "admin_probe",
-            "download_locked": False,
-            "gatekeeper": {"passed": True, "skipped": True, "reason": "admin_generation_probe"},
-            "content_policy": {"passed": True, "skipped": True, "reason": "admin_generation_probe"},
-            "remote_join": bool(payload.remote_join),
-            "couple_flow": couple_flow,
-            "subject_count": len(images),
-            "director_mode": False,
-            "global_style_text": (payload.global_style_text or "admin production probe").strip(),
-            "scene_text": (payload.scene_text or "").strip() or None,
-            "outfit_text": (payload.outfit_text or "").strip() or None,
-            "prompt_override": (payload.prompt_override or "").strip() or None,
-            "probe_created_at": datetime.now(timezone.utc).isoformat(),
-        },
-        price_cents=0,
-    )
-    apply_order_retention(order, plan_code=None, has_paid_credits=True)
-    db.add(order)
-    await db.flush()
-    await db.commit()
-    await db.refresh(order)
-
-    started = False
-    if execution_mode == "inline":
-        params = order.generation_params if isinstance(order.generation_params, dict) else {}
-        task_id = f"admin-probe-inline-{order.id}"
-        order.generation_params = {**params, "execution_mode": "inline", "queue_job_id": task_id}
-        order.task_id = task_id
-        order.status = OrderStatus.GENERATING
-        await db.commit()
-        started = True
-        await run_order_generation(str(order.id))
-    else:
-        try:
-            queue_job_id = await enqueue_generate_order(str(order.id))
-            started = True
-            params = order.generation_params if isinstance(order.generation_params, dict) else {}
-            order.generation_params = {**params, "execution_mode": "arq", "queue_job_id": queue_job_id}
-            order.task_id = queue_job_id
-            order.status = OrderStatus.GENERATING
-            await db.commit()
-        except Exception as exc:
-            order.status = OrderStatus.CREATED
-            order.error_message = f"queue_unavailable: {exc}"
-            await db.commit()
-
-    refreshed = (await db.execute(select(Order).where(Order.id == order.id))).scalar_one()
-    response = _probe_response(refreshed, execution_mode=execution_mode, started=started)
-    await log_admin_action(
-        db,
-        action="generation_probe",
-        request=request,
-        details={
-            "order_id": str(refreshed.id),
-            "template_id": template_id,
-            "execution_mode": execution_mode,
-            "started": response.started,
-            "completed": response.completed,
-            "ok": response.ok,
-        },
-    )
-    return response
 
 
 @router.post("/grant_credits", response_model=GrantCreditsResponse)
 async def grant_credits(
     request: Request,
     payload: GrantCreditsRequest,
+    current_admin: User = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Grant credits to a user (admin operation).
     """
+    await require_request_capability(request, db, Capability.CREDIT_PACK_CHECKOUT)
     if not payload.user_id.strip():
         raise HTTPException(status_code=400, detail="User ID is required")
 
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive")
-    
-    if payload.amount > 10000:
-        raise HTTPException(status_code=400, detail="Amount too large (max 10000)")
-    
-    result = await grant_credits_to_user(db, payload.user_id, payload.amount)
+    try:
+        result = await adjust_user_credits_by_admin(
+            db,
+            admin_user_id=current_admin.id,
+            user_id=payload.user_id,
+            amount=payload.amount,
+            idempotency_key=payload.idempotency_key,
+            approval_id=payload.approval_id,
+            reason=payload.reason,
+            positive_grant_policy=(
+                payload.positive_grant_policy.model_dump(mode="json")
+                if payload.positive_grant_policy is not None
+                else None
+            ),
+            reversal_roots=[
+                item.model_dump(mode="json") for item in payload.reversal_roots
+            ],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "credit_grant_invalid"}) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail={"code": "user_not_found"}) from exc
     await log_admin_action(
         db,
         action="grant_credits",
         request=request,
-        details={"target_user_id": payload.user_id, "amount": payload.amount},
+        details={
+            "target_user_id": payload.user_id,
+            "amount": payload.amount,
+            "approval_id": payload.approval_id,
+            "idempotency_key": payload.idempotency_key,
+        },
     )
     return GrantCreditsResponse(**result)
 
@@ -1007,7 +812,6 @@ async def list_users(
                 User.nickname.ilike(pattern),
                 User.username.ilike(pattern),
                 User.email.ilike(pattern),
-                User.openid.ilike(pattern),
                 cast(User.id, String).ilike(pattern),
             )
         )
@@ -1089,7 +893,6 @@ async def list_admin_orders(
                 User.nickname.ilike(pattern),
                 User.username.ilike(pattern),
                 User.email.ilike(pattern),
-                User.openid.ilike(pattern),
             )
         )
     clean_status = (status or "").strip().upper()
@@ -1117,11 +920,6 @@ async def list_admin_orders(
             .limit(clean_page_size)
         )
     ).all()
-    for order, _user in rows:
-        if order.status == OrderStatus.GENERATING:
-            await generation_service.refresh_order(str(order.id))
-            await db.refresh(order)
-
     return AdminOrdersResponse(
         orders=[_order_item(order, user) for order, user in rows],
         total=total,
@@ -1137,7 +935,6 @@ async def get_admin_order_detail(
 ):
     """Return an admin-safe order detail payload."""
     await ensure_user_account_columns(db)
-    await generation_service.refresh_order(order_id)
     order = await _get_admin_order(db, order_id)
     user = await db.get(User, order.user_id)
     return _order_detail(order, user)
@@ -1172,119 +969,6 @@ async def update_order_status(
     return _order_detail(order, user)
 
 
-@router.post("/orders/{order_id}/regenerate", response_model=RegenerateOrderResponse)
-async def regenerate_admin_order(
-    order_id: str,
-    payload: RegenerateOrderRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Restart generation for an existing order without charging the user again."""
-    await ensure_user_account_columns(db)
-    generation_service.validate_runtime_requirements(force=True)
-
-    order = await _get_admin_order(db, order_id)
-    previous_status = _order_status_value(order)
-    if previous_status in {OrderStatus.CHECKING.value, OrderStatus.GENERATING.value}:
-        raise HTTPException(status_code=409, detail="Order is already in progress")
-    if not order.template_id:
-        raise HTTPException(status_code=422, detail="Order is missing template_id")
-    if not _source_images(order):
-        raise HTTPException(status_code=422, detail="Order is missing source images")
-
-    params = _order_params(order)
-    debug = dict(params.get("debug")) if isinstance(params.get("debug"), dict) else {}
-    history = debug.get("admin_regeneration_history") if isinstance(debug.get("admin_regeneration_history"), list) else []
-    now = datetime.now(timezone.utc).isoformat()
-    next_attempt = max(1, (_safe_int(params.get("generation_attempt"), 1) or 1) + 1)
-    actor = str(getattr(request.state, "admin_actor", "unknown-admin"))
-    reason = (payload.reason or "").strip()[:240] or "admin_regenerate"
-    history.append(
-        {
-            "attempt": next_attempt,
-            "requested_at": now,
-            "requested_by": actor,
-            "previous_status": previous_status,
-            "reason": reason,
-            "previous_failure_code": params.get("failure_code"),
-        }
-    )
-    debug["admin_regeneration_history"] = history[-8:]
-    params.update(
-        {
-            "debug": debug,
-            "generation_attempt": next_attempt,
-            "admin_regenerate_requested_at": now,
-            "admin_regenerate_requested_by": actor,
-            "admin_regenerate_reason": reason,
-            "admin_regenerate_in_progress": True,
-            "automatic_repair_extra_charge": 0,
-            "qa_retry_pending": False,
-            "qa_retry_in_progress": False,
-        }
-    )
-    if params.get("failure_code"):
-        params["previous_failure_code"] = params.get("failure_code")
-    if params.get("failure_provider"):
-        params["previous_failure_provider"] = params.get("failure_provider")
-    params.pop("failure_code", None)
-    params.pop("failure_provider", None)
-
-    execution_mode = "inline" if (
-        settings.using_inline_generation_execution if payload.execute_inline is None else bool(payload.execute_inline)
-    ) else "arq"
-    task_id = f"admin-regenerate-inline-{order.id}-{next_attempt}"
-    params["execution_mode"] = execution_mode
-    params["queue_job_id"] = task_id
-    order.status = OrderStatus.GENERATING
-    order.error_message = None
-    order.task_id = task_id
-    order.generation_params = params
-    if execution_mode == "arq":
-        await db.commit()
-        try:
-            task_id = await enqueue_generate_order(str(order.id))
-        except Exception as exc:
-            order.status = OrderStatus.CREATED
-            order.error_message = f"queue_unavailable: {exc}"
-            params["admin_regenerate_in_progress"] = False
-            params["admin_regenerate_error"] = str(exc)[:500]
-            order.generation_params = params
-            await db.commit()
-            raise HTTPException(status_code=503, detail="Generation queue unavailable. Please try again later.") from exc
-        params["queue_job_id"] = task_id
-        order.task_id = task_id
-        order.generation_params = params
-
-    await log_admin_action(
-        db,
-        action="regenerate_order",
-        request=request,
-        details={
-            "order_id": str(order.id),
-            "from_status": previous_status,
-            "generation_attempt": next_attempt,
-            "execution_mode": execution_mode,
-            "reason": reason,
-            "charged_again": False,
-        },
-    )
-    await db.commit()
-
-    if execution_mode == "inline":
-        await run_order_generation(str(order.id))
-        await db.refresh(order)
-
-    user = await db.get(User, order.user_id)
-    return RegenerateOrderResponse(
-        ok=True,
-        started=True,
-        execution_mode=execution_mode,
-        task_id=task_id,
-        order=_order_detail(order, user),
-    )
-
-
 @router.post("/cleanup_expired_assets", response_model=CleanupAssetsResponse)
 async def cleanup_admin_expired_assets(
     request: Request,
@@ -1292,15 +976,13 @@ async def cleanup_admin_expired_assets(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete expired source images and generated assets according to retention policy."""
-    source_images = await cleanup_expired_source_images(db, limit=limit)
-    generated_assets = await cleanup_expired_orders(db, limit=limit)
-    await log_admin_action(
-        db,
-        action="cleanup_expired_assets",
-        request=request,
-        details={"limit": limit, "source_images": source_images, "generated_assets": generated_assets},
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "cleanup_paused",
+            "message": "Deletion is paused until durable cleanup retries are available.",
+        },
     )
-    return CleanupAssetsResponse(source_images=source_images, generated_assets=generated_assets)
 
 
 @router.get("/ops_config", response_model=OpsConfigResponse)
@@ -1427,61 +1109,6 @@ async def get_admin_risk_overview(
 ):
     """Return signup, verification, and starter-credit abuse monitoring summary."""
     return await get_account_risk_summary(db, days=days, limit=limit)
-
-
-@router.get("/crm_preview")
-async def get_admin_crm_preview(
-    limit: int = 100,
-    city: str | None = None,
-    source_page: str | None = None,
-    source_slot: str | None = None,
-    template_id: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """Return the JSON payload that would be sent to CRM."""
-    leads = await query_leads_for_crm(
-        db,
-        limit=limit,
-        city=city,
-        source_page=source_page,
-        source_slot=source_slot,
-        template_id=template_id,
-    )
-    return build_crm_payload(leads)
-
-
-@router.post("/crm_push", response_model=CrmPushResponse)
-async def post_admin_crm_push(
-    request: Request,
-    limit: int = 100,
-    city: str | None = None,
-    source_page: str | None = None,
-    source_slot: str | None = None,
-    template_id: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """Push a filtered batch of leads to the configured CRM webhook."""
-    result = await push_leads_to_crm(
-        db,
-        limit=limit,
-        city=city,
-        source_page=source_page,
-        source_slot=source_slot,
-        template_id=template_id,
-    )
-    await log_admin_action(
-        db,
-        action="crm_push",
-        request=request,
-        details={"limit": limit, "city": city, "source_page": source_page, "source_slot": source_slot, "template_id": template_id, "pushed": result.get("pushed")},
-    )
-    return CrmPushResponse(**result)
-
-
-@router.get("/crm_push_history", response_model=list[CrmPushHistoryItem])
-async def get_admin_crm_push_history(limit: int = 20):
-    """Return recent CRM push audit records."""
-    return [CrmPushHistoryItem(**item) for item in list_crm_push_history(limit=limit)]
 
 
 @router.get("/audit_logs", response_model=list[AdminAuditLogItem])

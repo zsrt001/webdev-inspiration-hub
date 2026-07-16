@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vowpic.com/schemas/evidence-index.v1.json",
+  "title": "VowPic append-only evidence entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "manifest_sha256", "evidence_type", "case_id", "run_id", "attempt",
+    "deployment_id", "report_sha256", "produced_at", "observed_at",
+    "freshness_result", "reviewer_approval_ref", "decision"
+  ],
+  "properties": {
+    "schema": {"const": "vowpic.evidence-entry.v1"},
+    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence_type": {"type": "string", "minLength": 1, "maxLength": 160},
+    "case_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "attempt": {"type": "integer", "minimum": 1},
+    "deployment_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "produced_at": {"type": "string", "format": "date-time"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "freshness_result": {"enum": ["PASS", "FAIL"]},
+    "reviewer_approval_ref": {"type": "string", "minLength": 1, "maxLength": 160},
+    "decision": {"enum": ["PASS", "FAIL", "NOT_RUN", "NOT_APPLICABLE"]}
+  }
+}

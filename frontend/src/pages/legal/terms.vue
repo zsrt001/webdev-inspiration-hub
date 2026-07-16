@@ -1,11 +1,11 @@
 <template>
   <view class="legal-page">
     <NavBar />
-    <view class="legal-shell">
+    <view class="legal-shell" role="main" tabindex="0" aria-label="Terms of Service">
       <view class="legal-hero">
         <text class="eyebrow">{{ tr('法务与合规', 'Legal & Compliance') }}</text>
-        <text class="title heading-serif">{{ tr('服务条款', 'Terms of Service') }}</text>
-        <text class="subtitle">{{ tr('最后更新：2026 年 4 月 26 日', 'Last updated: April 26, 2026') }}</text>
+        <text class="title heading-serif" role="heading" aria-level="1">{{ tr('服务条款', 'Terms of Service') }}</text>
+        <text class="subtitle">{{ tr('最后更新：2026 年 7 月 13 日', 'Last updated: July 13, 2026') }}</text>
       </view>
 
       <view class="legal-content">
@@ -51,12 +51,12 @@ const sections = computed(() => [
     titleEn: 'Credits and Pricing',
     zh: [
       '积分是平台内的使用额度，不是现金、储值卡或可提现资产。',
-      '当前扣费规则：单人基础生成 2 积分，Director/高级单人 3 积分，双人本地合拍 3 积分，异地合拍 4 积分，高级场景 5 积分，Live Portrait 5 秒 6 积分，每额外 5 秒加 4 积分。',
+      '当前扣费规则：单人生成（含 Director 创作方向）2 积分，双人同机与金婚重塑 3 积分。提交页会在扣费前再次显示本次实际积分。',
       '积分会在生成任务开始处理后扣减；如果任务未能开始，会按系统记录自动退回。支付成功后的积分发放以支付记录和账户流水为准。',
     ],
     en: [
       'Credits are in-product usage units, not cash, stored value, or withdrawable assets.',
-      'Current costs: base single image 2 credits, Director/advanced single 3, local couple 3, remote couple 4, premium scene 5, Live Portrait 5 seconds 6, and each extra 5 seconds +4.',
+      'Current costs: single generation, including Director guidance, is 2 credits; local couple and Golden Anniversary generation are 3 credits. The create page confirms the actual charge before submission.',
       'Credits are deducted after a generation task starts processing. If the task cannot start, credits are returned based on system records. Payment grants are based on payment records and account ledger entries.',
     ],
   },

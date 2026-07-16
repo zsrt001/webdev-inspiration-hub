@@ -1,136 +1,129 @@
-"""Analytics reporting helpers."""
+"""Generation analytics must use normalized attempts and immutable verdicts."""
 
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import unittest
+import uuid
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.models.generation_attempt import (  # noqa: E402
+    GenerationAttemptKind,
+    GenerationAttemptStatus,
+)
 from app.models.order import OrderStatus  # noqa: E402
+from app.models.qa_verdict import QaDecision  # noqa: E402
 from app.services.analytics_reporting_service import (  # noqa: E402
-    _build_quality_dashboard_from_orders,
-    _identity_grade_from_params,
+    NormalizedQualityFact,
+    _build_quality_dashboard_from_facts,
 )
 
 
+NOW = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+
+
+def _fact(
+    *,
+    order_id: uuid.UUID,
+    template_id: str,
+    attempt_number: int,
+    kind: GenerationAttemptKind,
+    decision: QaDecision,
+    reasons: tuple[str, ...] = (),
+    identity_score: float = 1.0,
+    cost_minor_units: int = 0,
+) -> NormalizedQualityFact:
+    return NormalizedQualityFact(
+        order_id=order_id,
+        created_at=NOW,
+        template_id=template_id,
+        order_status=OrderStatus.READY,
+        attempt_number=attempt_number,
+        attempt_kind=kind,
+        attempt_status=GenerationAttemptStatus.FINISHED,
+        cost_minor_units=cost_minor_units,
+        cost_currency="USD",
+        decision=decision,
+        reasons=reasons,
+        scores={"identity": identity_score},
+    )
+
+
 class AnalyticsReportingServiceTest(unittest.TestCase):
-    def test_identity_grade_uses_worst_round_grade(self) -> None:
-        params = {
-            "debug": {
-                "image_edit_rounds": [
-                    {"identity_grade": "identity_pass"},
-                    {
-                        "identity_grade": "minor_drift",
-                        "candidate_scores": [{"identity_grade": "major_mismatch"}],
-                    },
-                    {"identity_grade": "identity_pass"},
-                ]
-            }
-        }
-
-        self.assertEqual(_identity_grade_from_params(params), "major_mismatch")
-
-    def test_quality_dashboard_groups_template_reasons_and_repair_success(self) -> None:
-        order_rows = [
-            (
-                "royal_castle",
-                OrderStatus.COMPLETED.value,
-                {
-                    "debug": {
-                        "image_edit_rounds": [
-                            {
-                                "round": 1,
-                                "stage": "primary_generation",
-                                "repair_mode": "primary_generation",
-                                "qa_passed": False,
-                                "qa_reasons": ["face_underexposed", "background_brighter_than_face"],
-                                "candidate_scores": [
-                                    {
-                                        "index": 0,
-                                        "score": 42,
-                                        "reasons": ["face_underexposed"],
-                                        "hard_gate_reasons": ["face_underexposed"],
-                                    }
-                                ],
-                                "selected_candidate_index": 0,
-                            },
-                            {
-                                "round": 2,
-                                "stage": "targeted_repair",
-                                "repair_mode": "relight_edit_only",
-                                "qa_passed": True,
-                                "qa_reasons": [],
-                                "candidate_scores": [{"index": 0, "score": 91, "reasons": []}],
-                                "selected_candidate_index": 0,
-                            },
-                        ]
-                    }
-                },
-                None,
+    def test_quality_dashboard_derives_repair_reasons_and_cost_from_facts(self) -> None:
+        repaired_order = uuid.uuid4()
+        passing_order = uuid.uuid4()
+        facts = [
+            _fact(
+                order_id=repaired_order,
+                template_id="royal_castle",
+                attempt_number=1,
+                kind=GenerationAttemptKind.INITIAL,
+                decision=QaDecision.REPAIR,
+                reasons=("face_underexposed",),
+                identity_score=0.91,
+                cost_minor_units=12,
             ),
-            (
-                "royal_castle",
-                OrderStatus.FAILED.value,
-                {
-                    "failure_code": "qa_reject",
-                    "qa_last_reasons": ["identity_similarity_low"],
-                    "qa_last_issues": [{"code": "identity_similarity_low"}],
-                },
-                "QA failed: identity_similarity_low",
+            _fact(
+                order_id=repaired_order,
+                template_id="royal_castle",
+                attempt_number=2,
+                kind=GenerationAttemptKind.REPAIR,
+                decision=QaDecision.PASS,
+                identity_score=0.95,
+                cost_minor_units=4,
             ),
-            (
-                "solo_royal_castle",
-                OrderStatus.FAILED.value,
-                {
-                    "qa_last_reasons": ["dress_cropped", "subject_too_small"],
-                    "debug": {
-                        "image_edit_rounds": [
-                            {
-                                "round": 1,
-                                "repair_mode": "primary_generation",
-                                "qa_passed": False,
-                                "qa_reasons": ["dress_cropped", "subject_too_small"],
-                            }
-                        ]
-                    },
-                },
-                "QA failed: dress_cropped",
+            _fact(
+                order_id=passing_order,
+                template_id="solo_royal_castle",
+                attempt_number=1,
+                kind=GenerationAttemptKind.INITIAL,
+                decision=QaDecision.REJECT,
+                reasons=("identity_similarity_low",),
+                identity_score=0.42,
+                cost_minor_units=9,
             ),
         ]
 
-        dashboard = _build_quality_dashboard_from_orders(order_rows)
+        dashboard = _build_quality_dashboard_from_facts(facts)
 
-        self.assertEqual(dashboard["totals"]["orders"], 3)
-        self.assertEqual(dashboard["totals"]["completed_orders"], 1)
-        self.assertEqual(dashboard["totals"]["qa_failed_orders"], 3)
-        self.assertEqual(dashboard["totals"]["identity_failed_orders"], 1)
-        self.assertEqual(dashboard["totals"]["lighting_failed_orders"], 1)
-        self.assertEqual(dashboard["totals"]["composition_failed_orders"], 1)
-        self.assertEqual(dashboard["totals"]["relight_attempts"], 1)
-        self.assertEqual(dashboard["totals"]["relight_success_rate"], 1.0)
+        totals = dashboard["totals"]
+        self.assertEqual(totals["orders"], 2)
+        self.assertEqual(totals["qa_failed_orders"], 2)
+        self.assertEqual(totals["identity_failed_orders"], 1)
+        self.assertEqual(totals["repair_round_sum"], 1)
+        self.assertEqual(totals["provider_cost_minor_units"], {"USD": 25})
 
         reasons = {item["reason"]: item for item in dashboard["failure_reasons"]}
-        self.assertEqual(reasons["identity_similarity_low"]["group"], "identity")
         self.assertEqual(reasons["face_underexposed"]["group"], "lighting")
-        self.assertEqual(reasons["dress_cropped"]["group"], "composition")
-        self.assertEqual(reasons["face_underexposed"]["round_counts"], {"1": 1})
+        self.assertEqual(reasons["identity_similarity_low"]["group"], "identity")
 
-        rounds = {str(item["round"]): item for item in dashboard["repair_rounds"]}
-        self.assertEqual(rounds["1"]["attempts"], 2)
-        self.assertEqual(rounds["2"]["success_rate"], 1.0)
+        rounds = {item["round"]: item for item in dashboard["repair_rounds"]}
+        self.assertEqual(rounds[1]["attempts"], 2)
+        self.assertEqual(rounds[2]["success_rate"], 1.0)
+        self.assertEqual(rounds[1]["avg_identity_score"], 0.67)
 
-        repair_modes = {item["repair_mode"]: item for item in dashboard["repair_modes"]}
-        self.assertEqual(repair_modes["relight_edit_only"]["attempts"], 1)
-        self.assertEqual(repair_modes["relight_edit_only"]["success_rate"], 1.0)
-
-        templates = {item["template_id"]: item for item in dashboard["templates"]}
-        self.assertEqual(templates["royal_castle"]["orders"], 2)
-        self.assertEqual(templates["royal_castle"]["identity_failed_orders"], 1)
-        self.assertEqual(templates["royal_castle"]["lighting_failed_orders"], 1)
-        self.assertEqual(templates["solo_royal_castle"]["composition_failed_orders"], 1)
+    def test_legacy_debug_params_and_credit_policy_are_absent(self) -> None:
+        service = (BACKEND_DIR / "app/services/analytics_reporting_service.py").read_text(
+            encoding="utf-8"
+        )
+        for forbidden in (
+            "Order.generation_params",
+            "image_edit_rounds",
+            "qa_last_reasons",
+            "qa_attempt_count",
+            "generation_credit_policy",
+        ):
+            self.assertNotIn(forbidden, service)
+        self.assertFalse(
+            (BACKEND_DIR / "app/services/generation_credit_policy.py").exists()
+        )
 
 
 if __name__ == "__main__":

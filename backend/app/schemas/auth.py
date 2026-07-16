@@ -1,28 +1,45 @@
-"""Authentication Pydantic schemas."""
+"""Cookie-session and PKCE exchange request/response schemas."""
 
+from datetime import datetime
 from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
-class LoginRequest(BaseModel):
-    """Schema for guest code exchange."""
-
-    code: str | None = None
-    previous_guest_id: str | None = Field(default=None, max_length=128)
+class OAuthIntentRequest(BaseModel):
+    next_path: str = Field(default="/pages/account/index", min_length=1, max_length=512)
 
 
-class LoginResponse(BaseModel):
-    """Schema for login response with JWT token."""
-
-    access_token: str
-    token_type: str = "bearer"
-    openid: str
-    user_id: UUID
-    username: str | None = None
+class OAuthIntentResponse(BaseModel):
+    intent_token: str
+    callback_url: str
+    redirect_path: str
+    expires_at: datetime
 
 
 class SupabaseSessionRequest(BaseModel):
-    """Supabase OAuth access token exchange request."""
+    """One-time broker token plus the browser's local application intent."""
 
     access_token: str = Field(min_length=16, max_length=8192)
-    previous_guest_id: str | None = Field(default=None, max_length=128)
+    intent_token: str = Field(min_length=16, max_length=512)
+
+
+class PaymentClaimProofRequest(BaseModel):
+    legacy_user_id: UUID
+    payment_reference: str = Field(min_length=1, max_length=256)
+
+
+class PaymentClaimProofResponse(BaseModel):
+    proof_id: UUID
+    expires_at: datetime
+
+
+class LegacyAccountMergeRequest(BaseModel):
+    legacy_user_id: UUID
+    proof_id: UUID
+
+
+class LegacyAccountMergeResponse(BaseModel):
+    merge_id: UUID
+    legacy_user_id: UUID
+    canonical_user_id: UUID

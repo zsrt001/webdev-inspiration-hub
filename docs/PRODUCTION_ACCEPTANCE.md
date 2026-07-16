@@ -1,82 +1,31 @@
-# Production acceptance checklist
+# Production acceptance status
 
-Use this checklist before marking a Vercel production release ready.
+VowPic **尚未达到 Production accepted**。当前已实现的安全基线和 Preview 身份验收只证明受控范围内的工程合同，不能替代正式域名上的真实商业主链路验收。
 
-## Automated smoke
+## 当前可验证范围
 
-Run from the repository root:
+- `safe-baseline-release.yml` 验证生产安全基线、全能力关闭、部署坐标、零运行时 DDL 和无业务数据副作用。
+- `integration.yml` 在受保护的 Vercel Preview 上验证一次真实 Google PKCE 登录、本地 Cookie 会话、刷新轮换、退出和独立清理。
+- 本地单元、集成和构建检查只能作为前置证据，不能把项目标记为生产可用。
 
-```powershell
-node .\scripts\prod_smoke_check.mjs --base-url "https://www.vowpic.com"
-```
+以上两条发布流程都必须绑定精确 source SHA、runtime bundle、Vercel deployment、数据库 revision 和 create-once 证据。Preview 身份验收完成后必须恢复 Supabase 精确回调、关闭全部能力并清理验收业务数据。
 
-If Vercel is cold or the generation queue provider is slow, keep the queue probe enabled and raise the timeout:
+## 禁止的验收捷径
 
-```powershell
-node .\scripts\prod_smoke_check.mjs --base-url "https://www.vowpic.com" --readiness-timeout-sec 240
-```
+- 不得用浏览器 `X-Admin-Token`、通用 Bearer、旧 OpenID、游客身份或硬编码白名单代替普通 Google 用户。
+- 不得用 Admin generation probe 代替用户下单、计费、生成、质检和私密交付链路。
+- 不得把健康检查、构建、页面打开、mock、静态样例或单一 smoke 结果写成生产验收通过。
+- 不得在缺少真实支付、真实 Provider、真实私密存储和正式域名证据时生成 `passed: true` 的商业验收报告。
 
-The smoke check must pass:
+## Production accepted 的后续门槛
 
-- `/health` returns healthy.
-- `/api/v1/ops/readiness` returns `commercial_ready: true`.
-- Storage and generation queue probes are healthy.
-- Public home banner no longer points at legacy heavy images.
-- Templates endpoint returns a non-empty collection.
+只有获批实施计划中的生产发布与验收阶段完成后，才能更新本文件并执行正式验收。至少需要：
 
-## Admin console
+- 正式域名上的普通 Google 用户登录、刷新、退出、退出后拒绝和再次登录。
+- 真实低额支付、账本、退款/债务抵扣、订阅及 webhook 幂等链路。
+- 单人、本机双人和金婚重塑的真实上传、下单、异步生成、质量检查、私密资产和授权下载。
+- Provider 超时/未知结果恢复、重复提交防护、失败退款和有界清理。
+- 数据迁移、回滚基线、正式域名切换、能力逐项 canary、至少 24 小时的持久观察和最终签署。
+- 证据不得包含 token、原始邮箱、对象 key、永久 URL 或 Provider 原始敏感载荷。
 
-Open `/admin` after signing in with an authorized Google account.
-
-- Confirm the Admin access card shows the current actor, roles, `/admin` entry, remote join state, session store, and generation mode.
-- Use Users & credits to inspect user status and grant credits only when needed.
-- Use Orders to inspect order status and generation details.
-- Use Email delivery to send a real test email and confirm the latest email log is successful.
-- Use Real generation probe with public Vercel Blob image URLs. For remote couple probes, provide two portrait URLs and keep "Remote join couple probe" enabled.
-- Confirm the probe shows both source images and the generated wedding image.
-
-## Real generation acceptance
-
-Run the production generation acceptance script after backend and frontend deploys are ready:
-
-```powershell
-node .\scripts\run_prod_generation_acceptance.mjs --base-url "https://www.vowpic.com" --admin-token "<ADMIN_TOKEN>"
-```
-
-To verify the customer-facing order contract in the same run, also provide a bearer token for the probe user that owns the generated orders:
-
-```powershell
-node .\scripts\run_prod_generation_acceptance.mjs --base-url "https://www.vowpic.com" --admin-token "<ADMIN_TOKEN>" --public-bearer-token "<USER_BEARER_TOKEN>"
-```
-
-The script starts zero-cost admin probe orders and downloads the source/final image evidence into `artifacts/production-generation-test/generated`.
-It must cover:
-
-- Single template generation.
-- Single text-description generation.
-- Single outdoor lighting text generation.
-- Couple same-device template generation.
-- Couple remote-session text generation.
-
-Each test must satisfy:
-
-- Order status is `COMPLETED`.
-- At least one generated wedding image is returned.
-- `qa_last_reasons` is empty after final delivery.
-- Every automatic repair round remains `billable: false`.
-- Sum of `extra_credits_charged` across repair rounds is `0`.
-- Admin order detail shows generation rounds, QA reasons, candidate scores, `repair_mode`, and billing reason.
-- Customer-facing order responses show only user uploads and final delivery, not internal process images or failed candidates. If `--public-bearer-token` is omitted, this gate is intentionally reported as unchecked/failing.
-
-## Release gates
-
-Do not call the release done until all items are true:
-
-- Google login works on production.
-- Credits are deducted or granted according to the current credit rules.
-- Email test succeeds with the verified sender.
-- Solo generation, local couple generation, and remote couple generation each produce an acceptable wedding image.
-- If a second round is caused only by lighting QA, the round must be `relight_edit_only`, must use the prior candidate as the current canvas, and must not redraw the face.
-- Automatic relight/repair rounds must not deduct additional user credits.
-- Admin console is reachable at `/admin` only for authorized admins.
-- No production environment variable points at `127.0.0.1`, `localhost`, or local MinIO.
+在上述合同尚未实现和实跑前，任何生产验收命令都应视为不存在，而不是使用旧脚本或旧凭据凑出绿色结果。

@@ -18,7 +18,7 @@ def get_legal_policies() -> dict:
     settings = get_settings()
     support_contact = settings.support_contact_url or settings.support_contact_email or settings.manual_payment_contact
     return {
-        "last_updated": date(2026, 4, 26).isoformat(),
+        "last_updated": date(2026, 7, 13).isoformat(),
         "retention": {
             "source_images_days": SOURCE_IMAGE_RETENTION_DAYS,
             "free_generated_days": FREE_ORDER_RETENTION_DAYS,
@@ -26,19 +26,15 @@ def get_legal_policies() -> dict:
             "subscription_generated_days": SUBSCRIPTION_ORDER_RETENTION_DAYS,
             "studio_generated_days": STUDIO_ORDER_RETENTION_DAYS,
             "summary": (
-                "Uploaded source photos are temporary processing inputs. Generated assets are retained by account tier "
-                "and removed automatically after expiry unless the user deletes them earlier."
+                "The listed periods are the scheduled retention targets for source and generated assets. "
+                "Automated deletion is temporarily paused until the auditable, retryable cleanup flow is verified."
             ),
         },
         "pricing": {
             "single": 2,
             "director": 2,
             "couple_local": 3,
-            "couple_remote": 3,
             "golden_anniversary": 3,
-            "premium_scene": 5,
-            "live_portrait_5s": 6,
-            "live_portrait_extra_5s": 4,
             "summary": "Credits are deducted only after a generation job is accepted into the queue and are refunded if queueing fails.",
         },
         "disclaimers": [

@@ -23,12 +23,12 @@
       <view v-else-if="authRequired" class="state-card">
         <text class="state-title">{{ t('orders.signin_required') }}</text>
         <text class="state-subtitle">{{ t('orders.signin_required_subtitle') }}</text>
-        <button class="btn btn-primary state-action" @tap="goLogin">{{ t('orders.signin') }}</button>
+        <button v-if="googleAuthAvailable" class="btn btn-primary state-action" @tap="goLogin">{{ t('orders.signin') }}</button>
       </view>
 
       <view v-else-if="orders.length === 0" class="state-card">
         <text class="state-title">{{ t('orders.empty') }}</text>
-        <button class="btn btn-primary state-action" @tap="goToCreate">{{ t('orders.start') }}</button>
+        <button v-if="creationAvailable" class="btn btn-primary state-action" @tap="goToCreate">{{ t('orders.start') }}</button>
       </view>
 
       <view v-else class="orders-grid">
@@ -67,6 +67,7 @@ import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
+import { useOpsStore } from '../../stores/ops';
 import { getLocalizedTemplateTitle, useTemplateStore } from '../../stores/template';
 import { get, resolvePublicUrl } from '../../utils/api';
 
@@ -98,10 +99,13 @@ const loading = ref(true);
 const error = ref('');
 const authRequired = ref(false);
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const templateStore = useTemplateStore();
 const t = i18nStore.t;
 const tf = i18nStore.tf;
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const googleAuthAvailable = computed(() => opsStore.googleAuthAvailable);
 
 const templateTitleMap = computed(() => {
   const map = new Map<string, string>();
@@ -237,10 +241,12 @@ function badgeClass(status: string): string {
 }
 
 function goToCreate() {
+  if (!creationAvailable.value) return;
   uni.navigateTo({ url: '/pages/create/index' });
 }
 
 function goLogin() {
+  if (!googleAuthAvailable.value) return;
   uni.navigateTo({ url: '/pages/auth/login' });
 }
 
@@ -252,7 +258,10 @@ function refresh() {
   fetchOrders();
 }
 
-onMounted(fetchOrders);
+onMounted(async () => {
+  await opsStore.fetchPublicConfig();
+  await fetchOrders();
+});
 </script>
 
 <style lang="scss" scoped>

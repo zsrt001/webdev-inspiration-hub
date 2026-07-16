@@ -1,0 +1,79 @@
+{
+  "contract_version": "preview-protected-runtime.v4",
+  "release_role": "PREVIEW_IDENTITY",
+  "schema_revision": "20260710_0020",
+  "api_version": "vowpic-web-identity-private-media.v3",
+  "enabled_capabilities": [
+    "google_auth",
+    "authenticated_upload"
+  ],
+  "disabled_capabilities": [
+    "generation",
+    "credit_pack_checkout",
+    "subscription_billing",
+    "private_download",
+    "partner_invite"
+  ],
+  "identity": {
+    "broker": "supabase-google-pkce",
+    "first_login": "deployment-bound-acceptance-identity",
+    "local_identity_key": "provider-subject"
+  },
+  "session": {
+    "access_ttl_seconds": 900,
+    "refresh_ttl_seconds": 2592000,
+    "storage": "secure-cookie-only"
+  },
+  "welcome_grant": {
+    "identity_claims": 2,
+    "ledger_roots": 2,
+    "grant_lots": 2,
+    "credits_per_identity": 2,
+    "duplicate_login_delta": 0,
+    "preserved_by_cleanup": true
+  },
+  "private_media": {
+    "upload_identities": 1,
+    "isolation_identities": 2,
+    "owner_read": "required",
+    "cross_user_read": "denied",
+    "deletion": "read-revoked-and-object-cleaned"
+  },
+  "cleanup": {
+    "auth_redirect": "restore-exact-snapshot",
+    "feature_flags": "all-off",
+    "unused_identity_binding": "revoke",
+    "activation_terminal_phase": "CLEANED"
+  },
+  "commercial_extension": {
+    "release_role": "PREVIEW_COMMERCIAL",
+    "api_role": "PREVIEW_COMMERCIAL_API",
+    "schema_revision": "20260710_0020",
+    "worker": {
+      "role": "PREVIEW_COMMERCIAL_WORKER",
+      "image_identity": "oci-digest-only",
+      "runtime_identity": "same-as-api",
+      "host": "protected-ephemeral-preview-runner",
+      "heartbeat_max_age_seconds": 120
+    },
+    "provider_contract_authority": "release/provider-contracts.json",
+    "provider_grant_origin": "exact-temporary-vercel-alias",
+    "provider_grant_route": "GET /api/v1/media/grants/{token}",
+    "provider_runtime_probe": "authenticated GET /api/v1/version with an independent app secret",
+    "provider_grant_other_routes": "404 including missing-or-invalid runtime probes",
+    "feature_snapshot": "all-off-until-case-scoped-activation",
+    "evidence": {
+      "worker_build": "create-once",
+      "worker_start": "create-once",
+      "worker_heartbeat": "redis-and-process-bound",
+      "provider_fetch": "signed-real-network-and-database-read-count"
+    },
+    "cleanup": {
+      "worker": "stop-and-remove-exact-container",
+      "worker_heartbeat": "prove-absent",
+      "provider_grant_origin": "remove-exact-alias-and-read-back",
+      "feature_flags": "all-off",
+      "activation_terminal_phase": "CLEANED"
+    }
+  }
+}

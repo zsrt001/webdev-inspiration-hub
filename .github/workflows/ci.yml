@@ -6,111 +6,375 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  backend-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - run: pip install -r backend/requirements.txt
-        working-directory: .
-      - run: python -m unittest discover -s tests -v
-        working-directory: backend
+permissions:
+  contents: read
 
-  frontend-build:
-    runs-on: ubuntu-latest
+jobs:
+  dependency-locks:
+    runs-on: ubuntu-24.04
+    container: python:3.11.15-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Verify the pinned resolver runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(python -c 'import platform; print(platform.python_version())')" = "3.11.15"
+          . /etc/os-release
+          test "${VERSION_CODENAME:-}" = "bookworm"
+      - name: Install Git and byte-comparison tools
+        run: apt-get update && apt-get install --yes --no-install-recommends git diffutils && rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install the hash-locked resolver
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-resolver.txt
+      - name: Reproduce the resolver lock itself
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp requirements-resolver.txt /tmp/requirements-resolver.expected.txt
+          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --allow-unsafe --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=requirements-resolver.txt requirements-resolver.in'
+          python -m piptools compile --allow-unsafe --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements-resolver.txt requirements-resolver.in --quiet
+          cmp /tmp/requirements-resolver.expected.txt requirements-resolver.txt
+      - name: Resolve the Linux backend lock twice and require byte-identical output
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp backend/requirements.lock.txt /tmp/backend-requirements-lock.expected.txt
+          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=backend/requirements.lock.txt backend/requirements.txt'
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.lock.txt backend/requirements.txt --quiet
+          sha256sum backend/requirements.lock.txt > /tmp/backend-lock-pass-1.sha256
+          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=backend/requirements.lock.txt backend/requirements.txt'
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.lock.txt backend/requirements.txt --quiet
+          sha256sum backend/requirements.lock.txt > /tmp/backend-lock-pass-2.sha256
+          diff --unified /tmp/backend-lock-pass-1.sha256 /tmp/backend-lock-pass-2.sha256
+          cmp /tmp/backend-requirements-lock.expected.txt backend/requirements.lock.txt
+      - name: Prove the Linux backend lock installs with hashes
+        run: |
+          python -m venv /tmp/vowpic-backend-lock
+          /tmp/vowpic-backend-lock/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          /tmp/vowpic-backend-lock/bin/python -m pip check
+
+  vercel-dependency-locks:
+    runs-on: ubuntu-24.04
+    container: python:3.12.13-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
+    steps:
+      - name: Verify the Vercel Python runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(python -c 'import platform; print(platform.python_version())')" = "3.12.13"
+          . /etc/os-release
+          test "${VERSION_CODENAME:-}" = "bookworm"
+      - name: Install Git and byte-comparison tools
+        run: apt-get update && apt-get install --yes --no-install-recommends git diffutils && rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install the hash-locked resolver
+        run: python -m pip install --disable-pip-version-check --require-hashes --index-url=https://pypi.org/simple -r requirements-resolver.txt
+      - name: Resolve the Vercel API lock twice and require byte-identical output
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp requirements.txt /tmp/requirements.expected.txt
+          export CUSTOM_COMPILE_COMMAND='python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=requirements.txt requirements.in'
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements.txt requirements.in --quiet
+          sha256sum requirements.txt > /tmp/vercel-lock-pass-1.sha256
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements.txt requirements.in --quiet
+          sha256sum requirements.txt > /tmp/vercel-lock-pass-2.sha256
+          diff --unified /tmp/vercel-lock-pass-1.sha256 /tmp/vercel-lock-pass-2.sha256
+          cmp /tmp/requirements.expected.txt requirements.txt
+      - name: Prove the Vercel API lock installs and the function entry point imports
+        run: |
+          python -m venv /tmp/vowpic-vercel-runtime
+          /tmp/vowpic-vercel-runtime/bin/python -m pip install --disable-pip-version-check --require-hashes -r requirements.txt
+          /tmp/vowpic-vercel-runtime/bin/python -m pip check
+          /tmp/vowpic-vercel-runtime/bin/python -c "import api.index; assert api.index.handler is api.index.app"
+
+  windows-dependency-locks:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          node-version: "20"
+          python-version: "3.11.9"
+          cache: pip
+          cache-dependency-path: requirements-resolver.windows.txt
+      - name: Verify the available Windows resolver runtime identity
+        shell: pwsh
+        run: |
+          $version = python -c "import platform; print(platform.python_version())"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($version.Trim() -ne "3.11.9") { throw "Expected Python 3.11.9, got $version" }
+      - name: Install the Windows hash-locked resolver
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-resolver.windows.txt
+      - name: Resolve the Windows resolver and backend locks twice
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:CUSTOM_COMPILE_COMMAND = 'python -m piptools compile --allow-unsafe --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=requirements-resolver.windows.txt requirements-resolver.in'
+          python -m piptools compile --allow-unsafe --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements-resolver.windows.txt requirements-resolver.in --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $resolverFirst = (Get-FileHash -Algorithm SHA256 requirements-resolver.windows.txt).Hash
+          python -m piptools compile --allow-unsafe --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=requirements-resolver.windows.txt requirements-resolver.in --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $resolverSecond = (Get-FileHash -Algorithm SHA256 requirements-resolver.windows.txt).Hash
+          if ($resolverFirst -ne $resolverSecond) { throw "Windows resolver lock is not byte-identical" }
+          $env:CUSTOM_COMPILE_COMMAND = 'python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=backend/requirements.windows.lock.txt backend/requirements.txt'
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.windows.lock.txt backend/requirements.txt --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $first = (Get-FileHash -Algorithm SHA256 backend/requirements.windows.lock.txt).Hash
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=backend/requirements.windows.lock.txt backend/requirements.txt --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $second = (Get-FileHash -Algorithm SHA256 backend/requirements.windows.lock.txt).Hash
+          if ($first -ne $second) { throw "Windows backend lock is not byte-identical" }
+          git diff --exit-code -- requirements-resolver.windows.txt backend/requirements.windows.lock.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prove the Windows backend lock installs with hashes
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP "vowpic-backend-lock"
+          python -m venv $venv
+          & "$venv\Scripts\python.exe" -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.windows.lock.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$venv\Scripts\python.exe" -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  backend-test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:15-alpine@sha256:fceb6f86328c36f2438fae3b851b0cc57c4a7e69a58c866d9ce24281f2cf0c9c
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vowpic_rls_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vowpic_rls_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11.15"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+      - name: Install the hash-locked backend environment
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+      - name: Require deterministic committed OpenAPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/scripts/export_openapi.py
+          sha256sum openapi/openapi.json > /tmp/openapi-pass-1.sha256
+          python backend/scripts/export_openapi.py
+          sha256sum openapi/openapi.json > /tmp/openapi-pass-2.sha256
+          diff --unified /tmp/openapi-pass-1.sha256 /tmp/openapi-pass-2.sha256
+          git diff --exit-code -- openapi/openapi.json
+      - name: Wait for PostgreSQL final startup
+        shell: bash
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 120))
+          while (( SECONDS < deadline )); do
+            logs="$(docker logs "$POSTGRES_SERVICE_ID" 2>&1 || true)"
+            if grep -Fq 'PostgreSQL init process complete; ready for start up.' <<<"$logs"; then
+              if docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres -d vowpic_rls_test >/dev/null 2>&1; then
+                exit 0
+              fi
+            fi
+            sleep 1
+          done
+          docker logs --tail 100 "$POSTGRES_SERVICE_ID" >&2
+          exit 1
+      - name: Run an empty PostgreSQL migration to head
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: alembic upgrade head
+      - name: Run the real PostgreSQL control-plane RLS contract
+        env:
+          RUN_POSTGRES_INTEGRATION: '1'
+          CONTROL_PLANE_RLS_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: python -m unittest backend.tests.integration.test_control_plane_rls -v
+      - name: Run the real PostgreSQL click-stats repair contract
+        env:
+          RUN_CLICK_STATS_REPAIR_INTEGRATION: '1'
+          CLICK_STATS_REPAIR_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: python -m unittest backend.tests.integration.test_click_stats_repair -v
+      - name: Run the real identity RLS and concurrency contract
+        env:
+          RUN_POSTGRES_INTEGRATION: '1'
+          IDENTITY_RLS_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: python -m unittest backend.tests.integration.test_identity_rls -v
+      - name: Run the real Partner Invite RLS contract
+        env:
+          RUN_POSTGRES_INTEGRATION: '1'
+          PARTNER_INVITE_RLS_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
+        run: python -m unittest backend.tests.integration.test_partner_invite_rls -v
+      - name: Run a non-empty backend suite
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import sys
+          import unittest
+
+          suite = unittest.defaultTestLoader.discover("tests")
+          count = suite.countTestCases()
+          print(f"collected_backend_tests={count}")
+          if count == 0:
+              raise SystemExit("backend test discovery collected zero tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
+
+  frontend-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.17.0"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+        working-directory: frontend
+      - name: Require zero audited production dependency vulnerabilities
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=low
+      - name: Require exact locked frontend test tools
+        working-directory: frontend
+        run: npm ls --depth=0 vitest@3.2.6 @vue/test-utils@2.4.6 jsdom@24.1.3 @axe-core/playwright@4.12.1 openapi-typescript@7.13.0 @playwright/test@1.61.1
+      - name: Require deterministic generated API types
+        shell: bash
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npm run openapi:generate
+          sha256sum src/generated/api.d.ts > /tmp/api-types-pass-1.sha256
+          npm run openapi:generate
+          sha256sum src/generated/api.d.ts > /tmp/api-types-pass-2.sha256
+          diff --unified /tmp/api-types-pass-1.sha256 /tmp/api-types-pass-2.sha256
+          git diff --exit-code -- src/generated/api.d.ts
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm run test:unit
         working-directory: frontend
       - run: npm run build:web
         working-directory: frontend
+      - name: Install the exact browser engines for accessibility checks
+        working-directory: frontend
+        run: npm run playwright:install
+      - name: Run non-empty browser accessibility checks against the real Web build
+        working-directory: frontend
+        env:
+          RUN_LOCAL_A11Y: '1'
+        run: npm run test:a11y
 
-  deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [backend-test, frontend-build]
-    runs-on: ubuntu-latest
-    environment: production
+  worker-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Build the production Worker image from the locked backend context
+        run: docker build --file backend/Dockerfile.worker --tag vowpic-worker:pr-${GITHUB_SHA} backend
+
+  quality-gate:
+    if: always()
+    needs: [dependency-locks, vercel-dependency-locks, windows-dependency-locks, backend-test, frontend-check, worker-image]
+    runs-on: ubuntu-24.04
     env:
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      LINUX_LOCKS_RESULT: ${{ needs.dependency-locks.result }}
+      VERCEL_LOCKS_RESULT: ${{ needs.vercel-dependency-locks.result }}
+      WINDOWS_LOCKS_RESULT: ${{ needs.windows-dependency-locks.result }}
+      BACKEND_RESULT: ${{ needs.backend-test.result }}
+      FRONTEND_RESULT: ${{ needs.frontend-check.result }}
+      WORKER_IMAGE_RESULT: ${{ needs.worker-image.result }}
     steps:
-      - name: Skip manual Vercel deploy when token is not configured
-        if: env.VERCEL_TOKEN == ''
-        run: echo "VERCEL_TOKEN is not configured; relying on Vercel Git integration."
-      - uses: actions/checkout@v4
-        if: env.VERCEL_TOKEN != ''
-      - uses: actions/setup-node@v4
-        if: env.VERCEL_TOKEN != ''
-        with:
-          node-version: "20"
-      - if: env.VERCEL_TOKEN != ''
-        run: npm i -g vercel
-      - if: env.VERCEL_TOKEN != ''
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-      - if: env.VERCEL_TOKEN != ''
-        run: vercel build --prod --token="$VERCEL_TOKEN"
-      - if: env.VERCEL_TOKEN != ''
-        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
-
-  production-smoke:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [deploy]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Verify production remote join
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Materialize exact secret-free PR evidence from required job results
+        shell: bash
         run: |
+          set -euo pipefail
+          RUNTIME_BUNDLE_ID="rtb_$(printf '%s' "${GITHUB_SHA}:pr-gate.v1" | sha256sum | cut -d' ' -f1)"
+          GATE_SHA256="$(sha256sum release/gates.json | cut -d' ' -f1)"
+          EVIDENCE_ROOT="artifacts/release/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/pr/01-ci"
+          mkdir -p "$EVIDENCE_ROOT"
+          export RUNTIME_BUNDLE_ID GATE_SHA256 EVIDENCE_ROOT
           python - <<'PY'
+          from datetime import datetime, timezone
           import json
-          import time
-          import urllib.error
-          import urllib.request
+          import os
+          from pathlib import Path
 
-          base_url = "https://www.vowpic.com/api/v1"
-
-          def request_json(path: str, *, data: dict | None = None) -> dict:
-              body = None if data is None else json.dumps(data).encode("utf-8")
-              headers = {"Content-Type": "application/json"}
-              req = urllib.request.Request(f"{base_url}{path}", data=body, headers=headers, method="GET" if data is None else "POST")
-              with urllib.request.urlopen(req, timeout=20) as response:
-                  return json.loads(response.read().decode("utf-8"))
-
-          last_error = ""
-          for attempt in range(1, 19):
-              try:
-                  config = request_json("/ops/public_config")
-                  print(json.dumps(config, ensure_ascii=False))
-                  if config.get("feature_flags", {}).get("remote_join") is True:
-                      break
-                  last_error = f"remote_join is not true on attempt {attempt}"
-              except Exception as exc:
-                  last_error = repr(exc)
-              time.sleep(10)
-          else:
-              raise SystemExit(last_error or "remote_join did not become enabled")
-
-          session = request_json(
-              "/session/create",
-              data={
-                  "template_id": "online-smoke",
-                  "host_image_url": "https://www.vowpic.com/favicon.ico",
-              },
+          results = {
+              "locks": os.environ["LINUX_LOCKS_RESULT"] == "success"
+              and os.environ["VERCEL_LOCKS_RESULT"] == "success"
+              and os.environ["WINDOWS_LOCKS_RESULT"] == "success",
+              "backend": os.environ["BACKEND_RESULT"] == "success",
+              "frontend": os.environ["FRONTEND_RESULT"] == "success",
+              "worker": os.environ["WORKER_IMAGE_RESULT"] == "success",
+          }
+          owners = {
+              "pr_dependency_locks": "locks",
+              "pr_empty_postgres_migration": "backend",
+              "pr_backend_tests": "backend",
+              "pr_postgres_rls_concurrency": "backend",
+              "pr_openapi_drift": "backend",
+              "pr_frontend_typecheck": "frontend",
+              "pr_frontend_unit": "frontend",
+              "pr_frontend_a11y": "frontend",
+              "pr_frontend_build": "frontend",
+              "pr_worker_image_build": "worker",
+              "pr_gate_aggregate": "backend",
+          }
+          root = Path(os.environ["EVIDENCE_ROOT"])
+          for case_id, owner in owners.items():
+              passed = results[owner]
+              payload = {
+                  "schema": "vowpic.gate-evidence.v1",
+                  "case_id": case_id,
+                  "status": "PASS" if passed else "FAIL",
+                  "source_sha": os.environ["GITHUB_SHA"],
+                  "runtime_bundle_id": os.environ["RUNTIME_BUNDLE_ID"],
+                  "gate_contract_sha256": os.environ["GATE_SHA256"],
+                  "produced_at": datetime.now(timezone.utc).isoformat(),
+                  "execution": "completed",
+                  "test_count": 1,
+                  "capability_enabled": False,
+              }
+              path = root / f"{case_id}.json"
+              path.write_text(
+                  json.dumps(payload, sort_keys=True, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+          (Path(os.environ["RUNNER_TEMP"]) / "pr-runtime-bundle-id.txt").write_text(
+              os.environ["RUNTIME_BUNDLE_ID"] + "\n",
+              encoding="utf-8",
           )
-          print(json.dumps(session, ensure_ascii=False))
-          if not session.get("session_id"):
-              raise SystemExit("missing session_id")
-          if "/pages/join/landing?session=" not in str(session.get("join_url", "")):
-              raise SystemExit("join_url does not use the production landing route")
           PY
+      - name: Aggregate the exact PR registry and fail on any non-PASS result
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE_ROOT="artifacts/release/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/pr/01-ci"
+          evidence_args=()
+          while IFS= read -r path; do evidence_args+=(--evidence "$path"); done < <(find "$EVIDENCE_ROOT" -type f -name '*.json' -print | sort)
+          python scripts/release/aggregate_gates.py \
+            --contract release/gates.json \
+            --profile pr \
+            "${evidence_args[@]}" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --expected-runtime-bundle-id "$(tr -d '\r\n' < "$RUNNER_TEMP/pr-runtime-bundle-id.txt")" \
+            --output "$RUNNER_TEMP/pr-gate-aggregate.json"
+      - name: Persist exact PR gate evidence after successful aggregation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vowpic-pr-gates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/pr/01-ci/*.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9

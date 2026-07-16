@@ -1,0 +1,24 @@
+{
+  "contract_version": "safe-baseline.v2",
+  "builder_schema": "vowpic.runtime-bundle.safe-baseline.v2",
+  "schema_revision": "20260712_0014",
+  "environments": [
+    "preview",
+    "production"
+  ],
+  "capabilities": [
+    "google_auth",
+    "authenticated_upload",
+    "generation",
+    "credit_pack_checkout",
+    "subscription_billing",
+    "private_download",
+    "partner_invite"
+  ],
+  "seed_contract": {
+    "state": "OFF",
+    "rows_per_environment": 7,
+    "authoritative_store": "postgresql",
+    "redis_cache": "OFF_ONLY_MAX_30_SECONDS"
+  }
+}

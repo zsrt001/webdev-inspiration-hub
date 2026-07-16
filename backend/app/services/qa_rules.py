@@ -959,7 +959,7 @@ def _std(values: list[float], mean_value: float) -> float:
 
 def _compute_colorfulness(image: Any) -> float:
     sample = image.resize((96, 96)).convert("RGB")
-    pixels = list(sample.getdata())
+    pixels = list(sample.get_flattened_data())
     if not pixels:
         return 0.0
 
@@ -978,7 +978,7 @@ def _compute_colorfulness(image: Any) -> float:
 
 def _compute_skin_ratio(image: Any) -> float:
     sample = image.resize((128, 128)).convert("YCbCr")
-    pixels = list(sample.getdata())
+    pixels = list(sample.get_flattened_data())
     if not pixels:
         return 0.0
     skin = 0

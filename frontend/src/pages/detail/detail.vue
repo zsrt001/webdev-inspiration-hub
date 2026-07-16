@@ -20,16 +20,19 @@
             </view>
           </view>
 
-          <view class="hero-actions">
-            <button class="btn btn-primary action-btn shadow-glow" @tap="goCreate('single')">
+          <view v-if="creationAvailable" class="hero-actions">
+            <button v-if="isGoldenTemplate" class="btn btn-primary action-btn shadow-glow" @tap="goCreate('golden_anniversary')">
+              {{ tr('开始金婚重塑', 'Start Golden Anniversary') }}
+            </button>
+            <button v-if="!isGoldenTemplate" class="btn btn-primary action-btn shadow-glow" @tap="goCreate('single')">
               {{ tr('单人开始', 'Start Solo') }}
             </button>
-            <button class="btn btn-outline action-btn" @tap="goCreate('couple_local')">
+            <button v-if="!isGoldenTemplate" class="btn btn-outline action-btn" @tap="goCreate('couple_local')">
               {{ tr('双人同机', 'Local Couple') }}
             </button>
-            <button v-if="remoteJoinEnabled" class="btn btn-outline action-btn" @tap="goCreate('couple_remote')">
-              {{ tr('异地合拍', 'Remote Couple') }}
-            </button>
+          </view>
+          <view v-else class="availability-notice">
+            {{ tr('当前部署仅开放风格浏览，上传与生成功能暂未开放。', 'This deployment is browse-only. Upload and generation are temporarily unavailable.') }}
           </view>
 
           <view class="logic-card">
@@ -60,7 +63,7 @@
             </view>
             <view class="support-row">
               <view class="support-dot"></view>
-              <text class="support-copy">{{ tr('单人、双人同机、双人异地合拍', 'Single, local couple, and remote couple workflows') }}</text>
+              <text class="support-copy">{{ workflowLabel }}</text>
             </view>
           </view>
         </view>
@@ -140,8 +143,8 @@ const DETAIL_COPY: Record<string, DetailCopyEntry> = {
     subtitleEn: 'Architectural scale, long-train gowns, and cinematic staging are emphasized first.',
     usageZh: '适合城堡、教堂、阳台、大场景婚纱与叙事性强的情侣画面。',
     usageEn: 'Best for castles, cathedrals, balconies, and cinematic couple portraits.',
-    pointsZh: ['更适合大场景和纵深感强的构图。', '文本可继续强化皇室、史诗、电影感。', '双人同机和异地合拍都适配。'],
-    pointsEn: ['Works best in larger-scale cinematic scenes.', 'Text can push it toward regal or epic direction.', 'Fits both local and remote couple flows.'],
+    pointsZh: ['更适合大场景和纵深感强的构图。', '文本可继续强化皇室、史诗、电影感。', '适配单人和双人同机创作。'],
+    pointsEn: ['Works best in larger-scale cinematic scenes.', 'Text can push it toward regal or epic direction.', 'Fits solo and local couple workflows.'],
   },
   old_money: {
     kickerZh: '静奢庄园',
@@ -186,17 +189,21 @@ const DETAIL_COPY: Record<string, DetailCopyEntry> = {
 };
 
 const templateStore = useTemplateStore();
-const opsStore = useOpsStore();
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
 
 const template = ref<Template | null>(null);
 
 const familyKey = computed(() => getTemplateFamilyKey(template.value));
+const isGoldenTemplate = computed(() => template.value?.category === 'vintage' || familyKey.value.startsWith('golden_'));
+const workflowLabel = computed(() => isGoldenTemplate.value
+  ? tr('金婚重塑双人流程', 'Golden anniversary workflow')
+  : tr('单人或双人同机创作', 'Single or local couple workflows'));
 const copy = computed<DetailCopyEntry | null>(() => DETAIL_COPY[familyKey.value] || null);
 
 const heroImageUrl = computed(() => resolvePublicUrl(template.value?.image_url || '/style-previews/royal_castle.jpg'));
-const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const heroTitle = computed(() => getLocalizedTemplateTitle(template.value, i18nStore.locale));
 const heroKicker = computed(() => {
   if (!copy.value) return tr('精选风格', 'Curated Style');
@@ -226,8 +233,8 @@ function currentQuery(): Record<string, string> {
   return ((pages[pages.length - 1] as any)?.options || {}) as Record<string, string>;
 }
 
-function goCreate(mode: 'single' | 'couple_local' | 'couple_remote') {
-  if (mode === 'couple_remote' && !remoteJoinEnabled.value) return;
+function goCreate(mode: 'single' | 'couple_local' | 'golden_anniversary') {
+  if (!creationAvailable.value) return;
   if (!template.value) return;
   uni.navigateTo({
     url: `/pages/create/index?id=${encodeURIComponent(template.value.id)}&mode=${mode}`,
@@ -379,6 +386,18 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 18px;
+}
+
+.availability-notice {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(17, 106, 96, 0.2);
+  border-radius: 8px;
+  background: #eef7f5;
+  color: #0b5e55;
+  font-size: 14px;
+  line-height: 1.65;
+  font-weight: 700;
 }
 
 .action-btn {

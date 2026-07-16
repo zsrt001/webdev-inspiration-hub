@@ -1,128 +1,155 @@
-"""Hosted payment orchestration for credit top-up."""
+"""Authoritative credit-pack checkout and signed monetary fact application."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import logging
-import uuid
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+import uuid
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus
-from app.models.credit_transaction import CreditTransactionType
-from app.models.payment_event import PaymentEvent
+from app.core.provider_contracts import CREEM_REFUND_CREATION, ProviderContractState
+from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
+from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus, PurchaseIntentState
+from app.models.credit_transaction import CreditTransaction, CreditTransactionType
+from app.models.payment_event import (
+    PaymentCaptureFact,
+    PaymentDisputeFact,
+    PaymentEvent,
+    PaymentEventProcessingState,
+    PaymentRefundFact,
+)
 from app.models.user import User
-from app.services.credit_service import add_credits_async, get_balance_async, get_package_by_id
-from app.services.subscription_service import subscription_service
+from app.models.user_credit import UserCredit
+from app.schemas.payment import CheckoutRedirect, CreditPackStatusResponse
+from app.services.billing_catalog_service import (
+    BillingCatalogUnavailable,
+    CheckoutCatalogSelection,
+    require_checkout_catalog_product,
+)
+from app.services.credit_reversal_service import CreditReversalError, reverse_root_grant
+from app.services.creem_event_service import (
+    CreemEventError,
+    ingest_verified_creem_event,
+    verify_creem_signature,
+)
+from app.services.idempotency_service import (
+    IdempotencyConflict,
+    begin_idempotent_request,
+    canonical_request_hash,
+    complete_idempotent_request,
+)
+from app.services.payment_reconciliation_service import (
+    PaymentReconciliationRequired,
+    classify_monetary_reversal,
+    freeze_purchase_and_open_case,
+    open_payment_reconciliation_case,
+    unfreeze_purchase_lineage,
+)
+
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
-class PaymentError(Exception):
+class PaymentError(RuntimeError):
     def __init__(self, *, code: str, message: str, status_code: int = 400):
-        super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        super().__init__(code)
+
+
+class CheckoutReconciliationPending(PaymentError):
+    def __init__(self, purchase_id: uuid.UUID | None = None):
+        self.purchase_id = purchase_id
+        super().__init__(
+            code="checkout_reconciliation_pending",
+            message="Checkout status requires reconciliation before another Provider call.",
+            status_code=409,
+        )
+
+
+class CheckoutStatusUnknown(CheckoutReconciliationPending):
+    def __init__(self, purchase_id: uuid.UUID):
+        super().__init__(purchase_id)
+        self.code = "checkout_status_unknown"
+        self.message = "The Provider call may have succeeded; status will be reconciled."
+
+
+def _enum_value(value: Any) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def checkout_replay_or_raise(purchase: CreditPurchase) -> dict:
+    state = _enum_value(purchase.intent_state)
+    if state in {PurchaseIntentState.READY.value, PurchaseIntentState.CONFIRMED.value}:
+        stored = purchase.stored_response
+        if not isinstance(stored, dict) or not str(stored.get("checkout_url") or "").strip():
+            raise CheckoutReconciliationPending(purchase.id)
+        return dict(stored)
+    if state in {
+        PurchaseIntentState.CALLING.value,
+        PurchaseIntentState.UNKNOWN.value,
+        PurchaseIntentState.FAILED_RETRYABLE.value,
+    }:
+        raise CheckoutReconciliationPending(purchase.id)
+    raise PaymentError(
+        code="checkout_intent_not_ready",
+        message="Checkout intent is not ready for replay.",
+        status_code=409,
+    )
+
+
+def derive_purchase_state(purchase: CreditPurchase) -> str:
+    captured = int(purchase.captured_minor_units or 0)
+    refunded = int(purchase.refunded_minor_units or 0)
+    dispute_state = str(purchase.dispute_state or "NONE").upper()
+    if captured and 0 < refunded < captured:
+        return "PARTIAL_RECONCILIATION_REQUIRED"
+    if dispute_state in {"OPEN", "REVIEW", "PARTIAL"}:
+        return "DISPUTED"
+    if captured and (refunded == captured or dispute_state == "LOST"):
+        return "REVERSED"
+    if captured and purchase.grant_transaction_id is not None:
+        return "PAID"
+    intent_state = _enum_value(purchase.intent_state)
+    if intent_state in {PurchaseIntentState.UNKNOWN.value, PurchaseIntentState.FAILED_RETRYABLE.value}:
+        return "UNKNOWN"
+    return "PENDING"
 
 
 class PaymentService:
-    _ONE_TIME_WEBHOOK_EVENTS = {"checkout.completed", "checkout.succeeded", "checkout.paid", "payment.completed"}
-    _SUBSCRIPTION_WEBHOOK_EVENTS = {
-        "invoice.paid",
-        "subscription.active",
-        "subscription.created",
-        "subscription.update",
-        "subscription.updated",
-        "subscription.paid",
-        "subscription.payment_succeeded",
-        "subscription.canceled",
-        "subscription.cancelled",
-        "subscription.scheduled_cancel",
-        "subscription.past_due",
-        "subscription.expired",
-        "subscription.paused",
-        "subscription.trialing",
-        "subscription.unpaid",
-        "refund.created",
-        "dispute.created",
-    }
-    _COMPLETED_STATES = {"completed", "paid", "succeeded", "success"}
-    _FAILED_STATES = {"failed"}
-    _EXPIRED_STATES = {"expired"}
-    _CANCELED_STATES = {"cancelled", "canceled"}
-
-    def _status_value(self, status: CreditPurchaseStatus | str | None) -> str:
-        value = status.value if hasattr(status, "value") else status
-        normalized = str(value or "").strip().lower()
-        aliases = {
-            "created": CreditPurchaseStatus.PENDING.value,
-            "pending": CreditPurchaseStatus.PENDING.value,
-            "completed": CreditPurchaseStatus.PAID.value,
-            "paid": CreditPurchaseStatus.PAID.value,
-            "succeeded": CreditPurchaseStatus.PAID.value,
-            "success": CreditPurchaseStatus.PAID.value,
-            "failed": CreditPurchaseStatus.FAILED.value,
-            "canceled": CreditPurchaseStatus.FAILED.value,
-            "cancelled": CreditPurchaseStatus.FAILED.value,
-            "expired": CreditPurchaseStatus.EXPIRED.value,
-            "refunded": CreditPurchaseStatus.REFUNDED.value,
-        }
-        return aliases.get(normalized, normalized)
-
-    def _is_paid(self, purchase: CreditPurchase) -> bool:
-        return self._status_value(purchase.status) == CreditPurchaseStatus.PAID.value
+    _ONE_TIME_EVENTS = frozenset({"checkout.completed", "refund.created"})
+    _DISPUTE_EVENTS = frozenset({"dispute.created", "dispute.updated", "dispute.closed"})
 
     def _provider(self) -> str:
-        return settings.payment_mode
+        return "creem"
 
     def _api_base_url(self) -> str:
         return (settings.creem_api_base_url or "https://api.creem.io").rstrip("/")
 
     def _headers(self) -> dict[str, str]:
-        if not settings.creem_api_key:
+        api_key = str(settings.creem_api_key or "").strip()
+        if not api_key:
             raise PaymentError(
                 code="creem_not_configured",
                 message="Payment provider is not configured.",
                 status_code=503,
             )
-        return {
-            "x-api-key": settings.creem_api_key,
-            "Content-Type": "application/json",
-        }
-
-    def _manual_checkout_base_url(self) -> str:
-        return f"{settings.effective_webhook_base_url.rstrip('/')}/api/v1/payments/manual/checkout"
-
-    def _product_id_for_package(self, package_id: str) -> str:
-        mapping = {
-            "pack_50": settings.creem_product_pack_50,
-            "pack_120": settings.creem_product_pack_120,
-            "pack_300": settings.creem_product_pack_300,
-        }
-        product_id = (mapping.get(package_id) or "").strip()
-        if not product_id:
-            raise PaymentError(
-                code="creem_product_missing",
-                message=f"Payment product is not configured for package {package_id}.",
-                status_code=503,
-            )
-        return product_id
+        return {"x-api-key": api_key, "Content-Type": "application/json"}
 
     def _allowed_return_hosts(self) -> set[str]:
         hosts = {"localhost", "127.0.0.1"}
         for raw in (settings.effective_frontend_base_url, settings.cors_allow_origins):
-            if not raw:
-                continue
-            for item in str(raw).split(","):
+            for item in str(raw or "").split(","):
                 parsed = urlparse(item.strip())
                 if parsed.hostname:
                     hosts.add(parsed.hostname.lower())
@@ -132,15 +159,19 @@ class PaymentService:
         return settings.effective_frontend_base_url.rstrip("/")
 
     def _safe_return_url(self, return_url: str | None) -> str:
-        candidate = (return_url or "").strip()
+        candidate = str(return_url or "").strip()
         if not candidate:
             return self._default_return_url()
         parsed = urlparse(candidate)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.hostname.lower() not in self._allowed_return_hosts()
+        ):
             return self._default_return_url()
-        if parsed.hostname.lower() not in self._allowed_return_hosts():
-            return self._default_return_url()
-        if parsed.scheme != "https" and not settings.using_manual_review_payments:
+        if parsed.scheme != "https":
             default = self._default_return_url()
             default_parsed = urlparse(default)
             if default_parsed.scheme == "https" and default_parsed.hostname:
@@ -156,151 +187,83 @@ class PaymentService:
     def _append_query(self, url: str, **params: str) -> str:
         parsed = urlparse(url)
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        query.update({k: v for k, v in params.items() if v})
-        return urlunparse(parsed._replace(path=parsed.path or "/", query=urlencode(query), fragment=parsed.fragment))
+        query.update({key: value for key, value in params.items() if value})
+        return urlunparse(
+            parsed._replace(
+                path=parsed.path or "/",
+                query=urlencode(query),
+                fragment=parsed.fragment,
+            )
+        )
 
     def _extract_checkout_dict(self, payload: Any, checkout_id: str | None = None) -> dict[str, Any]:
         if isinstance(payload, list):
             for item in payload:
-                if isinstance(item, dict):
-                    if checkout_id is None:
-                        return item
-                    candidate_id = str(item.get("checkout_id") or item.get("id") or "")
-                    if candidate_id == checkout_id:
-                        return item
+                if not isinstance(item, dict):
+                    continue
+                if checkout_id is None or str(item.get("id") or item.get("checkout_id")) == checkout_id:
+                    return item
             return {}
         if not isinstance(payload, dict):
             return {}
-        for key in ("object", "checkout", "item", "result"):
+        for key in ("checkout", "result"):
             child = payload.get(key)
             if isinstance(child, dict):
                 return child
-        for key in ("data", "items", "checkouts"):
-            child = payload.get(key)
-            result = self._extract_checkout_dict(child, checkout_id)
-            if result:
-                return result
-        return payload
-
-    def _extract_event_id(self, payload: dict[str, Any], body: bytes) -> str:
-        value = payload.get("id") or payload.get("event_id")
-        if value is not None:
-            text = str(value).strip()
-            if text:
-                return text
-        digest = hashlib.sha256(body or repr(payload).encode("utf-8")).hexdigest()
-        return f"generated:{digest}"
-
-    def _extract_event_type(self, payload: dict[str, Any]) -> str:
-        return str(
-            payload.get("eventType")
-            or payload.get("event_type")
-            or payload.get("type")
-            or payload.get("event")
-            or ""
-        ).strip().lower()
-
-    def _extract_event_object(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = payload.get("data")
-        if isinstance(data, dict):
-            for key in ("object", "subscription", "checkout", "payment"):
-                child = data.get(key)
-                if isinstance(child, dict):
-                    return child
-            return data
-        for key in ("object", "subscription", "checkout", "payment"):
-            child = payload.get(key)
-            if isinstance(child, dict):
-                return child
+        if isinstance(data, (dict, list)):
+            extracted = self._extract_checkout_dict(data, checkout_id)
+            if extracted:
+                return extracted
         return payload
 
-    def _extract_object_id(self, payload: dict[str, Any]) -> str | None:
-        event_object = self._extract_event_object(payload)
-        for key in ("subscription_id", "provider_subscription_id", "checkout_id", "payment_id", "id"):
-            value = event_object.get(key)
-            if value is not None:
-                text = str(value).strip()
-                if text:
-                    return text
-        return None
-
-    async def _get_or_create_payment_event(
-        self,
-        db: AsyncSession,
-        *,
-        provider: str,
-        event_id: str,
-        event_type: str,
-        object_id: str | None,
-        payload: dict[str, Any],
-    ) -> tuple[PaymentEvent, bool]:
-        result = await db.execute(
-            select(PaymentEvent)
-            .where(PaymentEvent.provider == provider, PaymentEvent.event_id == event_id)
-            .with_for_update()
-        )
-        existing = result.scalar_one_or_none()
-        if existing is not None:
-            return existing, False
-
-        event = PaymentEvent(
-            provider=provider,
-            event_id=event_id,
-            event_type=event_type or "unknown",
-            object_id=object_id,
-            payload_json=payload,
-        )
-        db.add(event)
-        await db.flush()
-        return event, True
-
-    def _extract_checkout_url(self, payload: dict[str, Any]) -> str | None:
+    @staticmethod
+    def _extract_checkout_url(payload: dict[str, Any]) -> str | None:
         for key in ("checkout_url", "url", "hosted_checkout_url"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
 
-    def _extract_checkout_id(self, payload: dict[str, Any]) -> str | None:
-        for key in ("checkout_id", "id"):
+    @staticmethod
+    def _extract_checkout_id(payload: dict[str, Any]) -> str | None:
+        for key in ("id", "checkout_id"):
             value = payload.get(key)
-            if value is not None:
-                text = str(value).strip()
-                if text:
-                    return text
+            if value is not None and str(value).strip():
+                return str(value).strip()
         return None
 
-    def _extract_payment_id(self, payload: dict[str, Any]) -> str | None:
-        for key in ("payment_id", "order_id", "charge_id"):
-            value = payload.get(key)
-            if value is not None:
-                text = str(value).strip()
-                if text:
-                    return text
-        order = payload.get("order")
-        if isinstance(order, dict):
-            for key in ("transaction", "id", "payment_id", "charge_id"):
-                value = order.get(key)
-                if value is not None:
-                    text = str(value).strip()
-                    if text:
-                        return text
-        return None
+    @staticmethod
+    def _extract_product_id(payload: dict[str, Any]) -> str | None:
+        value = payload.get("product_id") or payload.get("product")
+        if isinstance(value, dict):
+            value = value.get("id")
+        if value is None:
+            order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+            value = order.get("product")
+            if isinstance(value, dict):
+                value = value.get("id")
+        return str(value).strip() if value is not None and str(value).strip() else None
 
-    def _normalize_status(self, payload: dict[str, Any]) -> str:
-        for key in ("payment_status", "status"):
-            value = payload.get(key)
-            if value is not None:
-                return str(value).strip().lower()
-        order = payload.get("order")
-        if isinstance(order, dict):
-            value = order.get("status")
-            if value is not None:
-                return str(value).strip().lower()
-        return ""
+    @staticmethod
+    def _extract_payment_id(payload: dict[str, Any]) -> str | None:
+        order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+        value = payload.get("payment_id") or order.get("transaction") or order.get("id")
+        return str(value).strip() if value is not None and str(value).strip() else None
 
-    async def _request(self, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+    @staticmethod
+    def _normalize_status(payload: dict[str, Any]) -> str:
+        order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+        return str(order.get("status") or payload.get("status") or "").strip().lower()
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
             response = await client.request(
                 method,
                 f"{self._api_base_url()}{path}",
@@ -308,383 +271,299 @@ class PaymentService:
                 headers=self._headers(),
             )
             response.raise_for_status()
-            data = response.json()
-            return data if isinstance(data, dict) else {"data": data}
+            result = response.json()
+            if not isinstance(result, dict):
+                raise PaymentError(
+                    code="payment_provider_response_invalid",
+                    message="Payment provider returned an invalid response.",
+                    status_code=503,
+                )
+            return result
 
-    async def _get_purchase_for_user(self, db: AsyncSession, purchase_id: str, user_id: uuid.UUID) -> CreditPurchase:
-        try:
-            purchase_uuid = uuid.UUID(str(purchase_id))
-        except ValueError as exc:
-            raise PaymentError(code="invalid_purchase_id", message="Invalid purchase ID.", status_code=400) from exc
-        result = await db.execute(
-            select(CreditPurchase).where(CreditPurchase.id == purchase_uuid).with_for_update()
+    @staticmethod
+    def _provider_request_id(user_id: uuid.UUID, idempotency_key: str) -> str:
+        digest = hashlib.sha256(f"{user_id}:{idempotency_key}".encode("utf-8")).hexdigest()
+        return f"cp_{digest}"
+
+    @staticmethod
+    def _selection_request_hash(
+        selection: CheckoutCatalogSelection,
+        *,
+        user_id: uuid.UUID,
+        return_url: str,
+    ) -> str:
+        return canonical_request_hash(
+            {
+                "user_id": str(user_id),
+                "product": selection.as_snapshot(),
+                "return_url": return_url,
+            }
         )
-        purchase = result.scalar_one_or_none()
-        if purchase is None or purchase.user_id != user_id:
-            raise PaymentError(code="purchase_not_found", message="Purchase not found.", status_code=404)
-        return purchase
 
-    async def _get_purchase_by_id(self, db: AsyncSession, purchase_id: str) -> CreditPurchase:
+    def _validate_checkout_response(
+        self,
+        payload: dict[str, Any],
+        *,
+        purchase: CreditPurchase,
+    ) -> tuple[str, str]:
+        snapshot = dict(purchase.catalog_snapshot or {})
+        checkout_id = self._extract_checkout_id(payload)
+        checkout_url = self._extract_checkout_url(payload)
+        returned_request_id = str(payload.get("request_id") or "").strip()
+        returned_product_id = self._extract_product_id(payload)
+        expected_product_id = str(snapshot.get("provider_product_id") or "").strip()
+        if not checkout_id or returned_request_id != purchase.provider_request_id:
+            raise PaymentError(
+                code="payment_checkout_identity_mismatch",
+                message="Payment checkout identity did not match the local intent.",
+                status_code=503,
+            )
+        if not expected_product_id or returned_product_id != expected_product_id:
+            raise PaymentError(
+                code="payment_checkout_product_mismatch",
+                message="Payment checkout product did not match the active catalog.",
+                status_code=503,
+            )
+        if not checkout_url:
+            raise PaymentError(
+                code="payment_checkout_url_missing",
+                message="Payment provider did not return a checkout URL.",
+                status_code=503,
+            )
+        parsed_url = urlparse(checkout_url)
+        if parsed_url.scheme != "https" or not parsed_url.hostname or parsed_url.username or parsed_url.password:
+            raise PaymentError(
+                code="payment_checkout_url_invalid",
+                message="Payment provider returned an unsafe checkout URL.",
+                status_code=503,
+            )
+
+        product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
+        order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+        returned_amount = product.get("price")
+        if returned_amount is None:
+            returned_amount = order.get("sub_total")
+        returned_currency = product.get("currency") or order.get("currency")
+        if returned_amount is not None and (
+            isinstance(returned_amount, bool)
+            or not isinstance(returned_amount, int)
+            or returned_amount != int(snapshot.get("pre_tax_minor_units") or -1)
+        ):
+            raise PaymentError(
+                code="payment_checkout_amount_mismatch",
+                message="Payment checkout amount did not match the active catalog.",
+                status_code=503,
+            )
+        if returned_currency is not None and str(returned_currency).upper() != str(snapshot.get("currency") or ""):
+            raise PaymentError(
+                code="payment_checkout_currency_mismatch",
+                message="Payment checkout currency did not match the active catalog.",
+                status_code=503,
+            )
+        return checkout_id, checkout_url
+
+    async def create_credit_pack_checkout(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        product_code: str,
+        idempotency_key: str,
+        return_url: str | None,
+    ) -> CheckoutRedirect:
+        clean_key = str(idempotency_key or "").strip()
+        if not clean_key or len(clean_key) > 128:
+            raise PaymentError(
+                code="idempotency_key_required",
+                message="A valid Idempotency-Key header is required.",
+                status_code=400,
+            )
+        safe_return_url = self._safe_return_url(return_url)
         try:
-            purchase_uuid = uuid.UUID(str(purchase_id))
-        except ValueError as exc:
-            raise PaymentError(code="invalid_purchase_id", message="Invalid purchase ID.", status_code=400) from exc
-        result = await db.execute(
-            select(CreditPurchase).where(CreditPurchase.id == purchase_uuid).with_for_update()
+            selection = await require_checkout_catalog_product(
+                db,
+                product_code=product_code,
+                provider="creem",
+            )
+        except BillingCatalogUnavailable as exc:
+            raise PaymentError(
+                code="credit_catalog_unavailable",
+                message="The active billing catalog is unavailable.",
+                status_code=503,
+            ) from exc
+        request_hash = self._selection_request_hash(
+            selection,
+            user_id=user_id,
+            return_url=safe_return_url,
         )
-        purchase = result.scalar_one_or_none()
-        if purchase is None:
-            raise PaymentError(code="purchase_not_found", message="Purchase not found.", status_code=404)
-        return purchase
+        try:
+            idempotency = await begin_idempotent_request(
+                db,
+                user_id=user_id,
+                endpoint="payments.credit_pack.checkout",
+                key=clean_key,
+                request_hash=request_hash,
+            )
+        except IdempotencyConflict as exc:
+            raise PaymentError(
+                code="idempotency_payload_mismatch",
+                message="The Idempotency-Key was already used for another checkout request.",
+                status_code=409,
+            ) from exc
+        provider_request_id = self._provider_request_id(user_id, clean_key)
+        purchase = await db.scalar(
+            select(CreditPurchase)
+            .where(CreditPurchase.provider_request_id == provider_request_id)
+            .with_for_update()
+        )
+        if purchase is not None:
+            if purchase.user_id != user_id or purchase.request_hash != request_hash:
+                raise PaymentError(
+                    code="idempotency_payload_mismatch",
+                    message="The Idempotency-Key was already used for another checkout request.",
+                    status_code=409,
+                )
+            stored = checkout_replay_or_raise(purchase)
+            return CheckoutRedirect.model_validate(stored)
 
-    async def _get_manual_purchase(self, db: AsyncSession, purchase_id: str, token: str) -> CreditPurchase:
-        purchase = await self._get_purchase_by_id(db, purchase_id)
-        if purchase.provider != "manual_review":
-            raise PaymentError(code="purchase_not_found", message="Purchase not found.", status_code=404)
-        if str(purchase.provider_request_id or "").strip() != str(token or "").strip():
-            raise PaymentError(code="invalid_checkout_token", message="Invalid checkout token.", status_code=403)
-        return purchase
+        now = datetime.now(timezone.utc)
+        snapshot = selection.as_snapshot()
+        internal_metadata_id = uuid.uuid4()
+        purchase = CreditPurchase(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            provider="creem",
+            package_id=selection.product.product_code,
+            credits=selection.product.credits,
+            price_cents=selection.product.pre_tax_minor_units,
+            currency=selection.product.currency,
+            status=CreditPurchaseStatus.PENDING,
+            provider_request_id=provider_request_id,
+            intent_state=PurchaseIntentState.CALLING,
+            request_hash=request_hash,
+            catalog_version_id=selection.catalog_version_id,
+            catalog_snapshot=snapshot,
+            internal_metadata_id=internal_metadata_id,
+            captured_minor_units=0,
+            tax_minor_units=0,
+            refunded_minor_units=0,
+            disputed_minor_units=0,
+            dispute_state="NONE",
+            call_started_at=now,
+            metadata_json={"return_url": safe_return_url},
+        )
+        db.add(purchase)
+        await db.flush()
+        await db.commit()  # durable CALLING boundary before external I/O
+
+        success_url = self._append_query(
+            safe_return_url,
+            payment="return",
+            purchase_id=str(purchase.id),
+        )
+        provider_request = {
+            "product_id": selection.product.provider_product_id,
+            "request_id": provider_request_id,
+            "units": 1,
+            "success_url": success_url,
+            "metadata": {"vowpic_purchase_ref": str(internal_metadata_id)},
+        }
+        try:
+            response_data = await self._request("POST", "/v1/checkouts", json_body=provider_request)
+        except httpx.RequestError as exc:
+            purchase.intent_state = PurchaseIntentState.UNKNOWN
+            purchase.last_error = f"creem_checkout_ambiguous:{type(exc).__name__}"
+            await db.flush()
+            await db.commit()
+            raise CheckoutStatusUnknown(purchase.id) from exc
+        except httpx.HTTPStatusError as exc:
+            purchase.intent_state = PurchaseIntentState.FAILED_RETRYABLE
+            purchase.last_error = f"creem_checkout_rejected:{exc.response.status_code}"
+            await db.flush()
+            await db.commit()
+            raise PaymentError(
+                code="payment_provider_rejected_checkout",
+                message="Payment provider rejected the checkout request.",
+                status_code=503,
+            ) from exc
+
+        checkout_payload = self._extract_checkout_dict(response_data)
+        try:
+            checkout_id, checkout_url = self._validate_checkout_response(
+                checkout_payload,
+                purchase=purchase,
+            )
+        except PaymentError:
+            purchase.intent_state = PurchaseIntentState.UNKNOWN
+            purchase.last_error = "creem_checkout_response_validation_failed"
+            await db.flush()
+            await db.commit()
+            raise
+        purchase.provider_checkout_id = checkout_id
+        purchase.checkout_url = checkout_url
+        purchase.intent_state = PurchaseIntentState.READY
+        purchase.ready_at = datetime.now(timezone.utc)
+        purchase.last_error = None
+        stored_response = {
+            "purchase_id": str(purchase.id),
+            "provider": "creem",
+            "status": "READY",
+            "checkout_url": checkout_url,
+        }
+        purchase.stored_response = stored_response
+        await db.flush()
+        await complete_idempotent_request(
+            db,
+            record_id=idempotency.record_id,
+            response_status=201,
+            response_json=stored_response,
+        )
+        await db.commit()
+        return CheckoutRedirect.model_validate(stored_response)
 
     async def create_checkout(
         self,
         db: AsyncSession,
         *,
         user: User,
-        package_id: str,
+        product_code: str | None = None,
+        package_id: str | None = None,
+        idempotency_key: str,
         return_url: str | None,
-    ) -> CreditPurchase:
-        package = get_package_by_id(package_id)
-        if not package:
-            raise PaymentError(code="package_not_found", message="Credit package not found.", status_code=404)
-
-        safe_return_url = self._safe_return_url(return_url)
-        purchase = CreditPurchase(
+    ) -> CheckoutRedirect:
+        return await self.create_credit_pack_checkout(
+            db,
             user_id=user.id,
-            provider=self._provider(),
-            package_id=package_id,
-            credits=int(package["credits"]),
-            price_cents=int(round(float(package["price"]) * 100)),
-            currency="USD",
-            status=CreditPurchaseStatus.PENDING,
-            provider_request_id=str(uuid.uuid4()),
-            metadata_json={
-                "package_label": package["label"],
-                "price": float(package["price"]),
-                "popular": bool(package["popular"]),
-            },
+            product_code=str(product_code or package_id or ""),
+            idempotency_key=idempotency_key,
+            return_url=return_url,
         )
-        db.add(purchase)
-        await db.flush()
 
-        if settings.using_manual_review_payments:
-            purchase.provider_checkout_id = f"manual-{uuid.uuid4()}"
-            purchase.checkout_url = self._append_query(
-                self._manual_checkout_base_url(),
-                purchase_id=str(purchase.id),
-                token=purchase.provider_request_id,
-            )
-            purchase.status = CreditPurchaseStatus.PENDING
-            purchase.metadata_json = {
-                **(purchase.metadata_json or {}),
-                "return_url": safe_return_url,
-                "payment_provider": self._provider(),
-                "checkout_display_name": settings.manual_payment_display_name,
-                "manual_payment_contact": settings.manual_payment_contact,
-                "manual_payment_instructions": settings.manual_payment_instructions,
-            }
-            await db.flush()
-            return purchase
-
-        product_id = self._product_id_for_package(package_id)
-        success_url = self._append_query(
-            safe_return_url,
-            payment="success",
-            purchase_id=str(purchase.id),
-        )
-        payload = {
-            "product_id": product_id,
-            "request_id": purchase.provider_request_id,
-            "success_url": success_url,
-            "metadata": {
-                "purchase_id": str(purchase.id),
-                "user_id": str(user.id),
-                "package_id": package_id,
-                "credits": int(package["credits"]),
-            },
-        }
-
+    async def _get_purchase_for_user(
+        self,
+        db: AsyncSession,
+        *,
+        purchase_id: str,
+        user_id: uuid.UUID,
+    ) -> CreditPurchase:
         try:
-            response_data = await self._request("POST", "/v1/checkouts", json_body=payload)
-        except httpx.HTTPError as exc:
-            logger.warning("creem_checkout_create_failed: %s", exc)
-            purchase.status = CreditPurchaseStatus.FAILED
-            purchase.last_error = f"creem_checkout_create_failed:{type(exc).__name__}"
-            await db.flush()
+            parsed_id = uuid.UUID(str(purchase_id))
+        except ValueError as exc:
             raise PaymentError(
-                code="payment_provider_unavailable",
-                message="Unable to start payment checkout.",
-                status_code=503,
+                code="invalid_purchase_id",
+                message="Invalid purchase ID.",
+                status_code=400,
             ) from exc
-
-        checkout_payload = self._extract_checkout_dict(response_data)
-        purchase.provider_checkout_id = self._extract_checkout_id(checkout_payload)
-        purchase.checkout_url = self._extract_checkout_url(checkout_payload)
-        purchase.status = CreditPurchaseStatus.PENDING
-        purchase.metadata_json = {
-            **(purchase.metadata_json or {}),
-            "creem_checkout": checkout_payload,
-            "success_url": success_url,
-        }
-        await db.flush()
-
-        if not purchase.checkout_url:
-            purchase.status = CreditPurchaseStatus.FAILED
-            purchase.last_error = "creem_checkout_url_missing"
-            await db.flush()
+        purchase = await db.scalar(
+            select(CreditPurchase).where(CreditPurchase.id == parsed_id)
+        )
+        if purchase is None or purchase.user_id != user_id:
             raise PaymentError(
-                code="payment_checkout_invalid",
-                message="Payment checkout URL is missing from provider response.",
-                status_code=503,
+                code="purchase_not_found",
+                message="Purchase not found.",
+                status_code=404,
             )
-
         return purchase
-
-    async def _add_purchase_credits(
-        self,
-        db: AsyncSession,
-        purchase: CreditPurchase,
-        checkout_payload: dict[str, Any] | None,
-    ) -> int:
-        await add_credits_async(
-            db,
-            purchase.user_id,
-            int(purchase.credits),
-            transaction_type=CreditTransactionType.PURCHASE,
-            source="credit_purchase",
-            source_id=str(purchase.id),
-            description=f"Credit package purchase: {purchase.package_id}",
-            metadata={
-                "provider": purchase.provider,
-                "provider_checkout_id": purchase.provider_checkout_id,
-                "provider_payment_id": purchase.provider_payment_id,
-                "checkout_payload": checkout_payload or {},
-            },
-        )
-        return await get_balance_async(db, purchase.user_id)
-
-    async def finalize_purchase(
-        self,
-        db: AsyncSession,
-        purchase: CreditPurchase,
-        *,
-        checkout_payload: dict[str, Any] | None = None,
-        webhook_event_id: str | None = None,
-    ) -> CreditPurchase:
-        if self._is_paid(purchase):
-            return purchase
-
-        purchase.provider_checkout_id = (
-            purchase.provider_checkout_id
-            or self._extract_checkout_id(checkout_payload or {})
-        )
-        purchase.provider_payment_id = self._extract_payment_id(checkout_payload or {}) or purchase.provider_payment_id
-        purchase.webhook_event_id = webhook_event_id or purchase.webhook_event_id
-        purchase.status = CreditPurchaseStatus.PAID
-        purchase.completed_at = datetime.now(timezone.utc)
-        purchase.last_error = None
-        purchase.metadata_json = {
-            **(purchase.metadata_json or {}),
-            "last_checkout_payload": checkout_payload or {},
-        }
-        await self._add_purchase_credits(db, purchase, checkout_payload)
-        await db.flush()
-
-        try:
-            from app.services.email_service import send_payment_confirmation
-            import asyncio
-            user = await db.get(User, purchase.user_id)
-            if user and user.email:
-                pkg = get_package_by_id(purchase.package_id)
-                asyncio.create_task(send_payment_confirmation(
-                    to=user.email,
-                    credits=purchase.credits,
-                    package_name=pkg.get("name", purchase.package_id) if pkg else purchase.package_id,
-                    amount_display=f"${purchase.price_cents / 100:.2f}" if purchase.price_cents else "N/A",
-                ))
-        except Exception as exc:
-            logger.warning("Payment confirmation email failed: %s", exc)
-
-        return purchase
-
-    async def mark_purchase_terminal(
-        self,
-        db: AsyncSession,
-        purchase: CreditPurchase,
-        *,
-        status: CreditPurchaseStatus,
-        checkout_payload: dict[str, Any] | None = None,
-        error: str | None = None,
-    ) -> CreditPurchase:
-        if self._is_paid(purchase):
-            return purchase
-        purchase.status = status
-        purchase.last_error = error or purchase.last_error
-        purchase.metadata_json = {
-            **(purchase.metadata_json or {}),
-            "last_checkout_payload": checkout_payload or {},
-        }
-        await db.flush()
-        return purchase
-
-    async def get_manual_checkout_context(
-        self,
-        db: AsyncSession,
-        *,
-        purchase_id: str,
-        token: str,
-    ) -> dict[str, Any]:
-        purchase = await self._get_manual_purchase(db, purchase_id, token)
-        metadata = purchase.metadata_json if isinstance(purchase.metadata_json, dict) else {}
-        return {
-            "purchase": purchase,
-            "return_url": str(metadata.get("return_url") or self._default_return_url()),
-            "display_name": str(metadata.get("checkout_display_name") or settings.manual_payment_display_name),
-            "contact": str(metadata.get("manual_payment_contact") or settings.manual_payment_contact or "").strip(),
-            "instructions": str(
-                metadata.get("manual_payment_instructions") or settings.manual_payment_instructions or ""
-            ).strip(),
-            "submitted_at": str(metadata.get("manual_submitted_at") or "").strip(),
-        }
-
-    async def acknowledge_manual_checkout(
-        self,
-        db: AsyncSession,
-        *,
-        purchase_id: str,
-        token: str,
-    ) -> CreditPurchase:
-        purchase = await self._get_manual_purchase(db, purchase_id, token)
-        metadata = purchase.metadata_json if isinstance(purchase.metadata_json, dict) else {}
-        metadata["manual_submitted_at"] = datetime.now(timezone.utc).isoformat()
-        metadata["manual_checkout_acknowledged"] = True
-        purchase.metadata_json = metadata
-        purchase.status = CreditPurchaseStatus.PENDING
-        await db.flush()
-        return purchase
-
-    async def complete_manual_purchase(
-        self,
-        db: AsyncSession,
-        *,
-        purchase_id: str,
-    ) -> CreditPurchase:
-        purchase = await self._get_purchase_by_id(db, purchase_id)
-        if purchase.provider != "manual_review":
-            raise PaymentError(code="unsupported_payment_provider", message="Manual approval is not available.", status_code=400)
-        return await self.finalize_purchase(
-            db,
-            purchase,
-            checkout_payload={"provider": "manual_review", "status": "completed"},
-        )
-
-    async def fail_manual_purchase(
-        self,
-        db: AsyncSession,
-        *,
-        purchase_id: str,
-        reason: str | None = None,
-    ) -> CreditPurchase:
-        purchase = await self._get_purchase_by_id(db, purchase_id)
-        if purchase.provider != "manual_review":
-            raise PaymentError(code="unsupported_payment_provider", message="Manual rejection is not available.", status_code=400)
-        return await self.mark_purchase_terminal(
-            db,
-            purchase,
-            status=CreditPurchaseStatus.FAILED,
-            checkout_payload={"provider": "manual_review", "status": "failed"},
-            error=(reason or "manual_review_rejected").strip(),
-        )
-
-    async def sync_checkout_status(
-        self,
-        db: AsyncSession,
-        *,
-        purchase: CreditPurchase,
-        checkout_id: str | None = None,
-    ) -> CreditPurchase:
-        if purchase.provider == "manual_review":
-            return purchase
-        provider_checkout_id = (checkout_id or purchase.provider_checkout_id or "").strip()
-        if not provider_checkout_id:
-            return purchase
-
-        try:
-            response_data = await self._request("GET", f"/v1/checkouts?checkout_id={provider_checkout_id}")
-        except httpx.HTTPError as exc:
-            logger.warning("creem_checkout_status_failed: %s", exc)
-            raise PaymentError(
-                code="payment_status_unavailable",
-                message="Unable to verify payment status.",
-                status_code=503,
-            ) from exc
-
-        checkout_payload = self._extract_checkout_dict(response_data, provider_checkout_id)
-        normalized_status = self._normalize_status(checkout_payload)
-        purchase.provider_checkout_id = provider_checkout_id
-        purchase.checkout_url = self._extract_checkout_url(checkout_payload) or purchase.checkout_url
-
-        if normalized_status in self._COMPLETED_STATES:
-            return await self.finalize_purchase(db, purchase, checkout_payload=checkout_payload)
-        if normalized_status in self._FAILED_STATES:
-            return await self.mark_purchase_terminal(
-                db,
-                purchase,
-                status=CreditPurchaseStatus.FAILED,
-                checkout_payload=checkout_payload,
-                error=f"provider_status:{normalized_status}",
-            )
-        if normalized_status in self._EXPIRED_STATES:
-            return await self.mark_purchase_terminal(
-                db,
-                purchase,
-                status=CreditPurchaseStatus.EXPIRED,
-                checkout_payload=checkout_payload,
-                error=f"provider_status:{normalized_status}",
-            )
-        if normalized_status in self._CANCELED_STATES:
-            return await self.mark_purchase_terminal(
-                db,
-                purchase,
-                status=CreditPurchaseStatus.FAILED,
-                checkout_payload=checkout_payload,
-                error=f"provider_status:{normalized_status}",
-            )
-
-        purchase.status = CreditPurchaseStatus.PENDING
-        purchase.metadata_json = {
-            **(purchase.metadata_json or {}),
-            "last_checkout_payload": checkout_payload,
-        }
-        await db.flush()
-        return purchase
-
-    def verify_webhook_signature(self, body: bytes, signature_header: str | None) -> bool:
-        secret = (settings.creem_webhook_secret or "").strip()
-        if not secret:
-            return False
-        if not signature_header:
-            return False
-        expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        candidates = []
-        for piece in str(signature_header).split(","):
-            piece = piece.strip()
-            if not piece:
-                continue
-            if "=" in piece:
-                _, _, value = piece.partition("=")
-                piece = value.strip()
-            candidates.append(piece)
-        return any(hmac.compare_digest(expected, item) for item in candidates)
 
     async def get_purchase_status(
         self,
@@ -693,77 +572,650 @@ class PaymentService:
         purchase_id: str,
         user_id: uuid.UUID,
         checkout_id: str | None = None,
-    ) -> tuple[CreditPurchase, int]:
-        purchase = await self._get_purchase_for_user(db, purchase_id, user_id)
-        if self._status_value(purchase.status) == CreditPurchaseStatus.PENDING.value and (checkout_id or purchase.provider_checkout_id):
-            purchase = await self.sync_checkout_status(db, purchase=purchase, checkout_id=checkout_id)
-        balance = await get_balance_async(db, purchase.user_id)
-        return purchase, balance
-
-    async def process_webhook_event(self, db: AsyncSession, *, payload: dict[str, Any], body: bytes, signature_header: str | None) -> CreditPurchase | None:
-        if not self.verify_webhook_signature(body, signature_header):
-            raise PaymentError(code="invalid_webhook_signature", message="Invalid webhook signature.", status_code=401)
-
-        provider = self._provider()
-        event_type = self._extract_event_type(payload)
-        event_id = self._extract_event_id(payload, body)
-        payment_event, _created = await self._get_or_create_payment_event(
+    ) -> CreditPackStatusResponse:
+        del checkout_id  # redirect/provider query values are never accounting authority
+        purchase = await self._get_purchase_for_user(
             db,
-            provider=provider,
-            event_id=event_id,
-            event_type=event_type,
-            object_id=self._extract_object_id(payload),
-            payload=payload,
+            purchase_id=purchase_id,
+            user_id=user_id,
         )
-        if payment_event.processed_at is not None:
-            return None
+        credit = await db.scalar(select(UserCredit).where(UserCredit.user_id == user_id))
+        accounting_balance = int(credit.balance or 0) if credit is not None else 0
+        reserved = int(credit.reserved_balance or 0) if credit is not None else 0
+        return CreditPackStatusResponse(
+            purchase_id=purchase.id,
+            provider="creem",
+            product_code=purchase.package_id,
+            state=derive_purchase_state(purchase),
+            checkout_url=purchase.checkout_url,
+            captured_minor_units=int(purchase.captured_minor_units or 0),
+            tax_minor_units=int(purchase.tax_minor_units or 0),
+            refunded_minor_units=int(purchase.refunded_minor_units or 0),
+            disputed_minor_units=int(purchase.disputed_minor_units or 0),
+            currency=str(purchase.currency or "USD").upper(),
+            credits_granted=int(purchase.credits if purchase.grant_transaction_id is not None else 0),
+            accounting_balance=accounting_balance,
+            spendable_balance=max(0, accounting_balance - reserved),
+        )
 
+    @staticmethod
+    def _retention_expiry(retention_tier: str, occurred_at: datetime) -> datetime:
+        days_by_tier = {"paid_90d": 90, "subscription_180d": 180, "studio_365d": 365}
+        days = days_by_tier.get(str(retention_tier))
+        if days is None:
+            raise PaymentReconciliationRequired("purchase_retention_tier_invalid")
+        return occurred_at + timedelta(days=days)
+
+    async def _mark_event_reconciliation(
+        self,
+        db: AsyncSession,
+        *,
+        event: PaymentEvent,
+        purchase: CreditPurchase | None,
+        reason_code: str,
+    ) -> None:
+        await open_payment_reconciliation_case(
+            db,
+            purchase=purchase,
+            case_key=f"event:{event.event_id}",
+            subject_type="credit_purchase" if purchase is not None else "payment_event",
+            subject_id=str(purchase.id if purchase is not None else event.id),
+            reason_code=reason_code,
+            raw_payload_sha256=str(event.raw_payload_sha256),
+        )
+        event.processing_state = PaymentEventProcessingState.RECONCILIATION_REQUIRED
+        event.error = reason_code
+
+    async def _find_checkout_purchase(
+        self,
+        db: AsyncSession,
+        event: PaymentEvent,
+    ) -> CreditPurchase | None:
+        metadata = dict(event.business_metadata or {})
+        internal_ref: uuid.UUID | None = None
         try:
-            purchase: CreditPurchase | None = None
-            if event_type in self._ONE_TIME_WEBHOOK_EVENTS:
-                checkout_payload = self._extract_checkout_dict(payload.get("data") or payload)
-                request_id = str(checkout_payload.get("request_id") or "").strip()
-                checkout_id = self._extract_checkout_id(checkout_payload)
-
-                if request_id:
-                    result = await db.execute(
-                        select(CreditPurchase).where(CreditPurchase.provider_request_id == request_id).with_for_update()
-                    )
-                    purchase = result.scalar_one_or_none()
-                if purchase is None and checkout_id:
-                    result = await db.execute(
-                        select(CreditPurchase).where(CreditPurchase.provider_checkout_id == checkout_id).with_for_update()
-                    )
-                    purchase = result.scalar_one_or_none()
-                if purchase is None:
-                    raise PaymentError(code="purchase_not_found", message="Purchase not found for webhook.", status_code=404)
-                purchase = await self.finalize_purchase(
-                    db,
-                    purchase,
-                    checkout_payload=checkout_payload,
-                    webhook_event_id=event_id,
+            if metadata.get("vowpic_purchase_ref"):
+                internal_ref = uuid.UUID(str(metadata["vowpic_purchase_ref"]))
+        except ValueError:
+            internal_ref = None
+        conditions = []
+        if event.request_id:
+            conditions.append(CreditPurchase.provider_request_id == event.request_id)
+        if internal_ref is not None:
+            conditions.append(CreditPurchase.internal_metadata_id == internal_ref)
+        provider_checkout_id = str(metadata.get("provider_checkout_id") or "").strip()
+        if provider_checkout_id:
+            conditions.append(CreditPurchase.provider_checkout_id == provider_checkout_id)
+        if not conditions:
+            return None
+        rows = list(
+            (
+                await db.scalars(
+                    select(CreditPurchase).where(or_(*conditions)).with_for_update()
                 )
-            elif event_type in self._SUBSCRIPTION_WEBHOOK_EVENTS:
-                await subscription_service.process_provider_event(
-                    db,
-                    provider=provider,
-                    event_type=event_type,
-                    payload=self._extract_event_object(payload),
-                )
+            ).all()
+        )
+        unique = {row.id: row for row in rows}
+        return next(iter(unique.values())) if len(unique) == 1 else None
 
-            payment_event.processed_at = datetime.now(timezone.utc)
-            payment_event.error = None
+    async def _apply_checkout_capture(self, db: AsyncSession, event: PaymentEvent) -> CreditPurchase | None:
+        purchase = await self._find_checkout_purchase(db, event)
+        if purchase is None:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=None,
+                reason_code="checkout_purchase_not_found",
+            )
+            return None
+        snapshot = dict(purchase.catalog_snapshot or {})
+        metadata = dict(event.business_metadata or {})
+        provider_product_id = str(metadata.get("provider_product_id") or "")
+        provider_payment_id = str(metadata.get("provider_payment_id") or "")
+        expected_status = str(event.normalized_status or "").lower()
+        if expected_status not in {"paid", "completed", "succeeded"}:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=purchase,
+                reason_code="checkout_status_not_paid",
+            )
+            return purchase
+        if (
+            not provider_payment_id
+            or provider_product_id != str(snapshot.get("provider_product_id") or "")
+            or event.pre_tax_minor_units is None
+            or int(event.pre_tax_minor_units) != int(snapshot.get("pre_tax_minor_units") or -1)
+            or event.tax_minor_units is None
+            or event.currency != str(snapshot.get("currency") or "")
+        ):
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=purchase,
+                reason_code="checkout_money_or_catalog_mismatch",
+            )
+            return purchase
+        existing_capture = await db.scalar(
+            select(PaymentCaptureFact).where(
+                or_(
+                    PaymentCaptureFact.purchase_id == purchase.id,
+                    PaymentCaptureFact.provider_payment_id == provider_payment_id,
+                )
+            )
+        )
+        if existing_capture is not None:
+            if (
+                existing_capture.purchase_id != purchase.id
+                or int(existing_capture.pre_tax_minor_units) != int(event.pre_tax_minor_units)
+                or int(existing_capture.tax_minor_units) != int(event.tax_minor_units)
+                or existing_capture.currency != event.currency
+            ):
+                await self._mark_event_reconciliation(
+                    db,
+                    event=event,
+                    purchase=purchase,
+                    reason_code="capture_fact_conflict",
+                )
+                return purchase
+            event.processing_state = PaymentEventProcessingState.APPLIED
+            event.processed_at = datetime.now(timezone.utc)
+            event.error = None
+            return purchase
+
+        credit = await db.scalar(
+            select(UserCredit).where(UserCredit.user_id == purchase.user_id).with_for_update()
+        )
+        if credit is None:
+            credit = UserCredit(
+                id=uuid.uuid4(),
+                user_id=purchase.user_id,
+                balance=0,
+                reserved_balance=0,
+            )
+            db.add(credit)
+            await db.flush()
+        prior_balance = int(credit.balance or 0)
+        next_balance = prior_balance + int(purchase.credits)
+        debt_offset = min(int(purchase.credits), max(0, -prior_balance))
+        transaction_id = uuid.uuid4()
+        lot_id = uuid.uuid4()
+        retention_tier = str(snapshot.get("retention_tier") or "")
+        root = CreditTransaction(
+            id=transaction_id,
+            user_id=purchase.user_id,
+            transaction_type=CreditTransactionType.PURCHASE,
+            amount=int(purchase.credits),
+            balance_after=next_balance,
+            source="credit_purchase",
+            source_id=str(purchase.id),
+            description=f"Verified Creem credit pack: {purchase.package_id}",
+            metadata_json={
+                "provider": "creem",
+                "provider_payment_id": provider_payment_id,
+                "payment_event_id": str(event.id),
+            },
+            root_transaction_id=transaction_id,
+            request_id=f"creem-capture:{provider_payment_id}",
+        )
+        lot = CreditGrantLot(
+            id=lot_id,
+            user_id=purchase.user_id,
+            root_transaction_id=transaction_id,
+            source_type=GrantLotSourceType.PURCHASE,
+            source_id=str(purchase.id),
+            original_amount=int(purchase.credits),
+            debt_offset_amount=debt_offset,
+            reversed_amount=0,
+            frozen_amount=0,
+            consumed_amount=0,
+            retention_tier=retention_tier,
+            expires_at=self._retention_expiry(retention_tier, event.occurred_at),
+        )
+        capture = PaymentCaptureFact(
+            id=uuid.uuid4(),
+            purchase_id=purchase.id,
+            payment_event_id=event.id,
+            provider="creem",
+            provider_payment_id=provider_payment_id,
+            pre_tax_minor_units=int(event.pre_tax_minor_units),
+            tax_minor_units=int(event.tax_minor_units),
+            currency=str(event.currency),
+            grant_transaction_id=transaction_id,
+            grant_lot_id=lot_id,
+            occurred_at=event.occurred_at,
+        )
+        db.add(root)
+        db.add(lot)
+        db.add(capture)
+        credit.balance = next_balance
+        purchase.provider_payment_id = provider_payment_id
+        purchase.provider_checkout_id = str(metadata.get("provider_checkout_id") or purchase.provider_checkout_id or "") or None
+        purchase.captured_minor_units = int(event.pre_tax_minor_units) + int(event.tax_minor_units)
+        purchase.tax_minor_units = int(event.tax_minor_units)
+        purchase.grant_transaction_id = transaction_id
+        purchase.grant_lot_id = lot_id
+        purchase.intent_state = PurchaseIntentState.CONFIRMED
+        purchase.status = CreditPurchaseStatus.PAID
+        purchase.confirmed_at = event.occurred_at
+        purchase.completed_at = event.occurred_at
+        purchase.webhook_event_id = event.event_id
+        if purchase.stored_response:
+            purchase.stored_response = {**purchase.stored_response, "status": "CONFIRMED"}
+        event.processing_state = PaymentEventProcessingState.APPLIED
+        event.processed_at = datetime.now(timezone.utc)
+        event.error = None
+        await db.flush()
+        return purchase
+
+    async def _capture_for_event(self, db: AsyncSession, event: PaymentEvent) -> PaymentCaptureFact | None:
+        provider_payment_id = str((event.business_metadata or {}).get("provider_payment_id") or "")
+        if not provider_payment_id:
+            return None
+        return await db.scalar(
+            select(PaymentCaptureFact).where(
+                PaymentCaptureFact.provider == "creem",
+                PaymentCaptureFact.provider_payment_id == provider_payment_id,
+            )
+        )
+
+    async def _apply_refund(self, db: AsyncSession, event: PaymentEvent) -> CreditPurchase | None:
+        capture = await self._capture_for_event(db, event)
+        if capture is None:
+            from app.services.subscription_service import subscription_service
+
+            if await subscription_service.apply_subscription_adjustment_event(db, event=event):
+                return None
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=None,
+                reason_code="refund_capture_not_found",
+            )
+            return None
+        purchase = await db.scalar(
+            select(CreditPurchase).where(CreditPurchase.id == capture.purchase_id).with_for_update()
+        )
+        if purchase is None:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=None,
+                reason_code="refund_purchase_not_found",
+            )
+            return None
+        metadata = dict(event.business_metadata or {})
+        provider_refund_id = str(metadata.get("provider_refund_id") or event.object_id or "")
+        try:
+            amount = int(str(metadata.get("event_minor_units") or ""))
+        except ValueError:
+            amount = 0
+        if amount <= 0 or event.currency != purchase.currency:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=purchase,
+                reason_code="refund_money_invalid",
+            )
+            return purchase
+        existing = await db.scalar(
+            select(PaymentRefundFact).where(PaymentRefundFact.payment_event_id == event.id)
+        )
+        if existing is not None:
+            event.processing_state = PaymentEventProcessingState.APPLIED
+            event.processed_at = datetime.now(timezone.utc)
+            event.error = None
+            return purchase
+        try:
+            classification = classify_monetary_reversal(
+                captured_minor_units=int(purchase.captured_minor_units or 0),
+                already_refunded_minor_units=int(purchase.refunded_minor_units or 0),
+                event_minor_units=amount,
+            )
+        except PaymentReconciliationRequired as exc:
+            classification = (
+                "OVER_CAPTURE"
+                if exc.code == "monetary_reversal_exceeds_capture"
+                else "PARTIAL_RECONCILIATION_REQUIRED"
+            )
+            db.add(
+                PaymentRefundFact(
+                    id=uuid.uuid4(),
+                    purchase_id=purchase.id,
+                    payment_event_id=event.id,
+                    provider="creem",
+                    provider_refund_id=provider_refund_id,
+                    refund_minor_units=amount,
+                    currency=str(event.currency),
+                    classification=classification,
+                    occurred_at=event.occurred_at,
+                )
+            )
+            if amount + int(purchase.refunded_minor_units or 0) <= int(purchase.captured_minor_units or 0):
+                purchase.refunded_minor_units = int(purchase.refunded_minor_units or 0) + amount
+            await freeze_purchase_and_open_case(
+                db,
+                purchase=purchase,
+                case_key=f"refund:{provider_refund_id}",
+                reason_code=exc.code,
+                raw_payload_sha256=str(event.raw_payload_sha256),
+            )
+            event.processing_state = PaymentEventProcessingState.RECONCILIATION_REQUIRED
+            event.error = exc.code
             await db.flush()
             return purchase
-        except Exception as exc:
-            payment_event.error = f"{type(exc).__name__}:{exc}"
-            await db.flush()
-            try:
-                import sentry_sdk
-                sentry_sdk.capture_exception(exc)
-            except ImportError:
-                pass
-            raise
+
+        if classification != "FULL" or purchase.grant_transaction_id is None:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=purchase,
+                reason_code="refund_root_lineage_missing",
+            )
+            return purchase
+        try:
+            reversal = await reverse_root_grant(
+                db,
+                user_id=purchase.user_id,
+                root_transaction_id=purchase.grant_transaction_id,
+                amount=int(purchase.credits),
+                request_id=f"creem-refund:{provider_refund_id}",
+                reason_code="provider_full_refund",
+                transaction_type=CreditTransactionType.PURCHASE_REVERSAL,
+                now=event.occurred_at,
+            )
+        except CreditReversalError as exc:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=purchase,
+                reason_code=exc.code,
+            )
+            return purchase
+        db.add(
+            PaymentRefundFact(
+                id=uuid.uuid4(),
+                purchase_id=purchase.id,
+                payment_event_id=event.id,
+                provider="creem",
+                provider_refund_id=provider_refund_id,
+                refund_minor_units=amount,
+                currency=str(event.currency),
+                classification="FULL",
+                reversal_transaction_id=reversal.transaction.id,
+                occurred_at=event.occurred_at,
+            )
+        )
+        purchase.refunded_minor_units = amount
+        purchase.status = CreditPurchaseStatus.REFUNDED
+        event.processing_state = PaymentEventProcessingState.APPLIED
+        event.processed_at = datetime.now(timezone.utc)
+        event.error = None
+        await db.flush()
+        return purchase
+
+    @staticmethod
+    def _dispute_outcome(event: PaymentEvent) -> str:
+        metadata = dict(event.business_metadata or {})
+        explicit = str(metadata.get("dispute_outcome") or "").strip().upper()
+        status = str(event.normalized_status or "").strip().upper()
+        event_type = str(event.event_type).lower()
+        if explicit in {"WON", "LOST", "OPEN"}:
+            return explicit
+        if status in {"WON", "CLOSED_WON", "RESOLVED_WON"}:
+            return "WON"
+        if status in {"LOST", "CHARGEBACK", "CLOSED_LOST"}:
+            return "LOST"
+        if event_type == "dispute.created":
+            return "OPEN"
+        return "REVIEW"
+
+    async def _apply_dispute(self, db: AsyncSession, event: PaymentEvent) -> CreditPurchase | None:
+        capture = await self._capture_for_event(db, event)
+        if capture is None:
+            from app.services.subscription_service import subscription_service
+
+            if await subscription_service.apply_subscription_adjustment_event(db, event=event):
+                return None
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=None,
+                reason_code="dispute_capture_not_found",
+            )
+            return None
+        purchase = await db.scalar(
+            select(CreditPurchase).where(CreditPurchase.id == capture.purchase_id).with_for_update()
+        )
+        if purchase is None:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=None,
+                reason_code="dispute_purchase_not_found",
+            )
+            return None
+        metadata = dict(event.business_metadata or {})
+        provider_dispute_id = str(metadata.get("provider_dispute_id") or event.object_id or "")
+        try:
+            amount = int(str(metadata.get("event_minor_units") or ""))
+        except ValueError:
+            amount = 0
+        outcome = self._dispute_outcome(event)
+        if amount <= 0 or event.currency != purchase.currency:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                purchase=purchase,
+                reason_code="dispute_money_invalid",
+            )
+            return purchase
+        existing = await db.scalar(
+            select(PaymentDisputeFact).where(PaymentDisputeFact.payment_event_id == event.id)
+        )
+        if existing is not None:
+            event.processing_state = PaymentEventProcessingState.APPLIED
+            event.processed_at = datetime.now(timezone.utc)
+            event.error = None
+            return purchase
+
+        reversal_transaction_id: uuid.UUID | None = None
+        if amount > int(purchase.captured_minor_units or 0) or outcome == "REVIEW":
+            await freeze_purchase_and_open_case(
+                db,
+                purchase=purchase,
+                case_key=f"dispute:{provider_dispute_id}:{outcome}",
+                reason_code="dispute_amount_or_outcome_reconciliation",
+                raw_payload_sha256=str(event.raw_payload_sha256),
+            )
+            event.processing_state = PaymentEventProcessingState.RECONCILIATION_REQUIRED
+            event.error = "dispute_amount_or_outcome_reconciliation"
+        elif outcome == "OPEN":
+            await freeze_purchase_and_open_case(
+                db,
+                purchase=purchase,
+                case_key=f"dispute:{provider_dispute_id}:open",
+                reason_code="provider_dispute_open",
+                raw_payload_sha256=str(event.raw_payload_sha256),
+            )
+            purchase.dispute_state = "OPEN"
+            purchase.disputed_minor_units = max(int(purchase.disputed_minor_units or 0), amount)
+            event.processing_state = PaymentEventProcessingState.APPLIED
+            event.processed_at = datetime.now(timezone.utc)
+            event.error = None
+        elif outcome == "WON":
+            if purchase.grant_lot_id is not None:
+                lot = await db.scalar(
+                    select(CreditGrantLot)
+                    .where(CreditGrantLot.id == purchase.grant_lot_id)
+                    .with_for_update()
+                )
+                if lot is None:
+                    await self._mark_event_reconciliation(
+                        db,
+                        event=event,
+                        purchase=purchase,
+                        reason_code="dispute_grant_lot_missing",
+                    )
+                    return purchase
+                unfreeze_purchase_lineage(lot)
+            purchase.dispute_state = "WON"
+            purchase.disputed_minor_units = max(int(purchase.disputed_minor_units or 0), amount)
+            event.processing_state = PaymentEventProcessingState.APPLIED
+            event.processed_at = datetime.now(timezone.utc)
+            event.error = None
+        elif outcome == "LOST":
+            if amount != int(purchase.captured_minor_units or 0) or purchase.grant_transaction_id is None:
+                await freeze_purchase_and_open_case(
+                    db,
+                    purchase=purchase,
+                    case_key=f"dispute:{provider_dispute_id}:lost",
+                    reason_code="partial_dispute_reconciliation_required",
+                    raw_payload_sha256=str(event.raw_payload_sha256),
+                )
+                event.processing_state = PaymentEventProcessingState.RECONCILIATION_REQUIRED
+                event.error = "partial_dispute_reconciliation_required"
+            else:
+                try:
+                    reversal = await reverse_root_grant(
+                        db,
+                        user_id=purchase.user_id,
+                        root_transaction_id=purchase.grant_transaction_id,
+                        amount=int(purchase.credits),
+                        request_id=f"creem-dispute:{provider_dispute_id}:lost",
+                        reason_code="provider_dispute_lost",
+                        transaction_type=CreditTransactionType.DISPUTE_REVERSAL,
+                        now=event.occurred_at,
+                    )
+                except CreditReversalError as exc:
+                    await self._mark_event_reconciliation(
+                        db,
+                        event=event,
+                        purchase=purchase,
+                        reason_code=exc.code,
+                    )
+                    return purchase
+                reversal_transaction_id = reversal.transaction.id
+                purchase.dispute_state = "LOST"
+                purchase.disputed_minor_units = amount
+                event.processing_state = PaymentEventProcessingState.APPLIED
+                event.processed_at = datetime.now(timezone.utc)
+                event.error = None
+        db.add(
+            PaymentDisputeFact(
+                id=uuid.uuid4(),
+                purchase_id=purchase.id,
+                payment_event_id=event.id,
+                provider="creem",
+                provider_dispute_id=provider_dispute_id,
+                disputed_minor_units=amount,
+                currency=str(event.currency),
+                outcome=outcome,
+                reversal_transaction_id=reversal_transaction_id,
+                occurred_at=event.occurred_at,
+            )
+        )
+        await db.flush()
+        return purchase
+
+    async def apply_payment_event(
+        self,
+        db: AsyncSession,
+        *,
+        payment_event_id: uuid.UUID,
+    ) -> CreditPurchase | None:
+        event = await db.scalar(
+            select(PaymentEvent).where(PaymentEvent.id == payment_event_id).with_for_update()
+        )
+        if event is None:
+            raise PaymentError(
+                code="payment_event_not_found",
+                message="Payment event was not found.",
+                status_code=404,
+            )
+        state = _enum_value(event.processing_state)
+        if state == PaymentEventProcessingState.APPLIED.value:
+            return None
+        if state == PaymentEventProcessingState.UNHANDLED.value:
+            return None
+        event_type = str(event.event_type).lower()
+        if event_type == "checkout.completed":
+            return await self._apply_checkout_capture(db, event)
+        if event_type == "refund.created":
+            return await self._apply_refund(db, event)
+        if event_type in self._DISPUTE_EVENTS:
+            return await self._apply_dispute(db, event)
+        if event_type.startswith("subscription."):
+            from app.services.subscription_service import subscription_service
+
+            await subscription_service.apply_normalized_payment_event(db, event=event)
+            return None
+        event.processing_state = PaymentEventProcessingState.UNHANDLED
+        event.processed_at = datetime.now(timezone.utc)
+        event.error = "event_type_unhandled"
+        await db.flush()
+        return None
+
+    def verify_webhook_signature(self, body: bytes, signature_header: str | None) -> bool:
+        try:
+            verify_creem_signature(
+                body,
+                signature_header,
+                str(settings.creem_webhook_secret or "").encode("utf-8"),
+            )
+        except CreemEventError:
+            return False
+        return True
+
+    async def process_webhook_event(
+        self,
+        db: AsyncSession,
+        *,
+        payload: dict[str, Any] | None = None,
+        body: bytes,
+        signature_header: str | None,
+    ) -> CreditPurchase | None:
+        """Compatibility entrypoint; raw body remains the sole signed authority."""
+
+        del payload
+        try:
+            accepted = await ingest_verified_creem_event(
+                db,
+                raw_body=body,
+                signature=signature_header,
+                webhook_secret=str(settings.creem_webhook_secret or "").encode("utf-8"),
+            )
+        except CreemEventError as exc:
+            raise PaymentError(
+                code=exc.code,
+                message="Payment webhook was rejected.",
+                status_code=exc.status_code,
+            ) from exc
+        event = await db.scalar(
+            select(PaymentEvent).where(
+                PaymentEvent.provider == "creem",
+                PaymentEvent.event_id == accepted.event_id,
+            )
+        )
+        if event is None or not accepted.created:
+            return None
+        result = await self.apply_payment_event(db, payment_event_id=event.id)
+        await db.commit()
+        return result
+
+    async def initiate_refund(self, *args, **kwargs) -> None:
+        del args, kwargs
+        if CREEM_REFUND_CREATION.state is not ProviderContractState.VERIFIED:
+            raise PaymentError(
+                code="provider_refund_creation_unverified",
+                message="Provider refund creation is not enabled for this release.",
+                status_code=503,
+            )
+        raise PaymentError(
+            code="provider_refund_creation_unimplemented",
+            message="Provider refund creation is unavailable.",
+            status_code=503,
+        )
 
 
 payment_service = PaymentService()

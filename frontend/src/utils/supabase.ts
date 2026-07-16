@@ -1,197 +1,90 @@
-import { API_BASE_URL, isH5Runtime, resolveBackendOrigin } from './apiConfig';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { API_BASE_URL, isWebRuntime } from './apiConfig';
 
-type Session = {
-    access_token: string;
-    user: {
-        id: string;
-        email?: string | null;
-    };
-};
+const SUPABASE_PKCE_STORAGE_KEY = 'vowpic_supabase_pkce';
 
-type OAuthParams = {
-    accessToken: string;
-    error: string;
-};
+interface PublicAuthConfig {
+    google_oauth_enabled?: boolean;
+    supabase_url?: string;
+    supabase_publishable_key?: string;
+}
 
-let googleAuthConfigured = false;
-let publicConfigLoaded = false;
-let pendingPublicConfig: Promise<boolean> | null = null;
+let authConfig: PublicAuthConfig | null = null;
+let configRequest: Promise<boolean> | null = null;
+let client: SupabaseClient | null = null;
 
-function getOAuthParams(): OAuthParams {
-    if (!isH5Runtime()) return { accessToken: '', error: '' };
-
-    const hash = window.location.hash.startsWith('#')
-        ? window.location.hash.slice(1)
-        : window.location.hash;
-    const hashParams = new URLSearchParams(hash);
-    const queryParams = new URLSearchParams(window.location.search);
-
+function normalizedAuthConfig(payload: any): PublicAuthConfig {
+    const source = payload?.auth && typeof payload.auth === 'object' ? payload.auth : {};
     return {
-        accessToken: String(hashParams.get('access_token') || queryParams.get('access_token') || '').trim(),
-        error: String(
-            hashParams.get('error_description') ||
-            hashParams.get('error') ||
-            queryParams.get('error_description') ||
-            queryParams.get('error') ||
-            '',
-        ).trim(),
+        google_oauth_enabled: Boolean(source.google_oauth_enabled),
+        supabase_url: String(source.supabase_url || '').trim().replace(/\/$/, ''),
+        supabase_publishable_key: String(source.supabase_publishable_key || '').trim(),
     };
 }
 
-function clearOAuthParams(): void {
-    if (!isH5Runtime()) return;
-    if (!window.location.hash && !/[?&](access_token|error|error_description)=/.test(window.location.search)) return;
-
-    window.history.replaceState(
-        null,
-        document.title,
-        `${window.location.pathname}${stripOAuthQuery(window.location.search)}`,
-    );
-}
-
-function stripOAuthQuery(search: string): string {
-    if (!search) return '';
-    const params = new URLSearchParams(search);
-    ['access_token', 'expires_at', 'expires_in', 'provider_token', 'refresh_token', 'token_type', 'type', 'error', 'error_description'].forEach((key) => {
-        params.delete(key);
-    });
-    const next = params.toString();
-    return next ? `?${next}` : '';
-}
-
-function decodeJwtPayload(token: string): Record<string, any> {
-    const part = token.split('.')[1] || '';
-    if (!part) return {};
-    const padded = part.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(part.length / 4) * 4, '=');
+function isUsableConfig(config: PublicAuthConfig | null): boolean {
+    if (!isWebRuntime() || !config?.google_oauth_enabled) return false;
+    if (!config.supabase_url || !config.supabase_publishable_key) return false;
     try {
-        return JSON.parse(window.atob(padded));
+        const url = new URL(config.supabase_url);
+        return url.protocol === 'https:' && url.pathname === '/';
     } catch {
-        return {};
+        return false;
     }
-}
-
-async function exchangeSupabaseAccessToken(accessToken: string): Promise<Session | null> {
-    // Include previous guest ID for account merge
-    let previousGuestId = '';
-    try {
-        previousGuestId = String(uni.getStorageSync('ai_wedding_guest_id') || '').trim();
-    } catch {}
-    const data: Record<string, string> = { access_token: accessToken };
-    if (previousGuestId) {
-        data.previous_guest_id = previousGuestId;
-    }
-    const response = await uni.request({
-        url: `${API_BASE_URL}/auth/supabase/session`,
-        method: 'POST',
-        data,
-        header: {
-            'Content-Type': 'application/json',
-        },
-    });
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-        return null;
-    }
-
-    const payload: any = response.data || {};
-    const access_token = String(payload.access_token || payload.token || '').trim();
-    const userId = String(payload.user_id || payload.userId || '').trim();
-    if (!access_token || !userId || access_token.split('.').length !== 3) {
-        return null;
-    }
-
-    const claims = decodeJwtPayload(accessToken);
-    return {
-        access_token,
-        user: {
-            id: userId,
-            email: typeof claims.email === 'string' ? claims.email : null,
-        },
-    };
-}
-
-export function isSupabaseConfigured(): boolean {
-    return isH5Runtime() && googleAuthConfigured;
-}
-
-function readGoogleAuthEnabled(payload: any): boolean {
-    const auth = payload?.auth;
-    if (!auth || typeof auth !== 'object') return false;
-    return Boolean(auth.google_oauth_enabled || auth.google_enabled || auth.supabase_enabled);
 }
 
 export async function refreshSupabaseConfig(force = false): Promise<boolean> {
-    if (!isH5Runtime()) {
-        googleAuthConfigured = false;
-        publicConfigLoaded = true;
-        return false;
-    }
+    if (!isWebRuntime()) return false;
+    if (!force && authConfig) return isUsableConfig(authConfig);
+    if (!force && configRequest) return configRequest;
 
-    if (publicConfigLoaded && !force) return googleAuthConfigured;
-    if (pendingPublicConfig && !force) return pendingPublicConfig;
-
-    pendingPublicConfig = uni.request({
+    configRequest = uni.request({
         url: `${API_BASE_URL}/ops/public_config`,
         method: 'GET',
+        withCredentials: true,
     }).then((response) => {
-        googleAuthConfigured = response.statusCode >= 200
-            && response.statusCode < 300
-            && readGoogleAuthEnabled(response.data);
-        publicConfigLoaded = true;
-        return googleAuthConfigured;
+        authConfig = response.statusCode >= 200 && response.statusCode < 300
+            ? normalizedAuthConfig(response.data)
+            : null;
+        if (!isUsableConfig(authConfig)) client = null;
+        return isUsableConfig(authConfig);
     }).catch(() => {
-        googleAuthConfigured = false;
-        publicConfigLoaded = true;
+        authConfig = null;
+        client = null;
         return false;
     }).finally(() => {
-        pendingPublicConfig = null;
+        configRequest = null;
     });
-
-    return pendingPublicConfig;
+    return configRequest;
 }
 
-export function getSupabaseClient(): null {
-    return null;
-}
-
-export async function getCurrentSupabaseSession(): Promise<Session | null> {
-    const params = getOAuthParams();
-    if (params.error) {
-        clearOAuthParams();
-        return null;
-    }
-
-    if (!params.accessToken) {
-        return null;
-    }
-
-    try {
-        return await exchangeSupabaseAccessToken(params.accessToken);
-    } finally {
-        clearOAuthParams();
-    }
-}
-
-export function getSupabaseRedirectUrl(): string {
-    if (!isH5Runtime()) return 'http://localhost:3000/pages/account/index';
-    return `${window.location.origin}/pages/account/index`;
-}
-
-export async function signInWithGoogle(): Promise<void> {
-    if (!isH5Runtime()) {
-        throw new Error('Google sign-in is only available in the web app');
-    }
-
+export async function getSupabaseClient(): Promise<SupabaseClient> {
     const available = await refreshSupabaseConfig();
-    if (!available) {
+    if (!available || !authConfig?.supabase_url || !authConfig.supabase_publishable_key) {
         throw new Error('Google sign-in is not available on this deployment.');
     }
-
-    const backendOrigin = resolveBackendOrigin();
-    const startUrl = `${backendOrigin || ''}/api/v1/auth/supabase/google/start?next=${encodeURIComponent('/pages/account/index')}`;
-    window.location.assign(startUrl);
+    if (!client) {
+        client = createClient(authConfig.supabase_url, authConfig.supabase_publishable_key, {
+            auth: {
+                flowType: 'pkce',
+                persistSession: false,
+                autoRefreshToken: false,
+                detectSessionInUrl: false,
+                storage: window.sessionStorage,
+                storageKey: SUPABASE_PKCE_STORAGE_KEY,
+            },
+        });
+    }
+    return client;
 }
 
-export async function signOutFromSupabase(): Promise<void> {
-    return;
+export function discardSupabaseClient(): void {
+    client = null;
+}
+
+export function clearSupabaseTransientStorage(): void {
+    if (!isWebRuntime()) return;
+    window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}`);
+    window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}-code-verifier`);
+    window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}-user`);
 }

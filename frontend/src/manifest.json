@@ -1,12 +1,12 @@
 {
-    "name": "AI婚纱照",
+    "name": "VowPic",
     "appid": "__UNI__XXXXXXX",
-    "description": "AI智能婚纱照生成",
+    "description": "VowPic overseas AI wedding portrait Web SaaS",
     "versionName": "1.0.0",
     "versionCode": "100",
     "transformPx": false,
     "h5": {
-        "title": "AI Wedding Photo",
+        "title": "VowPic",
         "router": {
             "mode": "history",
             "base": "/"
@@ -30,24 +30,6 @@
             "preload": true
         },
         "template": "template.h5.html"
-    },
-    "mp-weixin": {
-        "appid": "",
-        "setting": {
-            "urlCheck": false,
-            "es6": true,
-            "minified": true,
-            "postcss": true
-        },
-        "usingComponents": true,
-        "optimization": {
-            "subPackages": true
-        },
-        "permission": {
-            "scope.userLocation": {
-                "desc": "用于获取您的位置信息"
-            }
-        }
     },
     "networkTimeout": {
         "request": 30000,

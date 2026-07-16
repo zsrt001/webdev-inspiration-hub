@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vowpic.example/schemas/provider-product-mapping.v1.json",
+  "title": "Protected Provider Product Mapping",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "environment",
+    "catalog_version",
+    "provider",
+    "release_sha",
+    "approver_audit_id",
+    "products"
+  ],
+  "properties": {
+    "schema_version": {"const": "provider-product-mapping.v1"},
+    "environment": {"enum": ["preview", "production"]},
+    "catalog_version": {"const": "2026-07-10"},
+    "provider": {"const": "creem"},
+    "release_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "approver_audit_id": {"type": "string", "minLength": 3, "maxLength": 128},
+    "products": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pack_50", "pack_120", "pack_300", "starter_monthly", "creator_monthly", "studio_monthly"],
+      "properties": {
+        "pack_50": {"$ref": "#/$defs/providerProductId"},
+        "pack_120": {"$ref": "#/$defs/providerProductId"},
+        "pack_300": {"$ref": "#/$defs/providerProductId"},
+        "starter_monthly": {"$ref": "#/$defs/providerProductId"},
+        "creator_monthly": {"$ref": "#/$defs/providerProductId"},
+        "studio_monthly": {"$ref": "#/$defs/providerProductId"}
+      }
+    }
+  },
+  "$defs": {
+    "providerProductId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,255}$"
+    }
+  }
+}

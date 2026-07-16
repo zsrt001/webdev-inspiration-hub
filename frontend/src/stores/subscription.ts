@@ -4,21 +4,22 @@ import { get, post } from '../utils/api';
 
 export interface SubscriptionPlan {
   code: string;
-  name: string;
-  billing_interval: string;
-  price_cents: number;
-  currency: string;
-  monthly_credits: number;
-  feature_flags: Record<string, any>;
+  pre_tax_minor_units: number;
+  currency: 'USD';
+  credits: number;
+  retention_tier: string;
+  display_price: string;
 }
 
 export interface CurrentSubscription {
-  status: string;
-  plan_code: string | null;
-  current_period_start?: string | null;
+  subscription_id: string | null;
+  status: 'NONE' | 'PENDING' | 'ACTIVE' | 'PAST_DUE' | 'CANCEL_REQUESTED' | 'CANCELED' | 'EXPIRED';
+  product_code: string | null;
+  current_period_start: string | null;
   current_period_end: string | null;
+  paid_through_at: string | null;
   cancel_at_period_end: boolean;
-  monthly_credits: number;
+  credits_per_paid_period: number;
 }
 
 export interface SubscriptionCheckoutResponse {
@@ -27,50 +28,23 @@ export interface SubscriptionCheckoutResponse {
   checkout_url: string;
 }
 
-const DEFAULT_SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
-  {
-    code: 'starter_monthly',
-    name: 'Starter Monthly',
-    billing_interval: 'month',
-    price_cents: 1900,
-    currency: 'USD',
-    monthly_credits: 80,
-    feature_flags: { tier: 'starter' },
-  },
-  {
-    code: 'creator_monthly',
-    name: 'Creator Monthly',
-    billing_interval: 'month',
-    price_cents: 4900,
-    currency: 'USD',
-    monthly_credits: 260,
-    feature_flags: { tier: 'creator' },
-  },
-  {
-    code: 'studio_monthly',
-    name: 'Studio Monthly',
-    billing_interval: 'month',
-    price_cents: 12900,
-    currency: 'USD',
-    monthly_credits: 900,
-    feature_flags: { tier: 'studio', priority_generation: true },
-  },
-];
-
-function defaultSubscriptionPlans(): SubscriptionPlan[] {
-  return DEFAULT_SUBSCRIPTION_PLANS.map((plan) => ({
-    ...plan,
-    feature_flags: { ...plan.feature_flags },
-  }));
-}
-
 export const useSubscriptionStore = defineStore('subscription', () => {
   const plans = ref<SubscriptionPlan[]>([]);
   const current = ref<CurrentSubscription | null>(null);
   const loading = ref(false);
+  const checkoutKeys = new Map<string, string>();
+  let cancelKey: string | null = null;
+
+  function newIdempotencyKey(prefix: string): string {
+    const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+    const suffix = randomUUID
+      ? randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return `${prefix}-${suffix}`;
+  }
 
   const activePlan = computed(() => {
-    const code = current.value?.plan_code;
+    const code = current.value?.product_code;
     if (!code) return null;
     return plans.value.find((plan) => plan.code === code) || null;
   });
@@ -82,9 +56,9 @@ export const useSubscriptionStore = defineStore('subscription', () => {
         showLoading: false,
         showError: false,
       });
-      plans.value = Array.isArray(res) && res.length > 0 ? res : defaultSubscriptionPlans();
+      plans.value = Array.isArray(res) ? res : [];
     } catch {
-      plans.value = defaultSubscriptionPlans();
+      plans.value = [];
     }
     return plans.value;
   }
@@ -108,12 +82,21 @@ export const useSubscriptionStore = defineStore('subscription', () => {
     returnUrl?: string,
   ): Promise<SubscriptionCheckoutResponse> {
     loading.value = true;
+    const signature = `${planCode}|${returnUrl || ''}`;
+    const idempotencyKey = checkoutKeys.get(signature) || newIdempotencyKey('subscription-checkout');
+    checkoutKeys.set(signature, idempotencyKey);
     try {
-      return await post<SubscriptionCheckoutResponse>(
+      const response = await post<SubscriptionCheckoutResponse>(
         '/subscriptions/checkout',
         { plan_code: planCode, return_url: returnUrl },
-        { showLoading: false, showError: false },
+        {
+          showLoading: false,
+          showError: false,
+          headers: { 'Idempotency-Key': idempotencyKey },
+        },
       );
+      checkoutKeys.delete(signature);
+      return response;
     } finally {
       loading.value = false;
     }
@@ -121,22 +104,27 @@ export const useSubscriptionStore = defineStore('subscription', () => {
 
   async function cancelSubscription(): Promise<CurrentSubscription | null> {
     loading.value = true;
+    cancelKey ||= newIdempotencyKey('subscription-cancel');
     try {
-      const res = await post<CurrentSubscription>('/subscriptions/cancel', {}, {
+      const res = await post<{
+        subscription_id: string;
+        state: 'CONFIRMED';
+        cancel_at_period_end: true;
+      }>('/subscriptions/cancel', {}, {
         showLoading: false,
         showError: false,
+        headers: { 'Idempotency-Key': cancelKey },
       });
-      current.value = {
-        ...(current.value || {
-          status: res.status,
-          plan_code: null,
-          current_period_end: res.current_period_end,
-          monthly_credits: 0,
-        }),
-        status: res.status,
-        current_period_end: res.current_period_end,
-        cancel_at_period_end: res.cancel_at_period_end,
-      };
+      if (current.value?.subscription_id === res.subscription_id) {
+        current.value = {
+          ...current.value,
+          status: 'CANCEL_REQUESTED',
+          cancel_at_period_end: true,
+        };
+      } else {
+        await fetchCurrentSubscription(true);
+      }
+      cancelKey = null;
       return current.value;
     } finally {
       loading.value = false;

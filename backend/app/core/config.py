@@ -1,12 +1,12 @@
 """Application configuration using pydantic-settings."""
 
-import base64
-import hashlib
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlparse
+import re
+from typing import Literal
+from urllib.parse import unquote, urlparse
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +17,35 @@ PRODUCTION_ALLOWED_IMAGE_MODELS = (
 )
 
 
+def _database_login_and_target(database_url: str) -> tuple[str, tuple[str, str, int, str]]:
+    try:
+        parsed = urlparse(str(database_url or "").strip())
+        login = unquote(parsed.username or "").strip()
+        host = (parsed.hostname or "").strip().lower()
+        port = parsed.port or 5432
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid PostgreSQL database URL") from exc
+    scheme = parsed.scheme.split("+", 1)[0].lower()
+    database = unquote((parsed.path or "").lstrip("/")).strip()
+    if scheme not in {"postgres", "postgresql"} or not login or not host or not database:
+        raise ValueError("database URL must include PostgreSQL login, host, and database")
+    if host.startswith("db.") and host.endswith(".supabase.co"):
+        project_ref = host.removeprefix("db.").removesuffix(".supabase.co")
+        if not project_ref:
+            raise ValueError("Supabase direct URL is missing its project reference")
+        target = ("supabase", project_ref, 0, database)
+    elif "pooler.supabase." in host:
+        if "." not in login:
+            raise ValueError("Supabase pooler login is missing its project reference")
+        project_ref = login.rsplit(".", 1)[1].strip().lower()
+        if not project_ref:
+            raise ValueError("Supabase pooler login is missing its project reference")
+        target = ("supabase", project_ref, 0, database)
+    else:
+        target = ("postgresql", host, port, database)
+    return login, target
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -25,6 +54,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Application
@@ -32,9 +62,23 @@ class Settings(BaseSettings):
     debug: bool = False
     auto_create_tables: bool | None = None
     cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    runtime_environment: Literal["development", "preview", "production"] = Field(
+        default="development",
+        validation_alias=AliasChoices("RUNTIME_ENVIRONMENT", "VERCEL_ENV"),
+    )
+    vercel_deployment_id: str = Field(default="", validation_alias="VERCEL_DEPLOYMENT_ID")
+    vercel_git_commit_sha: str = Field(
+        default="",
+        validation_alias=AliasChoices("VERCEL_GIT_COMMIT_SHA", "SOURCE_SHA"),
+    )
+    runtime_bundle_id: str = ""
+    release_role: str = Field(default="", validation_alias="RELEASE_ROLE")
+    worker_image_digest: str = ""
+    acceptance_identity_hmac_key: str = ""
 
     # Database (Supabase/Neon compatible)
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_wedding"
+    control_plane_database_url: str = ""
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -54,45 +98,35 @@ class Settings(BaseSettings):
     vercel_url: str = ""
     vercel_project_production_url: str = ""
     blob_read_write_token: str = ""
+    upload_max_bytes: int = 10_485_760
+    upload_max_files: int = 5
+    upload_max_pixels: int = 40_000_000
+    upload_requests_per_hour: int = 20
+    upload_bytes_per_day: int = 209_715_200
+    upload_max_concurrent: int = 2
+    upload_intent_ttl_seconds: int = 900
+    provider_asset_grant_ttl_seconds: int = 600
+    provider_asset_grant_max_reads: int = 3
+    external_fetch_max_redirects: int = 2
+    external_fetch_connect_timeout_seconds: int = 5
+    external_fetch_total_timeout_seconds: int = 30
+    external_fetch_max_bytes: int = 10_485_760
 
     # Primary vision LLM provider
     llm_provider: str = "wenwen"  # jiekou | wenwen
     jiekou_api_key: str = ""
     jiekou_chat_url: str = "https://api.jiekou.ai/v1/chat/completions"
     jiekou_vision_model: str = "gemini-3.1-flash"
-    wenwen_api_key: str = ""
     wenwen_chat_api_key: str = ""
     wenwen_vision_api_key: str = ""
     wenwen_api_base_url: str = "https://breakout.wenwen-ai.com/v1"
     wenwen_chat_path: str = "/chat/completions"
-    wenwen_models_path: str = "/models"
     wenwen_text_model: str = "deepseek-v3.2"
     wenwen_vision_model: str = "gemini-3.1-pro-preview"
-    wenwen_image_model: str = "gemini-3-pro-image-preview"
-    wenwen_image_fallback_models: str = ""
     generation_allowed_image_models: str = "gemini-3-pro-image-preview,gemini-3.1-flash-image-preview"
-    wenwen_image_generate_path: str = "/images/generations"
-    wenwen_image_edit_path: str = "/images/edits"
-    wenwen_image_edit_model: str = "gemini-3-pro-image-preview"
-    wenwen_image_edit_fallback_models: str = ""
-    wenwen_prefer_image_edit: bool = True
-    wenwen_require_image_edit_identity: bool = True
-    wenwen_image_edit_quality: str = "high"
-    wenwen_image_edit_candidate_count: int = 2
-    wenwen_image_edit_size_single: str = "1152x1536"
-    wenwen_image_edit_size_couple: str = "1152x1536"
-    wenwen_native_image_generate_path_template: str = "/v1beta/models/{model}:generateContent"
-    wenwen_native_image_size: str = "4K"
-    wenwen_task_path_template: str = "/tasks/{task_id}"
-    wenwen_image_size_single: str = "3:4"
-    wenwen_image_size_couple: str = "3:4"
-    wenwen_poll_interval: float = 3.0
-    wenwen_poll_timeout: int = 240
-    wenwen_max_retries: int = 2
     evolink_api_key: str = ""
     evolink_api_base_url: str = "https://api.evolink.ai"
     evolink_image_model: str = "gemini-3.1-flash-image-preview"
-    evolink_image_fallback_models: str = ""
     evolink_image_quality: str = "2K"
     evolink_image_size: str = "3:4"
     evolink_poll_interval: float = 5.0
@@ -124,6 +158,8 @@ class Settings(BaseSettings):
     qa_vision_error_retry_attempts: int = 3
     qa_vision_timeout_seconds: float = 75.0
     webhook_base_url: str = ""  # Public URL for webhooks
+    provider_grant_origin: str = ""  # Exact isolated origin for Provider asset reads
+    provider_grant_probe_secret: str = ""  # Authenticates the isolated runtime probe
     frontend_base_url: str = ""  # Public URL for web/join links
     # Hosted checkout / staged commercial validation
     payment_provider: str = "creem"  # creem | manual_review
@@ -141,7 +177,13 @@ class Settings(BaseSettings):
     creem_product_pack_50: str = ""
     creem_product_pack_120: str = ""
     creem_product_pack_300: str = ""
+    google_auth_enabled: bool = False
+    authenticated_upload_enabled: bool = False
+    generation_enabled: bool = False
+    credit_pack_checkout_enabled: bool = False
     subscription_billing_enabled: bool = False
+    private_download_enabled: bool = False
+    partner_invite_enabled: bool = False
     creem_subscription_starter_product_id: str = ""
     creem_subscription_creator_product_id: str = ""
     creem_subscription_studio_product_id: str = ""
@@ -149,21 +191,19 @@ class Settings(BaseSettings):
     supabase_pooler_host: str = ""
 
     # Generation engine
-    generation_engine: str = "evolink"  # comfyui | wenwen | evolink
+    generation_engine: str = "evolink"
 
     # Security
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 60 * 24 * 30  # 30 days
     admin_token: str = ""  # Backend-only fallback for scripts/internal admin calls. Do not expose in frontend.
-    admin_user_ids: str = ""  # Comma-separated local user UUIDs allowed to use admin APIs.
-    admin_openids: str = ""  # Comma-separated local openids allowed to use admin APIs.
-    admin_emails: str = ""  # Comma-separated emails allowed to use admin APIs.
-    phone_crypto_key: str = ""  # Optional dedicated key for lead phone encryption.
     supabase_url: str = ""
     supabase_anon_key: str = ""
     supabase_jwt_secret: str = ""
     supabase_jwt_audience: str = "authenticated"
     supabase_auth_timeout: float = 5.0
+    supabase_exchange_max_token_age_seconds: int = 600
+    supabase_clock_skew_seconds: int = 60
     rate_limit_enabled: bool = False
     rate_limit_default_requests: int = 240
     rate_limit_default_window_seconds: int = 60
@@ -173,8 +213,8 @@ class Settings(BaseSettings):
     new_account_ip_limit_per_hour: int = 8
     new_account_device_limit_per_hour: int = 3
     resend_api_key: str = ""
-    trial_welcome_credits: int = 2
-    trial_daily_generation_limit: int = 1
+    trial_welcome_credits: int = Field(default=2, ge=2, le=2)
+    trial_daily_generation_limit: int = Field(default=3, ge=3, le=3)
     order_active_user_limit: int = 1
     order_active_window_minutes: int = 45
     trial_preview_max_width: int = 900
@@ -186,23 +226,6 @@ class Settings(BaseSettings):
     postprocess_jpeg_quality: int = 92
     postprocess_variants: str = "2x3,3x2,3x4,4x5,9x16,1x1"
 
-    # ComfyUI
-    comfy_provider: str = "local"  # local | cloud
-    comfyui_base_url: str = "http://127.0.0.1:8188"
-    comfy_cloud_base_url: str = "https://cloud.comfy.org"
-    comfy_cloud_api_key: str = ""
-    comfy_cloud_workflow_path: str = "workflows/comfyui_cloud_base_minimal.json"
-    comfy_cloud_couple_workflow_path: str = "workflows/comfyui_cloud_couple_minimal.json"
-    comfy_cloud_node_map: str = "{\"prompt\":{\"id\":\"2\",\"key\":\"text\"},\"negative_prompt\":{\"id\":\"3\",\"key\":\"text\"},\"init_image_name\":{\"id\":\"4\",\"key\":\"image\"}}"
-    comfyui_workflow_path: str = "workflows/comfyui_base.json"
-    comfyui_inpaint_workflow_path: str = "workflows/comfyui_couple_inpaint.json"
-    comfyui_live_portrait_workflow_path: str = "workflows/comfyui_live_portrait.json"
-    comfyui_node_map: str = "{\"prompt\":{\"id\":\"2\",\"key\":\"text\"},\"negative_prompt\":{\"id\":\"3\",\"key\":\"text\"},\"scene_image_url\":{\"id\":\"12\",\"key\":\"image\",\"upload\":true,\"type\":\"input\",\"allow_empty\":true},\"clothing_image_url\":{\"id\":\"13\",\"key\":\"image\",\"upload\":true,\"type\":\"input\",\"allow_empty\":true},\"face_image_url\":{\"id\":\"14\",\"key\":\"image\",\"upload\":true,\"type\":\"input\",\"allow_empty\":true},\"face_image_url_2\":{\"id\":\"34\",\"key\":\"image\",\"upload\":true,\"type\":\"input\",\"allow_empty\":true},\"pose_image_url\":{\"id\":\"22\",\"key\":\"image\",\"upload\":true,\"type\":\"input\",\"allow_empty\":true},\"depth_image_url\":{\"id\":\"23\",\"key\":\"image\",\"upload\":true,\"type\":\"input\",\"allow_empty\":true},\"normal_image_url\":{\"id\":\"24\",\"key\":\"image\",\"upload\":true,\"type\":\"input\",\"allow_empty\":true},\"scene_ip_weight\":{\"id\":\"19\",\"key\":\"weight\"},\"clothing_ip_weight\":{\"id\":\"20\",\"key\":\"weight\"},\"face_ip_weight\":{\"id\":\"21\",\"key\":\"weight\"},\"face2_ip_weight\":{\"id\":\"35\",\"key\":\"weight\"},\"pose_cn_weight\":{\"id\":\"28\",\"key\":\"strength\"},\"depth_cn_weight\":{\"id\":\"29\",\"key\":\"strength\"},\"normal_cn_weight\":{\"id\":\"30\",\"key\":\"strength\"},\"pose_cn_start\":{\"id\":\"28\",\"key\":\"start_percent\"},\"pose_cn_end\":{\"id\":\"28\",\"key\":\"end_percent\"},\"depth_cn_start\":{\"id\":\"29\",\"key\":\"start_percent\"},\"depth_cn_end\":{\"id\":\"29\",\"key\":\"end_percent\"},\"normal_cn_start\":{\"id\":\"30\",\"key\":\"start_percent\"},\"normal_cn_end\":{\"id\":\"30\",\"key\":\"end_percent\"}}"
-    comfyui_live_portrait_node_map: str = "{\"image_url\":{\"id\":\"1\",\"key\":\"image\",\"upload\":true,\"type\":\"input\"},\"seconds\":{\"id\":\"2\",\"key\":\"seconds\"}}"
-    comfyui_poll_interval: float = 1.5
-    comfyui_poll_timeout: int = 300
-    comfyui_max_retries: int = 1
-    comfyui_require_storage_delivery: bool = True
     cleanup_source_images_on_complete: bool = False
     cleanup_cron_token: str = ""
     cron_secret: str = ""
@@ -222,7 +245,7 @@ class Settings(BaseSettings):
 
     # Live Portrait / Remote Join
     live_portrait_enabled: bool = False
-    remote_join_enabled: bool = True
+    remote_join_enabled: bool = False
     allow_memory_fallback: bool = False
 
     @field_validator("debug", mode="before")
@@ -236,12 +259,124 @@ class Settings(BaseSettings):
                 return False
         return value
 
+    @field_validator(
+        "upload_max_bytes",
+        "upload_max_files",
+        "upload_max_pixels",
+        "upload_requests_per_hour",
+        "upload_bytes_per_day",
+        "upload_max_concurrent",
+        "upload_intent_ttl_seconds",
+        "provider_asset_grant_ttl_seconds",
+        "provider_asset_grant_max_reads",
+        "external_fetch_max_redirects",
+        "external_fetch_connect_timeout_seconds",
+        "external_fetch_total_timeout_seconds",
+        "external_fetch_max_bytes",
+    )
+    @classmethod
+    def enforce_media_security_caps(cls, value: int, info: ValidationInfo) -> int:
+        """Allow stricter deployments, but never weaken the documented hard ceilings."""
+
+        caps = {
+            "upload_max_bytes": 10_485_760,
+            "upload_max_files": 5,
+            "upload_max_pixels": 40_000_000,
+            "upload_requests_per_hour": 20,
+            "upload_bytes_per_day": 209_715_200,
+            "upload_max_concurrent": 2,
+            "upload_intent_ttl_seconds": 900,
+            "provider_asset_grant_ttl_seconds": 600,
+            "provider_asset_grant_max_reads": 3,
+            "external_fetch_max_redirects": 2,
+            "external_fetch_connect_timeout_seconds": 5,
+            "external_fetch_total_timeout_seconds": 30,
+            "external_fetch_max_bytes": 10_485_760,
+        }
+        normalized = int(value)
+        cap = caps[str(info.field_name)]
+        if normalized <= 0 or normalized > cap:
+            raise ValueError(f"{info.field_name} must be between 1 and {cap}")
+        return normalized
+
     @property
     def should_auto_create_tables(self) -> bool:
-        """Whether startup may mutate database schema for local/dev convenience."""
-        if self.auto_create_tables is not None:
-            return bool(self.auto_create_tables)
-        return bool(self.debug)
+        """Deprecated compatibility property; runtime schema writes stay disabled."""
+        return False
+
+    @property
+    def deployment_id(self) -> str:
+        """Platform-issued deployment coordinate; project `DEPLOYMENT_ID` is ignored."""
+        return self.vercel_deployment_id.strip()
+
+    @property
+    def source_sha(self) -> str:
+        """Platform-issued source coordinate exposed only as a non-secret digest."""
+        value = self.vercel_git_commit_sha.strip().lower()
+        return value if re.fullmatch(r"[0-9a-f]{40,64}", value) else ""
+
+    @property
+    def runtime_coordinate_errors(self) -> list[str]:
+        """Return readiness blockers without preventing the liveness process from starting."""
+        if self.runtime_environment == "development":
+            return []
+        errors: list[str] = []
+        if not self.deployment_id:
+            errors.append("VERCEL_DEPLOYMENT_ID is required")
+        if not re.fullmatch(r"rtb_[0-9a-f]{64}", self.runtime_bundle_id.strip()):
+            errors.append("RUNTIME_BUNDLE_ID must be a canonical rtb_ SHA-256 identity")
+        release_role = self.release_role.strip()
+        if self.runtime_environment == "preview" and release_role not in {
+            "PREVIEW_IDENTITY",
+            "PREVIEW_COMMERCIAL",
+        }:
+            errors.append("RELEASE_ROLE must identify an approved Preview role")
+        if self.runtime_environment == "production" and release_role not in {
+            "SAFE_BASELINE",
+            "COMMERCIAL_7A",
+            "CONTRACT_7B",
+        }:
+            errors.append("RELEASE_ROLE must identify an approved Production role")
+        if len(self.acceptance_identity_hmac_key.strip()) < 32:
+            errors.append("ACCEPTANCE_IDENTITY_HMAC_KEY must contain at least 32 characters")
+        digest = self.worker_image_digest.strip()
+        if digest and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            errors.append("WORKER_IMAGE_DIGEST must be a sha256 OCI digest")
+        return errors
+
+    @property
+    def runtime_coordinates_valid(self) -> bool:
+        return not self.runtime_coordinate_errors
+
+    @property
+    def effective_control_plane_database_url(self) -> str:
+        explicit = self.control_plane_database_url.strip()
+        if explicit:
+            return explicit
+        return self.database_url.strip() if self.runtime_environment == "development" else ""
+
+    @property
+    def control_plane_database_config_errors(self) -> list[str]:
+        if self.runtime_environment == "development":
+            return []
+        explicit = self.control_plane_database_url.strip()
+        if not explicit:
+            return ["CONTROL_PLANE_DATABASE_URL is required outside development"]
+        try:
+            runtime_login, runtime_target = _database_login_and_target(self.database_url)
+            writer_login, writer_target = _database_login_and_target(explicit)
+        except ValueError:
+            return ["DATABASE_URL and CONTROL_PLANE_DATABASE_URL must be valid PostgreSQL URLs"]
+        errors: list[str] = []
+        if runtime_login == writer_login:
+            errors.append(
+                "DATABASE_URL and CONTROL_PLANE_DATABASE_URL must use distinct login roles"
+            )
+        if runtime_target != writer_target:
+            errors.append(
+                "DATABASE_URL and CONTROL_PLANE_DATABASE_URL must target the same database"
+            )
+        return errors
 
     @property
     def effective_cleanup_cron_token(self) -> str:
@@ -258,27 +393,11 @@ class Settings(BaseSettings):
         return [item.strip() for item in (self.rate_limit_exempt_paths or "").split(",") if item.strip()]
 
     @property
-    def admin_user_id_list(self) -> set[str]:
-        return {item.strip().lower() for item in (self.admin_user_ids or "").split(",") if item.strip()}
-
-    @property
-    def admin_openid_list(self) -> set[str]:
-        return {item.strip() for item in (self.admin_openids or "").split(",") if item.strip()}
-
-    @property
-    def admin_email_list(self) -> set[str]:
-        return {item.strip().lower() for item in (self.admin_emails or "").split(",") if item.strip()}
-
-    @property
-    def admin_identity_configured(self) -> bool:
-        return bool(self.admin_user_id_list or self.admin_openid_list or self.admin_email_list)
-
-    @property
     def supabase_oauth_enabled(self) -> bool:
         """Whether Google OAuth can complete both redirect and token exchange."""
         return bool(
             self.supabase_url.strip()
-            and (self.supabase_jwt_secret.strip() or self.supabase_anon_key.strip())
+            and self.supabase_anon_key.strip()
         )
 
     @property
@@ -300,33 +419,8 @@ class Settings(BaseSettings):
         return origins
 
     @property
-    def phone_fernet_key(self) -> str:
-        source = (self.phone_crypto_key or self.secret_key or "").encode("utf-8")
-        digest = hashlib.sha256(source).digest()
-        return base64.urlsafe_b64encode(digest).decode("utf-8")
-
-    @property
-    def comfy_mode(self) -> str:
-        provider = (self.comfy_provider or "").strip().lower()
-        if provider in {"cloud", "comfy_cloud", "comfycloud"}:
-            return "cloud"
-        if provider in {"local", "self_hosted", "self-hosted"}:
-            return "local"
-        if self.comfy_cloud_api_key:
-            return "cloud"
-        return "local"
-
-    @property
-    def using_comfy_cloud(self) -> bool:
-        return self.comfy_mode == "cloud"
-
-    @property
-    def using_wenwen_generation(self) -> bool:
-        return (self.generation_engine or "").strip().lower() == "wenwen"
-
-    @property
     def using_evolink_generation(self) -> bool:
-        return (self.generation_engine or "").strip().lower() == "evolink"
+        return self.generation_engine == "evolink"
 
     @property
     def is_vercel_runtime(self) -> bool:
@@ -396,6 +490,13 @@ class Settings(BaseSettings):
         return "http://localhost:8001"
 
     @property
+    def effective_provider_grant_origin(self) -> str:
+        explicit = self._normalize_public_base_url(self.provider_grant_origin)
+        if explicit:
+            return explicit
+        return self.effective_webhook_base_url
+
+    @property
     def blob_token_effective(self) -> str:
         return (self.blob_read_write_token or "").strip()
 
@@ -403,11 +504,9 @@ class Settings(BaseSettings):
     def generation_execution_mode(self) -> str:
         mode = (self.task_execution_mode or "").strip().lower()
         if mode in {"inline", "sync", "direct"}:
-            return "inline"
+            return "inline" if self.runtime_environment == "development" and self.debug else "disabled"
         if mode in {"arq", "queue", "redis"}:
             return "arq"
-        if self.is_vercel_runtime:
-            return "inline"
         return "arq"
 
     @property
@@ -438,48 +537,16 @@ class Settings(BaseSettings):
         return (self.wenwen_vision_api_key or "").strip()
 
     @property
-    def comfy_api_base_url(self) -> str:
-        if self.using_comfy_cloud:
-            return f"{self.comfy_cloud_base_url.rstrip('/')}/api"
-        return self.comfyui_base_url.rstrip("/")
-
-    @property
-    def comfy_public_base_url(self) -> str:
-        if self.using_comfy_cloud:
-            return self.comfy_cloud_base_url.rstrip("/")
-        return self.comfyui_base_url.rstrip("/")
-
-    @property
-    def comfy_auth_headers(self) -> dict[str, str]:
-        if self.using_comfy_cloud and self.comfy_cloud_api_key:
-            return {"X-API-Key": self.comfy_cloud_api_key}
-        return {}
-
-    @property
     def generation_provider_name(self) -> str:
-        if self.using_evolink_generation:
-            return "evolink"
-        if self.using_wenwen_generation:
-            return "wenwen"
-        if self.using_comfy_cloud:
-            return "comfy_cloud"
-        return "comfyui"
+        return "evolink" if self.using_evolink_generation else "invalid"
 
     @property
     def generation_poll_timeout(self) -> int:
-        if self.using_evolink_generation:
-            return int(self.evolink_poll_timeout)
-        if self.using_wenwen_generation:
-            return int(self.wenwen_poll_timeout)
-        return int(self.comfyui_poll_timeout)
+        return int(self.evolink_poll_timeout)
 
     @property
     def generation_max_retries(self) -> int:
-        if self.using_evolink_generation:
-            return int(self.evolink_max_retries)
-        if self.using_wenwen_generation:
-            return int(self.wenwen_max_retries)
-        return int(self.comfyui_max_retries)
+        return int(self.evolink_max_retries)
 
     @property
     def generation_allowed_image_model_list(self) -> list[str]:

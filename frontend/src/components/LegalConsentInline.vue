@@ -17,7 +17,7 @@
 import { computed } from 'vue';
 import { useI18nStore } from '../stores/i18n';
 
-type ConsentMode = 'generate' | 'lead' | 'payment';
+type ConsentMode = 'generate' | 'payment';
 
 const props = withDefaults(
   defineProps<{
@@ -39,7 +39,6 @@ const i18nStore = useI18nStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const beforeText = computed(() => {
-  if (props.mode === 'lead') return tr('我同意平台依据', 'I agree that the platform may process my details under the ');
   return tr('我已阅读并同意', 'I have read and agree to the ');
 });
 
@@ -48,14 +47,8 @@ const betweenText = computed(() => tr(' 与 ', ' and the '));
 const afterText = computed(() => {
   if (props.mode === 'generate') {
     return tr(
-      '，确认上传内容合法、真实、已获授权；理解原图会定期删除，AI 结果可能不完全准确。',
-      ', confirm uploaded content is lawful, authentic, and authorized; source images are periodically deleted and AI results may be inaccurate.',
-    );
-  }
-  if (props.mode === 'lead') {
-    return tr(
-      '，用于婚摄咨询、服务联系与预约跟进。',
-      ', for consultation, follow-up, and booking communication.',
+      '，确认上传内容合法、真实、已获授权；理解原图删除目前暂停，AI 结果可能不完全准确。',
+      ', confirm uploaded content is lawful, authentic, and authorized; source-image deletion is temporarily paused and AI results may be inaccurate.',
     );
   }
   return tr(

@@ -23,28 +23,7 @@ DEFAULT_OPS_CONFIG: dict[str, Any] = {
             "cta_label": "Start Now",
             "secondary_cta_label": "Browse Collection",
             "image_url": "/style-previews/couple_old_money.jpg",
-            "legacy_enabled": True,
-            "portal_enabled": True,
         }
-    },
-    "feature_flags": {
-        "live_portrait": bool(settings.live_portrait_enabled),
-        "remote_join": bool(settings.remote_join_enabled),
-        "local_recommendations": True,
-        "director_mode": True,
-    },
-    "recommendations": {
-        "lead_lookback_days": 90,
-        "lead_boost_per_conversion": 8,
-        "lead_boost_cap": 48,
-        "manual_boosts": {},
-    },
-    "crm": {
-        "enabled": False,
-        "webhook_url": "",
-        "auth_header_name": "",
-        "auth_header_value": "",
-        "batch_size": 100,
     },
 }
 
@@ -90,64 +69,11 @@ def _normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             placements["home_banner"],
         )
 
-    feature_flags = merged.get("feature_flags")
-    if not isinstance(feature_flags, dict):
-        merged["feature_flags"] = copy.deepcopy(DEFAULT_OPS_CONFIG["feature_flags"])
-    else:
-        merged["feature_flags"] = _deep_merge(DEFAULT_OPS_CONFIG["feature_flags"], feature_flags)
-
-    recommendations = merged.get("recommendations")
-    if not isinstance(recommendations, dict):
-        merged["recommendations"] = copy.deepcopy(DEFAULT_OPS_CONFIG["recommendations"])
-    else:
-        merged["recommendations"] = _deep_merge(DEFAULT_OPS_CONFIG["recommendations"], recommendations)
-        try:
-            merged["recommendations"]["lead_lookback_days"] = max(
-                7,
-                min(365, int(merged["recommendations"].get("lead_lookback_days") or 90)),
-            )
-        except Exception:
-            merged["recommendations"]["lead_lookback_days"] = DEFAULT_OPS_CONFIG["recommendations"]["lead_lookback_days"]
-        try:
-            merged["recommendations"]["lead_boost_per_conversion"] = max(
-                0,
-                min(50, int(merged["recommendations"].get("lead_boost_per_conversion") or 0)),
-            )
-        except Exception:
-            merged["recommendations"]["lead_boost_per_conversion"] = DEFAULT_OPS_CONFIG["recommendations"]["lead_boost_per_conversion"]
-        try:
-            merged["recommendations"]["lead_boost_cap"] = max(
-                0,
-                min(500, int(merged["recommendations"].get("lead_boost_cap") or 0)),
-            )
-        except Exception:
-            merged["recommendations"]["lead_boost_cap"] = DEFAULT_OPS_CONFIG["recommendations"]["lead_boost_cap"]
-        manual_boosts = merged["recommendations"].get("manual_boosts")
-        if not isinstance(manual_boosts, dict):
-            merged["recommendations"]["manual_boosts"] = {}
-        else:
-            normalized_manual_boosts: dict[str, int] = {}
-            for key, value in manual_boosts.items():
-                studio_id = str(key or "").strip()
-                if not studio_id:
-                    continue
-                try:
-                    normalized_manual_boosts[studio_id] = max(-100, min(100, int(value or 0)))
-                except Exception:
-                    continue
-            merged["recommendations"]["manual_boosts"] = normalized_manual_boosts
-
-    crm = merged.get("crm")
-    if not isinstance(crm, dict):
-        merged["crm"] = copy.deepcopy(DEFAULT_OPS_CONFIG["crm"])
-    else:
-        merged["crm"] = _deep_merge(DEFAULT_OPS_CONFIG["crm"], crm)
-        try:
-            merged["crm"]["batch_size"] = max(1, min(500, int(merged["crm"].get("batch_size") or 100)))
-        except Exception:
-            merged["crm"]["batch_size"] = DEFAULT_OPS_CONFIG["crm"]["batch_size"]
-
-    return merged
+    return {
+        "template_overrides": merged["template_overrides"],
+        "pricing": merged["pricing"],
+        "placements": merged["placements"],
+    }
 
 
 def get_ops_config() -> dict[str, Any]:
@@ -256,7 +182,6 @@ def get_credit_package_overrides() -> list[dict[str, Any]] | None:
 def get_public_ops_config() -> dict[str, Any]:
     config = get_ops_config()
     placements = config.get("placements") if isinstance(config.get("placements"), dict) else {}
-    feature_flags = config.get("feature_flags") if isinstance(config.get("feature_flags"), dict) else {}
     home_banner = placements.get("home_banner") if isinstance(placements.get("home_banner"), dict) else {}
     image_url = str(home_banner.get("image_url") or DEFAULT_OPS_CONFIG["placements"]["home_banner"]["image_url"]).strip()
     legacy_home_images = {
@@ -289,58 +214,11 @@ def get_public_ops_config() -> dict[str, Any]:
                     or DEFAULT_OPS_CONFIG["placements"]["home_banner"]["secondary_cta_label"]
                 ).strip(),
                 "image_url": image_url,
-                "legacy_enabled": bool(home_banner.get("legacy_enabled", True)),
-                "portal_enabled": bool(home_banner.get("portal_enabled", True)),
             }
         },
-        "feature_flags": {
-            "live_portrait": bool(
-                settings.live_portrait_enabled and feature_flags.get("live_portrait", settings.live_portrait_enabled)
-            ),
-            "remote_join": bool(
-                settings.remote_join_enabled and feature_flags.get("remote_join", settings.remote_join_enabled)
-            ),
-            "local_recommendations": bool(feature_flags.get("local_recommendations", True)),
-            "director_mode": bool(feature_flags.get("director_mode", True)),
-        },
         "auth": {
-            "google_oauth_enabled": settings.supabase_oauth_enabled,
+            "google_oauth_enabled": bool(settings.google_auth_enabled and settings.supabase_oauth_enabled),
+            "supabase_url": settings.supabase_url.strip() if settings.supabase_oauth_enabled else "",
+            "supabase_publishable_key": settings.supabase_anon_key.strip() if settings.supabase_oauth_enabled else "",
         },
     }
-
-
-def get_recommendation_config() -> dict[str, Any]:
-    config = get_ops_config()
-    recommendations = config.get("recommendations")
-    if not isinstance(recommendations, dict):
-        return copy.deepcopy(DEFAULT_OPS_CONFIG["recommendations"])
-    normalized = _deep_merge(DEFAULT_OPS_CONFIG["recommendations"], recommendations)
-    try:
-        normalized["lead_lookback_days"] = max(7, min(365, int(normalized.get("lead_lookback_days") or 90)))
-    except Exception:
-        normalized["lead_lookback_days"] = DEFAULT_OPS_CONFIG["recommendations"]["lead_lookback_days"]
-    try:
-        normalized["lead_boost_per_conversion"] = max(0, min(50, int(normalized.get("lead_boost_per_conversion") or 0)))
-    except Exception:
-        normalized["lead_boost_per_conversion"] = DEFAULT_OPS_CONFIG["recommendations"]["lead_boost_per_conversion"]
-    try:
-        normalized["lead_boost_cap"] = max(0, min(500, int(normalized.get("lead_boost_cap") or 0)))
-    except Exception:
-        normalized["lead_boost_cap"] = DEFAULT_OPS_CONFIG["recommendations"]["lead_boost_cap"]
-    manual_boosts = normalized.get("manual_boosts")
-    if not isinstance(manual_boosts, dict):
-        normalized["manual_boosts"] = {}
-    return normalized
-
-
-def get_crm_config() -> dict[str, Any]:
-    config = get_ops_config()
-    crm = config.get("crm")
-    if not isinstance(crm, dict):
-        return copy.deepcopy(DEFAULT_OPS_CONFIG["crm"])
-    normalized = _deep_merge(DEFAULT_OPS_CONFIG["crm"], crm)
-    try:
-        normalized["batch_size"] = max(1, min(500, int(normalized.get("batch_size") or 100)))
-    except Exception:
-        normalized["batch_size"] = DEFAULT_OPS_CONFIG["crm"]["batch_size"]
-    return normalized

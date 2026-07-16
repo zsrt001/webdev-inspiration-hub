@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -19,39 +19,6 @@ from app.models.email_delivery_log import EmailDeliveryLog
 logger = logging.getLogger(__name__)
 
 RESEND_API_URL = "https://api.resend.com/emails"
-_email_log_table_ready = False
-
-
-async def ensure_email_delivery_log_table(db: AsyncSession) -> None:
-    """Create email log storage on production runtimes that have not run migrations yet."""
-    global _email_log_table_ready
-    if _email_log_table_ready:
-        return
-    await db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS email_delivery_logs (
-                id UUID PRIMARY KEY,
-                purpose VARCHAR(64) NOT NULL,
-                provider VARCHAR(32) NOT NULL,
-                to_email VARCHAR(255) NOT NULL,
-                subject VARCHAR(255) NOT NULL,
-                status VARCHAR(32) NOT NULL,
-                provider_message_id VARCHAR(128),
-                error_code VARCHAR(64),
-                error_message TEXT,
-                metadata_json JSONB,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
-            )
-            """
-        )
-    )
-    for column in ("purpose", "to_email", "status", "provider_message_id", "error_code", "created_at"):
-        await db.execute(text(f'CREATE INDEX IF NOT EXISTS "ix_email_delivery_logs_{column}" ON email_delivery_logs ("{column}")'))
-    await db.flush()
-    _email_log_table_ready = True
-
-
 # ---------------------------------------------------------------------------
 # Disposable email domain blocklist
 # ---------------------------------------------------------------------------
@@ -99,7 +66,6 @@ async def _record_email_log(
 ) -> None:
     if db is None:
         return
-    await ensure_email_delivery_log_table(db)
     status_value = "sent" if result.get("sent") else "failed"
     error_code = str(result.get("reason") or result.get("status") or result.get("error_code") or "")[:64] or None
     error_message = str(result.get("error") or result.get("message") or "")[:2000] or None
@@ -153,13 +119,13 @@ async def _send_email(
             result = {"sent": True, "id": resp.json().get("id")}
             await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
             return result
-        logger.warning("Resend API error %d: %s", resp.status_code, resp.text[:200])
-        result = {"sent": False, "status": resp.status_code, "message": resp.text[:500]}
+        logger.warning("Resend API rejected email status=%d", resp.status_code)
+        result = {"sent": False, "status": resp.status_code, "error_code": "provider_rejected"}
         await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
         return result
     except Exception as exc:
-        logger.warning("Email send failed: %s", exc)
-        result = {"sent": False, "error": str(exc)}
+        logger.warning("Email send failed exception_type=%s", type(exc).__name__)
+        result = {"sent": False, "error_code": "provider_unavailable"}
         await _record_email_log(db, to=to, subject=subject, purpose=purpose, result=result, metadata=metadata)
         return result
 
@@ -193,7 +159,7 @@ def build_order_result_url(order_id: str) -> str:
     clean_id = str(order_id or "").strip()
     if not base_url or not clean_id:
         return ""
-    return f"{base_url}/#/pages/preview/preview?id={quote(clean_id)}"
+    return f"{base_url}/pages/preview/preview?id={quote(clean_id)}"
 
 
 async def send_order_completed(
@@ -318,7 +284,6 @@ def get_email_diagnostics() -> dict[str, Any]:
 
 
 async def list_email_logs(db: AsyncSession, *, limit: int = 50) -> list[EmailDeliveryLog]:
-    await ensure_email_delivery_log_table(db)
     clean_limit = max(1, min(200, int(limit or 50)))
     rows = (
         await db.execute(

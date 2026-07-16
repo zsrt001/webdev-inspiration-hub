@@ -1,301 +1,221 @@
-"""Subscription billing business operations."""
+"""Provider-neutral subscription projections backed by immutable paid facts."""
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+import uuid
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.credit_transaction import CreditTransactionType
+from app.core.provider_contracts import (
+    CREEM_SUBSCRIPTION_PAID_TRANSACTION,
+    CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION,
+    ProviderContract,
+    ProviderContractState,
+)
+from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
+from app.models.credit_transaction import CreditTransaction, CreditTransactionType
+from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
+from app.models.subscription_cancel_intent import CancelIntentState, SubscriptionCancelIntent
 from app.models.subscription_credit_grant import SubscriptionCreditGrant
-from app.models.subscription_plan import SubscriptionPlan
-from app.models.user_subscription import SubscriptionStatus
-from app.models.user_subscription import UserSubscription
-from app.services.credit_service import add_credits_with_transaction_async
-
-settings = get_settings()
-
-DEFAULT_PLAN_SEEDS = (
-    {
-        "id": uuid.UUID("30aa1d5f-bbbd-4b1d-9f5b-2608ad6f0001"),
-        "code": "starter_monthly",
-        "name": "Starter Monthly",
-        "billing_interval": "month",
-        "price_cents": 1900,
-        "currency": "USD",
-        "monthly_credits": 80,
-        "feature_flags": {"tier": "starter"},
-        "is_active": True,
-    },
-    {
-        "id": uuid.UUID("30aa1d5f-bbbd-4b1d-9f5b-2608ad6f0002"),
-        "code": "creator_monthly",
-        "name": "Creator Monthly",
-        "billing_interval": "month",
-        "price_cents": 4900,
-        "currency": "USD",
-        "monthly_credits": 260,
-        "feature_flags": {"tier": "creator"},
-        "is_active": True,
-    },
-    {
-        "id": uuid.UUID("30aa1d5f-bbbd-4b1d-9f5b-2608ad6f0003"),
-        "code": "studio_monthly",
-        "name": "Studio Monthly",
-        "billing_interval": "month",
-        "price_cents": 12900,
-        "currency": "USD",
-        "monthly_credits": 900,
-        "feature_flags": {"tier": "studio"},
-        "is_active": True,
-    },
+from app.models.subscription_invoice import (
+    SubscriptionInvoice,
+    SubscriptionInvoiceAdjustmentFact,
+)
+from app.models.user_credit import UserCredit
+from app.models.user_subscription import (
+    NormalizedSubscriptionStatus,
+    SubscriptionStatus,
+    UserSubscription,
+)
+from app.services.billing_catalog_service import (
+    BillingCatalogUnavailable,
+    CheckoutCatalogSelection,
+    load_active_catalog,
+    require_subscription_catalog_product,
+)
+from app.services.idempotency_service import (
+    IdempotencyConflict,
+    canonical_request_hash,
+    lock_idempotency_scope,
+)
+from app.services.credit_reversal_service import CreditReversalError, reverse_root_grant
+from app.services.payment_reconciliation_service import (
+    freeze_unspent_purchase_lineage,
+    open_payment_reconciliation_case,
+    unfreeze_purchase_lineage,
 )
 
 
-class SubscriptionError(Exception):
+settings = get_settings()
+
+
+class SubscriptionError(RuntimeError):
     def __init__(self, *, code: str, message: str, status_code: int = 400):
-        super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        super().__init__(code)
+
+
+class SubscriptionFactInvalid(RuntimeError):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+class CancellationReconciliationPending(SubscriptionError):
+    def __init__(self, intent_id: uuid.UUID | None = None):
+        self.intent_id = intent_id
+        super().__init__(
+            code="subscription_cancellation_reconciliation_pending",
+            message="Cancellation status requires Provider reconciliation.",
+            status_code=409,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedSubscriptionPaidFact:
+    provider_transaction_id: str
+    period_start: datetime
+    period_end: datetime
+    pre_tax_minor_units: int
+    tax_minor_units: int
+    currency: str
+
+    @property
+    def total_minor_units(self) -> int:
+        return self.pre_tax_minor_units + self.tax_minor_units
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionGrantResult:
+    invoice: SubscriptionInvoice
+    grant: SubscriptionCreditGrant | None
+    replayed: bool
+
+
+def _value(value: Any) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _aware(value: datetime | None, *, field: str) -> datetime:
+    if value is None or value.tzinfo is None:
+        raise SubscriptionFactInvalid(f"{field}_invalid")
+    return value.astimezone(timezone.utc)
+
+
+def normalized_status_for_event(
+    event_type: str,
+    raw_status: str | None,
+) -> NormalizedSubscriptionStatus:
+    event = str(event_type or "").strip().lower()
+    status = str(raw_status or "").strip().lower()
+    if event == "subscription.scheduled_cancel" or status == "scheduled_cancel":
+        return NormalizedSubscriptionStatus.CANCEL_REQUESTED
+    if event == "subscription.canceled" or status in {"canceled", "cancelled"}:
+        return NormalizedSubscriptionStatus.CANCELED
+    if event == "subscription.expired" or status == "expired":
+        return NormalizedSubscriptionStatus.EXPIRED
+    if event == "subscription.past_due" or status in {"past_due", "unpaid", "paused"}:
+        return NormalizedSubscriptionStatus.PAST_DUE
+    if status in {"trial", "trialing", "pending"} or event == "subscription.trialing":
+        return NormalizedSubscriptionStatus.PENDING
+    if event in {"subscription.active", "subscription.paid"} or status == "active":
+        return NormalizedSubscriptionStatus.ACTIVE
+    raise SubscriptionFactInvalid("subscription_status_unrecognized")
+
+
+def validate_subscription_paid_fact(
+    *,
+    provider_transaction_id: str | None,
+    period_start: datetime | None,
+    period_end: datetime | None,
+    event_pre_tax_minor_units: int | None,
+    event_tax_minor_units: int | None,
+    event_currency: str | None,
+    catalog_pre_tax_minor_units: int,
+    catalog_currency: str,
+) -> ValidatedSubscriptionPaidFact:
+    transaction_id = str(provider_transaction_id or "").strip()
+    if not transaction_id or len(transaction_id) > 128:
+        raise SubscriptionFactInvalid("subscription_transaction_id_required")
+    start = _aware(period_start, field="subscription_period_start")
+    end = _aware(period_end, field="subscription_period_end")
+    if end <= start:
+        raise SubscriptionFactInvalid("subscription_period_invalid")
+    if event_pre_tax_minor_units is None or isinstance(event_pre_tax_minor_units, bool):
+        raise SubscriptionFactInvalid("subscription_pre_tax_amount_required")
+    if event_tax_minor_units is None or isinstance(event_tax_minor_units, bool):
+        raise SubscriptionFactInvalid("subscription_tax_amount_required")
+    pre_tax = int(event_pre_tax_minor_units)
+    tax = int(event_tax_minor_units)
+    currency = str(event_currency or "").upper()
+    if pre_tax != int(catalog_pre_tax_minor_units):
+        raise SubscriptionFactInvalid("subscription_catalog_amount_mismatch")
+    if tax < 0:
+        raise SubscriptionFactInvalid("subscription_tax_amount_invalid")
+    if currency != str(catalog_currency).upper():
+        raise SubscriptionFactInvalid("subscription_catalog_currency_mismatch")
+    return ValidatedSubscriptionPaidFact(
+        provider_transaction_id=transaction_id,
+        period_start=start,
+        period_end=end,
+        pre_tax_minor_units=pre_tax,
+        tax_minor_units=tax,
+        currency=currency,
+    )
+
+
+def cancel_replay_or_raise(intent: SubscriptionCancelIntent) -> dict:
+    state = _value(intent.state)
+    if state == CancelIntentState.CONFIRMED.value:
+        if not isinstance(intent.stored_response, dict):
+            raise CancellationReconciliationPending(intent.id)
+        return dict(intent.stored_response)
+    if state in {
+        CancelIntentState.CALLING.value,
+        CancelIntentState.UNKNOWN.value,
+        CancelIntentState.FAILED_RETRYABLE.value,
+    }:
+        raise CancellationReconciliationPending(intent.id)
+    raise SubscriptionError(
+        code="subscription_cancel_not_ready",
+        message="Cancellation intent is not ready.",
+        status_code=409,
+    )
 
 
 class SubscriptionService:
-    """Coordinates subscription period credit grants against the credit ledger."""
-
-    _ACTIVE_EVENTS = {
-        "subscription.active",
-        "subscription.created",
-        "subscription.update",
-        "subscription.updated",
-        "subscription.paid",
-        "invoice.paid",
-        "subscription.payment_succeeded",
-    }
-
-    def _status_value(self, status: SubscriptionStatus | str | None) -> str:
-        value = status.value if hasattr(status, "value") else status
-        normalized = str(value or "").strip().lower()
-        aliases = {
-            "active": SubscriptionStatus.ACTIVE.value,
-            "trial": SubscriptionStatus.TRIALING.value,
-            "trialing": SubscriptionStatus.TRIALING.value,
-            "past_due": SubscriptionStatus.PAST_DUE.value,
-            "past-due": SubscriptionStatus.PAST_DUE.value,
-            "canceled": SubscriptionStatus.CANCELED.value,
-            "cancelled": SubscriptionStatus.CANCELED.value,
-            "expired": SubscriptionStatus.EXPIRED.value,
-            "ended": SubscriptionStatus.EXPIRED.value,
-        }
-        return aliases.get(normalized, normalized)
-
-    def _parse_datetime(self, value: Any) -> datetime | None:
-        if isinstance(value, datetime):
-            return value
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        if text.isdigit():
-            return datetime.fromtimestamp(int(text), tz=timezone.utc)
-        try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-
-    def _period_key(self, payload: dict[str, Any]) -> str:
-        explicit = str(payload.get("period_key") or "").strip()
-        if explicit:
-            return explicit
-        start = self._parse_datetime(
-            payload.get("current_period_start")
-            or payload.get("current_period_start_date")
-            or payload.get("period_start")
-        )
-        if start is None:
-            start = datetime.now(timezone.utc)
-        return start.strftime("%Y-%m")
-
-    def _metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
-        for key in ("metadata", "custom_data"):
-            value = payload.get(key)
-            if isinstance(value, dict):
-                return value
-        return {}
-
-    def _provider_subscription_id(self, payload: dict[str, Any]) -> str:
-        for key in ("subscription_id", "provider_subscription_id", "subscriptionId", "id"):
-            value = payload.get(key)
-            if value is not None:
-                text = str(value).strip()
-                if text:
-                    return text
-        subscription = payload.get("subscription")
-        if isinstance(subscription, dict):
-            return self._provider_subscription_id(subscription)
-        if subscription is not None:
-            return str(subscription).strip()
-        return ""
-
-    def _provider_customer_id(self, payload: dict[str, Any]) -> str | None:
-        for key in ("customer_id", "provider_customer_id", "customer"):
-            value = payload.get(key)
-            if value is not None:
-                if isinstance(value, dict):
-                    value = value.get("id") or value.get("customer_id")
-                text = str(value).strip()
-                if text:
-                    return text
-        return None
-
-    def _product_id(self, payload: dict[str, Any]) -> str:
-        for key in ("product_id", "product"):
-            value = payload.get(key)
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                value = value.get("id") or value.get("product_id")
-            text = str(value or "").strip()
-            if text:
-                return text
-        return ""
-
-    def _plan_code_for_product_id(self, product_id: str) -> str:
-        normalized = str(product_id or "").strip()
-        if not normalized:
-            return ""
-        mapping = {
-            str(settings.creem_subscription_starter_product_id or "").strip(): "starter_monthly",
-            str(settings.creem_subscription_creator_product_id or "").strip(): "creator_monthly",
-            str(settings.creem_subscription_studio_product_id or "").strip(): "studio_monthly",
-        }
-        return mapping.get(normalized, "")
-
-    async def _find_plan(self, db: AsyncSession, payload: dict[str, Any]) -> SubscriptionPlan | None:
-        metadata = self._metadata(payload)
-        plan_code = str(
-            metadata.get("plan_code")
-            or payload.get("plan_code")
-            or self._plan_code_for_product_id(self._product_id(payload))
-            or ""
-        ).strip()
-        if not plan_code:
-            return None
-        result = await db.execute(select(SubscriptionPlan).where(SubscriptionPlan.code == plan_code))
-        return result.scalar_one_or_none()
-
-    async def _get_or_create_subscription(
-        self,
-        db: AsyncSession,
-        *,
-        provider: str,
-        payload: dict[str, Any],
-    ) -> UserSubscription:
-        provider_subscription_id = self._provider_subscription_id(payload)
-        if not provider_subscription_id:
-            raise ValueError("provider_subscription_id is required")
-
-        result = await db.execute(
-            select(UserSubscription)
-            .where(
-                UserSubscription.provider == provider,
-                UserSubscription.provider_subscription_id == provider_subscription_id,
-            )
-            .with_for_update()
-        )
-        subscription = result.scalar_one_or_none()
-        if subscription is not None:
-            return subscription
-
-        metadata = self._metadata(payload)
-        raw_user_id = str(metadata.get("user_id") or payload.get("user_id") or "").strip()
-        if not raw_user_id:
-            raise ValueError("subscription user_id is required for first provider event")
-        plan = await self._find_plan(db, payload)
-        if plan is None:
-            raise ValueError("subscription plan is required for first provider event")
-
-        subscription = UserSubscription(
-            user_id=uuid.UUID(raw_user_id),
-            plan_id=plan.id,
-            provider=provider,
-            provider_customer_id=self._provider_customer_id(payload),
-            provider_subscription_id=provider_subscription_id,
-            status=SubscriptionStatus.ACTIVE,
-            metadata_json={"provider_payload": payload},
-        )
-        subscription.plan = plan
-        db.add(subscription)
-        await db.flush()
-        return subscription
-
-    def _credits_for_period(self, subscription: UserSubscription, payload: dict[str, Any]) -> int:
-        metadata = self._metadata(payload)
-        for source in (payload, metadata):
-            value = source.get("credits") or source.get("monthly_credits")
-            if value is not None:
-                return int(value)
-        return int(getattr(subscription.plan, "monthly_credits", 0) or 0)
-
-    def _subscription_product_id(self, plan_code: str) -> str:
-        mapping = {
-            "starter_monthly": settings.creem_subscription_starter_product_id,
-            "creator_monthly": settings.creem_subscription_creator_product_id,
-            "studio_monthly": settings.creem_subscription_studio_product_id,
-        }
-        return str(mapping.get(plan_code) or "").strip()
-
     def _api_base_url(self) -> str:
         return (settings.creem_api_base_url or "https://api.creem.io").rstrip("/")
 
     def _headers(self) -> dict[str, str]:
-        if not settings.creem_api_key:
+        key = str(settings.creem_api_key or "").strip()
+        if not key:
             raise SubscriptionError(
                 code="creem_not_configured",
                 message="Subscription provider is not configured.",
                 status_code=503,
             )
-        return {
-            "x-api-key": settings.creem_api_key,
-            "Content-Type": "application/json",
-        }
+        return {"x-api-key": key, "Content-Type": "application/json"}
 
-    def _append_query(self, url: str, **params: str) -> str:
-        parsed = urlparse(url)
-        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        query.update({k: v for k, v in params.items() if v})
-        return urlunparse(parsed._replace(path=parsed.path or "/", query=urlencode(query), fragment=parsed.fragment))
-
-    def _safe_return_url(self, return_url: str | None) -> str:
-        candidate = str(return_url or "").strip()
-        if not candidate:
-            return settings.effective_frontend_base_url.rstrip("/")
-        parsed = urlparse(candidate)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            return settings.effective_frontend_base_url.rstrip("/")
-        if parsed.scheme != "https" and not settings.using_manual_review_payments:
-            default = settings.effective_frontend_base_url.rstrip("/")
-            default_parsed = urlparse(default)
-            if default_parsed.scheme == "https" and default_parsed.hostname:
-                return urlunparse(
-                    default_parsed._replace(
-                        path=parsed.path or default_parsed.path,
-                        query=parsed.query,
-                        fragment=parsed.fragment,
-                    )
-                )
-        return candidate
-
-    async def _request(self, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
             response = await client.request(
                 method,
                 f"{self._api_base_url()}{path}",
@@ -304,56 +224,105 @@ class SubscriptionService:
             )
             response.raise_for_status()
             data = response.json()
-            return data if isinstance(data, dict) else {"data": data}
+            if not isinstance(data, dict):
+                raise SubscriptionError(
+                    code="subscription_provider_response_invalid",
+                    message="Subscription provider returned an invalid response.",
+                    status_code=503,
+                )
+            return data
 
-    def _extract_checkout_url(self, payload: dict[str, Any]) -> str:
-        for key in ("checkout_url", "url", "hosted_checkout_url"):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        for key in ("data", "checkout", "result"):
-            child = payload.get(key)
-            if isinstance(child, dict):
-                result = self._extract_checkout_url(child)
-                if result:
-                    return result
-        return ""
-
-    async def list_active_plans(self, db: AsyncSession) -> list[SubscriptionPlan]:
-        await self.ensure_default_plans(db)
-        result = await db.execute(
-            select(SubscriptionPlan)
-            .where(SubscriptionPlan.is_active.is_(True))
-            .order_by(SubscriptionPlan.price_cents.asc(), SubscriptionPlan.code.asc())
-        )
-        return list(result.scalars().all())
-
-    async def ensure_default_plans(self, db: AsyncSession) -> None:
-        for plan in DEFAULT_PLAN_SEEDS:
-            statement = (
-                pg_insert(SubscriptionPlan)
-                .values(**plan)
-                .on_conflict_do_nothing(index_elements=["code"])
+    def _append_query(self, url: str, **params: str) -> str:
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.update({key: value for key, value in params.items() if value})
+        return urlunparse(
+            parsed._replace(
+                path=parsed.path or "/",
+                query=urlencode(query),
+                fragment=parsed.fragment,
             )
-            await db.execute(statement)
-        await db.flush()
-
-    async def get_current_subscription(self, db: AsyncSession, user_id: uuid.UUID) -> UserSubscription | None:
-        result = await db.execute(
-            select(UserSubscription)
-            .where(
-                UserSubscription.user_id == user_id,
-                UserSubscription.status.in_(
-                    [
-                        SubscriptionStatus.TRIALING.value,
-                        SubscriptionStatus.ACTIVE.value,
-                        SubscriptionStatus.PAST_DUE.value,
-                    ]
-                ),
-            )
-            .order_by(UserSubscription.created_at.desc())
         )
-        return result.scalars().first()
+
+    def _safe_return_url(self, return_url: str | None) -> str:
+        default = settings.effective_frontend_base_url.rstrip("/")
+        candidate = str(return_url or "").strip()
+        if not candidate:
+            return default
+        parsed = urlparse(candidate)
+        default_parsed = urlparse(default)
+        allowed = {default_parsed.hostname, "localhost", "127.0.0.1"}
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.hostname not in allowed
+            or parsed.username
+            or parsed.password
+        ):
+            return default
+        if parsed.scheme != "https" and default_parsed.scheme == "https":
+            return urlunparse(
+                default_parsed._replace(
+                    path=parsed.path or default_parsed.path,
+                    query=parsed.query,
+                    fragment=parsed.fragment,
+                )
+            )
+        return candidate
+
+    @staticmethod
+    def _provider_contract_ready(contract: ProviderContract) -> bool:
+        return (
+            contract.state is ProviderContractState.VERIFIED
+            and bool(contract.endpoint_schema_sha256)
+            and bool(contract.test_evidence_sha256)
+        )
+
+    async def list_active_plans(self, db: AsyncSession):
+        try:
+            catalog = await load_active_catalog(
+                db,
+                environment=settings.runtime_environment,
+            )
+        except BillingCatalogUnavailable as exc:
+            raise SubscriptionError(
+                code="billing_catalog_unavailable",
+                message="The active billing catalog is unavailable.",
+                status_code=503,
+            ) from exc
+        return [product for product in catalog.products if product.product_kind == "subscription"]
+
+    async def get_current_subscription(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+    ) -> UserSubscription | None:
+        rows = list(
+            (
+                await db.scalars(
+                    select(UserSubscription)
+                    .where(
+                        UserSubscription.user_id == user_id,
+                        UserSubscription.normalized_status.in_(
+                            [
+                                NormalizedSubscriptionStatus.PENDING.value,
+                                NormalizedSubscriptionStatus.ACTIVE.value,
+                                NormalizedSubscriptionStatus.PAST_DUE.value,
+                                NormalizedSubscriptionStatus.CANCEL_REQUESTED.value,
+                            ]
+                        ),
+                    )
+                    .order_by(UserSubscription.created_at.desc())
+                )
+            ).all()
+        )
+        if len(rows) > 1:
+            raise SubscriptionError(
+                code="subscription_projection_conflict",
+                message="Subscription state requires reconciliation.",
+                status_code=409,
+            )
+        return rows[0] if rows else None
 
     async def create_checkout(
         self,
@@ -362,79 +331,923 @@ class SubscriptionService:
         user_id: uuid.UUID,
         plan_code: str,
         return_url: str | None,
+        idempotency_key: str | None = None,
     ) -> dict[str, str]:
-        normalized_plan_code = str(plan_code or "").strip()
-        await self.ensure_default_plans(db)
-        result = await db.execute(
-            select(SubscriptionPlan).where(
-                SubscriptionPlan.code == normalized_plan_code,
-                SubscriptionPlan.is_active.is_(True),
+        del return_url, idempotency_key
+        active = await self.get_current_subscription(db, user_id)
+        if active is not None:
+            raise SubscriptionError(
+                code="subscription_already_nonterminal",
+                message="An active or pending subscription already exists.",
+                status_code=409,
+            )
+        available = {product.product_code for product in await self.list_active_plans(db)}
+        if str(plan_code or "").strip() not in available:
+            raise SubscriptionError(
+                code="plan_not_found",
+                message="Subscription plan not found.",
+                status_code=404,
+            )
+        if not self._provider_contract_ready(CREEM_SUBSCRIPTION_PAID_TRANSACTION):
+            raise SubscriptionError(
+                code="subscription_paid_transaction_unverified",
+                message="Subscription checkout is disabled until Creem test-mode facts are verified.",
+                status_code=503,
+            )
+        # Enabling the verified contract is a code/release change. The release
+        # that does so must also introduce a durable subscription checkout
+        # intent; this release intentionally has no unsafe external call path.
+        raise SubscriptionError(
+            code="subscription_checkout_release_not_activated",
+            message="Subscription checkout is not activated in this release.",
+            status_code=503,
+        )
+
+    @staticmethod
+    def _parse_provider_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc) if value.tzinfo else None
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)) or str(value).isdigit():
+            numeric = float(value)
+            if numeric > 10_000_000_000:
+                numeric /= 1000.0
+            try:
+                return datetime.fromtimestamp(numeric, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
+
+    async def _mark_event_reconciliation(
+        self,
+        db: AsyncSession,
+        *,
+        event: PaymentEvent,
+        subscription: UserSubscription | None,
+        reason_code: str,
+    ) -> None:
+        await open_payment_reconciliation_case(
+            db,
+            purchase=None,
+            case_key=f"subscription-event:{event.event_id}",
+            subject_type="subscription" if subscription is not None else "payment_event",
+            subject_id=str(subscription.id if subscription is not None else event.id),
+            reason_code=reason_code,
+            raw_payload_sha256=str(event.raw_payload_sha256),
+        )
+        event.processing_state = PaymentEventProcessingState.RECONCILIATION_REQUIRED
+        event.error = reason_code
+
+    async def _find_subscription_for_event(
+        self,
+        db: AsyncSession,
+        event: PaymentEvent,
+    ) -> UserSubscription | None:
+        return await db.scalar(
+            select(UserSubscription)
+            .where(
+                UserSubscription.provider == "creem",
+                UserSubscription.provider_subscription_id == event.object_id,
+            )
+            .with_for_update()
+        )
+
+    async def _find_invoice_candidate(
+        self,
+        db: AsyncSession,
+        *,
+        subscription: UserSubscription,
+        event: PaymentEvent,
+        paid: ValidatedSubscriptionPaidFact,
+    ) -> SubscriptionInvoice | None:
+        rows = list(
+            (
+                await db.scalars(
+                    select(SubscriptionInvoice)
+                    .where(
+                        or_(
+                            SubscriptionInvoice.provider_transaction_id
+                            == paid.provider_transaction_id,
+                            SubscriptionInvoice.payment_event_id == event.id,
+                            (
+                                (SubscriptionInvoice.subscription_id == subscription.id)
+                                & (SubscriptionInvoice.period_start == paid.period_start)
+                                & (SubscriptionInvoice.period_end == paid.period_end)
+                            ),
+                        )
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        unique = {row.id: row for row in rows}
+        if len(unique) > 1:
+            raise SubscriptionFactInvalid("subscription_invoice_uniqueness_conflict")
+        invoice = next(iter(unique.values())) if unique else None
+        if invoice is not None and (
+            invoice.subscription_id != subscription.id
+            or invoice.provider_transaction_id != paid.provider_transaction_id
+            or invoice.period_start != paid.period_start
+            or invoice.period_end != paid.period_end
+            or invoice.pre_tax_minor_units != paid.pre_tax_minor_units
+            or invoice.tax_minor_units != paid.tax_minor_units
+            or invoice.currency != paid.currency
+        ):
+            raise SubscriptionFactInvalid("subscription_invoice_replay_conflict")
+        return invoice
+
+    @staticmethod
+    def _lot_expiry(retention_tier: str, period_end: datetime) -> datetime:
+        days = {
+            "subscription_180d": 180,
+            "studio_365d": 365,
+            "paid_90d": 90,
+        }.get(str(retention_tier))
+        if days is None:
+            raise SubscriptionFactInvalid("subscription_retention_tier_invalid")
+        return period_end + timedelta(days=days)
+
+    async def apply_subscription_paid_transaction(
+        self,
+        db: AsyncSession,
+        *,
+        event: PaymentEvent,
+        subscription: UserSubscription,
+    ) -> SubscriptionGrantResult:
+        if not self._provider_contract_ready(CREEM_SUBSCRIPTION_PAID_TRANSACTION):
+            raise SubscriptionFactInvalid("subscription_paid_transaction_unverified")
+        metadata = dict(event.business_metadata or {})
+        transaction_id = str(metadata.get("last_transaction_id") or "").strip()
+        period_start = self._parse_provider_datetime(metadata.get("current_period_start_date"))
+        period_end = self._parse_provider_datetime(metadata.get("current_period_end_date"))
+        provider_product_id = str(metadata.get("provider_product_id") or "").strip()
+        try:
+            selection = await require_subscription_catalog_product(
+                db,
+                provider_product_id=provider_product_id,
+                pre_tax_minor_units=int(event.pre_tax_minor_units or -1),
+                currency=str(event.currency or ""),
+            )
+        except BillingCatalogUnavailable as exc:
+            raise SubscriptionFactInvalid("subscription_catalog_mismatch") from exc
+        paid = validate_subscription_paid_fact(
+            provider_transaction_id=transaction_id,
+            period_start=period_start,
+            period_end=period_end,
+            event_pre_tax_minor_units=event.pre_tax_minor_units,
+            event_tax_minor_units=event.tax_minor_units,
+            event_currency=event.currency,
+            catalog_pre_tax_minor_units=selection.product.pre_tax_minor_units,
+            catalog_currency=selection.product.currency,
+        )
+        if subscription.product_code and subscription.product_code != selection.product.product_code:
+            raise SubscriptionFactInvalid("subscription_product_changed_without_supported_flow")
+        invoice = await self._find_invoice_candidate(
+            db,
+            subscription=subscription,
+            event=event,
+            paid=paid,
+        )
+        if invoice is not None and invoice.credit_grant_id is not None:
+            grant = await db.scalar(
+                select(SubscriptionCreditGrant).where(
+                    SubscriptionCreditGrant.id == invoice.credit_grant_id
+                )
+            )
+            if grant is None:
+                raise SubscriptionFactInvalid("subscription_invoice_grant_missing")
+            return SubscriptionGrantResult(invoice=invoice, grant=grant, replayed=True)
+        if invoice is None:
+            invoice = SubscriptionInvoice(
+                id=uuid.uuid4(),
+                subscription_id=subscription.id,
+                user_id=subscription.user_id,
+                payment_event_id=event.id,
+                provider="creem",
+                provider_transaction_id=paid.provider_transaction_id,
+                provider_invoice_id=str(metadata.get("provider_invoice_id") or "").strip() or None,
+                period_start=paid.period_start,
+                period_end=paid.period_end,
+                pre_tax_minor_units=paid.pre_tax_minor_units,
+                tax_minor_units=paid.tax_minor_units,
+                currency=paid.currency,
+                provider_status=str(event.normalized_status or "paid"),
+                occurred_at=event.occurred_at,
+                raw_payload_sha256=str(event.raw_payload_sha256),
+                catalog_version_id=selection.catalog_version_id,
+                catalog_snapshot=selection.as_snapshot(),
+                refunded_minor_units=0,
+                disputed_minor_units=0,
+                dispute_state="NONE",
+            )
+            db.add(invoice)
+            await db.flush()
+        credit = await db.scalar(
+            select(UserCredit)
+            .where(UserCredit.user_id == subscription.user_id)
+            .with_for_update()
+        )
+        if credit is None:
+            raise SubscriptionFactInvalid("subscription_credit_account_missing")
+        prior_balance = int(credit.balance or 0)
+        amount = int(selection.product.credits)
+        debt_offset = min(amount, max(0, -prior_balance))
+        next_balance = prior_balance + amount
+        transaction_id_value = uuid.uuid4()
+        lot_id = uuid.uuid4()
+        grant_id = uuid.uuid4()
+        transaction = CreditTransaction(
+            id=transaction_id_value,
+            user_id=subscription.user_id,
+            transaction_type=CreditTransactionType.SUBSCRIPTION_GRANT,
+            amount=amount,
+            balance_after=next_balance,
+            source="subscription_invoice",
+            source_id=str(invoice.id),
+            description=f"Verified subscription invoice: {selection.product.product_code}",
+            metadata_json={
+                "provider": "creem",
+                "provider_transaction_id": paid.provider_transaction_id,
+                "payment_event_id": str(event.id),
+            },
+            root_transaction_id=transaction_id_value,
+            request_id=f"subscription-paid:{paid.provider_transaction_id}",
+        )
+        lot = CreditGrantLot(
+            id=lot_id,
+            user_id=subscription.user_id,
+            root_transaction_id=transaction_id_value,
+            source_type=GrantLotSourceType.SUBSCRIPTION,
+            source_id=str(invoice.id),
+            original_amount=amount,
+            debt_offset_amount=debt_offset,
+            reversed_amount=0,
+            frozen_amount=0,
+            consumed_amount=0,
+            retention_tier=selection.product.retention_tier,
+            expires_at=self._lot_expiry(selection.product.retention_tier, paid.period_end),
+        )
+        grant = SubscriptionCreditGrant(
+            id=grant_id,
+            subscription_id=subscription.id,
+            user_id=subscription.user_id,
+            period_key=paid.period_start.isoformat(),
+            period_start=paid.period_start,
+            period_end=paid.period_end,
+            credits=amount,
+            invoice_id=invoice.id,
+            credit_transaction_id=transaction_id_value,
+            grant_lot_id=lot_id,
+        )
+        db.add(transaction)
+        db.add(lot)
+        db.add(grant)
+        credit.balance = next_balance
+        invoice.credit_grant_id = grant_id
+        subscription.catalog_version_id = selection.catalog_version_id
+        subscription.product_code = selection.product.product_code
+        subscription.catalog_snapshot = selection.as_snapshot()
+        subscription.last_provider_transaction_id = paid.provider_transaction_id
+        subscription.paid_through_at = max(
+            [item for item in (subscription.paid_through_at, paid.period_end) if item is not None]
+        )
+        await db.flush()
+        return SubscriptionGrantResult(invoice=invoice, grant=grant, replayed=False)
+
+    async def _invoice_for_adjustment(
+        self,
+        db: AsyncSession,
+        event: PaymentEvent,
+    ) -> SubscriptionInvoice | None:
+        provider_transaction_id = str(
+            (event.business_metadata or {}).get("provider_payment_id") or ""
+        ).strip()
+        if not provider_transaction_id:
+            return None
+        return await db.scalar(
+            select(SubscriptionInvoice)
+            .where(
+                SubscriptionInvoice.provider == "creem",
+                SubscriptionInvoice.provider_transaction_id == provider_transaction_id,
+            )
+            .with_for_update()
+        )
+
+    async def _invoice_lineage(
+        self,
+        db: AsyncSession,
+        invoice: SubscriptionInvoice,
+    ) -> tuple[SubscriptionCreditGrant, CreditGrantLot]:
+        if invoice.credit_grant_id is None:
+            raise SubscriptionFactInvalid("subscription_invoice_grant_missing")
+        grant = await db.scalar(
+            select(SubscriptionCreditGrant).where(
+                SubscriptionCreditGrant.id == invoice.credit_grant_id
             )
         )
-        plan = result.scalar_one_or_none()
-        if plan is None:
-            raise SubscriptionError(code="plan_not_found", message="Subscription plan not found.", status_code=404)
-
-        safe_return_url = self._safe_return_url(return_url)
-        if settings.using_manual_review_payments:
-            return {
-                "provider": "manual_review",
-                "status": "pending",
-                "checkout_url": self._append_query(
-                    safe_return_url,
-                    subscription="manual_review",
-                    plan_code=plan.code,
-                ),
-            }
-
-        product_id = self._subscription_product_id(plan.code)
-        if not product_id:
-            raise SubscriptionError(
-                code="subscription_product_missing",
-                message=f"Subscription product is not configured for plan {plan.code}.",
-                status_code=503,
+        if (
+            grant is None
+            or grant.invoice_id != invoice.id
+            or grant.credit_transaction_id is None
+            or grant.grant_lot_id is None
+        ):
+            raise SubscriptionFactInvalid("subscription_invoice_lineage_invalid")
+        lot = await db.scalar(
+            select(CreditGrantLot)
+            .where(
+                CreditGrantLot.id == grant.grant_lot_id,
+                CreditGrantLot.root_transaction_id == grant.credit_transaction_id,
             )
+            .with_for_update()
+        )
+        if lot is None:
+            raise SubscriptionFactInvalid("subscription_invoice_grant_lot_missing")
+        return grant, lot
 
-        success_url = self._append_query(safe_return_url, subscription="success", plan_code=plan.code)
-        payload = {
-            "product_id": product_id,
-            "request_id": str(uuid.uuid4()),
-            "success_url": success_url,
-            "metadata": {
-                "user_id": str(user_id),
-                "plan_code": plan.code,
-                "monthly_credits": int(plan.monthly_credits or 0),
-            },
-        }
+    async def _invoice_reconciliation(
+        self,
+        db: AsyncSession,
+        *,
+        invoice: SubscriptionInvoice,
+        event: PaymentEvent,
+        reason_code: str,
+        case_key: str,
+        freeze_lineage: bool,
+    ) -> None:
+        if freeze_lineage:
+            try:
+                _grant, lot = await self._invoice_lineage(db, invoice)
+            except SubscriptionFactInvalid:
+                lot = None
+            if lot is not None:
+                freeze_unspent_purchase_lineage(lot)
+        reconciliation_user_id = invoice.user_id
         try:
-            response_data = await self._request("POST", "/v1/checkouts", json_body=payload)
-        except httpx.HTTPError as exc:
-            raise SubscriptionError(
-                code="subscription_checkout_unavailable",
-                message="Unable to start subscription checkout.",
-                status_code=503,
-            ) from exc
+            _grant, lot = await self._invoice_lineage(db, invoice)
+        except SubscriptionFactInvalid:
+            pass
+        else:
+            reconciliation_user_id = lot.user_id
+        await open_payment_reconciliation_case(
+            db,
+            purchase=None,
+            user_id=reconciliation_user_id,
+            case_key=case_key,
+            subject_type="subscription_invoice",
+            subject_id=str(invoice.id),
+            reason_code=reason_code,
+            raw_payload_sha256=str(event.raw_payload_sha256),
+        )
+        event.processing_state = PaymentEventProcessingState.RECONCILIATION_REQUIRED
+        event.error = reason_code
 
-        checkout_url = self._extract_checkout_url(response_data)
-        if not checkout_url:
-            raise SubscriptionError(
-                code="subscription_checkout_invalid",
-                message="Subscription checkout URL is missing from provider response.",
-                status_code=503,
+    @staticmethod
+    def _adjustment_amount(event: PaymentEvent) -> int:
+        try:
+            return int(str((event.business_metadata or {}).get("event_minor_units") or ""))
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _subscription_dispute_outcome(event: PaymentEvent) -> str:
+        metadata = dict(event.business_metadata or {})
+        explicit = str(metadata.get("dispute_outcome") or "").strip().upper()
+        status = str(event.normalized_status or "").strip().upper()
+        if explicit in {"OPEN", "WON", "LOST"}:
+            return explicit
+        if status in {"WON", "CLOSED_WON", "RESOLVED_WON"}:
+            return "WON"
+        if status in {"LOST", "CHARGEBACK", "CLOSED_LOST"}:
+            return "LOST"
+        if str(event.event_type).lower() == "dispute.created":
+            return "OPEN"
+        return "REVIEW"
+
+    async def apply_subscription_adjustment_event(
+        self,
+        db: AsyncSession,
+        *,
+        event: PaymentEvent,
+    ) -> bool:
+        """Apply a refund/dispute only when it belongs to a normalized invoice.
+
+        False means the Provider transaction is not a subscription invoice and
+        lets the credit-pack path retain authority over the event.
+        """
+
+        event_type = str(event.event_type or "").lower()
+        if event_type != "refund.created" and not event_type.startswith("dispute."):
+            return False
+        invoice = await self._invoice_for_adjustment(db, event)
+        if invoice is None:
+            return False
+        adjustment_kind = "REFUND" if event_type == "refund.created" else "DISPUTE"
+        provider_object_id = str(
+            (event.business_metadata or {}).get(
+                "provider_refund_id" if adjustment_kind == "REFUND" else "provider_dispute_id"
             )
-        return {"provider": "creem", "status": "pending", "checkout_url": checkout_url}
+            or event.object_id
+            or ""
+        ).strip()
+        amount = self._adjustment_amount(event)
+        outcome = (
+            "RECEIVED"
+            if adjustment_kind == "REFUND"
+            else self._subscription_dispute_outcome(event)
+        )
+        existing = await db.scalar(
+            select(SubscriptionInvoiceAdjustmentFact).where(
+                or_(
+                    SubscriptionInvoiceAdjustmentFact.payment_event_id == event.id,
+                    (
+                        (SubscriptionInvoiceAdjustmentFact.provider == "creem")
+                        & (
+                            SubscriptionInvoiceAdjustmentFact.provider_object_id
+                            == provider_object_id
+                        )
+                        & (
+                            SubscriptionInvoiceAdjustmentFact.adjustment_kind
+                            == adjustment_kind
+                        )
+                        & (SubscriptionInvoiceAdjustmentFact.outcome == outcome)
+                    ),
+                )
+            )
+        )
+        if existing is not None:
+            if (
+                existing.invoice_id != invoice.id
+                or int(existing.amount_minor_units) != amount
+                or existing.currency != event.currency
+            ):
+                await self._invoice_reconciliation(
+                    db,
+                    invoice=invoice,
+                    event=event,
+                    reason_code="subscription_adjustment_replay_conflict",
+                    case_key=f"subscription-adjustment-conflict:{provider_object_id}",
+                    freeze_lineage=True,
+                )
+                await db.flush()
+                return True
+            event.processing_state = PaymentEventProcessingState.APPLIED
+            event.processed_at = datetime.now(timezone.utc)
+            event.error = None
+            await db.flush()
+            return True
+        if not provider_object_id or amount <= 0 or str(event.currency or "") != invoice.currency:
+            await self._invoice_reconciliation(
+                db,
+                invoice=invoice,
+                event=event,
+                reason_code="subscription_adjustment_money_invalid",
+                case_key=f"subscription-adjustment-invalid:{event.event_id}",
+                freeze_lineage=True,
+            )
+            await db.flush()
+            return True
 
-    async def cancel_current_subscription(self, db: AsyncSession, user_id: uuid.UUID) -> UserSubscription:
-        subscription = await self.get_current_subscription(db, user_id)
+        total = invoice.total_minor_units
+        reversal_transaction_id: uuid.UUID | None = None
+        final_outcome = outcome
+        if adjustment_kind == "REFUND":
+            already_refunded = int(invoice.refunded_minor_units or 0)
+            remaining = total - already_refunded
+            if already_refunded == 0 and amount == total:
+                try:
+                    grant, lot = await self._invoice_lineage(db, invoice)
+                    reversal = await reverse_root_grant(
+                        db,
+                        user_id=lot.user_id,
+                        root_transaction_id=grant.credit_transaction_id,
+                        amount=int(grant.credits),
+                        request_id=f"creem-subscription-refund:{provider_object_id}",
+                        reason_code="provider_subscription_full_refund",
+                        transaction_type=CreditTransactionType.SUBSCRIPTION_REVERSAL,
+                        now=event.occurred_at,
+                    )
+                except (SubscriptionFactInvalid, CreditReversalError) as exc:
+                    await self._invoice_reconciliation(
+                        db,
+                        invoice=invoice,
+                        event=event,
+                        reason_code=getattr(exc, "code", "subscription_refund_lineage_invalid"),
+                        case_key=f"subscription-refund:{provider_object_id}:lineage",
+                        freeze_lineage=True,
+                    )
+                    await db.flush()
+                    return True
+                reversal_transaction_id = reversal.transaction.id
+                invoice.refunded_minor_units = total
+                final_outcome = "FULL"
+                event.processing_state = PaymentEventProcessingState.APPLIED
+                event.processed_at = datetime.now(timezone.utc)
+                event.error = None
+            else:
+                final_outcome = (
+                    "OVER_CAPTURE"
+                    if amount > max(0, remaining)
+                    else "PARTIAL_RECONCILIATION_REQUIRED"
+                )
+                if amount <= max(0, remaining):
+                    invoice.refunded_minor_units = already_refunded + amount
+                await self._invoice_reconciliation(
+                    db,
+                    invoice=invoice,
+                    event=event,
+                    reason_code=(
+                        "subscription_refund_exceeds_invoice"
+                        if final_outcome == "OVER_CAPTURE"
+                        else "subscription_partial_refund_reconciliation"
+                    ),
+                    case_key=f"subscription-refund:{provider_object_id}",
+                    freeze_lineage=True,
+                )
+        else:
+            if amount > total:
+                final_outcome = "OVER_CAPTURE"
+                await self._invoice_reconciliation(
+                    db,
+                    invoice=invoice,
+                    event=event,
+                    reason_code="subscription_dispute_exceeds_invoice",
+                    case_key=f"subscription-dispute:{provider_object_id}:over",
+                    freeze_lineage=True,
+                )
+            elif outcome == "OPEN":
+                _grant, lot = await self._invoice_lineage(db, invoice)
+                freeze_unspent_purchase_lineage(lot)
+                invoice.disputed_minor_units = max(
+                    int(invoice.disputed_minor_units or 0), amount
+                )
+                invoice.dispute_state = "OPEN"
+                await open_payment_reconciliation_case(
+                    db,
+                    purchase=None,
+                    user_id=lot.user_id,
+                    case_key=f"subscription-dispute:{provider_object_id}:open",
+                    subject_type="subscription_invoice",
+                    subject_id=str(invoice.id),
+                    reason_code="provider_subscription_dispute_open",
+                    raw_payload_sha256=str(event.raw_payload_sha256),
+                )
+                event.processing_state = PaymentEventProcessingState.APPLIED
+                event.processed_at = datetime.now(timezone.utc)
+                event.error = None
+            elif outcome == "WON":
+                _grant, lot = await self._invoice_lineage(db, invoice)
+                unfreeze_purchase_lineage(lot)
+                invoice.disputed_minor_units = max(
+                    int(invoice.disputed_minor_units or 0), amount
+                )
+                invoice.dispute_state = "WON"
+                event.processing_state = PaymentEventProcessingState.APPLIED
+                event.processed_at = datetime.now(timezone.utc)
+                event.error = None
+            elif outcome == "LOST" and amount == total:
+                try:
+                    grant, lot = await self._invoice_lineage(db, invoice)
+                    reversal = await reverse_root_grant(
+                        db,
+                        user_id=lot.user_id,
+                        root_transaction_id=grant.credit_transaction_id,
+                        amount=int(grant.credits),
+                        request_id=f"creem-subscription-dispute:{provider_object_id}:lost",
+                        reason_code="provider_subscription_dispute_lost",
+                        transaction_type=CreditTransactionType.SUBSCRIPTION_REVERSAL,
+                        now=event.occurred_at,
+                    )
+                except (SubscriptionFactInvalid, CreditReversalError) as exc:
+                    await self._invoice_reconciliation(
+                        db,
+                        invoice=invoice,
+                        event=event,
+                        reason_code=getattr(exc, "code", "subscription_dispute_lineage_invalid"),
+                        case_key=f"subscription-dispute:{provider_object_id}:lineage",
+                        freeze_lineage=True,
+                    )
+                    await db.flush()
+                    return True
+                reversal_transaction_id = reversal.transaction.id
+                invoice.disputed_minor_units = total
+                invoice.dispute_state = "LOST"
+                event.processing_state = PaymentEventProcessingState.APPLIED
+                event.processed_at = datetime.now(timezone.utc)
+                event.error = None
+            else:
+                final_outcome = (
+                    "PARTIAL_RECONCILIATION_REQUIRED"
+                    if outcome == "LOST"
+                    else "REVIEW_RECONCILIATION_REQUIRED"
+                )
+                invoice.disputed_minor_units = max(
+                    int(invoice.disputed_minor_units or 0), amount
+                )
+                await self._invoice_reconciliation(
+                    db,
+                    invoice=invoice,
+                    event=event,
+                    reason_code="subscription_dispute_reconciliation_required",
+                    case_key=f"subscription-dispute:{provider_object_id}:{outcome.lower()}",
+                    freeze_lineage=True,
+                )
+
+        db.add(
+            SubscriptionInvoiceAdjustmentFact(
+                id=uuid.uuid4(),
+                invoice_id=invoice.id,
+                payment_event_id=event.id,
+                provider="creem",
+                provider_object_id=provider_object_id,
+                adjustment_kind=adjustment_kind,
+                amount_minor_units=amount,
+                currency=str(event.currency),
+                outcome=final_outcome,
+                reversal_transaction_id=reversal_transaction_id,
+                occurred_at=event.occurred_at,
+            )
+        )
+        await db.flush()
+        return True
+
+    async def apply_normalized_payment_event(
+        self,
+        db: AsyncSession,
+        *,
+        event: PaymentEvent,
+    ) -> UserSubscription | None:
+        subscription = await self._find_subscription_for_event(db, event)
         if subscription is None:
-            raise SubscriptionError(code="subscription_not_found", message="Subscription not found.", status_code=404)
-        subscription.cancel_at_period_end = True
-        subscription.metadata_json = {
-            **(subscription.metadata_json or {}),
-            "cancel_requested_at": datetime.now(timezone.utc).isoformat(),
-        }
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                subscription=None,
+                reason_code="subscription_projection_not_found",
+            )
+            return None
+        try:
+            status = normalized_status_for_event(event.event_type, event.normalized_status)
+        except SubscriptionFactInvalid as exc:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                subscription=subscription,
+                reason_code=exc.code,
+            )
+            return subscription
+        if str(event.event_type).lower() == "subscription.paid":
+            try:
+                await self.apply_subscription_paid_transaction(
+                    db,
+                    event=event,
+                    subscription=subscription,
+                )
+            except SubscriptionFactInvalid as exc:
+                await self._mark_event_reconciliation(
+                    db,
+                    event=event,
+                    subscription=subscription,
+                    reason_code=exc.code,
+                )
+                return subscription
+        newer = (
+            subscription.last_provider_event_at is None
+            or event.occurred_at >= subscription.last_provider_event_at
+        )
+        if newer:
+            subscription.normalized_status = status
+            subscription.last_provider_event_at = event.occurred_at
+            metadata = dict(event.business_metadata or {})
+            period_start = self._parse_provider_datetime(metadata.get("current_period_start_date"))
+            period_end = self._parse_provider_datetime(metadata.get("current_period_end_date"))
+            if period_start is not None:
+                subscription.current_period_start = period_start
+            if period_end is not None:
+                subscription.current_period_end = period_end
+            subscription.cancel_at_period_end = status is NormalizedSubscriptionStatus.CANCEL_REQUESTED
+            legacy_status = {
+                NormalizedSubscriptionStatus.PENDING: SubscriptionStatus.TRIALING,
+                NormalizedSubscriptionStatus.ACTIVE: SubscriptionStatus.ACTIVE,
+                NormalizedSubscriptionStatus.PAST_DUE: SubscriptionStatus.PAST_DUE,
+                NormalizedSubscriptionStatus.CANCEL_REQUESTED: SubscriptionStatus.ACTIVE,
+                NormalizedSubscriptionStatus.CANCELED: SubscriptionStatus.CANCELED,
+                NormalizedSubscriptionStatus.EXPIRED: SubscriptionStatus.EXPIRED,
+            }[status]
+            subscription.status = legacy_status
+        if status is NormalizedSubscriptionStatus.CANCEL_REQUESTED:
+            intent = await db.scalar(
+                select(SubscriptionCancelIntent)
+                .where(SubscriptionCancelIntent.subscription_id == subscription.id)
+                .order_by(SubscriptionCancelIntent.created_at.desc())
+                .with_for_update()
+            )
+            if intent is not None and _value(intent.state) in {
+                CancelIntentState.CALLING.value,
+                CancelIntentState.UNKNOWN.value,
+            }:
+                intent.state = CancelIntentState.CONFIRMED
+                intent.provider_evidence = {
+                    "payment_event_id": str(event.id),
+                    "event_id": event.event_id,
+                    "raw_payload_sha256": event.raw_payload_sha256,
+                }
+                intent.stored_response = {
+                    "subscription_id": str(subscription.id),
+                    "state": "CONFIRMED",
+                    "cancel_at_period_end": True,
+                }
+                intent.confirmed_at = event.occurred_at
+                intent.last_error = None
+        event.processing_state = PaymentEventProcessingState.APPLIED
+        event.processed_at = datetime.now(timezone.utc)
+        event.error = None
         await db.flush()
         return subscription
+
+    @staticmethod
+    def _cancel_provider_request_id(
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        idempotency_key: str,
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{user_id}:{subscription_id}:{idempotency_key}:scheduled".encode("utf-8")
+        ).hexdigest()
+        return f"sc_{digest}"
+
+    async def request_period_end_cancellation(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        idempotency_key: str,
+    ) -> dict:
+        if not self._provider_contract_ready(CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION):
+            raise SubscriptionError(
+                code="subscription_period_end_cancel_unverified",
+                message="Period-end cancellation is disabled until Creem test-mode proof exists.",
+                status_code=503,
+            )
+        clean_key = str(idempotency_key or "").strip()
+        if not clean_key or len(clean_key) > 128:
+            raise SubscriptionError(
+                code="idempotency_key_required",
+                message="A valid Idempotency-Key header is required.",
+                status_code=400,
+            )
+        await lock_idempotency_scope(
+            db,
+            user_id=user_id,
+            endpoint="subscriptions.cancel_at_period_end",
+            key=clean_key,
+        )
+        subscription = await db.scalar(
+            select(UserSubscription)
+            .where(
+                UserSubscription.id == subscription_id,
+                UserSubscription.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        if subscription is None:
+            raise SubscriptionError(
+                code="subscription_not_found",
+                message="Subscription not found.",
+                status_code=404,
+            )
+        request_hash = canonical_request_hash(
+            {
+                "subscription_id": str(subscription.id),
+                "provider_subscription_id": subscription.provider_subscription_id,
+                "mode": "scheduled",
+                "onExecute": "cancel",
+            }
+        )
+        existing = await db.scalar(
+            select(SubscriptionCancelIntent)
+            .where(
+                SubscriptionCancelIntent.user_id == user_id,
+                SubscriptionCancelIntent.idempotency_key == clean_key,
+            )
+            .with_for_update()
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise SubscriptionError(
+                    code="idempotency_payload_mismatch",
+                    message="The Idempotency-Key was already used for another request.",
+                    status_code=409,
+                )
+            return cancel_replay_or_raise(existing)
+        if _value(subscription.normalized_status) not in {
+            NormalizedSubscriptionStatus.ACTIVE.value,
+            NormalizedSubscriptionStatus.PAST_DUE.value,
+        }:
+            raise SubscriptionError(
+                code="subscription_not_cancelable",
+                message="Subscription is not in a cancelable state.",
+                status_code=409,
+            )
+        if not subscription.provider_subscription_id:
+            raise SubscriptionError(
+                code="provider_subscription_id_missing",
+                message="Subscription requires reconciliation before cancellation.",
+                status_code=409,
+            )
+        intent = SubscriptionCancelIntent(
+            id=uuid.uuid4(),
+            subscription_id=subscription.id,
+            user_id=user_id,
+            idempotency_key=clean_key,
+            request_hash=request_hash,
+            provider_request_id=self._cancel_provider_request_id(
+                user_id,
+                subscription.id,
+                clean_key,
+            ),
+            state=CancelIntentState.CALLING,
+            attempt_count=1,
+            call_started_at=datetime.now(timezone.utc),
+        )
+        db.add(intent)
+        await db.flush()
+        await db.commit()
+        try:
+            response = await self._request(
+                "POST",
+                f"/v1/subscriptions/{subscription.provider_subscription_id}/cancel",
+                json_body={"mode": "scheduled", "onExecute": "cancel"},
+            )
+        except httpx.RequestError as exc:
+            intent.state = CancelIntentState.UNKNOWN
+            intent.last_error = f"creem_cancel_ambiguous:{type(exc).__name__}"
+            await db.flush()
+            await db.commit()
+            raise CancellationReconciliationPending(intent.id) from exc
+        except httpx.HTTPStatusError as exc:
+            intent.state = CancelIntentState.FAILED_RETRYABLE
+            intent.last_error = f"creem_cancel_rejected:{exc.response.status_code}"
+            await db.flush()
+            await db.commit()
+            raise CancellationReconciliationPending(intent.id) from exc
+        response_id = str(response.get("id") or "").strip()
+        response_status = str(response.get("status") or "").strip().lower()
+        confirmed = response_status == "scheduled_cancel" or response.get("cancel_at_period_end") is True
+        if response_id != subscription.provider_subscription_id or not confirmed:
+            intent.state = CancelIntentState.UNKNOWN
+            intent.last_error = "creem_cancel_response_unproven"
+            await db.flush()
+            await db.commit()
+            raise CancellationReconciliationPending(intent.id)
+        response_hash = hashlib.sha256(
+            json.dumps(response, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        stored_response = {
+            "subscription_id": str(subscription.id),
+            "state": "CONFIRMED",
+            "cancel_at_period_end": True,
+        }
+        intent.state = CancelIntentState.CONFIRMED
+        intent.stored_response = stored_response
+        intent.provider_evidence = {
+            "provider_subscription_id": response_id,
+            "provider_status": response_status,
+            "response_sha256": response_hash,
+        }
+        intent.confirmed_at = datetime.now(timezone.utc)
+        intent.last_error = None
+        subscription.normalized_status = NormalizedSubscriptionStatus.CANCEL_REQUESTED
+        subscription.cancel_at_period_end = True
+        await db.flush()
+        await db.commit()
+        return stored_response
+
+    async def cancel_current_subscription(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        *,
+        idempotency_key: str,
+    ) -> dict:
+        subscription = await self.get_current_subscription(db, user_id)
+        if subscription is None:
+            raise SubscriptionError(
+                code="subscription_not_found",
+                message="Subscription not found.",
+                status_code=404,
+            )
+        return await self.request_period_end_cancellation(
+            db,
+            user_id=user_id,
+            subscription_id=subscription.id,
+            idempotency_key=idempotency_key,
+        )
 
     async def process_provider_event(
         self,
@@ -444,115 +1257,12 @@ class SubscriptionService:
         event_type: str,
         payload: dict[str, Any],
     ) -> UserSubscription | None:
-        normalized_event_type = str(event_type or "").strip().lower()
-        subscription = await self._get_or_create_subscription(db, provider=provider, payload=payload)
-        status = self._status_value(payload.get("status"))
-
-        if normalized_event_type in {"subscription.canceled", "subscription.cancelled"}:
-            status = SubscriptionStatus.CANCELED.value
-        elif normalized_event_type == "subscription.scheduled_cancel":
-            status = SubscriptionStatus.ACTIVE.value
-        elif normalized_event_type == "subscription.past_due":
-            status = SubscriptionStatus.PAST_DUE.value
-        elif normalized_event_type in {"subscription.unpaid", "subscription.paused"}:
-            status = SubscriptionStatus.PAST_DUE.value
-        elif normalized_event_type == "subscription.expired":
-            status = SubscriptionStatus.EXPIRED.value
-        elif normalized_event_type == "subscription.trialing":
-            status = SubscriptionStatus.TRIALING.value
-        elif not status and normalized_event_type in self._ACTIVE_EVENTS:
-            status = SubscriptionStatus.ACTIVE.value
-
-        if status:
-            subscription.status = status
-        customer_id = self._provider_customer_id(payload)
-        if customer_id:
-            subscription.provider_customer_id = customer_id
-        subscription.current_period_start = self._parse_datetime(
-            payload.get("current_period_start")
-            or payload.get("current_period_start_date")
-            or payload.get("period_start")
-        ) or subscription.current_period_start
-        subscription.current_period_end = self._parse_datetime(
-            payload.get("current_period_end")
-            or payload.get("current_period_end_date")
-            or payload.get("period_end")
-        ) or subscription.current_period_end
-        if normalized_event_type == "subscription.scheduled_cancel":
-            subscription.cancel_at_period_end = True
-        elif "cancel_at_period_end" in payload:
-            subscription.cancel_at_period_end = bool(payload.get("cancel_at_period_end"))
-        subscription.metadata_json = {
-            **(subscription.metadata_json or {}),
-            "last_event_type": normalized_event_type,
-            "last_provider_payload": payload,
-        }
-
-        if normalized_event_type in {"subscription.paid", "invoice.paid", "subscription.payment_succeeded"}:
-            await self.grant_period_credits(
-                db,
-                subscription,
-                period_key=self._period_key(payload),
-                credits=self._credits_for_period(subscription, payload),
-            )
-
-        await db.flush()
-        return subscription
-
-    async def grant_period_credits(
-        self,
-        db: AsyncSession,
-        subscription: UserSubscription,
-        *,
-        period_key: str,
-        credits: int | None = None,
-    ) -> SubscriptionCreditGrant:
-        normalized_period_key = str(period_key or "").strip()
-        if not normalized_period_key:
-            raise ValueError("period_key is required")
-
-        result = await db.execute(
-            select(SubscriptionCreditGrant).where(
-                SubscriptionCreditGrant.subscription_id == subscription.id,
-                SubscriptionCreditGrant.period_key == normalized_period_key,
-            )
+        del db, provider, event_type, payload
+        raise SubscriptionError(
+            code="normalized_payment_event_required",
+            message="Subscription events must pass through signed normalized ingestion.",
+            status_code=409,
         )
-        existing = result.scalar_one_or_none()
-        if existing is not None:
-            return existing
-
-        credit_amount = int(credits if credits is not None else getattr(subscription.plan, "monthly_credits", 0) or 0)
-        if credit_amount <= 0:
-            raise ValueError("credits must be greater than zero")
-
-        _balance, credit_transaction = await add_credits_with_transaction_async(
-            db,
-            subscription.user_id,
-            credit_amount,
-            transaction_type=CreditTransactionType.SUBSCRIPTION_GRANT,
-            source="subscription",
-            source_id=str(subscription.id),
-            description=f"Subscription credit grant: {normalized_period_key}",
-            metadata={
-                "provider": subscription.provider,
-                "provider_subscription_id": subscription.provider_subscription_id,
-                "period_key": normalized_period_key,
-            },
-        )
-        credit_transaction_id = getattr(credit_transaction, "id", None)
-        if credit_transaction_id is None:
-            raise RuntimeError("subscription credit transaction was not recorded")
-
-        grant = SubscriptionCreditGrant(
-            subscription_id=subscription.id,
-            user_id=subscription.user_id,
-            period_key=normalized_period_key,
-            credits=credit_amount,
-            credit_transaction_id=credit_transaction_id,
-        )
-        db.add(grant)
-        await db.flush()
-        return grant
 
 
 subscription_service = SubscriptionService()

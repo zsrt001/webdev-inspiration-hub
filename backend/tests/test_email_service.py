@@ -14,7 +14,7 @@ from app.services import email_service  # noqa: E402
 
 
 class EmailServiceTest(unittest.IsolatedAsyncioTestCase):
-    def test_build_order_result_url_uses_frontend_hash_route(self) -> None:
+    def test_build_order_result_url_uses_frontend_history_route(self) -> None:
         original_get_settings = email_service.get_settings
         try:
             email_service.get_settings = lambda: Settings(
@@ -24,7 +24,7 @@ class EmailServiceTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(
                 email_service.build_order_result_url("order id/with space"),
-                "https://studio.example.test/#/pages/preview/preview?id=order%20id/with%20space",
+                "https://studio.example.test/pages/preview/preview?id=order%20id/with%20space",
             )
         finally:
             email_service.get_settings = original_get_settings
@@ -57,8 +57,15 @@ class EmailServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["sent"])
         self.assertEqual(captured["purpose"], "order_completed")
         self.assertIn("https://cdn.example.test/preview.jpg", captured["html"])
-        self.assertIn("https://studio.example.test/#/pages/preview/preview?id=abc123", captured["html"])
+        self.assertIn("https://studio.example.test/pages/preview/preview?id=abc123", captured["html"])
         self.assertIn("Open your result", captured["html"])
+
+    def test_provider_errors_are_not_returned_or_persisted_verbatim(self) -> None:
+        source = Path(email_service.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"message": resp.text', source)
+        self.assertNotIn('"error": str(exc)', source)
+        self.assertIn('"error_code": "provider_rejected"', source)
+        self.assertIn('"error_code": "provider_unavailable"', source)
 
 
 if __name__ == "__main__":

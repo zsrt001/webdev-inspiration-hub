@@ -1,28 +1,37 @@
-"""Supabase Auth token verification and profile normalization."""
+"""Strict verification of short-lived Supabase Google broker sessions."""
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
+from uuid import UUID
 
 import httpx
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 
 from app.core.config import get_settings
 
 
 @dataclass(frozen=True)
 class SupabaseUserClaims:
+    """Broker-verified Google identity used only during the local-session exchange."""
+
     subject: str
-    email: str | None = None
-    provider: str = "supabase"
+    session_id: str
+    issued_at: datetime
+    email: str
+    provider: str = "google"
+    identity_provider: str = "supabase"
+    broker_verified: bool = True
     nickname: str | None = None
     avatar_url: str | None = None
 
 
 class SupabaseAuthError(Exception):
-    """Raised when a Supabase access token cannot be verified."""
+    """Raised when a Supabase broker session is absent, stale, or untrusted."""
 
 
 def supabase_issuer_from_url(supabase_url: str) -> str:
@@ -30,18 +39,9 @@ def supabase_issuer_from_url(supabase_url: str) -> str:
     if not raw:
         return ""
     parsed = urlparse(raw if raw.startswith(("http://", "https://")) else f"https://{raw}")
-    if not parsed.scheme or not parsed.netloc:
+    if parsed.scheme != "https" or not parsed.netloc or parsed.path not in {"", "/"}:
         return ""
-    return f"{parsed.scheme}://{parsed.netloc}/auth/v1"
-
-
-def build_supabase_openid(subject: str) -> str:
-    normalized = str(subject or "").strip()
-    base = f"supabase:{normalized}"
-    if len(base) <= 64:
-        return base
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    return f"supabase:{digest[:55]}"
+    return f"https://{parsed.netloc}/auth/v1"
 
 
 def _first_text(*values: object) -> str | None:
@@ -51,83 +51,214 @@ def _first_text(*values: object) -> str | None:
     return None
 
 
-def parse_supabase_claims(payload: dict) -> SupabaseUserClaims:
-    subject = _first_text(payload.get("sub"), payload.get("id"))
-    if not subject:
-        raise SupabaseAuthError("supabase_token_missing_subject")
+def _dict(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
-    app_metadata = payload.get("app_metadata")
-    if not isinstance(app_metadata, dict):
-        app_metadata = {}
-    user_metadata = payload.get("user_metadata")
-    if not isinstance(user_metadata, dict):
-        user_metadata = {}
 
-    provider = _first_text(
-        app_metadata.get("provider"),
-        payload.get("provider"),
-        "supabase",
-    ) or "supabase"
+def _timestamp(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SupabaseAuthError(f"supabase_token_{field}_invalid")
+    return value
+
+
+def _uuid_text(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SupabaseAuthError(f"supabase_token_{field}_missing")
+    try:
+        return str(UUID(value.strip()))
+    except (TypeError, ValueError) as exc:
+        raise SupabaseAuthError(f"supabase_token_{field}_invalid") from exc
+
+
+def _audience_matches(value: object, expected: str) -> bool:
+    if isinstance(value, str):
+        return value == expected
+    if isinstance(value, list):
+        return expected in value and all(isinstance(item, str) for item in value)
+    return False
+
+
+def _google_provider(metadata: dict[str, Any]) -> bool:
+    provider = _first_text(metadata.get("provider"))
+    providers = metadata.get("providers")
+    return provider == "google" and isinstance(providers, list) and "google" in providers
+
+
+def _has_google_identity(user_record: dict[str, Any]) -> bool:
+    identities = user_record.get("identities")
+    if not isinstance(identities, list):
+        return False
+    return any(isinstance(item, dict) and item.get("provider") == "google" for item in identities)
+
+
+def _has_oauth_amr(payload: dict[str, Any]) -> bool:
+    amr = payload.get("amr")
+    if not isinstance(amr, list) or not amr:
+        return False
+    for entry in amr:
+        if not isinstance(entry, dict) or entry.get("method") != "oauth":
+            continue
+        timestamp = entry.get("timestamp")
+        if isinstance(timestamp, int) and not isinstance(timestamp, bool):
+            return True
+    return False
+
+
+def parse_supabase_claims(
+    payload: dict[str, Any],
+    user_record: dict[str, Any],
+    *,
+    expected_issuer: str,
+    expected_audience: str,
+    now: datetime | None = None,
+    maximum_age_seconds: int = 600,
+    clock_skew_seconds: int = 60,
+) -> SupabaseUserClaims:
+    """Validate signed JWT facts against the broker's current user record."""
+
+    if not isinstance(payload, dict) or not isinstance(user_record, dict):
+        raise SupabaseAuthError("supabase_broker_payload_invalid")
+    if not expected_issuer or payload.get("iss") != expected_issuer:
+        raise SupabaseAuthError("supabase_token_issuer_invalid")
+    if not expected_audience or not _audience_matches(payload.get("aud"), expected_audience):
+        raise SupabaseAuthError("supabase_token_audience_invalid")
+    if payload.get("role") != "authenticated":
+        raise SupabaseAuthError("supabase_token_role_invalid")
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("current time must be timezone-aware")
+    current_ts = int(current.timestamp())
+    issued_at = _timestamp(payload.get("iat"), field="iat")
+    expires_at = _timestamp(payload.get("exp"), field="exp")
+    if issued_at > current_ts + max(0, clock_skew_seconds):
+        raise SupabaseAuthError("supabase_token_iat_future")
+    if current_ts - issued_at > max(1, maximum_age_seconds):
+        raise SupabaseAuthError("supabase_token_iat_stale")
+    if expires_at <= current_ts or expires_at <= issued_at:
+        raise SupabaseAuthError("supabase_token_expired")
+
+    subject = _uuid_text(payload.get("sub"), field="subject")
+    session_id = _uuid_text(payload.get("session_id"), field="session_id")
+    if payload.get("is_anonymous") is not False:
+        raise SupabaseAuthError("supabase_anonymous_identity_forbidden")
+    if not _has_oauth_amr(payload):
+        raise SupabaseAuthError("supabase_google_amr_missing")
+
+    signed_app_metadata = _dict(payload.get("app_metadata"))
+    broker_app_metadata = _dict(user_record.get("app_metadata"))
+    if not _google_provider(signed_app_metadata) or not _google_provider(broker_app_metadata):
+        raise SupabaseAuthError("supabase_google_provider_required")
+    if not _has_google_identity(user_record):
+        raise SupabaseAuthError("supabase_google_identity_missing")
+
+    broker_subject = _uuid_text(user_record.get("id"), field="broker_subject")
+    if broker_subject != subject:
+        raise SupabaseAuthError("supabase_broker_subject_mismatch")
+    signed_email = (_first_text(payload.get("email")) or "").lower()
+    broker_email = (_first_text(user_record.get("email")) or "").lower()
+    if not signed_email or signed_email != broker_email:
+        raise SupabaseAuthError("supabase_broker_email_mismatch")
+    broker_user_metadata = _dict(user_record.get("user_metadata"))
+    email_confirmed = bool(_first_text(user_record.get("email_confirmed_at")))
+    email_verified = broker_user_metadata.get("email_verified") is True
+    if not (email_confirmed or email_verified):
+        raise SupabaseAuthError("supabase_email_unverified")
+
+    signed_user_metadata = _dict(payload.get("user_metadata"))
     nickname = _first_text(
-        user_metadata.get("name"),
-        user_metadata.get("full_name"),
-        user_metadata.get("nickname"),
-        payload.get("name"),
+        broker_user_metadata.get("name"),
+        broker_user_metadata.get("full_name"),
+        broker_user_metadata.get("nickname"),
+        signed_user_metadata.get("name"),
     )
     avatar_url = _first_text(
-        user_metadata.get("avatar_url"),
-        user_metadata.get("picture"),
-        payload.get("avatar_url"),
-        payload.get("picture"),
+        broker_user_metadata.get("avatar_url"),
+        broker_user_metadata.get("picture"),
+        signed_user_metadata.get("avatar_url"),
+        signed_user_metadata.get("picture"),
     )
-
     return SupabaseUserClaims(
         subject=subject,
-        email=_first_text(payload.get("email")),
-        provider=provider,
+        session_id=session_id,
+        issued_at=datetime.fromtimestamp(issued_at, tz=timezone.utc),
+        email=broker_email,
         nickname=nickname,
         avatar_url=avatar_url,
     )
 
 
+async def _fetch_supabase_user(access_token: str, *, url: str, publishable_key: str, timeout: float) -> dict[str, Any]:
+    headers = {"apikey": publishable_key, "Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            response = await client.get(f"{url.rstrip('/')}/auth/v1/user", headers=headers)
+    except httpx.HTTPError as exc:
+        raise SupabaseAuthError("supabase_userinfo_unreachable") from exc
+    if response.status_code != 200:
+        raise SupabaseAuthError("supabase_userinfo_rejected")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise SupabaseAuthError("supabase_userinfo_invalid") from exc
+    if not isinstance(data, dict):
+        raise SupabaseAuthError("supabase_userinfo_invalid")
+    return data
+
+
 async def verify_supabase_token(token: str) -> SupabaseUserClaims:
+    """Verify signature with Supabase Auth, then enforce the Google exchange contract."""
+
     settings = get_settings()
     access_token = str(token or "").strip()
-    if not access_token:
-        raise SupabaseAuthError("missing_supabase_token")
+    if not access_token or len(access_token) > 8192 or access_token.count(".") != 2:
+        raise SupabaseAuthError("missing_or_malformed_supabase_token")
+    issuer = supabase_issuer_from_url(settings.supabase_url)
+    if not issuer or not settings.supabase_anon_key.strip():
+        raise SupabaseAuthError("supabase_auth_not_configured")
 
-    if settings.supabase_jwt_secret:
-        issuer = supabase_issuer_from_url(settings.supabase_url)
-        decode_options = {"verify_aud": bool(settings.supabase_jwt_audience)}
+    try:
+        header = jwt.get_unverified_header(access_token)
+        payload = jwt.decode(
+            access_token,
+            options={
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+                "verify_iss": False,
+                "verify_iat": False,
+                "verify_nbf": False,
+            },
+        )
+    except PyJWTError as exc:
+        raise SupabaseAuthError("invalid_supabase_jwt") from exc
+
+    # When the project still uses HS256, verify locally as an additional check.
+    # The broker /user call below remains the algorithm-independent signature authority.
+    if header.get("alg") == "HS256" and settings.supabase_jwt_secret.strip():
         try:
             payload = jwt.decode(
                 access_token,
                 settings.supabase_jwt_secret,
                 algorithms=["HS256"],
-                audience=settings.supabase_jwt_audience or None,
-                issuer=issuer or None,
-                options=decode_options,
+                audience=settings.supabase_jwt_audience,
+                issuer=issuer,
+                options={"verify_exp": False, "verify_iat": False, "verify_nbf": False},
             )
-        except JWTError as exc:
+        except PyJWTError as exc:
             raise SupabaseAuthError("invalid_supabase_jwt") from exc
-        return parse_supabase_claims(payload)
 
-    if settings.supabase_url and settings.supabase_anon_key:
-        user_url = f"{settings.supabase_url.rstrip('/')}/auth/v1/user"
-        headers = {
-            "apikey": settings.supabase_anon_key,
-            "Authorization": f"Bearer {access_token}",
-        }
-        try:
-            async with httpx.AsyncClient(timeout=settings.supabase_auth_timeout, trust_env=False) as client:
-                response = await client.get(user_url, headers=headers)
-        except httpx.HTTPError as exc:
-            raise SupabaseAuthError("supabase_userinfo_unreachable") from exc
-        if response.status_code != 200:
-            raise SupabaseAuthError(f"supabase_userinfo_rejected:{response.status_code}")
-        data = response.json()
-        if not isinstance(data, dict):
-            raise SupabaseAuthError("supabase_userinfo_invalid")
-        return parse_supabase_claims(data)
-
-    raise SupabaseAuthError("supabase_auth_not_configured")
+    user_record = await _fetch_supabase_user(
+        access_token,
+        url=settings.supabase_url,
+        publishable_key=settings.supabase_anon_key,
+        timeout=settings.supabase_auth_timeout,
+    )
+    return parse_supabase_claims(
+        payload,
+        user_record,
+        expected_issuer=issuer,
+        expected_audience=settings.supabase_jwt_audience,
+        maximum_age_seconds=settings.supabase_exchange_max_token_age_seconds,
+        clock_skew_seconds=settings.supabase_clock_skew_seconds,
+    )

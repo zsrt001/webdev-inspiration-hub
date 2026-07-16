@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from datetime import datetime, timezone
-from io import BytesIO
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,11 +13,17 @@ import httpx
 from sqlalchemy import text
 
 from app.core.config import get_settings
-from app.core.database import async_session_maker
+from app.core.database import async_session_maker, control_plane_async_session_maker
 from app.core.redis_client import get_redis
 from app.core.task_queue import get_pool
 from app.services.generation_service import generation_service
-from app.services.storage import storage_service
+from app.services.job_lease_service import (
+    GENERATION_SCHEMA_REVISION,
+    WorkerHeartbeatInvalid,
+    read_worker_runtime_heartbeat,
+    worker_runtime_config_hash,
+)
+from app.services.storage import DeleteResult, storage_service
 
 settings = get_settings()
 
@@ -57,7 +63,11 @@ def _redis_required() -> bool:
 
 
 def _task_queue_required() -> bool:
-    return settings.using_background_queue or bool(settings.live_portrait_enabled)
+    return settings.using_background_queue
+
+
+def _worker_heartbeat_required() -> bool:
+    return bool(settings.worker_image_digest.strip())
 
 
 def validate_commercial_config_values() -> list[str]:
@@ -66,28 +76,23 @@ def validate_commercial_config_values() -> list[str]:
     llm_provider = (settings.llm_provider or "").strip().lower()
     raw_payment_provider = (settings.payment_provider or "").strip().lower()
 
-    if settings.using_evolink_generation:
+    if settings.runtime_environment == "development":
+        errors.append("RUNTIME_ENVIRONMENT must be preview or production when DEBUG=false")
+    else:
+        errors.extend(settings.runtime_coordinate_errors)
+        errors.extend(settings.control_plane_database_config_errors)
+
+    if settings.generation_engine == "evolink":
         if not settings.evolink_api_key:
             errors.append("EVOLINK_API_KEY is required when GENERATION_ENGINE=evolink")
         if not settings.evolink_api_base_url:
             errors.append("EVOLINK_API_BASE_URL is required when GENERATION_ENGINE=evolink")
         if not settings.evolink_image_model:
             errors.append("EVOLINK_IMAGE_MODEL is required when GENERATION_ENGINE=evolink")
-    elif settings.using_wenwen_generation:
-        if not settings.wenwen_api_key:
-            errors.append("WENWEN_API_KEY is required when GENERATION_ENGINE=wenwen")
-        if not settings.wenwen_api_base_url:
-            errors.append("WENWEN_API_BASE_URL is required when GENERATION_ENGINE=wenwen")
-    elif settings.generation_engine == "comfyui":
-        if settings.using_comfy_cloud:
-            if not settings.comfy_cloud_api_key:
-                errors.append("COMFY_CLOUD_API_KEY is required when COMFY_PROVIDER=cloud")
-        elif not settings.comfyui_base_url:
-            errors.append("COMFYUI_BASE_URL is required when COMFY_PROVIDER=local")
+        if not settings.generation_image_model_allowed(settings.evolink_image_model):
+            errors.append("EVOLINK_IMAGE_MODEL is not in the production allowlist")
     else:
-        errors.append("GENERATION_ENGINE must be comfyui, wenwen, or evolink")
-    if not settings.admin_token and not settings.admin_identity_configured:
-        errors.append("ADMIN_USER_IDS, ADMIN_EMAILS, or backend-only ADMIN_TOKEN is required")
+        errors.append("GENERATION_ENGINE must be exactly evolink")
     if provider in {"", "local"}:
         errors.append("STORAGE_PROVIDER must be s3 or vercel (local is not commercial-safe)")
     if settings.allow_memory_fallback:
@@ -98,10 +103,10 @@ def validate_commercial_config_values() -> list[str]:
         errors.append("QA_ALLOW_WITHOUT_PILLOW must be false")
     if not settings.qa_require_vision:
         errors.append("QA_REQUIRE_VISION must be true")
-    if settings.generation_engine == "comfyui" and not settings.comfyui_require_storage_delivery:
-        errors.append("COMFYUI_REQUIRE_STORAGE_DELIVERY must be true")
     if settings.secret_key == "change-me-in-production":
         errors.append("SECRET_KEY must be rotated")
+    if len(str(settings.secret_key or "").encode("utf-8")) < 32:
+        errors.append("SECRET_KEY must contain at least 32 bytes")
     if llm_provider in {"", "jiekou"}:
         if not settings.jiekou_api_key:
             errors.append("JIEKOU_API_KEY is required when LLM_PROVIDER=jiekou")
@@ -112,8 +117,6 @@ def validate_commercial_config_values() -> list[str]:
             errors.append("WENWEN_API_BASE_URL is required when LLM_PROVIDER=wenwen")
     else:
         errors.append("LLM_PROVIDER must be jiekou or wenwen in commercial mode")
-    if not settings.phone_crypto_key:
-        errors.append("PHONE_CRYPTO_KEY is required for leads encryption")
     if not settings.rate_limit_enabled:
         errors.append("RATE_LIMIT_ENABLED must be true")
     if not (settings.support_contact_email or settings.support_contact_url or settings.manual_payment_contact):
@@ -148,6 +151,19 @@ def validate_commercial_config_values() -> list[str]:
     if webhook_base_url_error:
         errors.append(webhook_base_url_error)
 
+    if settings.provider_grant_origin:
+        provider_grant_origin_error = _validate_public_base_url(
+            "PROVIDER_GRANT_ORIGIN",
+            settings.provider_grant_origin,
+        )
+        if provider_grant_origin_error:
+            errors.append(provider_grant_origin_error)
+        if len(settings.provider_grant_probe_secret) < 32:
+            errors.append(
+                "PROVIDER_GRANT_PROBE_SECRET must contain at least 32 characters when "
+                "PROVIDER_GRANT_ORIGIN is configured"
+            )
+
     if settings.cors_origins:
         frontend_host = urlparse((settings.effective_frontend_base_url or "").strip()).hostname
         if frontend_host and frontend_host.lower() not in _cors_origin_hosts():
@@ -181,6 +197,65 @@ async def _check_database() -> tuple[bool, str]:
     return True, "ok"
 
 
+def validate_database_role_proof(
+    proof: dict[str, Any],
+    *,
+    required_group: str,
+    forbidden_group: str,
+) -> str:
+    current_user = str(proof.get("current_user") or "").strip()
+    owner = str(proof.get("control_table_owner") or "").strip()
+    if not current_user or not owner:
+        raise RuntimeError("database role proof is incomplete")
+    if bool(proof.get("role_superuser")):
+        raise RuntimeError("database runtime role must not be a superuser")
+    if bool(proof.get("role_bypass_rls")):
+        raise RuntimeError("database runtime role must be NOBYPASSRLS")
+    if current_user == owner:
+        raise RuntimeError("database runtime role must not own control-plane tables")
+    if not bool(proof.get("required_group_member")):
+        raise RuntimeError(f"database role must be a member of {required_group}")
+    if bool(proof.get("forbidden_group_member")):
+        raise RuntimeError(f"database role must not be a member of {forbidden_group}")
+    return f"{current_user}:{required_group}"
+
+
+async def _check_database_role(
+    session_maker,
+    required_group: str,
+    forbidden_group: str,
+) -> tuple[bool, str]:
+    async with session_maker() as db:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT current_user AS current_user,
+                           role.rolsuper AS role_superuser,
+                           role.rolbypassrls AS role_bypass_rls,
+                           pg_get_userbyid(control.relowner) AS control_table_owner,
+                           pg_has_role(current_user, :required_group, 'MEMBER') AS required_group_member,
+                           pg_has_role(current_user, :forbidden_group, 'MEMBER') AS forbidden_group_member
+                    FROM pg_roles AS role
+                    JOIN pg_class AS control
+                      ON control.oid = 'public.ops_feature_flags'::regclass
+                    WHERE role.rolname = current_user
+                    """
+                ),
+                {
+                    "required_group": required_group,
+                    "forbidden_group": forbidden_group,
+                },
+            )
+        ).mappings().one()
+    detail = validate_database_role_proof(
+        dict(row),
+        required_group=required_group,
+        forbidden_group=forbidden_group,
+    )
+    return True, detail
+
+
 async def _check_redis() -> tuple[bool, str]:
     if not _redis_required():
         return True, "not_required"
@@ -198,6 +273,35 @@ async def _check_task_queue() -> tuple[bool, str]:
     pong = await pool.ping()
     if not pong:
         raise RuntimeError("task queue ping failed")
+    return True, "ok"
+
+
+async def _check_worker_heartbeat() -> tuple[bool, str]:
+    if not _worker_heartbeat_required():
+        return True, "not_required"
+    try:
+        redis = await get_redis()
+        heartbeat = await read_worker_runtime_heartbeat(
+            redis,
+            environment=settings.runtime_environment,
+            runtime_bundle_id=settings.runtime_bundle_id.strip().lower(),
+        )
+    except WorkerHeartbeatInvalid as exc:
+        return False, str(exc)
+    expected = {
+        "source_sha": settings.source_sha,
+        "api_deployment_id": settings.deployment_id,
+        "worker_image_digest": settings.worker_image_digest.strip().lower(),
+        "schema_revision": GENERATION_SCHEMA_REVISION,
+        "payload_min": "generation-job.v1",
+        "payload_max": "generation-job.v1",
+        "config_hash": worker_runtime_config_hash(),
+    }
+    for field, value in expected.items():
+        if getattr(heartbeat, field) != value:
+            return False, f"worker_heartbeat_{field}_mismatch"
+    if heartbeat.current_feature_snapshot_hash != heartbeat.target_feature_snapshot_hash:
+        return False, "worker_feature_snapshot_mismatch"
     return True, "ok"
 
 
@@ -272,18 +376,25 @@ def _check_payments_config() -> tuple[bool, str]:
 
 
 async def _probe_storage_rw() -> tuple[bool, str]:
-    url = await asyncio.to_thread(
-        storage_service.upload_file,
-        BytesIO(b"aiws-healthcheck"),
-        "healthcheck.txt",
-        "text/plain",
-        "healthcheck",
-    )
-    if not url.startswith("http://") and not url.startswith("https://"):
-        raise RuntimeError("storage returned non-http url")
-    deleted = await asyncio.to_thread(storage_service.delete_file, url)
-    if not deleted:
-        raise RuntimeError("upload succeeded but delete failed")
+    object_key = f"healthcheck/private/{secrets.token_hex(16)}.txt"
+    payload = secrets.token_bytes(64)
+    stored = False
+    try:
+        await asyncio.to_thread(
+            storage_service.put_private,
+            object_key,
+            payload,
+            "application/octet-stream",
+        )
+        stored = True
+        content = await asyncio.to_thread(storage_service.read_private, object_key)
+        if content != payload:
+            raise RuntimeError("private storage read did not match the uploaded bytes")
+    finally:
+        if stored:
+            deleted = await asyncio.to_thread(storage_service.delete_private, object_key)
+            if deleted not in {DeleteResult.DELETED, DeleteResult.NOT_FOUND}:
+                raise RuntimeError("private storage probe cleanup failed")
     return True, "ok"
 
 
@@ -313,12 +424,45 @@ async def run_readiness_checks(
         "detail": "ok" if not config_errors else "; ".join(config_errors),
         "latency_ms": 0.0,
     }
+    if strict and config_errors:
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "strict_mode": True,
+            "probe_storage": probe_storage,
+            "probe_generation_queue": probe_generation_queue,
+            "commercial_ready": False,
+            "blockers": ["commercial_config"],
+            "checks": checks,
+        }
 
     name, result = await _run_check("database", _check_database, timeout_s=15.0)
     checks[name] = result
+    if strict:
+        name, result = await _run_check(
+            "database_role",
+            lambda: _check_database_role(
+                async_session_maker,
+                "vowpic_runtime",
+                "vowpic_control_writer",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
+        name, result = await _run_check(
+            "control_plane_database",
+            lambda: _check_database_role(
+                control_plane_async_session_maker,
+                "vowpic_control_writer",
+                "vowpic_runtime",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
     name, result = await _run_check("redis", _check_redis)
     checks[name] = result
     name, result = await _run_check("task_queue", _check_task_queue)
+    checks[name] = result
+    name, result = await _run_check("worker_heartbeat", _check_worker_heartbeat)
     checks[name] = result
     name, result = await _run_check("generation_runtime", _check_generation_runtime)
     checks[name] = result
@@ -357,9 +501,12 @@ async def run_readiness_checks(
         required.append("redis")
     if _task_queue_required():
         required.append("task_queue")
+    if _worker_heartbeat_required():
+        required.append("worker_heartbeat")
     if strict:
         required.insert(0, "payments_config")
         required.insert(0, "commercial_config")
+        required.extend(["database_role", "control_plane_database"])
     if probe_storage:
         required.append("storage_rw_probe")
     if probe_generation_queue:
@@ -382,18 +529,64 @@ async def run_core_readiness_checks(*, strict_mode: bool | None = None) -> dict[
     strict = (not settings.debug) if strict_mode is None else bool(strict_mode)
     checks: dict[str, dict[str, Any]] = {}
 
+    if strict:
+        config_errors = validate_commercial_config_values()
+        checks["commercial_config"] = {
+            "ok": len(config_errors) == 0,
+            "detail": "ok" if not config_errors else "; ".join(config_errors),
+            "latency_ms": 0.0,
+        }
+        if config_errors:
+            return {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "not_ready",
+                "ready": False,
+                "strict_mode": True,
+                "required": ["commercial_config"],
+                "blockers": ["commercial_config"],
+                "checks": checks,
+            }
+
     name, result = await _run_check("database", _check_database, timeout_s=15.0)
     checks[name] = result
+    if strict:
+        name, result = await _run_check(
+            "database_role",
+            lambda: _check_database_role(
+                async_session_maker,
+                "vowpic_runtime",
+                "vowpic_control_writer",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
+        name, result = await _run_check(
+            "control_plane_database",
+            lambda: _check_database_role(
+                control_plane_async_session_maker,
+                "vowpic_control_writer",
+                "vowpic_runtime",
+            ),
+            timeout_s=15.0,
+        )
+        checks[name] = result
     name, result = await _run_check("redis", _check_redis)
     checks[name] = result
     name, result = await _run_check("task_queue", _check_task_queue)
     checks[name] = result
+    name, result = await _run_check("worker_heartbeat", _check_worker_heartbeat)
+    checks[name] = result
 
     required = ["database"]
+    if strict:
+        required.insert(0, "commercial_config")
+        required.extend(["database_role", "control_plane_database"])
     if _redis_required():
         required.append("redis")
     if _task_queue_required():
         required.append("task_queue")
+    if _worker_heartbeat_required():
+        required.append("worker_heartbeat")
 
     blockers = [key for key in required if not checks.get(key, {}).get("ok", False)]
     ready = len(blockers) == 0

@@ -1,213 +1,146 @@
-# Vercel Deployment Guide
+# Vercel Web SaaS Deployment Guide
 
-This project is deployed as a PC/mobile web SaaS on Vercel:
+VowPic is an overseas responsive Web SaaS. It has no WeChat, Mini Program,
+guest-account, public-password, anonymous partner-session, Live Portrait,
+local-recommendation, or lead/CRM product surface.
 
-- Frontend: uni-app web build from `frontend/dist/build/h5`.
-- Backend: FastAPI through `api/index.py`.
-- API routing: `/api/:path*`, `/health`, and backend static style assets are rewritten to the Python function.
+The frontend is compiled with uni-app's Web target. Uni-app names that target
+`h5`, so the compiler output directory remains `frontend/dist/build/h5`; this
+is a build-tool convention, not a separate H5 product or mobile runtime.
 
-## Build Settings
+## Build contract
 
-Use the repository root as the Vercel project root.
+Use the repository root as the Vercel project root. The checked-in
+`vercel.json` is authoritative:
 
 ```text
-Build Command: cd frontend && npm ci && npm run build:web
+Install Command: cd frontend && npm ci --ignore-scripts
+Build Command: cd frontend && npm run build:web
 Output Directory: frontend/dist/build/h5
-Install Command: default
+Backend Function: api/index.py
 ```
 
-The same settings are encoded in `vercel.json`.
+The root [`.python-version`](../.python-version) fixes the Vercel Function
+runtime to Python 3.12. The root `requirements.txt` is generated, installed
+with hashes, dependency-checked, and entry-point imported in an exact Python
+3.12.13 Bookworm CI job. That Vercel API graph is intentionally separate from
+the Python 3.11 Worker/backend lock so version-conditional dependencies cannot
+be hidden by the wrong resolver runtime.
 
-## Required Environment Variables
+The root [`.vercelignore`](../.vercelignore) must keep its repository-level
+`scripts` exclusion anchored as `/scripts`. The Web build invokes
+`frontend/scripts/clean-web-output.mjs`; an unanchored `scripts` pattern also
+excludes that nested directory from Vercel's upload context even though the
+file remains present in Git and local CI.
 
-Set these in Vercel Project Settings -> Environment Variables.
+The `/api/*` and `/health*` routes are rewritten to FastAPI; all other paths
+fall back to the Web application. Production deployment from `main` remains
+disabled in `vercel.json` while the protected release workflow is in force.
 
-```env
-DEBUG=false
-AUTO_CREATE_TABLES=false
-TASK_EXECUTION_MODE=inline
+## Environment contract
 
-DATABASE_URL=
-SECRET_KEY=
-ADMIN_USER_IDS=
-ADMIN_OPENIDS=
-ADMIN_EMAILS=
-PHONE_CRYPTO_KEY=
+Use [`backend/.env.example`](../backend/.env.example) as the field inventory.
+Do not copy example values into Production, commit secrets, or add provider
+keys to `VITE_*` variables.
 
-SUPABASE_URL=
-SUPABASE_ANON_KEY=
-SUPABASE_JWT_SECRET=
-SUPABASE_JWT_AUDIENCE=authenticated
+At minimum, the deployment owner must provision and validate:
 
-VITE_API_BASE_URL=
+- runtime and control-plane PostgreSQL URLs using the roles required by the
+  release contract;
+- Vercel runtime coordinates and the runtime-bundle identity;
+- Supabase/Google OAuth backend settings;
+- private storage, generation-provider, payment-provider, webhook, support,
+  rate-limit, and cron credentials required by the capabilities being tested;
+- a backend-only Admin token or configured Admin UUID/email.
 
-FRONTEND_BASE_URL=https://your-domain.com
-WEBHOOK_BASE_URL=https://your-domain.com
-CORS_ALLOW_ORIGINS=https://your-domain.com
+The bootstrap environment flags in `vercel.json` remain `false`. PostgreSQL
+`ops_feature_flags` is the runtime authority for the seven active
+capabilities. Missing rows, database failures, stale bundle bindings, or
+invalid release coordinates must resolve to OFF. Frontend visibility is only a
+UX reflection of that server decision.
 
-STORAGE_PROVIDER=vercel
-BLOB_READ_WRITE_TOKEN=
+Retired feature flags such as `REMOTE_JOIN_ENABLED` and
+`LIVE_PORTRAIT_ENABLED` stay explicitly false only as safe-baseline controls;
+they do not restore routes or product UI.
 
-GENERATION_ENGINE=wenwen
-WENWEN_API_KEY=
-WENWEN_CHAT_API_KEY=
-WENWEN_VISION_API_KEY=
+## Database and identity
 
-PAYMENT_PROVIDER=creem
-SUPPORT_CONTACT_EMAIL=
-SUPPORT_CONTACT_URL=
-REFUND_POLICY_URL=/pages/legal/refund
-CREEM_API_KEY=
-CREEM_WEBHOOK_SECRET=
-CREEM_PRODUCT_PACK_50=
-CREEM_PRODUCT_PACK_120=
-CREEM_PRODUCT_PACK_300=
-
-SUBSCRIPTION_BILLING_ENABLED=false
-CREEM_SUBSCRIPTION_STARTER_PRODUCT_ID=
-CREEM_SUBSCRIPTION_CREATOR_PRODUCT_ID=
-CREEM_SUBSCRIPTION_STUDIO_PRODUCT_ID=
-
-CLEANUP_CRON_TOKEN=
-CRON_SECRET=
-
-RATE_LIMIT_ENABLED=true
-RATE_LIMIT_DEFAULT_REQUESTS=240
-RATE_LIMIT_DEFAULT_WINDOW_SECONDS=60
-RATE_LIMIT_SENSITIVE_REQUESTS=40
-RATE_LIMIT_SENSITIVE_WINDOW_SECONDS=60
-NEW_ACCOUNT_IP_LIMIT_PER_HOUR=8
-NEW_ACCOUNT_DEVICE_LIMIT_PER_HOUR=3
-
-TRIAL_WELCOME_CREDITS=6
-TRIAL_DAILY_GENERATION_LIMIT=3
-TRIAL_PREVIEW_MAX_WIDTH=900
-TRIAL_PREVIEW_MAX_HEIGHT=1125
-TRIAL_WATERMARK_TEXT=AI WEDDING STUDIO PREVIEW
-
-POSTPROCESS_ENABLED=true
-POSTPROCESS_UPSCALE_FACTOR=2
-POSTPROCESS_MAX_LONG_EDGE=2400
-POSTPROCESS_JPEG_QUALITY=92
-POSTPROCESS_VARIANTS=2x3,3x4,9x16
-```
-
-Leave `VITE_API_BASE_URL` empty on Vercel. The frontend will use same-origin `/api/v1`.
-
-## Billing And Pricing Rules
-
-Credits are the only spendable unit. One-time packs and subscription grants share one balance.
-
-```text
-Single base generation: 2 credits
-Director / advanced single generation: 3 credits
-Local couple generation: 3 credits
-Remote couple generation: 4 credits
-Premium/vintage scene generation: 5 credits
-Live Portrait 5s: 6 credits
-Live Portrait extra 5s block: +4 credits
-```
-
-New users receive trial credits for preview generation. Trial orders can view watermarked previews; HD downloads and poster export are unlocked only after paid credit history or an active subscription.
-
-Subscriptions are not unlimited usage. Each billing period grants the plan's fixed credit amount through provider webhook reconciliation.
-
-## Refunds, Support, And Legal Entry Points
-
-Production deployments must expose a support contact before real-money checkout is enabled. Configure `SUPPORT_CONTACT_EMAIL` or `SUPPORT_CONTACT_URL` and keep the footer links visible on the homepage, creation flow, account center, order archive, and legal pages.
-
-Refund handling is review-based:
-
-```text
-Eligible for review: duplicate charges, paid credits not delivered, webhook failures, platform-side queue failures, confirmed storage/generation delivery failures.
-Usually not refundable after successful delivery: subjective style preference, user prompt choices, poor upload quality, or third-party payment delay.
-Never request or store: card numbers, CVV, bank credentials, payment passwords, or full ID documents.
-```
-
-The public refund/support page is `/pages/legal/refund`; the backend also exposes the current legal policy summary at `/api/v1/legal/policies`.
-
-## Rate Limiting And Admin Audit
-
-`RATE_LIMIT_ENABLED=true` is required for commercial readiness. The built-in limiter is per-instance and should be paired with Vercel Firewall/WAF for stronger production protection.
-
-Sensitive API prefixes use the stricter limit: auth, orders, payments, subscriptions, session, upload, and live portrait.
-
-Admin write operations are recorded in `admin_audit_logs` and can be reviewed from `/api/v1/admin/audit_logs` or the Admin page. Prefer `ADMIN_USER_IDS`, `ADMIN_OPENIDS`, or `ADMIN_EMAILS` so the frontend only sends the normal signed-in user JWT. `ADMIN_TOKEN` is a backend-only fallback for scripts/internal calls and must not be stored in browser localStorage or exposed through `VITE_*` variables.
-
-## Image Retention And Cleanup
-
-The app stores only URLs and operational metadata in Postgres. Image files are deleted by policy:
-
-```text
-Uploaded source images: 7 days
-Free generated images: 30 days
-Paid credit-pack generated images: 90 days
-Subscription generated images: 180 days
-Studio subscription generated images: 365 days
-```
-
-`vercel.json` includes a daily cron for `/api/v1/ops/cleanup_expired_assets`. Set `CRON_SECRET` in Vercel and use the same value for `CLEANUP_CRON_TOKEN` when running local/manual cleanup jobs. The cleanup route accepts `Authorization: Bearer $CRON_SECRET` or `Authorization: Bearer $CLEANUP_CRON_TOKEN`.
-
-Users can also delete image assets from Account Center. Deletion removes source, preview, and final image URLs from the order and deletes the underlying storage objects where the configured provider supports deletion.
-
-## Database Migration
-
-Run migrations before promoting a production deployment:
+Apply reviewed Alembic migrations before promotion. Run migration commands
+from `backend` so the `app` package resolves correctly:
 
 ```powershell
-cd backend
-python scripts/migrate_db.py
+Push-Location backend
+..\.venv\Scripts\python.exe scripts/migrate_db.py
+Pop-Location
 ```
 
-Production startup should not mutate schema. Keep:
+Application startup and ordinary requests must not execute runtime DDL.
+Production readiness must verify the expected revision, runtime role,
+control-plane role, and RLS posture.
 
-```env
-AUTO_CREATE_TABLES=false
-```
+Configure Google OAuth URLs exactly as described in
+[`SUPABASE_SETUP.md`](./SUPABASE_SETUP.md). Do not use wildcard Vercel callback
+URLs. The browser receives no Supabase key from the frontend bundle; it starts
+and exchanges OAuth through backend-owned endpoints.
 
-## Supabase OAuth URLs
+## Current safe-baseline behavior
 
-The current frontend build does not embed Supabase anon keys. If Google OAuth is reintroduced later, keep the browser flow behind backend-owned endpoints instead of adding `VITE_SUPABASE_ANON_KEY`.
+Before later commercial stages are activated, all seven high-risk
+capabilities are OFF. The storefront may load public content, but authentication,
+uploads, generation, credit-pack checkout, subscription billing, private
+downloads, and partner invites must remain unavailable.
 
-In Supabase Authentication settings:
+The following are intentional fail-closed behaviors, not release failures:
 
-```text
-Site URL: https://your-domain.com
-Redirect URLs:
-https://your-domain.com
-https://your-domain.com/
-http://127.0.0.1:3000
-http://127.0.0.1:3000/
-```
+- retired product routes return HTTP 410 with stable retirement codes;
+- disabled active capabilities return structured HTTP 503 responses before
+  identity lookup, database mutation, queueing, or provider calls;
+- the cleanup endpoints return `cleanup_paused` until durable deletion retry
+  and recovery are installed;
+- billing UI and catalog fallbacks remain hidden while billing capabilities
+  are OFF.
 
-In Google Cloud OAuth client:
+Do not claim Google login, checkout, generation, private download, or automatic
+deletion is production-ready solely because the Web build loads.
 
-```text
-Authorized JavaScript origins:
-https://your-domain.com
-http://127.0.0.1:3000
+## Local verification before deployment
 
-Authorized redirect URIs:
-https://<your-supabase-project-ref>.supabase.co/auth/v1/callback
-```
-
-## Verification
-
-Before launch:
+From the repository root:
 
 ```powershell
-python -m unittest discover -s backend/tests -v
-cd frontend
+Push-Location backend
+..\.venv\Scripts\python.exe -m unittest discover -s tests -v
+Pop-Location
+
+Push-Location frontend
+npm ci --ignore-scripts
+npm run typecheck
 npm run build:web
+Pop-Location
+
+.\.venv\Scripts\python.exe scripts/release/verify_safe_baseline.py
+git diff --check
 ```
 
-After deployment:
+Record skipped integration tests and missing external credentials as
+`NOT_RUN`; never convert them to PASS.
 
-```text
-GET https://your-domain.com/health
-GET https://your-domain.com/health/ready
-Open https://your-domain.com and verify Google login.
-Create a guest session and verify balance/order pages.
-Open Account Center and verify subscription, retention text, and recent generated image history.
-Trigger `/api/v1/ops/readiness?strict=true` and verify subscription/payment/storage cleanup config.
-```
+## Staged and formal-domain verification
+
+Deployment is an external state change and requires explicit approval. Use the
+protected release workflow in
+[`operations/risk-lockdown-runbook.md`](./operations/risk-lockdown-runbook.md)
+in its documented order:
+
+1. bind the exact reviewed source SHA, runtime bundle, migration revision,
+   Vercel project, staged deployment, and formal domain;
+2. prove all capability rows are OFF against live PostgreSQL authority;
+3. verify liveness, strict readiness, every guarded route, every 410 tombstone,
+   signed webhook/reconciliation/logout reachability, and zero runtime DDL;
+4. promote only after the staged report passes;
+5. repeat the same checks on the formal domain and preserve immutable evidence;
+6. restore or retain edge deny rules on any mismatch. Never roll back to the
+   known-unsafe pre-baseline deployment.
+
+Opening the homepage or receiving HTTP 200 from `/health` is not sufficient
+evidence that the SaaS business flow is ready.

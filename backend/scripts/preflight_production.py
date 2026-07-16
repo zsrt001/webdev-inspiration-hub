@@ -35,7 +35,6 @@ def _item(name: str, value: str, *, secret: bool = False) -> dict[str, Any]:
 
 def _build_env_summary(settings: Any) -> dict[str, list[dict[str, Any]]]:
     provider = (settings.storage_provider or "").strip().lower()
-    generation_engine = (settings.generation_engine or "").strip().lower()
 
     summary: dict[str, list[dict[str, Any]]] = {
         "runtime": [
@@ -59,8 +58,6 @@ def _build_env_summary(settings: Any) -> dict[str, list[dict[str, Any]]]:
             _item("SECRET_KEY", str(settings.secret_key), secret=True),
             _item("ADMIN_TOKEN", str(settings.admin_token), secret=True),
             _item("EVOLINK_API_KEY", str(settings.evolink_api_key), secret=True),
-            _item("PHONE_CRYPTO_KEY", str(settings.phone_crypto_key), secret=True),
-            _item("WENWEN_API_KEY", str(settings.wenwen_api_key), secret=True),
             _item("WENWEN_CHAT_API_KEY", str(settings.wenwen_text_api_key_effective), secret=True),
             _item("WENWEN_VISION_API_KEY", str(settings.wenwen_vision_api_key_effective), secret=True),
         ],
@@ -73,31 +70,14 @@ def _build_env_summary(settings: Any) -> dict[str, list[dict[str, Any]]]:
         ],
     }
 
-    if generation_engine == "evolink":
-        summary["connectivity"].extend(
-            [
-                _item("EVOLINK_API_BASE_URL", str(settings.evolink_api_base_url)),
-                _item("EVOLINK_IMAGE_MODEL", str(settings.evolink_image_model)),
-                _item("EVOLINK_IMAGE_SIZE", str(settings.evolink_image_size)),
-                _item("EVOLINK_IMAGE_QUALITY", str(settings.evolink_image_quality)),
-            ]
-        )
-    elif generation_engine == "wenwen":
-        summary["connectivity"].extend(
-            [
-                _item("WENWEN_API_BASE_URL", str(settings.wenwen_api_base_url)),
-                _item("WENWEN_MODELS_PATH", str(settings.wenwen_models_path)),
-            ]
-        )
-    else:
-        summary["connectivity"].extend(
-            [
-                _item("COMFY_PROVIDER", str(settings.comfy_provider)),
-                _item("COMFYUI_BASE_URL", str(settings.comfyui_base_url)),
-                _item("COMFY_CLOUD_BASE_URL", str(settings.comfy_cloud_base_url)),
-                _item("COMFY_CLOUD_API_KEY", str(settings.comfy_cloud_api_key), secret=True),
-            ]
-        )
+    summary["connectivity"].extend(
+        [
+            _item("EVOLINK_API_BASE_URL", str(settings.evolink_api_base_url)),
+            _item("EVOLINK_IMAGE_MODEL", str(settings.evolink_image_model)),
+            _item("EVOLINK_IMAGE_SIZE", str(settings.evolink_image_size)),
+            _item("EVOLINK_IMAGE_QUALITY", str(settings.evolink_image_quality)),
+        ]
+    )
 
     if provider == "s3":
         summary["storage"] = [
@@ -143,25 +123,23 @@ def _build_next_steps(report: dict[str, Any]) -> list[str]:
     steps: list[str] = []
 
     if "commercial_config" in blockers:
-        steps.append("补齐严格模式配置，并确保生产部署时 `DEBUG=false`。")
+        steps.append("补齐严格运行时配置，并确保受保护环境使用 `DEBUG=false`。")
     if "database" in blockers:
-        steps.append("检查 `DATABASE_URL` 是否指向可公网访问的生产 Postgres。")
+        steps.append("检查 `DATABASE_URL` 是否指向可连接且权限正确的 PostgreSQL。")
     if "redis" in blockers:
-        steps.append("当前仍有 Redis 依赖，请检查 `REDIS_URL` 和实例连通性。")
+        steps.append("检查 `REDIS_URL`、实例连通性和队列隔离配置。")
     if "task_queue" in blockers:
-        steps.append("当前仍有队列依赖，请检查 ARQ Worker 和 Redis。")
+        steps.append("检查 ARQ Worker、Redis、部署坐标和新鲜心跳。")
     if "generation_runtime" in blockers:
-        steps.append("检查 Wenwen/ComfyUI 访问凭证与运行时连通性。")
+        steps.append("检查 Evolink 凭据、已验证的提交对账合同和 Worker 运行时。")
     if "storage_config" in blockers or "storage_rw_probe" in blockers:
-        steps.append("检查对象存储配置；Vercel 建议优先使用 `BLOB_READ_WRITE_TOKEN`。")
+        steps.append("检查私有对象存储配置；如使用 Vercel Blob，确认读写令牌只存在于服务端。")
     if "payments_config" in blockers:
-        steps.append("检查支付提供方配置、回跳地址和人工审核/签名配置。")
+        steps.append("检查 Creem 产品目录、回跳地址和 webhook 签名配置。")
     if not steps:
-        steps.append("预检已通过，可以继续跑端到端商用回归。")
+        steps.append("配置预检已通过；这不代表真实商业主链路或生产验收通过。")
 
-    steps.append("建议下一步执行：`python backend/scripts/run_e2e_commercial_regression.py --base-url <public-api-base> --skip-live-portrait`")
-    if "payments_config" in blockers and steps:
-        steps[-1] = "检查支付提供方配置、回跳地址以及 webhook 签名配置。"
+    steps.append("查看 `docs/PRODUCTION_ACCEPTANCE.md` 中尚未满足的真实验收门槛。")
     return steps
 
 

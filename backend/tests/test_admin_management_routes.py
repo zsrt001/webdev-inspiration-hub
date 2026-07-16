@@ -13,8 +13,9 @@ if str(BACKEND_DIR) not in sys.path:
 class AdminManagementRoutesTest(unittest.TestCase):
     def test_admin_management_routes_are_registered(self) -> None:
         from app.routers import api_router
+        from tests.route_contract import effective_routes
 
-        routes = {(route.path, ",".join(sorted(route.methods or []))) for route in api_router.routes}
+        routes = {(route.path, ",".join(sorted(route.methods or []))) for route in effective_routes(api_router)}
         paths = {path for path, _methods in routes}
 
         self.assertIn("/admin/dashboard", paths)
@@ -42,21 +43,36 @@ class AdminManagementRoutesTest(unittest.TestCase):
 
     def test_legacy_public_routes_are_removed(self) -> None:
         from app.routers import api_router
+        from tests.route_contract import effective_routes
 
-        routes = {(route.path, ",".join(sorted(route.methods or []))) for route in api_router.routes}
+        routes = {(route.path, ",".join(sorted(route.methods or []))) for route in effective_routes(api_router)}
 
         self.assertFalse(any(path == "/templates/list" and "GET" in methods for path, methods in routes))
         self.assertFalse(any(path == "/orders" and "POST" in methods for path, methods in routes))
 
-    def test_generation_probe_accepts_text_direction_fields(self) -> None:
-        from app.routers.admin import GenerationProbeRequest
+    def test_generation_probe_and_regenerate_are_side_effect_free_tombstones(self) -> None:
+        from app.routers import admin, retired
 
-        properties = GenerationProbeRequest.model_json_schema()["properties"]
+        admin_source = (BACKEND_DIR / "app/routers/admin.py").read_text(encoding="utf-8")
+        retired_source = (BACKEND_DIR / "app/routers/retired.py").read_text(encoding="utf-8")
+        for forbidden in (
+            "GenerationProbeRequest",
+            "run_order_generation",
+            "enqueue_generate_order",
+            "admin-probe-inline",
+            "admin-regenerate-inline",
+            '@router.post("/generation_probe"',
+            '@router.post("/orders/{order_id}/regenerate"',
+        ):
+            self.assertNotIn(forbidden, admin_source)
+        self.assertIn('@router.post("/admin/generation_probe"', retired_source)
+        self.assertIn('@router.post("/admin/orders/{order_id}/regenerate"', retired_source)
 
-        self.assertIn("global_style_text", properties)
-        self.assertIn("scene_text", properties)
-        self.assertIn("outfit_text", properties)
-        self.assertIn("prompt_override", properties)
+        from app.routers.admin import AdminMeResponse
+
+        admin_properties = AdminMeResponse.model_json_schema()["properties"]
+        self.assertNotIn("remote_join_enabled", admin_properties)
+        self.assertNotIn("remote_join_session_store", admin_properties)
 
     def test_admin_order_detail_extracts_generation_rounds_and_qa_summary(self) -> None:
         import uuid
@@ -123,7 +139,7 @@ class AdminManagementRoutesTest(unittest.TestCase):
 
         detail = _order_detail(order, None)
 
-        self.assertTrue(detail.can_regenerate)
+        self.assertFalse(detail.can_regenerate)
         self.assertEqual(detail.failure_code, "qa_reject")
         self.assertEqual(detail.qa_summary.qa_last_reasons, ["identity_mismatch"])
         self.assertEqual(detail.qa_summary.credit_refund, {"applied": True, "amount": 2})
@@ -151,6 +167,30 @@ class AdminManagementRoutesTest(unittest.TestCase):
         self.assertNotIn("api_key", summary)
         self.assertNotIn("webhook_secret", summary)
         self.assertNotIn("creem_test_", serialized)
+
+    def test_admin_credit_adjustment_requires_idempotency_approval_and_lineage(self) -> None:
+        from app.routers.admin import GrantCreditsRequest
+
+        schema = GrantCreditsRequest.model_json_schema()
+        required = set(schema["required"])
+        self.assertTrue(
+            {
+                "user_id",
+                "amount",
+                "idempotency_key",
+                "approval_id",
+                "reason",
+            }.issubset(required)
+        )
+        properties = set(schema["properties"])
+        self.assertIn("positive_grant_policy", properties)
+        self.assertIn("reversal_roots", properties)
+
+        service_source = (
+            BACKEND_DIR / "app/services/admin_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("def grant_credits_to_user", service_source)
+        self.assertNotIn("add_credits_async", service_source)
 
 
 if __name__ == "__main__":

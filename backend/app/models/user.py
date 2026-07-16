@@ -10,11 +10,12 @@ from app.core.database import Base
 
 
 class User(Base):
-    """User model for WeChat Mini Program users."""
+    """Business user with temporary database-only legacy identity columns."""
 
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("auth_provider", "auth_subject", name="uq_users_auth_provider_subject"),
+        UniqueConstraint("openid", name="uq_users_openid"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -22,23 +23,23 @@ class User(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
-    openid: Mapped[str] = mapped_column(
+    openid: Mapped[str | None] = mapped_column(
         String(64),
-        unique=True,
+        nullable=True,
         index=True,
-        comment="Stable local identity key",
+        comment="Legacy identity alias; internal compatibility only",
     )
     username: Mapped[str | None] = mapped_column(
         String(64),
         unique=True,
         nullable=True,
         index=True,
-        comment="Username for password-based sign-in",
+        comment="Legacy username/profile alias; public password login is retired",
     )
     password: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
-        comment="Bcrypt password hash for password-based sign-in",
+        comment="Legacy password hash pending identity contract migration",
     )
     auth_provider: Mapped[str | None] = mapped_column(
         String(32),
@@ -55,8 +56,8 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
-        unique=True,
         index=True,
+        comment="Non-authoritative profile email; identity is provider plus subject",
     )
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -66,7 +67,7 @@ class User(Base):
         String(64),
         unique=True,
         nullable=True,
-        comment="WeChat UnionID (if available)",
+        comment="Legacy provider identity alias pending contract migration",
     )
     nickname: Mapped[str | None] = mapped_column(
         String(64),
@@ -110,4 +111,4 @@ class User(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<User {self.id} openid={self.openid[:8]}...>"
+        return f"<User {self.id}>"

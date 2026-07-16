@@ -22,6 +22,7 @@ class SubscriptionPlan(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    catalog_product_code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     billing_interval: Mapped[str] = mapped_column(String(16), default="month", server_default="month", index=True)
     price_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

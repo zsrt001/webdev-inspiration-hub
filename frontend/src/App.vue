@@ -1,37 +1,8 @@
 <script setup lang="ts">
-import { onLaunch, onShow, onHide } from '@dcloudio/uni-app';
-import { watch } from 'vue';
-import { useI18nStore } from './stores/i18n';
-
-const i18nStore = useI18nStore();
-
-const applyLocaleUi = () => {
-  i18nStore.applyTabBarLocale();
-};
-
-onLaunch(() => {
-  applyLocaleUi();
-  console.log('AI Wedding Studio - Professional UI/UX Refactor');
-});
-
-onShow(() => {
-  applyLocaleUi();
-  console.log('App Show');
-});
-
-onHide(() => {
-  console.log('App Hide');
-});
-
-watch(() => i18nStore.locale, () => {
-  applyLocaleUi();
-});
+// Global styles only; page routing owns all runtime behavior.
 </script>
 
 <style lang="scss">
-/* Import Professional Typography from Google Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Jost:wght@300;400;500;600;700&display=swap');
-
 /* ========================================
    Global Reset & Base Styles
    ======================================== */
@@ -52,6 +23,13 @@ page {
 page {
   background: #F7F8FA;
   min-height: 100vh;
+}
+
+/* All pages use custom Web navigation; disable Uni-app's delayed CDN shadow preload. */
+body::after {
+  content: none !important;
+  animation: none !important;
+  background-image: none !important;
 }
 
 .app-container {
@@ -211,22 +189,4 @@ page {
   cursor: pointer;
 }
 
-/* H5 desktop already has the fixed top navigation. Hide the mobile tab bar
-   so it does not cover landing page cards or footer content on wide screens. */
-@media (min-width: 769px) {
-  uni-tabbar,
-  uni-tabbar.uni-tabbar,
-  .uni-tabbar,
-  .uni-tabbar-bottom,
-  .uni-tabbar__placeholder {
-    display: none !important;
-    height: 0 !important;
-    min-height: 0 !important;
-  }
-
-  uni-page-body,
-  body {
-    padding-bottom: 0 !important;
-  }
-}
 </style>

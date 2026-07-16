@@ -57,7 +57,7 @@ const openPreview = () => {
 };
 
 const goHome = () => {
-  uni.switchTab({ url: '/pages/index/index' });
+  uni.reLaunch({ url: '/pages/index/index' });
 };
 
 onMounted(() => {

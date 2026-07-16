@@ -3,7 +3,7 @@
 本项目把 Supabase 用作两层能力：
 
 - Postgres 数据库：存储用户、积分、订单、支付和生成记录。
-- Auth 身份认证：H5 使用 Google OAuth 登录，后端校验 Supabase access token 后映射成本地业务用户。
+- Auth 身份认证：Web 应用使用 Google PKCE；后端只在一次性应用 intent 交换中校验短暂的 Supabase access token，然后签发本地 HttpOnly Cookie 会话。
 
 业务数据仍由 FastAPI 后端统一读写。前端不能直接写订单、积分或支付表。
 
@@ -66,18 +66,16 @@ https://your-domain.com
 Supabase `Authentication -> URL Configuration` 中追加：
 
 ```text
-http://localhost:3000/**
-https://your-domain.com/**
-https://*.vercel.app/**
+http://127.0.0.1:3000/pages/auth/callback
+http://localhost:3000/pages/auth/callback
+https://your-domain.com/pages/auth/callback
 ```
+
+不要加入 `https://*.vercel.app/**` 或正式域名 glob。受保护的 Preview 身份验收只会临时追加本次 deployment 的精确 `/pages/auth/callback` URL；独立清理任务必须按持久化快照恢复完整 allowlist 并回读确认。
 
 ## Auth 环境变量
 
-前端 `frontend/.env.local`：
-
-```env
-Frontend Supabase VITE variables are intentionally not used. Keep API keys on the backend.
-```
+前端不配置 Supabase VITE 变量。后端只在 Google 能力获准时，通过 `/api/v1/ops/public_config` 返回 Supabase URL 和 publishable key；浏览器不会获得 JWT secret 或服务端管理凭据。
 
 后端 `backend/.env`：
 
@@ -88,30 +86,25 @@ SUPABASE_JWT_SECRET=
 SUPABASE_JWT_AUDIENCE=authenticated
 ```
 
-后端支持两种校验方式：
-
-- 配置 `SUPABASE_JWT_SECRET`：后端本地校验 HS256 JWT。
-- 不配置 `SUPABASE_JWT_SECRET`，但配置 `SUPABASE_ANON_KEY`：后端调用 Supabase `/auth/v1/user` 验证 token。
-
-第一版建议用 `SUPABASE_ANON_KEY`，配置简单；后续生产环境可再切到 JWT secret 或 JWKS 方案。
+后端始终调用 Supabase `/auth/v1/user` 回读当前用户，并把 broker 返回的用户、Google provider、邮箱验证状态与 JWT 的 `sub`、`session_id`、`iat`、issuer、audience 做一致性校验。项目仍使用 HS256 时，配置 `SUPABASE_JWT_SECRET` 会增加本地签名校验，但不能跳过 broker 回读。
 
 ## 本地用户映射
 
 Google 登录成功后：
 
-1. 前端拿到 Supabase `access_token`。
-2. 请求业务 API 时带 `Authorization: Bearer <access_token>`。
-3. 后端校验 token。
-4. 后端按 Supabase `sub` 创建或更新本地 `users` 记录。
-5. 订单、积分、充值、生成记录继续绑定本地 `users.id`。
+1. 浏览器先向后端申请一次性 OAuth intent，并把 intent 状态保存在当前标签页的 `sessionStorage`。
+2. Supabase 完成 Google PKCE 后，浏览器只把短暂的 `access_token` 与 intent token 发送到同源 `/api/v1/auth/supabase/session`。
+3. 后端验证 exact Origin、一次性浏览器绑定、broker 会话和部署绑定的首登资格；成功时按 `(provider, subject)` 映射本地身份。
+4. 后端签发短时 access Cookie、可轮换 refresh Cookie 和独立 CSRF Cookie；响应体不返回本地 bearer token。
+5. 浏览器丢弃临时 Supabase client 引用，后续业务 API 只使用 Cookie、exact Origin 和 CSRF，不发送 `Authorization` 用户凭据。
 
-本地 `users.openid` 会使用：
+在兼容迁移窗口内，本地 `users.openid` 暂时使用：
 
 ```text
 supabase:<supabase-user-id>
 ```
 
-这样现有订单和积分代码可以平滑沿用。
+这只是数据库内部的只读 legacy alias，用于兼容现有订单和积分关联；它不得出现在公开 API、前端身份状态或授权判断中，并将在身份迁移与零引用验证完成后的 contract migration 中删除。
 
 ## 积分账本
 
@@ -129,4 +122,4 @@ supabase:<supabase-user-id>
 
 ## 表结构
 
-应用启动时会执行 `Base.metadata.create_all` 自动创建缺失表，并对 `users` 添加 Supabase Auth 所需字段。生产环境建议后续切到 Alembic 管理迁移，避免长期依赖自动建表。
+数据库结构由 Alembic migration 管理。应用启动和普通 API 请求不得执行 `create_all`、`ALTER TABLE` 或其他运行时 DDL；部署前必须核对当前 revision 与目标 migration 集合。

@@ -2,7 +2,7 @@
   <AdminLayout
     active="overview"
     :title="tr('运营总览', 'Operations overview')"
-    :subtitle="tr('检查后台权限、邮件投递、风控、异地合拍和真实生图链路。', 'Verify admin access, email delivery, risk controls, remote join, and the real image generation path.')"
+    :subtitle="tr('检查后台权限、邮件投递、风控和真实生图链路。', 'Verify admin access, email delivery, risk controls, and the real image generation path.')"
   >
     <view v-if="loading" class="admin-card admin-state">
       <text class="state-title">{{ tr('正在加载后台', 'Loading admin console') }}</text>
@@ -60,7 +60,7 @@
           <view class="section-head compact-head">
             <view>
               <text class="section-title small-title">{{ tr('模板转化', 'Template conversion') }}</text>
-              <text class="section-copy">{{ tr('A/B 选择会和点击、订单、完成、下载、线索一起进入模板排序。', 'A/B picks now feed template ranking together with clicks, orders, completions, downloads, and leads.') }}</text>
+              <text class="section-copy">{{ tr('A/B 选择会和点击、订单、完成及下载一起进入模板排序。', 'A/B picks feed template ranking together with clicks, orders, completions, and downloads.') }}</text>
             </view>
           </view>
           <view v-if="templateRanking.length === 0" class="admin-state compact-state">
@@ -218,7 +218,7 @@
           <view class="section-head compact-head">
             <view>
               <text class="section-title">{{ tr('后台权限', 'Admin access') }}</text>
-              <text class="section-copy">{{ tr('使用授权的 owner、admin、operator、ADMIN_EMAILS 或 ADMIN_USER_IDS 账号登录后访问 /admin。', 'Use /admin after signing in with an authorized owner, admin, operator, ADMIN_EMAILS, or ADMIN_USER_IDS account.') }}</text>
+              <text class="section-copy">{{ tr('使用已登录且数据库角色为 owner、admin 或 operator 的账号访问 /admin。', 'Use /admin with a signed-in account whose database role is owner, admin, or operator.') }}</text>
             </view>
           </view>
           <view class="diagnostic-list">
@@ -233,16 +233,6 @@
             <view class="diag-row">
               <text>{{ tr('角色', 'Roles') }}</text>
               <text class="mono">{{ adminRoleLabel }}</text>
-            </view>
-            <view class="diag-row">
-              <text>{{ tr('异地合拍', 'Remote join') }}</text>
-              <text class="status-pill" :class="{ active: adminMe?.remote_join_enabled }">
-                {{ adminMe?.remote_join_enabled ? tr('已启用', 'Enabled') : tr('已关闭', 'Disabled') }}
-              </text>
-            </view>
-            <view class="diag-row">
-              <text>{{ tr('会话存储', 'Session store') }}</text>
-              <text class="mono">{{ adminMe?.remote_join_session_store || '--' }}</text>
             </view>
             <view class="diag-row">
               <text>{{ tr('生成模式', 'Generation mode') }}</text>
@@ -312,13 +302,9 @@
 
           <view class="probe-form">
             <input v-model="probeImageUrl" class="filter-input" :placeholder="tr('主人物公开图片 URL', 'Primary public portrait image URL')" />
-            <input v-model="probeSecondImageUrl" class="filter-input" :placeholder="tr('双人或异地测试的第二人物 URL', 'Second portrait URL for couple or remote test')" />
+            <input v-model="probeSecondImageUrl" class="filter-input" :placeholder="tr('双人同机测试的第二人物 URL（可选）', 'Second portrait URL for local couple test (optional)')" />
             <input v-model="probeTemplateId" class="filter-input" :placeholder="tr(`模板 ID，默认 ${defaultProbeTemplateId}`, `Template ID, default ${defaultProbeTemplateId}`)" />
             <view class="probe-options">
-              <label class="check-row">
-                <checkbox :checked="probeRemoteJoin" @tap="probeRemoteJoin = !probeRemoteJoin" />
-                <text>{{ tr('异地双人探针', 'Remote join couple probe') }}</text>
-              </label>
               <label class="check-row">
                 <checkbox :checked="probeInline" @tap="probeInline = !probeInline" />
                 <text>{{ tr('立即同步运行', 'Run inline now') }}</text>
@@ -437,8 +423,6 @@ interface AdminMe {
   actor: string;
   admin_roles: string[];
   entry_url: string;
-  remote_join_enabled: boolean;
-  remote_join_session_store: string;
   generation_execution_mode: string;
 }
 
@@ -552,7 +536,6 @@ const sendingTestEmail = ref(false);
 const probeImageUrl = ref('');
 const probeSecondImageUrl = ref('');
 const probeTemplateId = ref('');
-const probeRemoteJoin = ref(false);
 const probeInline = ref(true);
 const runningProbe = ref(false);
 const probeResult = ref<ProbeResponse | null>(null);
@@ -568,7 +551,7 @@ const qualityReasons = computed(() => (qualityDashboard.value?.failure_reasons |
 const qualityRepairRounds = computed(() => qualityDashboard.value?.repair_rounds || []);
 const qualityRepairModes = computed(() => qualityDashboard.value?.repair_modes || []);
 const adminRoleLabel = computed(() => (adminMe.value?.admin_roles || []).join(', ') || '--');
-const defaultProbeTemplateId = computed(() => (probeRemoteJoin.value ? 'royal_castle' : 'solo_royal_castle'));
+const defaultProbeTemplateId = computed(() => (isHttpImageUrl(probeSecondImageUrl.value) ? 'royal_castle' : 'solo_royal_castle'));
 const dnsSummary = computed(() => {
   const dns = emailDiagnostics.value?.dns || {};
   const ok = tr('正常', 'ok');
@@ -728,10 +711,11 @@ async function loadDashboard() {
   loading.value = true;
   error.value = '';
   try {
-    await Promise.all([loadAdminMe(), loadCoreDashboard(), refreshOps()]);
+    await loadAdminMe();
+    await Promise.all([loadCoreDashboard(), refreshOps()]);
   } catch (err: any) {
-    error.value = err?.statusCode === 401
-      ? tr('当前账号没有后台权限。请使用 owner/admin/operator 账号，或配置 ADMIN_EMAILS / ADMIN_USER_IDS。', 'This account is not authorized for admin access. Use an owner/admin/operator account or configure ADMIN_EMAILS / ADMIN_USER_IDS.')
+    error.value = err?.statusCode === 401 || err?.statusCode === 403
+      ? tr('当前账号没有后台权限。请确认已登录，并由数据库管理员授予 owner、admin 或 operator 角色。', 'This account is not authorized for admin access. Sign in and ask a database administrator to grant the owner, admin, or operator role.')
       : (err?.message || tr('后台数据加载失败，请重试。', 'Admin data failed to load. Please retry.'));
   } finally {
     loading.value = false;
@@ -797,13 +781,13 @@ async function runGenerationProbe() {
     };
     return;
   }
-  if (probeRemoteJoin.value && !isHttpImageUrl(secondImageUrl)) {
+  if (secondImageUrl && !isHttpImageUrl(secondImageUrl)) {
     probeResult.value = {
       ok: false,
       started: false,
       completed: false,
       execution_mode: probeInline.value ? 'inline' : 'arq',
-      error_message: tr('异地合拍探针需要第二张公开可访问的 http(s) 人像图片 URL。', 'Remote join probes require a second public http(s) portrait image URL.'),
+      error_message: tr('第二张人物图片必须是公开可访问的 http(s) URL。', 'The second portrait must be a public http(s) URL.'),
     };
     return;
   }
@@ -817,7 +801,6 @@ async function runGenerationProbe() {
         image_url: imageUrl,
         second_image_url: secondImageUrl || undefined,
         template_id: probeTemplateId.value.trim() || defaultProbeTemplateId.value,
-        remote_join: probeRemoteJoin.value,
         execute_inline: probeInline.value,
       },
       { showLoading: false, showError: false },
@@ -852,7 +835,7 @@ onMounted(loadDashboard);
 </script>
 
 <style lang="scss" scoped>
-@import './admin.scss';
+@use './admin.scss';
 
 .metrics-grid {
   display: grid;

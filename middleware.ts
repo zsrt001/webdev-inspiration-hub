@@ -8,7 +8,7 @@ const SENSITIVE_PREFIXES = [
   "/api/v1/payments",
   "/api/v1/subscriptions",
   "/api/v1/session",
-  "/api/v1/upload",
+  "/api/v1/media",
 ];
 
 const EXEMPT_PREFIXES = ["/health", "/static", "/style-previews"];
@@ -17,6 +17,14 @@ type LimitConfig = {
   limit: number;
   windowSeconds: number;
   prefix: string;
+};
+
+const SECURITY_HEADERS: Record<string, string> = {
+  "Content-Security-Policy": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; connect-src 'self' https://*.supabase.co; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; upgrade-insecure-requests",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
 };
 
 const DEFAULT_LIMIT: LimitConfig = {
@@ -35,6 +43,7 @@ function continueRequest(): Response {
   return new Response(null, {
     headers: {
       "x-middleware-next": "1",
+      ...SECURITY_HEADERS,
     },
   });
 }
@@ -100,10 +109,19 @@ export default async function middleware(request: Request) {
   try {
     const result = await checkLimit(ip, isSensitive ? SENSITIVE_LIMIT : DEFAULT_LIMIT);
     if (!result.allowed) {
-      return new Response(JSON.stringify({ error: "rate_limit_exceeded" }), {
+      const requestId = crypto.randomUUID();
+      return new Response(JSON.stringify({
+        code: "rate_limited",
+        message: "Too many requests. Please wait a moment.",
+        request_id: requestId,
+        retryable: true,
+        field_errors: [],
+      }), {
         status: 429,
         headers: {
           "Content-Type": "application/json",
+          ...SECURITY_HEADERS,
+          "X-Request-ID": requestId,
           "X-RateLimit-Limit": String(result.limit),
           "X-RateLimit-Remaining": String(result.remaining),
           "X-RateLimit-Reset": String(result.reset),

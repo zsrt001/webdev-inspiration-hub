@@ -1,7 +1,20 @@
 ﻿<template>
   <view class="app-container create-page" style="padding-top: 64px;">
-    <NavBar ref="navBarRef" @show-payment="showPaymentModal = true" />
+    <NavBar ref="navBarRef" @show-payment="openPaymentModal" />
     <view class="create-shell">
+      <view v-if="!creationAvailable" class="capability-unavailable">
+        <text class="unavailable-kicker">{{ tr('安全基线', 'Safe baseline') }}</text>
+        <text class="unavailable-title heading-serif" role="heading" aria-level="1">
+          {{ tr('创作功能暂未开放', 'Studio temporarily unavailable') }}
+        </text>
+        <text class="unavailable-copy">
+          {{ tr('当前部署仅开放只读浏览。照片上传和 AI 生成会在私有存储、身份与生成链路完成真实验收后再开放。', 'This deployment is browse-only. Photo upload and AI generation will open only after identity, private storage, and generation pass real acceptance.') }}
+        </text>
+        <button class="btn btn-outline unavailable-action" @tap="goHome">
+          {{ tr('返回风格浏览', 'Browse styles') }}
+        </button>
+      </view>
+      <template v-else>
       <view class="hero-card">
         <view class="hero-main">
           <text class="hero-kicker">{{ tr('AI 婚纱创作台', 'AI Wedding Studio') }}</text>
@@ -49,7 +62,7 @@
               <text class="guidance-copy">{{ primaryPhotoInstruction }}</text>
             </view>
 
-            <view class="portrait-grid" :class="{ single: generationMode === 'single', remote: generationMode === 'couple_remote' }">
+            <view class="portrait-grid" :class="{ single: generationMode === 'single' }">
               <view v-for="index in portraitIndexes" :key="index" class="upload-card main-upload-card">
                 <text class="field-label">{{ portraitLabel(index) }}</text>
                 <view v-if="portraitSlots[index].localPath" class="preview-box">
@@ -66,21 +79,6 @@
                 </view>
               </view>
 
-              <view v-if="generationMode === 'couple_remote'" class="remote-card">
-                <text class="field-label">{{ tr('异地合拍邀请', 'Remote Couple Invite') }}</text>
-                <text class="remote-desc">{{ tr('先上传你的照片，再创建邀请链接。对方补充照片后，右侧检查项会变为就绪。', 'Upload your portrait first, then create an invite link. Once your partner uploads theirs, the checklist will be ready.') }}</text>
-                <view class="remote-actions">
-                  <button class="btn btn-outline remote-btn" @tap="createRemoteInvite" :disabled="remoteCreating">
-                    {{ remoteSession ? tr('刷新邀请', 'Refresh Invite') : tr('创建邀请', 'Create Invite') }}
-                  </button>
-                  <button v-if="remoteSession" class="btn btn-outline remote-btn" @tap="copyJoinLink">{{ tr('复制链接', 'Copy Link') }}</button>
-                  <button v-if="remoteSession" class="btn btn-outline remote-btn" @tap="openJoinLink">{{ tr('打开访客页', 'Open Guest Page') }}</button>
-                </view>
-                <view v-if="remoteSession" class="remote-info">
-                  <text>{{ tr('邀请状态', 'Invite Status') }}：{{ remoteStatusText }}</text>
-                  <text class="remote-link">{{ remoteSession.join_url }}</text>
-                </view>
-              </view>
             </view>
           </view>
 
@@ -221,10 +219,6 @@
                   <text>{{ enhancerStateText }}</text>
                 </view>
               </view>
-              <view v-if="generationMode === 'couple_remote'" class="summary-block">
-                <text class="summary-block-title">{{ tr('异地状态', 'Remote Status') }}</text>
-                <text class="summary-block-text">{{ remoteStatusText }}</text>
-              </view>
               <view class="summary-block">
                 <text class="summary-block-title">{{ tr('所需积分', 'Credits Required') }}</text>
                 <text class="credit-value">{{ generationCost }}</text>
@@ -237,29 +231,30 @@
           </view>
         </view>
       </view>
+      </template>
     </view>
 
     <LegalFooter />
-    <PaymentModal :visible="showPaymentModal" @close="showPaymentModal = false" @purchase-complete="onPurchaseComplete" />
+    <PaymentModal v-if="billingAvailable" :visible="showPaymentModal" @close="showPaymentModal = false" @purchase-complete="onPurchaseComplete" />
   </view>
 </template>
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import NavBar from '../../components/NavBar.vue';
 import PaymentModal from '../../components/PaymentModal.vue';
 import LegalConsentInline from '../../components/LegalConsentInline.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
-import { useOpsStore } from '../../stores/ops';
 import { useOrderStore } from '../../stores/order';
+import { useOpsStore } from '../../stores/ops';
 import { type Template, getLocalizedTemplateMarketingSubtitle, getLocalizedTemplateTitle, getTemplateFamilyKey, useTemplateStore } from '../../stores/template';
-import { get, post, resolvePublicUrl, uploadFile, type ApiError } from '../../utils/api';
-import { isSupabaseLoggedIn } from '../../utils/auth';
+import { resolvePublicUrl, uploadFile, type ApiError } from '../../utils/api';
+import { ensureSession } from '../../utils/auth';
 import { runLocalSmartInputCheck, type SmartInputVerdict } from '../../utils/local_smart_input';
 import { trackEvent } from '../../utils/analytics';
 
-type GenerationMode = 'single' | 'couple_local' | 'couple_remote' | 'golden_anniversary';
+type GenerationMode = 'single' | 'couple_local' | 'golden_anniversary';
 type UploadQuality = {
   quality_score: number;
   quality_level: 'good' | 'warning' | 'poor';
@@ -268,9 +263,6 @@ type UploadQuality = {
   metrics: Record<string, number>;
 };
 type PortraitSlot = { localPath: string; uploadedUrl: string; uploadQuality?: UploadQuality | null };
-type RemoteSessionResponse = { session_id: string; join_url: string; qr_code_url: string; expires_in_minutes: number };
-type RemoteSessionStatus = { exists: boolean; status: string; host_ready?: boolean; guest_ready?: boolean; order_id?: string | null; template_id?: string | null };
-type RemoteSessionImages = { host_image_url: string; guest_image_url: string; template_id: string };
 
 const STYLE_ORDER = ['chn_xiuhe', 'korean_minimal', 'royal_castle', 'old_money', 'gothic_romance', 'beach_sunset', 'hk_retro', 'twilight_forest', 'japanese_shiromuku', 'cyberpunk_city', 'school_days', 'classic_bw', 'golden_vintage_studio_8090', 'golden_chinese_courtyard', 'golden_modern_remake'];
 const GOLDEN_STYLE_FAMILIES = ['golden_vintage_studio_8090', 'golden_chinese_courtyard', 'golden_modern_remake'];
@@ -294,9 +286,11 @@ const STYLE_SUBTITLE: Record<string, { zh: string; en: string }> = {
 
 const templateStore = useTemplateStore();
 const orderStore = useOrderStore();
-const opsStore = useOpsStore();
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const creationAvailable = computed(() => opsStore.creationAvailable);
+const billingAvailable = computed(() => opsStore.billingAvailable);
 
 const navBarRef = ref<InstanceType<typeof NavBar> | null>(null);
 const showPaymentModal = ref(false);
@@ -312,31 +306,21 @@ const outfitReferencePath = ref('');
 const globalStyleText = ref('');
 const outfitText = ref('');
 const sceneText = ref('');
-const remoteCreating = ref(false);
-const remoteSession = ref<RemoteSessionResponse | null>(null);
-const remoteStatus = ref<RemoteSessionStatus | null>(null);
-let remotePollTimer: ReturnType<typeof setInterval> | null = null;
-
 const isGoldenAnniversaryMode = computed(() => generationMode.value === 'golden_anniversary');
-const portraitIndexes = computed(() => (generationMode.value === 'single' ? [0] : generationMode.value === 'couple_remote' ? [0] : [0, 1]));
+const portraitIndexes = computed(() => (generationMode.value === 'single' ? [0] : [0, 1]));
 const portraitHint = computed(() => generationMode.value === 'single'
   ? tr('上传一张清晰正脸照片，建议光线自然、五官无遮挡。', 'Upload one clear portrait with natural light and an unobstructed face.')
-  : generationMode.value === 'couple_local'
-    ? tr('在同一设备上传两张照片，适合情侣、夫妻或纪念照双人生成。', 'Upload two portraits on one device for couple or anniversary portraits.')
-    : isGoldenAnniversaryMode.value
-      ? tr('上传两张父母或长辈的清晰照片，系统会使用金婚重塑模板生成纪念合照。', 'Upload two clear portraits of parents or elders for a Golden Anniversary remake.')
-    : tr('你先上传自己的照片，再复制邀请链接给对方补充第二张照片。', 'Upload your portrait first, then send the invite link so your partner can add theirs.'));
+  : isGoldenAnniversaryMode.value
+    ? tr('上传两张父母或长辈的清晰照片，系统会使用金婚重塑模板生成纪念合照。', 'Upload two clear portraits of parents or elders for a Golden Anniversary remake.')
+    : tr('在同一设备上传两张照片，适合情侣、夫妻或纪念照双人生成。', 'Upload two portraits on one device for couple or anniversary portraits.'));
 const primaryPhotoInstruction = computed(() => {
   if (generationMode.value === 'single') {
     return tr('主流程只需要 1 张人物照片。上传后可以直接生成；想控制服装或场景时，再补充下方增强项。', 'The core flow only needs 1 portrait. After upload, you can generate directly; add enhancers only when you want outfit or scene control.');
   }
-  if (generationMode.value === 'couple_local') {
-    return tr('主流程需要 2 张人物照片。两张照片齐了即可生成；人数不会被文字或模板改掉。', 'The core flow needs 2 portraits. Once both are uploaded, generation is ready; text or templates cannot change the subject count.');
-  }
   if (isGoldenAnniversaryMode.value) {
     return tr('金婚重塑需要 2 张人物照片。系统会默认选择纪念合照模板，你也可以在下方切换 80/90 影楼、中式庭院或现代翻拍。', 'Golden Anniversary remake needs 2 portraits. A legacy template is selected by default, and you can switch between studio, courtyard, or modern remake below.');
   }
-  return tr('主流程是：上传你的照片，创建邀请，等待对方补照片。双方照片齐了才能提交生成。', 'The core flow is: upload your portrait, create an invite, and wait for your partner. Generation starts only when both portraits are ready.');
+  return tr('主流程需要 2 张人物照片。两张照片齐了即可生成；人数不会被文字或模板改掉。', 'The core flow needs 2 portraits. Once both are uploaded, generation is ready; text or templates cannot change the subject count.');
 });
 const selectedTemplate = computed<Template | null>(() => {
   if (!selectedStyleFamily.value) return null;
@@ -378,7 +362,6 @@ const directionPanelTitle = computed(() => selectedStyleFamily.value
 const directionPanelDesc = computed(() => selectedStyleFamily.value
   ? tr('你已经选择了参考风格。这里负责补充细节；如果上传场景/服装参考图，参考图会优先控制对应方向。', 'You already selected a reference style. Use this area to refine details; uploaded scene/outfit references control their matching direction first.')
   : tr('自由模式不强制选模板。没有参考图时，文字就是主创作指令；上传参考图后，文字负责补充氛围、镜头、布光和质感。', 'Free mode does not require a template. Without references, text is the main creative brief; after uploading references, text refines mood, lens, lighting, and texture.'));
-const remoteJoinEnabled = computed(() => opsStore.publicConfig.feature_flags.remote_join !== false);
 const stylePanelTitle = computed(() => {
   if (generationMode.value === 'single') return tr('参考风格（单人）', 'Reference Styles (solo)');
   if (isGoldenAnniversaryMode.value) return tr('金婚重塑模板', 'Golden Anniversary Templates');
@@ -387,7 +370,11 @@ const stylePanelTitle = computed(() => {
 const stylePanelNote = computed(() => isGoldenAnniversaryMode.value
   ? tr('必选：用于父母/长辈纪念合照的专项模板', 'Required: legacy templates for parents and elders')
   : tr('可选：无参考图时按文字主控生成', 'Optional: text leads when no reference is uploaded'));
-const outputModeLabel = computed(() => generationMode.value === 'single' ? tr('单人输出', 'Single Output') : generationMode.value === 'couple_local' ? tr('双人同机', 'Couple Local') : isGoldenAnniversaryMode.value ? tr('金婚重塑', 'Golden Anniversary') : tr('双人异地', 'Couple Remote'));
+const outputModeLabel = computed(() => generationMode.value === 'single'
+  ? tr('单人输出', 'Single Output')
+  : isGoldenAnniversaryMode.value
+    ? tr('金婚重塑', 'Golden Anniversary')
+    : tr('双人同机', 'Couple Local'));
 const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式', 'Free Mode'));
 const sceneControlLabel = computed(() => {
   if (sceneReferencePath.value) return tr('参考图强控', 'Reference control');
@@ -439,22 +426,17 @@ const priorityGuideItems = computed(() => [
   },
 ]);
 const generationCost = computed(() => {
-  if (generationMode.value === 'couple_remote' || generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return 3;
-  return 2;
+  return generationMode.value === 'single' ? 2 : 3;
 });
 const portraitRequirementMet = computed(() => {
   if (generationMode.value === 'single') return !!portraitSlots.value[0].localPath;
-  if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) return !!portraitSlots.value[0].localPath && !!portraitSlots.value[1].localPath;
-  return !!portraitSlots.value[0].localPath && !!remoteSession.value && remoteStatus.value?.status === 'ready';
+  return !!portraitSlots.value[0].localPath && !!portraitSlots.value[1].localPath;
 });
 const portraitRequirementText = computed(() => {
   if (generationMode.value === 'single') {
     return portraitRequirementMet.value ? tr('已上传 1 张人物照片', '1 portrait uploaded') : tr('需要上传 1 张人物照片', 'Upload 1 portrait');
   }
-  if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) {
-    return portraitRequirementMet.value ? tr('已上传 2 张人物照片', '2 portraits uploaded') : tr('需要上传 2 张人物照片', 'Upload 2 portraits');
-  }
-  return portraitRequirementMet.value ? tr('双方照片已就绪', 'Both portraits ready') : tr('需要你的照片和对方上传完成', 'Your portrait and guest upload are required');
+  return portraitRequirementMet.value ? tr('已上传 2 张人物照片', '2 portraits uploaded') : tr('需要上传 2 张人物照片', 'Upload 2 portraits');
 });
 const readinessTitle = computed(() => portraitRequirementMet.value
   ? tr('主流程已就绪', 'Core Flow Ready')
@@ -471,17 +453,6 @@ const enhancerStateText = computed(() => {
 const summaryTip = computed(() => selectedTemplate.value
   ? tr('身份和人数始终锁定。场景/服装参考图优先控制对应方向；无参考图时文字主控；模板只补未指定细节。', 'Identity and subject count stay locked. Scene/outfit references control their matching direction first; text leads when no reference exists; templates only fill unspecified details.')
   : tr('不选择模板也可以生成。若只写文字，文字会主控场景和服装；若上传参考图，参考图优先控制对应方向，文字只做兼容微调。', 'You can generate without a template. Text controls scene and outfit when used alone; uploaded references take priority for their matching direction, with text used only for compatible refinement.'));
-const remoteStatusText = computed(() => {
-  if (generationMode.value !== 'couple_remote') return '';
-  const status = remoteStatus.value?.status || '';
-  if (!remoteSession.value) return tr('尚未创建邀请', 'Invite not created');
-  if (status === 'ready') return tr('对方已就绪，可开始生成', 'Guest ready. Generation can start.');
-  if (status === 'uploading') return tr('对方正在上传', 'Guest is uploading');
-  if (status === 'processing') return tr('已进入生成队列', 'Generation has started');
-  if (status === 'completed') return tr('会话已完成', 'Session completed');
-  if (status === 'expired') return tr('邀请已过期，请重新创建', 'Invite expired. Create a new one.');
-  return tr('等待对方上传', 'Waiting for guest upload');
-});
 const canSubmit = computed(() => {
   if (!legalAccepted.value || submitting.value) return false;
   return portraitRequirementMet.value;
@@ -490,9 +461,6 @@ const modeOptions = computed(() => [
   { value: 'single' as GenerationMode, title: tr('单人生成', 'Single'), desc: tr('一张照片，直接生成个人婚纱风格', 'One portrait, direct solo bridal output') },
   { value: 'couple_local' as GenerationMode, title: tr('双人同机', 'Couple Local'), desc: tr('同一设备上传两张照片，立即合成双人作品', 'Upload two portraits on one device') },
   { value: 'golden_anniversary' as GenerationMode, title: tr('金婚重塑', 'Golden Anniversary'), desc: tr('父母/长辈纪念合照，默认使用年代感模板', 'Legacy portraits for parents and elders') },
-  ...(remoteJoinEnabled.value
-    ? [{ value: 'couple_remote' as GenerationMode, title: tr('双人异地', 'Couple Remote'), desc: tr('你先上传，再邀请对方远程补第二张', 'Upload yours first, then invite remotely') }]
-    : []),
 ]);
 
 function currentQuery(): Record<string, string> {
@@ -506,7 +474,6 @@ function currentQuery(): Record<string, string> {
   return { ...pageOptions, ...urlOptions, ...routeQuery.value };
 }
 function setMode(mode: GenerationMode) {
-  if (mode === 'couple_remote' && !remoteJoinEnabled.value) return;
   if (generationMode.value === mode) return;
   generationMode.value = mode;
   portraitSlots.value[1] = { localPath: '', uploadedUrl: '' };
@@ -514,7 +481,6 @@ function setMode(mode: GenerationMode) {
     selectedStyleFamily.value = '';
   }
   if (mode === 'golden_anniversary') selectDefaultGoldenStyle();
-  if (mode !== 'couple_remote') resetRemote();
 }
 function hasStyleForMode(familyKey: string, mode: GenerationMode) {
   const desiredCategories = mode === 'single' ? ['single'] : mode === 'golden_anniversary' ? ['vintage'] : ['couple', 'vintage'];
@@ -536,7 +502,6 @@ function applyRouteQuery(query: Record<string, string>) {
   const mode = String(query.mode || '').toLowerCase();
   if (mode === 'couple' || mode === 'couple_local') generationMode.value = 'couple_local';
   else if (mode === 'golden' || mode === 'golden_anniversary' || mode === 'vintage' || mode === 'legacy') generationMode.value = 'golden_anniversary';
-  else if ((mode === 'couple_remote' || mode === 'remote') && remoteJoinEnabled.value) generationMode.value = 'couple_remote';
 
   const requestedId = String(query.id || '').trim();
   if (requestedId) {
@@ -572,40 +537,35 @@ function serializeUploadQuality(verdict: SmartInputVerdict): UploadQuality {
 }
 function buildOrderUploadQuality(images: string[]): Array<Record<string, any>> {
   return portraitSlots.value
-    .map((slot, index) => {
-      if (!slot.uploadQuality) return null;
+    .flatMap((slot, index): Array<Record<string, any>> => {
+      if (!slot.uploadQuality) return [];
       const role = generationMode.value === 'single'
         ? 'subject'
         : isGoldenAnniversaryMode.value
           ? index === 0 ? 'elder_1' : 'elder_2'
-          : index === 0
-            ? 'host'
-            : 'guest';
-      return {
+          : index === 0 ? 'person_1' : 'person_2';
+      return [{
         ...slot.uploadQuality,
         slot_index: index,
         role,
         image_url: images[index] || slot.uploadedUrl || null,
-      };
-    })
-    .filter((item): item is Record<string, any> => !!item);
-}
-function stopRemotePolling() {
-  if (remotePollTimer) clearInterval(remotePollTimer);
-  remotePollTimer = null;
-}
-function resetRemote() {
-  stopRemotePolling();
-  remoteSession.value = null;
-  remoteStatus.value = null;
+      }];
+    });
 }
 function portraitLabel(index: number) {
-  return generationMode.value === 'single' ? tr('主人像', 'Main Portrait') : isGoldenAnniversaryMode.value ? (index === 0 ? tr('长辈 1', 'Elder 1') : tr('长辈 2', 'Elder 2')) : generationMode.value === 'couple_local' ? (index === 0 ? tr('人物 1', 'Portrait 1') : tr('人物 2', 'Portrait 2')) : tr('你的照片', 'Your Portrait');
+  if (generationMode.value === 'single') return tr('主人像', 'Main Portrait');
+  if (isGoldenAnniversaryMode.value) return index === 0 ? tr('长辈 1', 'Elder 1') : tr('长辈 2', 'Elder 2');
+  return index === 0 ? tr('人物 1', 'Portrait 1') : tr('人物 2', 'Portrait 2');
 }
 function portraitCta(index: number) {
-  return generationMode.value === 'single' ? tr('上传人物照片', 'Upload portrait') : isGoldenAnniversaryMode.value ? (index === 0 ? tr('上传第一位长辈照片', 'Upload first elder portrait') : tr('上传第二位长辈照片', 'Upload second elder portrait')) : generationMode.value === 'couple_local' ? (index === 0 ? tr('上传第一张照片', 'Upload first portrait') : tr('上传第二张照片', 'Upload second portrait')) : tr('上传你的照片', 'Upload your portrait');
+  if (generationMode.value === 'single') return tr('上传人物照片', 'Upload portrait');
+  if (isGoldenAnniversaryMode.value) return index === 0
+    ? tr('上传第一位长辈照片', 'Upload first elder portrait')
+    : tr('上传第二位长辈照片', 'Upload second elder portrait');
+  return index === 0 ? tr('上传第一张照片', 'Upload first portrait') : tr('上传第二张照片', 'Upload second portrait');
 }
 async function pickLocalImage() {
+  if (!creationAvailable.value) return { localPath: '', uploadQuality: null };
   const res = await uni.chooseImage({ count: 1, sizeType: ['original'], sourceType: ['album', 'camera'] });
   const localPath = res.tempFilePaths?.[0];
   if (!localPath) return { localPath: '', uploadQuality: null };
@@ -635,14 +595,12 @@ async function pickPortrait(index: number) {
     const { localPath, uploadQuality } = await pickLocalImage();
     if (!localPath) return;
     portraitSlots.value[index] = { localPath, uploadedUrl: '', uploadQuality };
-    if (generationMode.value === 'couple_remote' && remoteSession.value) remoteStatus.value = { ...(remoteStatus.value || { exists: true, status: 'waiting' }), host_ready: false };
   } catch (error) {
     console.error(error);
   }
 }
 function clearPortrait(index: number) {
   portraitSlots.value[index] = { localPath: '', uploadedUrl: '', uploadQuality: null };
-  if (generationMode.value === 'couple_remote' && index === 0) resetRemote();
 }
 async function pickSceneReference() { sceneReferencePath.value = (await pickLocalImage()).localPath; }
 async function pickOutfitReference() { outfitReferencePath.value = (await pickLocalImage()).localPath; }
@@ -706,68 +664,9 @@ async function ensurePortraitUploaded(index: number) {
   portraitSlots.value[index].uploadedUrl = url;
   return url;
 }
-async function refreshRemoteStatus(showError = false) {
-  if (!remoteSession.value) return null;
-  const status = await get<RemoteSessionStatus>(`/session/${remoteSession.value.session_id}/status`, { showLoading: false, showError });
-  remoteStatus.value = status;
-  if (['ready', 'completed', 'expired'].includes(status.status)) stopRemotePolling();
-  return status;
-}
-function startRemotePolling() {
-  stopRemotePolling();
-  remotePollTimer = setInterval(() => { void refreshRemoteStatus(false); }, 2000);
-}
-async function createRemoteInvite() {
-  if (!isSupabaseLoggedIn()) {
-    uni.showModal({
-      title: i18nStore.locale === 'zh' ? '需要登录' : 'Sign In Required',
-      content: i18nStore.locale === 'zh' ? '使用 Google 登录后可创建异地合拍邀请。' : 'Sign in with Google to create remote couple invites.',
-      confirmText: i18nStore.locale === 'zh' ? '去登录' : 'Sign In',
-      cancelText: i18nStore.locale === 'zh' ? '取消' : 'Cancel',
-      success: (res) => {
-        if (res.confirm) uni.navigateTo({ url: '/pages/auth/login' });
-      },
-    });
-    return;
-  }
-  if (!portraitSlots.value[0].localPath) {
-    uni.showToast({ title: tr('请先上传你的照片，再创建邀请', 'Upload your portrait before creating an invite'), icon: 'none' });
-    return;
-  }
-  remoteCreating.value = true;
-  try {
-    const seed = resolveSeedTemplate();
-    const hostImageUrl = await ensurePortraitUploaded(0);
-    remoteSession.value = await post<RemoteSessionResponse>('/session/create', { template_id: seed.id, host_image_url: hostImageUrl });
-    remoteStatus.value = { exists: true, status: 'waiting', host_ready: true, guest_ready: false, template_id: seed.id };
-    startRemotePolling();
-    uni.showToast({ title: tr('邀请已创建，可复制链接给对方', 'Invite created. Send the link to your partner.'), icon: 'none' });
-  } catch (error: any) {
-    uni.showToast({ title: error.message || tr('创建邀请失败', 'Failed to create invite'), icon: 'none' });
-  } finally {
-    remoteCreating.value = false;
-  }
-}
-function copyJoinLink() {
-  if (remoteSession.value?.join_url) uni.setClipboardData({ data: remoteSession.value.join_url, showToast: true });
-}
-function openJoinLink() {
-  if (!remoteSession.value?.join_url) return;
-  // #ifdef H5
-  window.open(remoteSession.value.join_url, '_blank');
-  // #endif
-  // #ifndef H5
-  uni.setClipboardData({ data: remoteSession.value.join_url, showToast: true });
-  // #endif
-}
-async function syncRemoteHost() {
-  if (!remoteSession.value) return;
-  const hostUrl = await ensurePortraitUploaded(0);
-  if (!hostUrl) throw new Error(tr('请先上传你的照片', 'Upload your portrait first'));
-  await post(`/session/${remoteSession.value.session_id}/upload/host?image_url=${encodeURIComponent(hostUrl)}`, {}, { showLoading: false, showError: false });
-}
 async function submitCreate() {
-  if (!isSupabaseLoggedIn()) {
+  if (!creationAvailable.value) return;
+  if (!await ensureSession()) {
     uni.showModal({
       title: i18nStore.locale === 'zh' ? '需要登录' : 'Sign In Required',
       content: i18nStore.locale === 'zh' ? '使用 Google 登录后可获得免费试用积分，立即开始生成。' : 'Sign in with Google to get free trial credits and start generating.',
@@ -806,15 +705,8 @@ async function submitCreate() {
     const images: string[] = [];
     if (generationMode.value === 'single') {
       images.push(await ensurePortraitUploaded(0));
-    } else if (generationMode.value === 'couple_local' || isGoldenAnniversaryMode.value) {
-      images.push(await ensurePortraitUploaded(0), await ensurePortraitUploaded(1));
     } else {
-      if (!remoteSession.value) throw new Error(tr('请先创建异地邀请', 'Create the remote invite first'));
-      await syncRemoteHost();
-      const status = await refreshRemoteStatus(true);
-      if (!status || status.status != 'ready') throw new Error(tr('对方还未完成上传，暂时不能生成', 'The guest has not finished uploading yet'));
-      const remoteImages = await get<RemoteSessionImages>(`/session/${remoteSession.value.session_id}/images`, { showLoading: false, showError: false });
-      images.push(remoteImages.host_image_url, remoteImages.guest_image_url);
+      images.push(await ensurePortraitUploaded(0), await ensurePortraitUploaded(1));
     }
     const sceneImageUrl = sceneReferencePath.value ? await uploadLocalAsset(sceneReferencePath.value) : undefined;
     const clothingImageUrl = outfitReferencePath.value ? await uploadLocalAsset(outfitReferencePath.value) : undefined;
@@ -822,7 +714,6 @@ async function submitCreate() {
     const order = await orderStore.createOrder(seed.id, images, {
       legal_accepted: true,
       director_mode: !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim() || sceneImageUrl || clothingImageUrl),
-      remote_join: generationMode.value === 'couple_remote',
       global_style_text: globalStyleText.value.trim() || undefined,
       scene_text: sceneText.value.trim() || undefined,
       outfit_text: outfitText.value.trim() || undefined,
@@ -842,15 +733,11 @@ async function submitCreate() {
         order_id: order.id,
       },
     });
-    if (generationMode.value === 'couple_remote' && remoteSession.value) {
-      await post(`/session/${remoteSession.value.session_id}/bind_order`, { order_id: order.id }, { showLoading: false, showError: false });
-      await post(`/session/${remoteSession.value.session_id}/processing`, {}, { showLoading: false, showError: false });
-    }
     navBarRef.value?.refreshBalance();
     uni.navigateTo({ url: `/pages/preview/preview?id=${order.id}` });
   } catch (error: any) {
     const apiError = error as ApiError;
-    if (apiError.statusCode === 402) {
+    if (apiError.statusCode === 402 && billingAvailable.value) {
       showPaymentModal.value = true;
     } else if (apiError.statusCode === 409 && apiError.detail?.existing_order_id) {
       uni.showToast({
@@ -870,6 +757,15 @@ function onPurchaseComplete() {
   navBarRef.value?.refreshBalance();
 }
 
+function openPaymentModal() {
+  if (!billingAvailable.value) return;
+  showPaymentModal.value = true;
+}
+
+function goHome() {
+  uni.reLaunch({ url: '/pages/index/index' });
+}
+
 onLoad((query = {}) => {
   routeQuery.value = Object.fromEntries(
     Object.entries(query as Record<string, unknown>).map(([key, value]) => [key, String(value || '')])
@@ -877,16 +773,13 @@ onLoad((query = {}) => {
 });
 
 onMounted(async () => {
-  if (!templateStore.templates.length) await templateStore.fetchTemplates();
   await opsStore.fetchPublicConfig();
+  if (!creationAvailable.value) return;
+  if (!templateStore.templates.length) await templateStore.fetchTemplates();
   applyRouteQuery(currentQuery());
   applyStoredTemplateIntent();
   setTimeout(() => applyRouteQuery(currentQuery()), 0);
-  if (generationMode.value === 'couple_remote' && !remoteJoinEnabled.value) {
-    generationMode.value = 'couple_local';
-  }
 });
-onUnmounted(() => stopRemotePolling());
 </script>
 
 <style lang="scss" scoped>
@@ -899,6 +792,47 @@ onUnmounted(() => stopRemotePolling());
   width: min(1360px, calc(100% - 48px));
   margin: 0 auto;
   padding: 32px 0 80px;
+}
+
+.capability-unavailable {
+  max-width: 720px;
+  margin: 72px auto;
+  padding: 44px;
+  border: 1px solid rgba(17, 106, 96, 0.2);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 20px 50px rgba(23, 25, 31, 0.07);
+  text-align: center;
+}
+
+.unavailable-kicker,
+.unavailable-title,
+.unavailable-copy {
+  display: block;
+}
+
+.unavailable-kicker {
+  color: #116a60;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.unavailable-title {
+  margin-top: 12px;
+  color: #17191f;
+  font-size: 46px;
+  line-height: 1.05;
+}
+
+.unavailable-copy {
+  margin-top: 18px;
+  color: #4c5360;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.unavailable-action {
+  margin-top: 24px;
 }
 
 .hero-card,
@@ -1012,21 +946,11 @@ onUnmounted(() => stopRemotePolling());
 .style-subtitle,
 .summary-subtitle,
 .summary-block-text,
-.mode-desc,
-.remote-desc,
-.remote-info {
+.mode-desc {
   display: block;
   color: #4c5360;
   font-size: 13px;
   line-height: 1.75;
-}
-
-.remote-link {
-  word-break: break-all;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #f7f8fa;
-  border: 1px solid #dde1e8;
 }
 
 .mode-grid {
@@ -1177,10 +1101,6 @@ onUnmounted(() => stopRemotePolling());
 
 .portrait-grid.single {
   grid-template-columns: 1fr;
-}
-
-.portrait-grid.remote {
-  grid-template-columns: minmax(0, 1fr) 320px;
 }
 
 .dual-inputs {
@@ -1430,8 +1350,7 @@ onUnmounted(() => stopRemotePolling());
   color: #0b5e55;
 }
 
-.upload-card,
-.remote-card {
+.upload-card {
   border-radius: 8px;
   border: 1px solid rgba(32, 43, 62, 0.1);
   background: #fbfcfd;
@@ -1554,7 +1473,6 @@ onUnmounted(() => stopRemotePolling());
   color: #ffffff;
 }
 
-.remote-actions,
 .tag-row {
   display: flex;
   flex-wrap: wrap;
@@ -1691,8 +1609,7 @@ onUnmounted(() => stopRemotePolling());
   font-weight: 900;
 }
 
-.create-btn,
-.remote-btn {
+.create-btn {
   width: 100%;
 }
 
@@ -1730,7 +1647,6 @@ onUnmounted(() => stopRemotePolling());
   }
 
   .portrait-grid,
-  .portrait-grid.remote,
   .dual-inputs,
   .reference-grid,
   .style-grid {

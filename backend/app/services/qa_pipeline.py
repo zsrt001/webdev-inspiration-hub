@@ -18,18 +18,12 @@ def attach_identity_grade(payload: dict, *, is_couple: bool = False) -> dict:
 
 
 def blocking_vision_reasons(reasons: list[str]) -> list[str]:
-    """Return actionable vision QA failures.
-
-    A generic "other" verdict is not enough to block delivery when local image
-    checks already passed; it is too vague for users and operators to act on.
-    """
+    """Return every normalized vision QA failure; ambiguity fails closed."""
 
     blocking: list[str] = []
     seen: set[str] = set()
     for reason in reasons:
         normalized = normalize_qa_reason(reason)
-        if normalized == "other":
-            continue
         if normalized not in seen:
             seen.add(normalized)
             blocking.append(normalized)

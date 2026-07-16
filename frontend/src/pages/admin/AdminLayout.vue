@@ -25,7 +25,7 @@
       <view class="admin-session">
         <text class="session-label">{{ tr('当前会话', 'Current session') }}</text>
         <text class="session-user">{{ sessionLabel }}</text>
-        <text class="session-note">{{ tr('需要 owner、admin、operator 角色，或配置 ADMIN_EMAILS / ADMIN_USER_IDS。', 'Requires owner, admin, operator, ADMIN_EMAILS, or ADMIN_USER_IDS.') }}</text>
+        <text class="session-note">{{ tr('仅数据库中激活的 owner、admin 或 operator 角色可访问。', 'Requires an active owner, admin, or operator database role.') }}</text>
       </view>
     </aside>
 
@@ -48,8 +48,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import { getAuthProvider } from '../../utils/auth';
+import { computed, onMounted, ref } from 'vue';
+import { ensureSession, type SessionUser } from '../../utils/auth';
 import { useI18nStore } from '../../stores/i18n';
 
 const props = defineProps<{
@@ -60,6 +60,7 @@ const props = defineProps<{
 
 const active = computed(() => props.active);
 const i18nStore = useI18nStore();
+const sessionUser = ref<SessionUser | null>(null);
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
 
@@ -70,9 +71,13 @@ const navItems = computed(() => [
 ] as const);
 
 const sessionLabel = computed(() => {
-  const provider = getAuthProvider();
-  if (provider === 'supabase') return tr('Google 管理员', 'Google Admin');
-  return provider || tr('未知会话', 'Unknown session');
+  return sessionUser.value
+    ? tr('Google 管理员', 'Google Admin')
+    : tr('尚未登录', 'Not signed in');
+});
+
+onMounted(async () => {
+  sessionUser.value = await ensureSession();
 });
 
 function toggleLocale() {

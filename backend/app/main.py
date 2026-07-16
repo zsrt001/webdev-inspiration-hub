@@ -2,30 +2,34 @@
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from sqlalchemy import text
-
 from app.core.config import get_settings
 from app.core.error_response import (
+    error_response,
     http_exception_handler,
+    install_sensitive_path_log_filter,
+    redact_sensitive_path,
+    redact_sentry_event,
     request_id_middleware,
     unhandled_exception_handler,
     validation_exception_handler,
 )
 from app.core.rate_limit import RateLimitMiddleware
+from app.core.security_headers import web_security_middleware
 from app.core.runtime_checks import (
     run_core_readiness_checks,
     run_readiness_checks,
     validate_commercial_config_values,
 )
+from app.services.runtime_bundle_service import public_runtime_bundle_json
 from app.routers import api_router
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+install_sensitive_path_log_filter()
 
 # --- Sentry SDK (production only) ---
 if not settings.debug and settings.sentry_dsn:
@@ -34,8 +38,9 @@ if not settings.debug and settings.sentry_dsn:
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
             traces_sample_rate=0.1,
-            environment="production",
+            environment=settings.runtime_environment,
             send_default_pii=False,
+            before_send=redact_sentry_event,
         )
         logger.info("Sentry SDK initialized")
     except Exception as exc:
@@ -47,36 +52,23 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     strict_mode = not settings.debug
 
-    if strict_mode:
-        config_errors = validate_commercial_config_values()
-        if config_errors:
-            raise RuntimeError(f"commercial_config_invalid: {'; '.join(config_errors)}")
+    config_errors = validate_commercial_config_values() if strict_mode else []
+    app.state.runtime_config_blocked = bool(config_errors)
+    if config_errors:
+        logger.error(
+            "Commercial runtime is not ready; serving the fail-closed liveness surface: %s",
+            "; ".join(config_errors),
+        )
+    elif strict_mode:
+        try:
+            from app.core.database import async_session_maker
+            from app.services.schema_guard_service import validate_runtime_schema
 
-    try:
-        from app.core.database import engine, Base
-        async with engine.begin() as conn:
-            if settings.should_auto_create_tables:
-                await conn.run_sync(Base.metadata.create_all)
-                await conn.execute(text("ALTER TABLE IF EXISTS leads ALTER COLUMN phone TYPE TEXT"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(32)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS auth_subject VARCHAR(128)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS username VARCHAR(64)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password VARCHAR(255)"))
-                await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS role VARCHAR(32) DEFAULT 'user'"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'active'"))
-                await conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE"))
-        if settings.should_auto_create_tables:
-            logger.info("Database connected and schema auto-create completed")
-        else:
-            logger.info("Database connected; schema auto-create disabled")
-    except Exception as e:
-        if strict_mode:
-            raise RuntimeError(f"database_startup_failed: {e}") from e
-        logger.warning(f"Database not available (dev mode): {e}")
+            async with async_session_maker() as db:
+                await validate_runtime_schema(db)
+        except Exception as exc:
+            raise RuntimeError(f"database_schema_readiness_failed: {exc}") from exc
 
-    if strict_mode:
         core_readiness = await run_core_readiness_checks(strict_mode=True)
         if not core_readiness.get("ready", False):
             blockers = ", ".join(core_readiness.get("blockers", []))
@@ -114,24 +106,44 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-cors_origins = settings.cors_origins
-if settings.debug:
-    local_debug_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-    if not cors_origins:
-        cors_origins = local_debug_origins
-    else:
-        cors_origins = [*cors_origins, *(origin for origin in local_debug_origins if origin not in cors_origins)]
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins or ["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+_RUNTIME_CONFIG_EXEMPT_PATHS = frozenset(
+    {
+        "/health",
+        "/health/ready",
+        "/version",
+        "/api/v1/ops/health",
+        "/api/v1/ops/readiness",
+    }
 )
+
+
+async def runtime_config_guard_middleware(request: Request, call_next):
+    """Keep misconfigured hosted deployments alive but unable to serve application APIs."""
+    runtime_state = getattr(request.app.state, "runtime_config_blocked", None)
+    if runtime_state is None:
+        runtime_blocked = not settings.debug
+    else:
+        runtime_blocked = bool(runtime_state)
+    if runtime_blocked and request.url.path not in _RUNTIME_CONFIG_EXEMPT_PATHS:
+        logger.warning(
+            "Blocked application request because the hosted runtime is not ready: path=%s",
+            redact_sensitive_path(request.url.path),
+        )
+        return error_response(
+            request=request,
+            status_code=503,
+            detail={
+                "code": "runtime_not_ready",
+                "message": "This deployment is not ready to serve application requests.",
+                "action": "Use the liveness or readiness endpoint for diagnostics.",
+            },
+        )
+    return await call_next(request)
+
+app.middleware("http")(runtime_config_guard_middleware)
 app.add_middleware(RateLimitMiddleware)
 app.middleware("http")(request_id_middleware)
+app.middleware("http")(web_security_middleware)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
@@ -166,9 +178,14 @@ async def health_check():
     return {
         "status": "healthy",
         "kind": "liveness",
-        "app": settings.app_name,
         "readiness": "/health/ready",
     }
+
+
+@app.get("/version")
+async def runtime_version():
+    """Compatibility alias for the versioned public attestation route."""
+    return public_runtime_bundle_json(settings)
 
 
 @app.get("/health/ready")

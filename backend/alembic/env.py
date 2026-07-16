@@ -58,6 +58,11 @@ def do_run_migrations(connection) -> None:
 
 async def run_migrations_online() -> None:
     """Run migrations against an async database connection."""
+    existing_connection = config.attributes.get("connection")
+    if existing_connection is not None:
+        do_run_migrations(existing_connection)
+        return
+
     engine = create_async_engine(
         database_url,
         poolclass=pool.NullPool,
