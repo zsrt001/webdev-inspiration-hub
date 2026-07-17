@@ -408,7 +408,8 @@ report, staged/formal verification is `NOT_RUN`.
    proves whether the request was sent, stop for audited manual forward
    disposition; never send again. Rolling Releases are forbidden for this one-
    time baseline because partial traffic assignment is not a completed handoff.
-   Never rebuild after STAGED.
+   Never rebuild after STAGED except through the exact invalid-runtime-config
+   rearm described below.
    Read remote `main` through the authenticated GitHub API immediately before
    and immediately after Promote; an API error or mismatch cannot be recorded
    as a completed current-main install.
@@ -431,7 +432,9 @@ Crash recovery uses the recorded activation and encrypted build artifact. One
 unbound exact source/runtime/build deployment may be bound; zero candidates may
 deploy the previously bound output once; multiple candidates, an exhausted or
 cyclic deployment listing, a missing build artifact, or a hash mismatch require
-audited manual forward disposition. Once STAGED, reuse the recorded deployment.
+audited manual forward disposition. Once STAGED, reuse the recorded deployment
+unless the exact invalid-runtime-config rearm below has first returned it to an
+unbound reservation.
 If Promote already happened, require the formal domain to resolve READY in the
 exact project and to the staged ID and require the project `lastAliasRequest`
 to show the target `promote` request succeeded before advancing; do not Promote
@@ -445,7 +448,8 @@ report, deliberately stops the attempt with the activation retained at its last
 durable phase. A GitHub rerun of the same workflow run ID and source SHA
 recollects the runtime audit and regenerates fresh signed edge evidence inside
 the protected job; it reuses the recorded deployment and never rebuilds after
-STAGED.
+STAGED unless the exact invalid-runtime-config rearm below is the recorded
+reason the deployment could not serve application requests.
 
 One exception exists for a verifier defect discovered only after the immutable
 deployment has reached exactly `STAGED`. A newly approved workflow run may
@@ -465,6 +469,26 @@ later staged/formal/completion artifacts. The adopted run must reuse the
 recorded STAGED deployment and can only move forward through the ordinary
 verification and Promote gates.
 
+A second, distinct exception exists only when an unpromoted STAGED deployment
+is proven fail-closed because `ACCEPTANCE_IDENTITY_HMAC_KEY` was missing or
+invalid in the Vercel Production environment. The protected GitHub secret and
+the value pulled from the exact Vercel Production project must both contain at
+least 32 characters and match in constant time; the evidence records only the
+key name, minimum length, environment, source/runner/run coordinates, and PASS
+state. This is not a general runtime-configuration repair mechanism. That sanitized
+proof, the old activation coordinates, and fresh edge evidence must be durable
+before mutation. The migration owner then takes the release advisory lock and
+an ACCESS EXCLUSIVE table lock, temporarily disables only the activation
+regression trigger inside the transaction, performs one exact version/source/
+run/approval CAS from the fully bound unpromoted STAGED row to an unbound
+RESERVED row, and restores the trigger before commit. The old coordinates are
+retained by hash and durable preflight evidence; no application data or feature
+state is changed. The repair attempt intentionally stops, and only the next
+attempt of that same workflow run may continue. It must rebuild from a detached
+worktree at the original immutable `source_sha`, verify the pulled Vercel secret
+again, bind a new encrypted build artifact and deployment, and then pass every
+ordinary staged, Promote, formal-domain, edge-handoff, and completion gate.
+
 The immutable reservation expiry is an audit/recovery deadline, not a lease
 that transfers ownership. An expired `RESERVED`, `STAGED`, `PROMOTION_ARMED`,
 `PROMOTED`, or `FORMAL_VERIFIED` activation may be resumed only by the exact source SHA and
@@ -472,9 +496,9 @@ workflow run ID after all protected-environment and edge checks are fresh; its
 workflow attempt must increase monotonically. `FORMAL_VERIFIED` additionally
 requires its already bound artifact reference to remain downloadable and
 byte-hash valid; retention expiry does not authorize replacement. Except for
-the exact STAGED verifier takeover above, a different run or source remains a
-conflict and requires audited manual forward disposition. A takeover never
-changes the deployed source.
+the exact STAGED verifier takeover and invalid-runtime-config rearm above, a
+different run or source remains a conflict and requires audited manual forward
+disposition. Neither recovery path changes the deployed source.
 
 ## Emergency recovery
 

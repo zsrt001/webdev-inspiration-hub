@@ -1376,6 +1376,179 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("runtime_bundle_id IS NOT NULL", statement)
         self.assertIn("report_sha256 IS NULL", statement)
 
+    def test_runtime_secret_match_evidence_never_contains_the_secret(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_runtime_secret_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        protected_secret = "k" * 64
+        with tempfile.TemporaryDirectory(prefix="vowpic-runtime-secret-") as directory:
+            env_file = Path(directory, ".env.production.local")
+            env_file.write_text(
+                f'ACCEPTANCE_IDENTITY_HMAC_KEY="{protected_secret}"\n',
+                encoding="utf-8",
+            )
+            evidence = register.verify_pulled_runtime_secret(
+                env_file,
+                secret_name="ACCEPTANCE_IDENTITY_HMAC_KEY",
+                expected_secret=protected_secret,
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="123",
+                workflow_attempt=1,
+            )
+            self.assertTrue(evidence["passed"])
+            self.assertEqual(evidence["minimum_length"], 32)
+            self.assertNotIn(protected_secret, json.dumps(evidence, sort_keys=True))
+            with self.assertRaisesRegex(ValueError, "do not match"):
+                register.verify_pulled_runtime_secret(
+                    env_file,
+                    secret_name="ACCEPTANCE_IDENTITY_HMAC_KEY",
+                    expected_secret="z" * 64,
+                    source_sha=source_sha,
+                    runner_sha=runner_sha,
+                    workflow_run_id="123",
+                    workflow_attempt=1,
+                )
+
+    def test_invalid_staged_rearm_is_exact_cas_and_restores_the_regression_trigger(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_rearm_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "STAGED",
+            "version": 4,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_invalid_config",
+            "api_deployment_url": "https://invalid-config.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
+            "id": activation["id"],
+            "version": 5,
+        }
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+        with tempfile.TemporaryDirectory(prefix="vowpic-staged-rearm-") as directory:
+            evidence_path = Path(directory, "runtime-secret.json")
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "vowpic.runtime-secret-match.v1",
+                        "passed": True,
+                        "secret_name": "ACCEPTANCE_IDENTITY_HMAC_KEY",
+                        "minimum_length": 32,
+                        "vercel_environment": "production",
+                        "source_sha": source_sha,
+                        "runner_sha": runner_sha,
+                        "workflow_run_id": "789",
+                        "workflow_attempt": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(register, "validate_staged_control_descendant") as control_diff,
+                mock.patch.object(register, "create_engine", return_value=engine),
+                mock.patch.object(register, "_configure_migration_timeouts") as configure_timeouts,
+                mock.patch.object(register, "_advisory_lock"),
+                mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+                mock.patch.object(register, "_read_activation", return_value=activation),
+            ):
+                result = register._rearm_invalid_staged(
+                    "postgresql://migration",
+                    source_sha=source_sha,
+                    runner_sha=runner_sha,
+                    workflow_run_id="789",
+                    workflow_attempt=1,
+                    expected_source_sha=source_sha,
+                    expected_workflow_run_id="123",
+                    expected_version=4,
+                    approval="protected-approval",
+                    evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
+                    runtime_secret_evidence=evidence_path,
+                )
+
+        control_diff.assert_called_once_with(source_sha, runner_sha)
+        self.assertEqual(result["state"], "STAGED_REARMED")
+        self.assertEqual(result["next_workflow_attempt"], 2)
+        statements = [str(call.args[0]) for call in connection.execute.call_args_list]
+        disable_index = next(
+            index for index, statement in enumerate(statements)
+            if "DISABLE TRIGGER trg_release_activation_regression" in statement
+        )
+        update_index = next(
+            index for index, statement in enumerate(statements)
+            if "UPDATE release_activations" in statement
+        )
+        enable_index = next(
+            index for index, statement in enumerate(statements)
+            if "ENABLE TRIGGER trg_release_activation_regression" in statement
+        )
+        self.assertLess(disable_index, update_index)
+        self.assertLess(update_index, enable_index)
+        update = statements[update_index]
+        self.assertIn("phase = 'RESERVED'", update)
+        self.assertIn("runtime_bundle_id = NULL", update)
+        self.assertIn("manifest_sha256 = NULL", update)
+        self.assertIn("api_deployment_id = NULL", update)
+        self.assertIn("updated_at = CURRENT_TIMESTAMP", update)
+        self.assertIn("version = :expected_version", update)
+        configure_timeouts.assert_called_once_with(connection)
+        self.assertRegex(result["previous_coordinates_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_staged_runtime_secret_rearm_rebuilds_only_the_immutable_source(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        register_source = _read("scripts/release/register_safe_baseline.py")
+        self.assertIn("rearm_staged_after_config_repair", workflow)
+        self.assertIn('"verify-runtime-secret"', register_source)
+        self.assertIn('"rearm-staged"', register_source)
+        secret_proof = workflow.index(
+            "- name: Prove the repaired Production runtime secret matches GitHub"
+        )
+        reservation_upload = workflow.index(
+            "- name: Persist protected evidence before the first irreversible boundary"
+        )
+        rearm = workflow.index(
+            "- name: Atomically rearm the invalid unpromoted STAGED binding"
+        )
+        adopt = workflow.index(
+            "- name: Atomically adopt the immutable STAGED deployment"
+        )
+        self.assertLess(secret_proof, reservation_upload)
+        self.assertLess(reservation_upload, rearm)
+        self.assertLess(rearm, adopt)
+        rearm_step = workflow[rearm:adopt]
+        self.assertIn("--runtime-secret-evidence", rearm_step)
+        self.assertIn("exit 75", rearm_step)
+        adopt_condition = workflow[adopt : workflow.index("- name: Provision and publish", adopt)]
+        self.assertIn("inputs.rearm_staged_after_config_repair != true", adopt_condition)
+
+        build_start = workflow.index("- name: Build the predeploy output")
+        build_end = workflow.index("- name: Encrypt the predeploy output", build_start)
+        build_step = workflow[build_start:build_end]
+        self.assertIn('git worktree add --detach "$RUNTIME_SOURCE_DIR" "$SOURCE_SHA"', build_step)
+        self.assertIn('git -C "$RUNTIME_SOURCE_DIR" rev-parse HEAD', build_step)
+        self.assertIn('--directory "$RUNTIME_SOURCE_DIR/.vercel" output', build_step)
+        self.assertIn("--action verify-runtime-secret", build_step)
+        self.assertNotIn('"$VERCEL_CLI" build --prod', build_step.split("cd \"$RUNTIME_SOURCE_DIR\"", 1)[0])
+
     def test_staged_verifier_takeover_diff_is_exactly_release_control_only(self) -> None:
         register = _load_script(
             "scripts/release/register_safe_baseline.py",
