@@ -1,9 +1,12 @@
 """Database URL compatibility tests."""
 
+import os
 from pathlib import Path
 import ssl
 import sys
+from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock, patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -44,6 +47,33 @@ class DatabaseConfigTest(unittest.TestCase):
             "postgresql+asyncpg://postgres:%5BYOUR-PASSWORD%5D@db.example.supabase.co:5432/postgres",
         )
         self.assertIsInstance(connect_args.get("ssl"), ssl.SSLContext)
+
+    def test_asyncpg_context_loads_the_scoped_postgres_root_certificate(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root_cert = Path(temp_dir) / "database-root.crt"
+            root_cert.write_text("test certificate placeholder", encoding="utf-8")
+            context = Mock()
+            with (
+                patch.dict(os.environ, {"PGSSLROOTCERT": str(root_cert)}),
+                patch.object(database_config.ssl, "create_default_context", return_value=context),
+            ):
+                _url, connect_args = normalize_database_url(
+                    "postgresql://postgres.example:secret@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+                )
+
+        self.assertIs(connect_args["ssl"], context)
+        context.load_verify_locations.assert_called_once_with(cafile=str(root_cert))
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_missing_scoped_postgres_root_certificate_fails_closed(self) -> None:
+        with (
+            patch.dict(os.environ, {"PGSSLROOTCERT": "missing-database-root.crt"}),
+            self.assertRaisesRegex(RuntimeError, "existing certificate file"),
+        ):
+            normalize_database_url(
+                "postgresql://postgres.example:secret@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+            )
 
     def test_vercel_supabase_direct_url_uses_configured_pooler_host(self) -> None:
         original_vercel = database_config.settings.vercel
