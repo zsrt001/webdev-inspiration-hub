@@ -665,6 +665,12 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn('RUNNER_TEMP_RESOLVED="$(realpath -m "$RUNNER_TEMP")"', restore)
         self.assertIn('"$RUNNER_TEMP_RESOLVED"/*', restore)
         self.assertIn('"$WORKSPACE_ARTIFACTS_RESOLVED"/*', restore)
+        self.assertIn('-k $RESTORE_PGDATA', restore)
+        self.assertIn('tail -n 80 "$RESTORE_PGLOG" >&2', restore)
+        self.assertLess(
+            restore.index('tail -n 80 "$RESTORE_PGLOG" >&2'),
+            restore.index("ALTER ROLE postgres WITH PASSWORD"),
+        )
         self.assertIn('rm -rf -- "$RESTORE_PGDATA" "$RESTORE_SCRATCH_DIR"', restore)
         self.assertIn('rm -f -- "$RESTORE_PGLOG"', restore)
         self.assertNotIn("secrets.RESTORE_TARGET_", workflow)
