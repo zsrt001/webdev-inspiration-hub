@@ -1549,3 +1549,17 @@
 - The initial lockdown now accepts either the final application guard or the exact `503/runtime_not_ready` response as proof that the runner bypass reached the currently fail-closed application. No other `503` code is accepted.
 - The later per-group handoff remains strict: it still requires the exact final application status/code and matching before/after database snapshots after each deny group is removed. The bootstrap allowance cannot satisfy formal-domain handoff or completion.
 - Added regressions for the full initial deny/bypass HTTP sequence, the exact fail-closed allowance, and default/handoff rejection of that allowance. Focused edge and workflow contract tests passed, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Migration-owner forced-RLS control-plane repair
+
+### Goal and evidence
+
+- Protected run `29579027746` passed the schema-`0012` inventory, isolated restore rehearsal, authenticated edge lockdown, protected evidence upload/readback, and final main-head recheck.
+- The atomic reservation transaction upgraded through `20260710_0013` and `20260712_0014`, then the insert into `release_activations` was rejected by forced RLS. That migration created policies for `vowpic_runtime` and `vowpic_control_writer` but omitted the existing least-privilege `vowpic_migration_owner` used by the same transaction.
+- Transactional DDL rolled back both revisions and the failed insert together. Production therefore remains at `0012` with no reservation row, application-login publication, build, deploy, Promote, alias, or formal-domain handoff. The unconditional runner-bypass cleanup passed; the two deny rules remain as intended containment.
+
+### Changes and verification
+
+- The control-plane migration now validates or creates the exact `NOLOGIN`, `NOBYPASSRLS` migration-owner shape, grants only control-plane DML, and creates one forced-RLS `FOR ALL` policy for that role on each of the eight control-plane tables. Runtime and control-writer policy boundaries remain unchanged.
+- Added a real non-superuser, non-role-creator, non-RLS-bypass migration login to the PostgreSQL integration test. Its database default role becomes `vowpic_migration_owner`; readback proves the exact role shape and eight policies before the exact reservation insert succeeds.
+- A fresh isolated PostgreSQL 17 cluster migrated from empty through head and passed all 7 control-plane RLS integration tests, including the new reservation path. The server stopped and its test data/log were deleted. Focused schema/workflow tests passed 74/74 and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.

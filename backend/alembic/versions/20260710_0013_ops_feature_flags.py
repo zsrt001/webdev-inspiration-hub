@@ -738,6 +738,18 @@ def _enable_control_plane_rls() -> None:
             """
             DO $$
             BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_migration_owner') THEN
+                CREATE ROLE vowpic_migration_owner
+                  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+              ELSIF EXISTS (
+                SELECT 1 FROM pg_roles
+                WHERE rolname = 'vowpic_migration_owner'
+                  AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
+                       rolreplication OR rolbypassrls OR NOT rolinherit)
+              ) THEN
+                RAISE EXCEPTION 'existing vowpic_migration_owner role violates the NOBYPASSRLS owner contract';
+              END IF;
+
               IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_runtime') THEN
                 CREATE ROLE vowpic_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
               ELSIF EXISTS (
@@ -762,16 +774,32 @@ def _enable_control_plane_rls() -> None:
             """
         )
     )
-    op.execute(sa.text("GRANT USAGE ON SCHEMA public TO vowpic_runtime, vowpic_control_writer"))
+    op.execute(
+        sa.text(
+            "GRANT USAGE ON SCHEMA public TO "
+            "vowpic_migration_owner, vowpic_runtime, vowpic_control_writer"
+        )
+    )
     for table in CONTROL_PLANE_TABLES:
         op.execute(sa.text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
         op.execute(sa.text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
         op.execute(sa.text(f"REVOKE ALL ON TABLE {table} FROM PUBLIC"))
-        op.execute(sa.text(f"REVOKE ALL ON TABLE {table} FROM vowpic_runtime, vowpic_control_writer"))
+        op.execute(
+            sa.text(
+                f"REVOKE ALL ON TABLE {table} FROM "
+                "vowpic_migration_owner, vowpic_runtime, vowpic_control_writer"
+            )
+        )
         op.execute(sa.text(f"GRANT SELECT ON TABLE {table} TO vowpic_runtime"))
         op.execute(
             sa.text(
                 f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} TO vowpic_control_writer"
+            )
+        )
+        op.execute(
+            sa.text(
+                f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} "
+                "TO vowpic_migration_owner"
             )
         )
         op.execute(
@@ -784,6 +812,12 @@ def _enable_control_plane_rls() -> None:
             sa.text(
                 f"CREATE POLICY {table}_control_writer_all ON {table} FOR ALL TO vowpic_control_writer "
                 "USING (true) WITH CHECK (true)"
+            )
+        )
+        op.execute(
+            sa.text(
+                f"CREATE POLICY {table}_migration_owner_all ON {table} FOR ALL "
+                "TO vowpic_migration_owner USING (true) WITH CHECK (true)"
             )
         )
         op.execute(
@@ -838,6 +872,7 @@ def downgrade() -> None:
     for table in CONTROL_PLANE_TABLES:
         op.execute(sa.text(f"DROP POLICY IF EXISTS {table}_runtime_select ON {table}"))
         op.execute(sa.text(f"DROP POLICY IF EXISTS {table}_control_writer_all ON {table}"))
+        op.execute(sa.text(f"DROP POLICY IF EXISTS {table}_migration_owner_all ON {table}"))
     op.execute(sa.text("DROP FUNCTION IF EXISTS enforce_release_observation_cas() CASCADE"))
     op.execute(sa.text("DROP FUNCTION IF EXISTS enforce_data_migration_run_fence() CASCADE"))
     op.execute(sa.text("DROP FUNCTION IF EXISTS enforce_acceptance_binding_consumption() CASCADE"))

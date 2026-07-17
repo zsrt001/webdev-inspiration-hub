@@ -9,6 +9,7 @@ import unittest
 from urllib.parse import urlsplit
 
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from alembic import command
 from alembic.config import Config
@@ -33,6 +34,8 @@ from provision_production_database_logins import (  # noqa: E402
 
 RUNTIME_LOGIN = "vowpic_runtime_login_test"
 WRITER_LOGIN = "vowpic_control_login_test"
+MIGRATION_LOGIN = "vowpic_migration_login_test"
+MIGRATION_PASSWORD = "migration-test-password"
 
 
 def _dsn_with_user(database_url: str, username: str, password: str) -> str:
@@ -48,6 +51,14 @@ def _dsn_with_user(database_url: str, username: str, password: str) -> str:
     "set RUN_POSTGRES_INTEGRATION=1 with CONTROL_PLANE_RLS_TEST_DATABASE_URL",
 )
 class ControlPlaneRlsIntegrationTest(unittest.TestCase):
+    @classmethod
+    def _drop_migration_login(cls) -> None:
+        with psycopg2.connect(cls.admin_url) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s)", (MIGRATION_LOGIN,))
+            if cursor.fetchone()[0]:
+                cursor.execute(f'REVOKE vowpic_migration_owner FROM "{MIGRATION_LOGIN}"')
+                cursor.execute(f'DROP ROLE "{MIGRATION_LOGIN}"')
+
     @classmethod
     def _drop_production_logins(cls) -> None:
         with psycopg2.connect(cls.admin_url) as connection, connection.cursor() as cursor:
@@ -74,6 +85,8 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
                 command.upgrade(alembic, "head")
         finally:
             engine.dispose()
+        cls._drop_migration_login()
+        database_name = urlsplit(cls.admin_url).path.lstrip("/")
         with psycopg2.connect(cls.admin_url) as connection, connection.cursor(
             cursor_factory=RealDictCursor
         ) as cursor:
@@ -92,13 +105,27 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
             )
             cursor.execute(f'GRANT vowpic_runtime TO "{RUNTIME_LOGIN}"')
             cursor.execute(f'GRANT vowpic_control_writer TO "{WRITER_LOGIN}"')
+            cursor.execute(
+                f'CREATE ROLE "{MIGRATION_LOGIN}" LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB '
+                "NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT",
+                (MIGRATION_PASSWORD,),
+            )
+            cursor.execute(f'GRANT vowpic_migration_owner TO "{MIGRATION_LOGIN}"')
+            cursor.execute(
+                sql.SQL("ALTER ROLE {} IN DATABASE {} SET role TO 'vowpic_migration_owner'").format(
+                    sql.Identifier(MIGRATION_LOGIN),
+                    sql.Identifier(database_name),
+                )
+            )
         cls.runtime_url = _dsn_with_user(cls.admin_url, RUNTIME_LOGIN, "runtime-test-password")
         cls.writer_url = _dsn_with_user(cls.admin_url, WRITER_LOGIN, "writer-test-password")
+        cls.migration_url = _dsn_with_user(cls.admin_url, MIGRATION_LOGIN, MIGRATION_PASSWORD)
 
     @classmethod
     def tearDownClass(cls) -> None:
         if not getattr(cls, "admin_url", ""):
             return
+        cls._drop_migration_login()
         with psycopg2.connect(cls.admin_url) as connection, connection.cursor() as cursor:
             cursor.execute(f'REVOKE vowpic_runtime FROM "{RUNTIME_LOGIN}"')
             cursor.execute(f'REVOKE vowpic_control_writer FROM "{WRITER_LOGIN}"')
@@ -126,6 +153,58 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
             roles = cursor.fetchall()
             self.assertEqual(len(roles), 2)
             self.assertTrue(all(not can_login and not superuser and not bypass for _, can_login, superuser, bypass in roles))
+
+    def test_migration_login_can_reserve_through_forced_rls_without_bypass(self) -> None:
+        connection = psycopg2.connect(self.migration_url)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT session_user, current_user,
+                           role.rolsuper, role.rolcreatedb, role.rolcreaterole,
+                           role.rolreplication, role.rolbypassrls,
+                           pg_has_role(session_user, 'vowpic_migration_owner', 'MEMBER')
+                    FROM pg_roles role
+                    WHERE role.rolname = session_user
+                    """
+                )
+                self.assertEqual(
+                    cursor.fetchone(),
+                    (MIGRATION_LOGIN, "vowpic_migration_owner", False, False, False, False, False, True),
+                )
+                cursor.execute(
+                    """
+                    SELECT has_table_privilege(current_user, 'release_activations', 'INSERT'),
+                           count(*) = %s
+                    FROM pg_policies
+                    WHERE schemaname = 'public'
+                      AND policyname LIKE '%%_migration_owner_all'
+                      AND 'vowpic_migration_owner' = ANY(roles)
+                    """,
+                    (8,),
+                )
+                self.assertEqual(cursor.fetchone(), (True, True))
+                cursor.execute(
+                    """
+                    INSERT INTO release_activations (
+                      id, environment, kind, source_sha, workflow_run_id, workflow_attempt,
+                      phase, phase_rank, version, approval, reservation_expires_at,
+                      current_snapshot_hash, private_evidence_prefix
+                    ) VALUES (
+                      '00000000-0000-4000-8000-000000000013', 'production',
+                      'SAFE_BASELINE_INSTALL', %s, 'migration-rls-test', 1,
+                      'RESERVED', 0, 1, 'integration-test',
+                      CURRENT_TIMESTAMP + INTERVAL '60 minutes', %s,
+                      'https://example.invalid/evidence'
+                    )
+                    RETURNING phase
+                    """,
+                    ("a" * 40, "b" * 64),
+                )
+                self.assertEqual(cursor.fetchone()[0], "RESERVED")
+        finally:
+            connection.rollback()
+            connection.close()
 
     def test_runtime_can_read_but_cannot_mutate_flags(self) -> None:
         with psycopg2.connect(self.runtime_url) as connection, connection.cursor() as cursor:
