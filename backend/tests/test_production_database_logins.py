@@ -185,6 +185,84 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
         self.assertEqual(unquote(parsed.username or ""), "vowpic_control_writer_login")
         self.assertEqual(unquote(parsed.password or ""), "writer-secret")
 
+    def test_pooler_password_propagation_retries_only_bounded_auth_failures(self) -> None:
+        self.assertEqual(
+            provision.POOLER_AUTH_RETRY_DELAYS_SECONDS,
+            (0, 15, 30, 60),
+        )
+        runtime_url = (
+            "postgresql://runtime.project:secret@"
+            "aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+        )
+        writer_url = (
+            "postgresql://writer.project:secret@"
+            "aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+        )
+        auth_failure = provision.psycopg2.OperationalError(
+            'password authentication failed for user "vowpic_app_runtime"'
+        )
+        expected = {"vowpic_app_runtime": {"current_user": "vowpic_app_runtime"}}
+        with (
+            mock.patch.object(
+                provision,
+                "prove_database_logins",
+                side_effect=(auth_failure, auth_failure, expected),
+            ) as prove,
+            mock.patch.object(provision.time, "sleep") as sleep,
+        ):
+            result = provision.prove_database_logins_after_pooler_propagation(
+                runtime_url,
+                writer_url,
+                {"users": ("SELECT",)},
+            )
+        self.assertEqual(result, expected)
+        self.assertEqual(prove.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(15), mock.call(30)])
+
+    def test_pooler_proof_does_not_retry_non_authentication_failures(self) -> None:
+        role_url = (
+            "postgresql://runtime.project:secret@"
+            "aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+        )
+        with (
+            mock.patch.object(
+                provision,
+                "prove_database_logins",
+                side_effect=provision.psycopg2.OperationalError("connection timed out"),
+            ) as prove,
+            mock.patch.object(provision.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(provision.psycopg2.OperationalError):
+                provision.prove_database_logins_after_pooler_propagation(
+                    role_url,
+                    role_url,
+                    {"users": ("SELECT",)},
+                )
+        prove.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_direct_database_authentication_failure_is_not_retried(self) -> None:
+        direct_url = "postgresql://runtime:secret@db.example.com:5432/postgres"
+        failure = provision.psycopg2.OperationalError(
+            'password authentication failed for user "runtime"'
+        )
+        with (
+            mock.patch.object(
+                provision,
+                "prove_database_logins",
+                side_effect=failure,
+            ) as prove,
+            mock.patch.object(provision.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(provision.psycopg2.OperationalError):
+                provision.prove_database_logins_after_pooler_propagation(
+                    direct_url,
+                    direct_url,
+                    {"users": ("SELECT",)},
+                )
+        prove.assert_called_once()
+        sleep.assert_not_called()
+
 
 class ProductionDatabaseLoginVercelTest(unittest.TestCase):
     def test_urls_are_sent_only_over_stdin_and_read_back_as_sensitive(self) -> None:

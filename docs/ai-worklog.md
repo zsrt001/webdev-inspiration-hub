@@ -1588,3 +1588,15 @@
 - Added a controlled adoption path only for a `RESERVED` row with no runtime bundle, manifest, build artifact, report, API/worker deployment, target snapshot, or acceptance-fault binding. Bound or later-phase activations remain conflicting and immutable to this path.
 - Adoption requires the reserving SHA to be a Git ancestor of the exact reviewed checkout, the same protected approval, exact prior source/run/version coordinates, the migration advisory lock, row lock, and a version CAS. The durable preflight/edge artifact is written before mutation and becomes the new evidence-chain head while preserving the prior evidence reference inside the preflight report.
 - Focused release/workflow tests passed 75/75; the PostgreSQL integration extension is wired into CI's real database job and was locally collected with its seven explicit environment-dependent skips. Python compilation, YAML parsing, Git ancestry proof, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Supavisor password-propagation retry boundary
+
+### Goal and evidence
+
+- Protected run `29581521675` successfully completed the new read-only takeover preflight, authenticated edge lockdown, durable reservation evidence, exact-main recheck, and atomic adoption of the unbound Production reservation.
+- The next application-login step committed a new password rotation, then the Supavisor session pool returned `password authentication failed` for the runtime login before any Vercel environment write. This is the documented pooler credential-propagation/cache boundary; the workflow preserved failure evidence and removed its runner bypass.
+
+### Changes and verification
+
+- Added four bounded proof attempts over 105 seconds, and only for an exact password-authentication failure when both generated role URLs target `*.pooler.supabase.com`. Direct-database authentication failures, timeouts, privilege mismatches, and every other error still fail immediately.
+- Vercel publication remains after the application logins authenticate and their exact SQL surfaces pass, so unverified credentials are not promoted. Focused login/release tests passed 85/85 with seven explicit database-environment skips; Python compilation and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import secrets
 import sys
+import time
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
@@ -34,6 +35,9 @@ from production_database_login_proof import (  # noqa: E402
     WRITER_LOGIN,
     prove_database_logins,
 )
+
+
+POOLER_AUTH_RETRY_DELAYS_SECONDS = (0, 15, 30, 60)
 
 
 def load_database_role_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, tuple[str, ...]]:
@@ -160,6 +164,47 @@ def database_url_for_login(database_url: str, login: str, password: str) -> str:
         host = f"{host}:{parsed.port}"
     userinfo = f"{quote(login + suffix, safe='')}:{quote(password, safe='')}"
     return urlunsplit((parsed.scheme, f"{userinfo}@{host}", parsed.path, parsed.query, ""))
+
+
+def _is_pooler_password_propagation_failure(
+    exc: psycopg2.OperationalError,
+    role_urls: tuple[str, str],
+) -> bool:
+    hosts = tuple((urlsplit(url).hostname or "").lower() for url in role_urls)
+    sqlstate = str(getattr(getattr(exc, "diag", None), "sqlstate", "") or "")
+    return (
+        all(host.endswith(".pooler.supabase.com") for host in hosts)
+        and (
+            sqlstate == "28P01"
+            or "password authentication failed" in str(exc).lower()
+        )
+    )
+
+
+def prove_database_logins_after_pooler_propagation(
+    runtime_url: str,
+    writer_url: str,
+    business_privileges: dict[str, tuple[str, ...]],
+) -> dict[str, dict[str, Any]]:
+    """Retry only the known bounded Supavisor password-propagation boundary."""
+    role_urls = (runtime_url, writer_url)
+    for attempt, delay in enumerate(POOLER_AUTH_RETRY_DELAYS_SECONDS):
+        if delay:
+            time.sleep(delay)
+        try:
+            return prove_database_logins(
+                runtime_url,
+                writer_url,
+                business_privileges,
+            )
+        except psycopg2.OperationalError as exc:
+            is_last_attempt = attempt + 1 == len(POOLER_AUTH_RETRY_DELAYS_SECONDS)
+            if is_last_attempt or not _is_pooler_password_propagation_failure(
+                exc,
+                role_urls,
+            ):
+                raise
+    raise AssertionError("unreachable pooler propagation retry boundary")
 
 
 def _role_facts(cursor: RealDictCursor, role_name: str) -> dict[str, Any] | None:
@@ -328,7 +373,7 @@ def provision_database_logins(
     proof = {
         "database": authority["current_database"],
         "credential_rotation": credential_rotation,
-        "roles": prove_database_logins(
+        "roles": prove_database_logins_after_pooler_propagation(
             runtime_url,
             writer_url,
             business_privileges,
