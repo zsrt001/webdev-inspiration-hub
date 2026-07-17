@@ -7,8 +7,12 @@ import re
 import subprocess
 import sys
 import unittest
+from unittest.mock import Mock, patch
+
+import httpx
 
 from scripts.release import manage_edge_lockdown as edge
+from scripts.release import edge_lockdown_probes as probes
 
 
 HOST = "www.vowpic.com"
@@ -85,6 +89,67 @@ class FakeProjectApi:
 
 
 class EdgeRouteContractTest(unittest.TestCase):
+    def test_lockdown_http_proves_deny_rules_and_fail_closed_runner_bypass(self) -> None:
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def request(self, method, path, *, headers=None, json=None):
+                del method, json
+                if probes.BYPASS_HEADER_NAME in (headers or {}):
+                    return httpx.Response(503, json={"code": "runtime_not_ready"})
+                if path in {probe.path for probe in probes.APPLICATION_PROBES.values()}:
+                    return httpx.Response(403)
+                return httpx.Response(200)
+
+        with patch.object(probes.httpx, "Client", return_value=FakeClient()):
+            evidence = probes.verify_lockdown_http("https://www.vowpic.com", "a" * 48)
+
+        self.assertEqual(set(evidence["groups"]), edge.EDGE_ROUTE_GROUPS)
+        self.assertTrue(all(item["status"] == 403 for item in evidence["groups"].values()))
+        self.assertEqual(evidence["runner_bypass_status"], 503)
+        self.assertEqual(evidence["runner_bypass_code"], "runtime_not_ready")
+        self.assertTrue(all(status != 403 for status in evidence["preserved_paths"].values()))
+
+    def test_initial_bypass_accepts_the_exact_fail_closed_runtime_boundary(self) -> None:
+        client = Mock()
+        client.request.return_value = httpx.Response(
+            503,
+            json={"code": "runtime_not_ready"},
+        )
+        response = probes.poll_probe(
+            client,
+            probes.APPLICATION_PROBES["auth_upload"],
+            extra_headers={probes.BYPASS_HEADER_NAME: "a" * 48},
+            expected_status=410,
+            expected_code="auth_method_retired",
+            alternate_outcomes=((503, "runtime_not_ready"),),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(probes.response_code(response), "runtime_not_ready")
+
+    def test_handoff_probe_does_not_accept_the_bootstrap_runtime_boundary(self) -> None:
+        client = Mock()
+        client.request.return_value = httpx.Response(
+            503,
+            json={"code": "runtime_not_ready"},
+        )
+        with patch.object(probes.time, "sleep", return_value=None), self.assertRaisesRegex(
+            edge.EdgeLockdownError,
+            "expected 410/auth_method_retired, observed 503/runtime_not_ready",
+        ):
+            probes.poll_probe(
+                client,
+                probes.APPLICATION_PROBES["auth_upload"],
+                extra_headers=None,
+                expected_status=410,
+                expected_code="auth_method_retired",
+            )
+        self.assertEqual(client.request.call_count, 6)
+
     def test_direct_script_entrypoint_resolves_repository_package(self) -> None:
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)

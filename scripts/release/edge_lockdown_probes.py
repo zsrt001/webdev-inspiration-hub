@@ -40,8 +40,10 @@ def poll_probe(
     extra_headers: dict[str, str] | None,
     expected_status: int,
     expected_code: str | None,
+    alternate_outcomes: tuple[tuple[int, str | None], ...] = (),
 ) -> httpx.Response:
     last: httpx.Response | None = None
+    expected_outcomes = ((expected_status, expected_code), *alternate_outcomes)
     headers = {"User-Agent": "vowpic-edge-lockdown/1", **(probe.headers or {})}
     headers.update(extra_headers or {})
     for attempt in range(6):
@@ -52,13 +54,19 @@ def poll_probe(
             json=probe.json_body,
         )
         code = response_code(last)
-        if last.status_code == expected_status and (expected_code is None or code == expected_code):
+        if any(
+            last.status_code == status and (outcome_code is None or code == outcome_code)
+            for status, outcome_code in expected_outcomes
+        ):
             return last
         if attempt < 5:
             time.sleep(2)
     assert last is not None
+    expected = " or ".join(
+        f"{status}/{outcome_code or '*'}" for status, outcome_code in expected_outcomes
+    )
     raise EdgeLockdownError(
-        f"{probe.method} {probe.path} expected {expected_status}/{expected_code or '*'}, "
+        f"{probe.method} {probe.path} expected {expected}, "
         f"observed {last.status_code}/{response_code(last) or 'missing'}"
     )
 
@@ -81,6 +89,7 @@ def verify_lockdown_http(base_url: str, bypass_value: str) -> dict[str, Any]:
             extra_headers={BYPASS_HEADER_NAME: bypass_value},
             expected_status=APPLICATION_PROBES["auth_upload"].expected_status,
             expected_code=APPLICATION_PROBES["auth_upload"].expected_code,
+            alternate_outcomes=((503, "runtime_not_ready"),),
         )
         preserved = {}
         preserved_requests = (
@@ -103,6 +112,7 @@ def verify_lockdown_http(base_url: str, bypass_value: str) -> dict[str, Any]:
     return {
         "groups": results,
         "runner_bypass_status": bypass_response.status_code,
+        "runner_bypass_code": response_code(bypass_response),
         "preserved_paths": preserved,
     }
 

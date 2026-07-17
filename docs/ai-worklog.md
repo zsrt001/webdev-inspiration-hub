@@ -1535,3 +1535,17 @@
 - Added the repository root to the script import path before its `scripts.release` imports, following the existing release-script entrypoint pattern.
 - Added a subprocess regression that removes inherited `PYTHONPATH` and invokes the exact workflow form from the repository root. The direct `--help` entrypoint now exits zero and exposes `cleanup-bypass`.
 - The focused edge manager and protected workflow contract suites passed 75/75. `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Fail-closed bootstrap edge-bypass proof
+
+### Goal and evidence
+
+- Protected run `29578442846` correctly recognized the already-bridged `0012` Production schema, skipped every legacy bridge step, and repeated the read-only inventory plus isolated PostgreSQL 17 restore rehearsal successfully.
+- The repaired edge manager published and read back the ephemeral runner bypass plus the two managed deny rules. All seven unbypassed logical route probes returned the required edge denial. The bypassed authentication probe reached the existing application and returned the exact fail-closed `503/runtime_not_ready` boundary instead of the post-install `410/auth_method_retired` guard.
+- The workflow stopped before protected-evidence persistence, reservation, application-login publication, build, deploy, Promote, alias, and formal-domain handoff. Its unconditional cleanup succeeded and removed the runner bypass; the two deny rules remain as the intended safe containment.
+
+### Changes and verification
+
+- The initial lockdown now accepts either the final application guard or the exact `503/runtime_not_ready` response as proof that the runner bypass reached the currently fail-closed application. No other `503` code is accepted.
+- The later per-group handoff remains strict: it still requires the exact final application status/code and matching before/after database snapshots after each deny group is removed. The bootstrap allowance cannot satisfy formal-domain handoff or completion.
+- Added regressions for the full initial deny/bypass HTTP sequence, the exact fail-closed allowance, and default/handoff rejection of that allowance. Focused edge and workflow contract tests passed, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
