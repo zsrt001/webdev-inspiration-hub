@@ -1638,3 +1638,17 @@
 - The protected workflow now installs `uv 0.10.11` through official `astral-sh/setup-uv` v8.3.2 pinned to full commit `11f9893b081a58869d3b5fccaea48c9e9e46f990`, disables the unrelated uv dependency cache, downloads from the official GitHub release, and checks the exact official archive checksum.
 - The release-tooling step requires exact `uv 0.10.11` output before installing any other tooling or invoking Vercel. A closed contract test proves the immutable action pin, version, checksum, source, cache setting, singleton action use, and ordering before the first build.
 - Focused release coverage passed 97/97, the full backend suite passed 789 tests with 36 explicit environment-dependent skips, workflow YAML parsing, Python compilation, and `git diff --check` passed. No application runtime dependency, cloud configuration, secret, domain, or Proxifier setting was changed, and no Subagent was used.
+
+## 2026-07-17 - GitHub build-artifact digest boundary normalization
+
+### Goal and evidence
+
+- Protected run `29584924777` proved the deterministic uv repair: Vercel's complete predeploy build passed, the exact `.vercel/output` was encrypted, and GitHub artifact upload plus durable-output checks passed.
+- Binding then failed before the registration script ran because upload-artifact v7 emits its `artifact-digest` output as 64 lowercase hexadecimal characters, while the internal database and GitHub REST evidence contract intentionally stores the canonical `sha256:<64 lowercase hex>` form. The workflow incorrectly required the canonical form without converting the action output.
+- No build manifest was bound and no staged deployment, Promote, formal-domain change, or edge handoff began. Sanitized failure evidence was preserved and the ephemeral runner bypass cleanup passed.
+
+### Changes and verification
+
+- The bind step now treats new-upload and recovered-artifact digests as separate trust boundaries. A new action output must be exact raw 64-hex and is prefixed once; a recovered REST digest must already be exact canonical form. The final value is revalidated before the unchanged database CAS.
+- A closed workflow contract proves both branch-specific input formats, the single normalization, the final canonical validation, and removal of the unsafe direct fallback expression. Focused release coverage passed 98/98, the full backend suite passed 790 tests with 36 explicit environment-dependent skips, workflow YAML parsing, Python compilation, and `git diff --check` passed.
+- No database schema, application runtime code, cloud setting, secret, domain, or Proxifier setting was changed, and no Subagent was used.
