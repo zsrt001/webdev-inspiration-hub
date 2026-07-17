@@ -1612,3 +1612,15 @@
 
 - Reconciliation now preserves all pre-existing automation bypasses, creates the protected VowPic target only when absent, and requires exact readback of the prior key set plus that target. It also fails if any pre-existing metadata changed, so it neither overwrites nor revokes an unknown integration.
 - The report contains only counts and the existing target fingerprint; no bypass plaintext is logged or persisted. Focused release coverage passed 96/96, and the full backend suite passed 788 tests with 36 explicit environment-dependent skips. Python compilation, workflow YAML parsing, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Exact Vercel bypass-secret format contract
+
+### Goal and evidence
+
+- Protected run `29583036219` passed least-privilege database-login authentication and publication, then Vercel rejected creation of the protected automation bypass with HTTP 400 before any build or deployment.
+- Vercel's official Provider contract requires an exact 32-character alphanumeric secret. The local parser incorrectly admitted 32-256 characters plus underscore and hyphen, so an invalid protected input crossed local validation and failed only at the external mutation boundary.
+
+### Changes and verification
+
+- The parser now accepts only the exact Vercel format and rejects 31/33-character and underscore/hyphen cases before constructing an API client. Existing secret redaction and no-plaintext reporting remain unchanged.
+- The protected GitHub Production header secret must be rotated to a cryptographically generated 32-character alphanumeric value after this contract passes review; generation is process-only and the value must never be printed or persisted. Focused release coverage passed 96/96, the full backend suite passed 788 tests with 36 explicit environment-dependent skips, and Python compilation plus `git diff --check` passed. No existing Vercel bypass is revoked. No Proxifier setting was read or changed, and no Subagent was used.

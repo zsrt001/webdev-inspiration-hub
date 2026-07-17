@@ -31,12 +31,13 @@ def parse_bypass_header(raw: str) -> str:
     if (
         not separator
         or name.strip().lower() != DEPLOYMENT_BYPASS_HEADER_NAME
-        or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", value.strip())
+        or not re.fullmatch(r"[A-Za-z0-9]{32}", value.strip())
         or "\n" in raw
         or "\r" in raw
     ):
         raise ValueError(
-            f"protected bypass must be one {DEPLOYMENT_BYPASS_HEADER_NAME}: <secret> header"
+            "protected bypass must be one "
+            f"{DEPLOYMENT_BYPASS_HEADER_NAME}: <32-character alphanumeric secret> header"
         )
     return value.strip()
 
