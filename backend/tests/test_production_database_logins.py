@@ -94,6 +94,15 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "REVOKE ALL ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)",
             source,
         )
+        owner_set_grant = (
+            "GRANT vowpic_migration_owner TO CURRENT_USER\n"
+            "      WITH INHERIT FALSE, SET TRUE;"
+        )
+        self.assertIn(owner_set_grant, source)
+        self.assertLess(
+            source.index(owner_set_grant),
+            source.index("'ALTER %s %I.%I OWNER TO vowpic_migration_owner'"),
+        )
 
     def test_pooler_url_keeps_project_suffix_and_replaces_password(self) -> None:
         result = provision.database_url_for_login(

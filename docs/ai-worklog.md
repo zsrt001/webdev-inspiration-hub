@@ -1360,3 +1360,20 @@
 - A disposable local PostgreSQL container demoted `postgres` to non-superuser with `CREATEROLE`, created a least-privilege login, and successfully executed the password-only rotation; readback proved the admin remained non-superuser and the target had no superuser, role-creator, or RLS-bypass attribute. The container was removed.
 - An exact PostgreSQL 17 container rerun was unavailable because the image is not cached and Docker Desktop could not reach Docker Hub without changing its proxy. No proxy or Proxifier setting was changed. The exact hosted-PostgreSQL proof therefore remains the guarded Supabase rerun after review and merge.
 - No Subagent was used.
+
+## 2026-07-17 - Hosted Supabase migration-owner SET compatibility repair
+
+### Goal and evidence
+
+- The next real Supabase SQL Editor execution passed the password-only role rotation and failed transactionally with SQLSTATE `42501` on `ALTER TABLE public.click_stats OWNER TO vowpic_migration_owner`: the hosted `postgres` session was not able to `SET ROLE` to the new owner.
+- PostgreSQL 17 automatically gives a non-superuser `CREATEROLE` creator `ADMIN TRUE, SET FALSE, INHERIT FALSE`. PostgreSQL also requires `SET ROLE` capability for `ALTER ... OWNER TO`, so the bootstrap must add the missing membership option explicitly.
+
+### Changes
+
+- Granted `CURRENT_USER` membership in `vowpic_migration_owner` with `SET TRUE` and `INHERIT FALSE` before any ownership transfer. This is limited to the already-authorized SQL Editor/bootstrap identity and does not add inherited data privileges to an application or migration login.
+- Added a regression assertion that the SET-capable grant exists before the first ownership transfer.
+
+### Verification and boundary
+
+- The failed hosted execution was atomic and rolled back, so it created no valid login or password. Focused database-login/runtime-audit tests passed 9/9, and the full backend unittest discovery completed with exit code 0. CI plus a reviewed merge are required before the guarded Supabase rerun.
+- No Subagent was used. No Proxifier setting was read or changed.
