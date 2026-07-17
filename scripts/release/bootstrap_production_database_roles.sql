@@ -304,10 +304,12 @@ BEGIN
         );
     END LOOP;
 
-    ALTER DEFAULT PRIVILEGES FOR ROLE vowpic_migration_owner IN SCHEMA public
+    SET LOCAL ROLE vowpic_migration_owner;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
       GRANT SELECT ON TABLES TO vowpic_inventory_login;
-    ALTER DEFAULT PRIVILEGES FOR ROLE vowpic_migration_owner IN SCHEMA public
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
       GRANT SELECT ON SEQUENCES TO vowpic_inventory_login;
+    RESET ROLE;
 
     IF NOT EXISTS (
         SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'

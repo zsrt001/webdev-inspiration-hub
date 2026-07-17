@@ -1396,3 +1396,21 @@
 - Both hosted probes deliberately raised exceptions after their assertions, so their role DDL rolled back and no probe role remained. The production bootstrap attempt that exposed the failure also rolled back completely.
 - Focused database-login/runtime-audit tests passed 9/9 and `git diff --check` passed. The unlocked local Python 3.13 full suite is not a valid release baseline: it collected 773 tests but retained one OpenAPI snapshot failure and three Pillow API errors that are absent from the repository's locked Python 3.11 CI environment; the protected branch checks remain the authoritative full regression gate.
 - No secret value was returned or persisted during diagnosis. No Proxifier setting was read or changed.
+
+## 2026-07-17 - Migration-owner default-privilege execution repair
+
+### Goal and evidence
+
+- The merged self-grant repair let the real bootstrap pass role creation, password configuration, grants, and object ownership transfer. The transaction then failed explicitly with SQLSTATE `42501` because the protected Supabase SQL Editor identity could not change default privileges for `vowpic_migration_owner`.
+- A hosted rollback probe proved that the SQL Editor identity can `SET LOCAL ROLE` to a newly self-granted owner, apply that owner's default table privileges, `RESET ROLE`, and reach a deliberate rollback exception.
+
+### Changes
+
+- Wrapped only the two migration-owner default-privilege statements in `SET LOCAL ROLE vowpic_migration_owner` and `RESET ROLE`.
+- Removed the `FOR ROLE` form that was still evaluated against the protected SQL Editor identity, while keeping the same inventory SELECT-only defaults.
+- Added ordering assertions and a regression rejection for the hosted-incompatible `FOR ROLE` form.
+
+### Verification and boundary
+
+- The hosted probe deliberately raised an exception after the default-privilege assertion, so both probe roles and their ACL changes rolled back. The failed production bootstrap also rolled back completely and returned no credential payload.
+- No Proxifier setting was read or changed.
