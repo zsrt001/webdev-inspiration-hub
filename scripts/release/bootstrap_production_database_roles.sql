@@ -42,15 +42,19 @@ BEGIN
         RAISE EXCEPTION 'unsupported VowPic Production revision: %', current_revision;
     END IF;
 
+    -- PostgreSQL 17 does not give a non-superuser CREATEROLE creator SET on a
+    -- newly created role by default. Request that membership option at role
+    -- creation time; hosted Supabase terminates the management connection when
+    -- its protected SQL Editor role is targeted by an explicit GRANT.
+    PERFORM set_config('createrole_self_grant', 'set', true);
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_migration_owner') THEN
         CREATE ROLE vowpic_migration_owner
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
-    -- PostgreSQL 17 gives a non-superuser CREATEROLE creator ADMIN but not SET
-    -- on a role it creates. Object ownership transfer requires SET to the new
-    -- owner, so grant that capability explicitly without inheriting privileges.
-    GRANT vowpic_migration_owner TO CURRENT_USER
-      WITH INHERIT FALSE, SET TRUE;
+    IF NOT pg_has_role(CURRENT_USER, 'vowpic_migration_owner', 'SET') THEN
+        RAISE EXCEPTION
+          'the Supabase SQL Editor authority cannot SET ROLE vowpic_migration_owner';
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_runtime') THEN
         CREATE ROLE vowpic_runtime
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;

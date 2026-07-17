@@ -1377,3 +1377,22 @@
 
 - The failed hosted execution was atomic and rolled back, so it created no valid login or password. Focused database-login/runtime-audit tests passed 9/9, and the full backend unittest discovery completed with exit code 0. CI plus a reviewed merge are required before the guarded Supabase rerun.
 - No Subagent was used. No Proxifier setting was read or changed.
+
+## 2026-07-17 - Hosted Supabase protected-role self-grant repair
+
+### Goal and evidence
+
+- The merged explicit `GRANT vowpic_migration_owner TO CURRENT_USER ... SET TRUE` terminated the hosted Supabase SQL Editor management connection. A rollback probe proved that `CREATE ROLE` itself succeeds, while adding that explicit grant reproduces the connection termination.
+- A second rollback probe set PostgreSQL 17 `createrole_self_grant` to `set` before creating the owner and proved with `pg_has_role(..., 'SET')` that the SQL Editor authority receives the required SET capability without targeting the protected current role with a GRANT.
+
+### Changes
+
+- Request SET membership transaction-locally before creating `vowpic_migration_owner`.
+- Removed the hosted-incompatible explicit grant to `CURRENT_USER` and added a fail-closed SET capability check for an already-existing owner.
+- Updated the regression contract to require the self-grant setting and capability check before any ownership transfer, and to reject the explicit current-user grant.
+
+### Verification and boundary
+
+- Both hosted probes deliberately raised exceptions after their assertions, so their role DDL rolled back and no probe role remained. The production bootstrap attempt that exposed the failure also rolled back completely.
+- Focused database-login/runtime-audit tests passed 9/9 and `git diff --check` passed. The unlocked local Python 3.13 full suite is not a valid release baseline: it collected 773 tests but retained one OpenAPI snapshot failure and three Pillow API errors that are absent from the repository's locked Python 3.11 CI environment; the protected branch checks remain the authoritative full regression gate.
+- No secret value was returned or persisted during diagnosis. No Proxifier setting was read or changed.

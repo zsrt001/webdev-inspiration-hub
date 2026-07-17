@@ -94,13 +94,19 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "REVOKE ALL ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)",
             source,
         )
-        owner_set_grant = (
-            "GRANT vowpic_migration_owner TO CURRENT_USER\n"
-            "      WITH INHERIT FALSE, SET TRUE;"
+        owner_self_grant = "set_config('createrole_self_grant', 'set', true)"
+        owner_set_check = (
+            "pg_has_role(CURRENT_USER, 'vowpic_migration_owner', 'SET')"
         )
-        self.assertIn(owner_set_grant, source)
+        self.assertIn(owner_self_grant, source)
+        self.assertIn(owner_set_check, source)
+        self.assertNotIn("GRANT vowpic_migration_owner TO CURRENT_USER", source)
         self.assertLess(
-            source.index(owner_set_grant),
+            source.index(owner_self_grant),
+            source.index("CREATE ROLE vowpic_migration_owner"),
+        )
+        self.assertLess(
+            source.index(owner_set_check),
             source.index("'ALTER %s %I.%I OWNER TO vowpic_migration_owner'"),
         )
 
