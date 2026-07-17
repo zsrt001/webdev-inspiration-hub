@@ -65,8 +65,9 @@ provide only the scoped, expiring inputs used by the one-purpose workflow:
 - inventory HMAC key
 - independent HMAC keys for edge evidence and runtime-statement-audit evidence
 - Vercel token, org ID, and project ID
-- one `x-vercel-protection-bypass: <secret>` header pair used only for the staged
-  deployment URL; the workflow creates/read-backs that exact secret through the
+- one `x-vercel-protection-bypass: <secret>` header pair with an exact 32-character
+  alphanumeric Vercel secret, used only for the staged deployment URL; the
+  workflow creates/read-backs that exact secret through the
   Vercel project API, preserves every pre-existing automation bypass without
   overwrite or revocation, and fails if readback shows an unexpected entry change
 - the cleanup cron token used to reach the authenticated cleanup guard; the
