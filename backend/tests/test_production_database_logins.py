@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest import mock
+from urllib.parse import unquote, urlsplit
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "release" / "provision_production_database_logins.py"
+BOOTSTRAP_SQL = ROOT / "scripts" / "release" / "bootstrap_production_database_roles.sql"
+SPEC = importlib.util.spec_from_file_location("provision_production_database_logins", SCRIPT)
+assert SPEC and SPEC.loader
+provision = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(provision)
+
+
+class ProductionDatabaseLoginUrlTest(unittest.TestCase):
+    def test_role_contract_is_exact_and_forbids_destructive_business_privileges(self) -> None:
+        privileges = provision.load_database_role_contract()
+        self.assertEqual(len(privileges), 16)
+        self.assertEqual(privileges["subscription_plans"], ("SELECT",))
+        self.assertEqual(privileges["users"], ("SELECT", "INSERT", "UPDATE"))
+        self.assertFalse(
+            {"DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
+            & {verb for verbs in privileges.values() for verb in verbs}
+        )
+        self.assertEqual(
+            provision.CONTROL_PLANE_TABLES,
+            (
+                "release_observation_samples",
+                "release_observation_runs",
+                "data_migration_checkpoints",
+                "data_migration_runs",
+                "ops_feature_flag_audits",
+                "ops_feature_flags",
+                "acceptance_identity_bindings",
+                "release_activations",
+            ),
+        )
+
+    def test_server_side_bootstrap_creates_scoped_inventory_and_migration_logins(self) -> None:
+        source = BOOTSTRAP_SQL.read_text(encoding="utf-8")
+        for required in (
+            "vowpic_inventory_login",
+            "default_transaction_read_only = on",
+            "BYPASSRLS",
+            "vowpic_migration_owner",
+            "vowpic_migration_login",
+            "vowpic_app_runtime",
+            "vowpic_control_writer_login",
+            "NOCREATEROLE",
+            "NOBYPASSRLS",
+            "SET role TO 'vowpic_migration_owner'",
+            "GRANT SELECT ON ALL TABLES IN SCHEMA public",
+            "ALTER DEFAULT PRIVILEGES FOR ROLE vowpic_migration_owner",
+            "vowpic.database-bootstrap.secrets.v1",
+            "vowpic_rotate_application_database_logins",
+            "application database login rotation requires the migration login",
+            "an existing VowPic NOLOGIN role has unexpected memberships",
+            "a VowPic application group owns database objects",
+        ):
+            self.assertIn(required, source)
+        self.assertNotIn("pg_read_all_data", source)
+        self.assertNotIn("GRANT postgres", source)
+        self.assertNotIn("PASSWORD 'change", source)
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)",
+            source,
+        )
+
+    def test_pooler_url_keeps_project_suffix_and_replaces_password(self) -> None:
+        result = provision.database_url_for_login(
+            "postgresql://migration.ucqdgdjituqzzsnfprqd:old@"
+            "aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require",
+            "vowpic_app_runtime",
+            "new:/ password",
+        )
+        parsed = urlsplit(result)
+        self.assertEqual(
+            unquote(parsed.username or ""),
+            "vowpic_app_runtime.ucqdgdjituqzzsnfprqd",
+        )
+        self.assertEqual(unquote(parsed.password or ""), "new:/ password")
+        self.assertEqual(parsed.hostname, "aws-1-us-east-1.pooler.supabase.com")
+        self.assertEqual(parsed.query, "sslmode=require")
+        self.assertNotIn("old", result)
+
+    def test_direct_url_uses_the_exact_login_without_pooler_suffix(self) -> None:
+        result = provision.database_url_for_login(
+            "postgresql+asyncpg://postgres:old@db.example.com/vowpic?sslmode=require",
+            "vowpic_control_writer_login",
+            "writer-secret",
+        )
+        parsed = urlsplit(result)
+        self.assertEqual(parsed.scheme, "postgresql")
+        self.assertEqual(unquote(parsed.username or ""), "vowpic_control_writer_login")
+        self.assertEqual(unquote(parsed.password or ""), "writer-secret")
+
+
+class ProductionDatabaseLoginVercelTest(unittest.TestCase):
+    def test_urls_are_sent_only_over_stdin_and_read_back_as_sensitive(self) -> None:
+        calls: list[tuple[list[str], str | None]] = []
+
+        def fake_run(args, *, input, text, capture_output, check):
+            self.assertTrue(text)
+            self.assertTrue(capture_output)
+            self.assertFalse(check)
+            calls.append((list(args), input))
+            if args[1:3] == ["env", "list"]:
+                stdout = json.dumps(
+                    [
+                        {"key": "DATABASE_URL", "type": "sensitive", "target": ["production"]},
+                        {
+                            "key": "CONTROL_PLANE_DATABASE_URL",
+                            "type": "sensitive",
+                            "target": ["production"],
+                        },
+                        {
+                            "key": "CLEANUP_CRON_TOKEN",
+                            "type": "sensitive",
+                            "target": ["production"],
+                        },
+                    ]
+                )
+            else:
+                stdout = ""
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+        with tempfile.TemporaryDirectory() as directory:
+            cli = Path(directory) / "vercel"
+            cli.touch()
+            with mock.patch.object(provision.vercel_env.subprocess, "run", side_effect=fake_run):
+                result = provision.vercel_env.publish_vercel_database_urls(
+                    vercel_cli=str(cli),
+                    token="vercel-token",
+                    project_id="prj_Example123",
+                    team_id="team_Example123",
+                    runtime_url="postgresql://runtime:secret@db.example/vowpic",
+                    writer_url="postgresql://writer:secret@db.example/vowpic",
+                    cleanup_cron_token="cleanup-secret",
+                )
+
+        self.assertEqual(
+            set(result),
+            {"DATABASE_URL", "CONTROL_PLANE_DATABASE_URL", "CLEANUP_CRON_TOKEN"},
+        )
+        add_calls = [call for call in calls if call[0][1:3] == ["env", "add"]]
+        self.assertEqual(len(add_calls), 3)
+        self.assertEqual(add_calls[0][1], "postgresql://writer:secret@db.example/vowpic\n")
+        self.assertEqual(add_calls[1][1], "postgresql://runtime:secret@db.example/vowpic\n")
+        self.assertEqual(add_calls[2][1], "cleanup-secret\n")
+        for args, _ in calls:
+            command = " ".join(args)
+            self.assertNotIn("postgresql://writer", command)
+            self.assertNotIn("postgresql://runtime", command)
+        for args, _ in add_calls:
+            self.assertIn("--force", args)
+            self.assertIn("--sensitive", args)
+
+    def test_readback_rejects_a_non_sensitive_database_variable(self) -> None:
+        def fake_run(args, *, input, text, capture_output, check):
+            if args[1:3] == ["env", "list"]:
+                stdout = json.dumps(
+                    [
+                        {"key": "DATABASE_URL", "type": "encrypted", "target": ["production"]},
+                        {
+                            "key": "CONTROL_PLANE_DATABASE_URL",
+                            "type": "sensitive",
+                            "target": ["production"],
+                        },
+                        {
+                            "key": "CLEANUP_CRON_TOKEN",
+                            "type": "sensitive",
+                            "target": ["production"],
+                        },
+                    ]
+                )
+            else:
+                stdout = ""
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+        with tempfile.TemporaryDirectory() as directory:
+            cli = Path(directory) / "vercel"
+            cli.touch()
+            with mock.patch.object(provision.vercel_env.subprocess, "run", side_effect=fake_run):
+                with self.assertRaisesRegex(ValueError, "not a Production Sensitive"):
+                    provision.vercel_env.publish_vercel_database_urls(
+                        vercel_cli=str(cli),
+                        token="vercel-token",
+                        project_id="prj_Example123",
+                        team_id="team_Example123",
+                        runtime_url="postgresql://runtime:secret@db.example/vowpic",
+                        writer_url="postgresql://writer:secret@db.example/vowpic",
+                        cleanup_cron_token="cleanup-secret",
+                    )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -251,6 +251,14 @@ def _aware_datetime(value: Any, *, label: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def normalize_postgres_server_address(value: Any) -> str:
+    """Return a bare IP address for PostgreSQL inet values such as 127.0.0.1/32."""
+    try:
+        return str(ipaddress.ip_interface(str(value or "").strip()).ip)
+    except ValueError as exc:
+        raise RehearsalError("connected target returned an invalid server address") from exc
+
+
 def validate_target_control_proof(
     proof: dict[str, Any],
     *,
@@ -280,8 +288,10 @@ def validate_target_control_proof(
     if int(proof.get("privileged_membership_count") or 0) != 0:
         raise RehearsalError("rehearsal target role inherits a privileged PostgreSQL role")
 
-    server_address = str(proof.get("server_address") or "").strip()
-    admin_server_address = str(proof.get("admin_server_address") or server_address).strip()
+    server_address = normalize_postgres_server_address(proof.get("server_address"))
+    admin_server_address = normalize_postgres_server_address(
+        proof.get("admin_server_address") or server_address
+    )
     if server_address not in resolved_addresses or admin_server_address != server_address:
         raise RehearsalError("connected target address does not match the verified DNS/server facts")
     try:
@@ -323,7 +333,7 @@ def verify_target_controls(config: RehearsalConfig) -> dict[str, Any]:
     with psycopg2.connect(**config.target.connect_kwargs()) as target_connection:
         with target_connection.cursor() as cursor:
             cursor.execute(
-                "SELECT current_database(), current_user, inet_server_addr()::text"
+                "SELECT current_database(), current_user, host(inet_server_addr())"
             )
             database, role, server_address = cursor.fetchone()
     with psycopg2.connect(**config.target_admin.connect_kwargs()) as admin_connection:
@@ -343,7 +353,7 @@ def verify_target_controls(config: RehearsalConfig) -> dict[str, Any]:
                              OR parent.rolreplication OR parent.rolbypassrls
                            )
                        ),
-                       inet_server_addr()::text
+                       host(inet_server_addr())
                 FROM pg_database AS database
                 JOIN pg_roles AS role ON role.rolname = %s
                 WHERE database.datname = %s

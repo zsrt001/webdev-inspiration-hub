@@ -27,6 +27,7 @@ jobs:
         shell: bash
     env:
       EVIDENCE_DIR: artifacts/security-baseline
+      LEGACY_BRIDGE_EVIDENCE_DIR: artifacts/security-legacy-bridge
       SOURCE_SHA: ${{ inputs.source_sha }}
     steps:
       - name: Check out the exact reviewed commit
@@ -69,9 +70,131 @@ jobs:
           test "$("$VERCEL_CLI" --version)" = "56.2.0"
           echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends postgresql-client-16
-          test "$(pg_dump --version | sed -E 's/.* ([0-9]+)\..*/\1/')" = "16"
-          test "$(pg_restore --version | sed -E 's/.* ([0-9]+)\..*/\1/')" = "16"
+          sudo apt-get install --yes --no-install-recommends ca-certificates curl postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-17
+          PG_BIN="/usr/lib/postgresql/17/bin"
+          test "$("$PG_BIN/pg_dump" --version | sed -E 's/.* ([0-9]+)\..*/\1/')" = "17"
+          test "$("$PG_BIN/pg_restore" --version | sed -E 's/.* ([0-9]+)\..*/\1/')" = "17"
+          echo "$PG_BIN" >> "$GITHUB_PATH"
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/prod-ca-2021.crt" \
+            https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt
+          echo "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7  $RUNNER_TEMP/prod-ca-2021.crt" \
+            | sha256sum --check --strict
+          echo "SSL_CERT_FILE=$RUNNER_TEMP/prod-ca-2021.crt" >> "$GITHUB_ENV"
+
+      - name: Discover the exact Production schema boundary
+        id: schema
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import psycopg2
+
+          database_url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
+              "postgresql+asyncpg://", "postgresql://", 1
+          )
+          with psycopg2.connect(database_url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version_num FROM alembic_version")
+                  rows = cursor.fetchall()
+          if len(rows) != 1:
+              raise SystemExit("Production must expose exactly one Alembic revision")
+          revision = str(rows[0][0])
+          allowed = {"20260427_0006", "20260516_0012", "20260712_0014"}
+          if revision not in allowed:
+              raise SystemExit(f"unsupported Production schema revision: {revision}")
+          bridge_required = revision == "20260427_0006"
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"revision={revision}\n")
+              handle.write(f"bridge_required={str(bridge_required).lower()}\n")
+          print(json.dumps({"revision": revision, "bridge_required": bridge_required}))
+          PY
+
+      - name: Inventory the legacy source before any bridge mutation
+        if: ${{ steps.schema.outputs.bridge_required == 'true' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          INVENTORY_HMAC_KEY: ${{ secrets.INVENTORY_HMAC_KEY }}
+        run: |
+          mkdir -p "$LEGACY_BRIDGE_EVIDENCE_DIR/before"
+          python scripts/release/inventory_production.py \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --hmac-key-env INVENTORY_HMAC_KEY \
+            --output "$LEGACY_BRIDGE_EVIDENCE_DIR/before/production-inventory.json"
+
+      - name: Rehearse the legacy source through an isolated PostgreSQL 17 restore
+        if: ${{ steps.schema.outputs.bridge_required == 'true' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          RESTORE_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/security-legacy-bridge/before/restore
+          RESTORE_SCRATCH_DIR: ${{ runner.temp }}/legacy-restore
+        run: bash scripts/release/run_isolated_restore_rehearsal.sh
+
+      - name: Persist legacy bridge evidence before migration
+        id: legacy_evidence
+        if: ${{ steps.schema.outputs.bridge_required == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vowpic-legacy-bridge-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/security-legacy-bridge
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Prove legacy bridge evidence is durable before mutation
+        if: ${{ steps.schema.outputs.bridge_required == 'true' }}
+        run: |
+          test -n "${{ steps.legacy_evidence.outputs.artifact-id }}"
+          test -n "${{ steps.legacy_evidence.outputs.artifact-digest }}"
+          test -n "${{ steps.legacy_evidence.outputs.artifact-url }}"
+
+      - name: Recheck current main before the legacy bridge
+        if: ${{ steps.schema.outputs.bridge_required == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-legacy-bridge.json"
+
+      - name: Atomically bridge the legacy schema to the reviewed 0012 boundary
+        if: ${{ steps.schema.outputs.bridge_required == 'true' }}
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+        run: alembic upgrade 20260516_0012
+
+      - name: Verify the legacy bridge landed on exactly 0012
+        if: ${{ steps.schema.outputs.bridge_required == 'true' }}
+        env:
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          database_url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
+              "postgresql+asyncpg://", "postgresql://", 1
+          )
+          with psycopg2.connect(database_url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version_num FROM alembic_version")
+                  rows = cursor.fetchall()
+          if rows != [("20260516_0012",)]:
+              raise SystemExit(f"legacy bridge revision mismatch: {rows!r}")
+          PY
 
       - name: Read-only install preflight
         id: preflight
@@ -153,34 +276,30 @@ jobs:
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' }}
         env:
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
-          RESTORE_TARGET_DATABASE_URL: ${{ secrets.RESTORE_TARGET_DATABASE_URL }}
-          RESTORE_TARGET_ADMIN_DATABASE_URL: ${{ secrets.RESTORE_TARGET_ADMIN_DATABASE_URL }}
-          RESTORE_TARGET_ROLE_NAME: ${{ secrets.RESTORE_TARGET_ROLE_NAME }}
-          RESTORE_TARGET_CREDENTIAL_EXPIRES_AT: ${{ secrets.RESTORE_TARGET_CREDENTIAL_EXPIRES_AT }}
-        run: |
-          python backend/scripts/backup_restore_rehearsal.py \
-            --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
-            --target-url-env RESTORE_TARGET_DATABASE_URL \
-            --target-admin-url-env RESTORE_TARGET_ADMIN_DATABASE_URL \
-            --target-role-name-env RESTORE_TARGET_ROLE_NAME \
-            --target-credential-expires-at-env RESTORE_TARGET_CREDENTIAL_EXPIRES_AT \
-            --artifact-dir "$EVIDENCE_DIR/restore" \
-            --scratch-dir "$RUNNER_TEMP/restore"
+          RESTORE_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/security-baseline/restore
+          RESTORE_SCRATCH_DIR: ${{ runner.temp }}/restore
+        run: bash scripts/release/run_isolated_restore_rehearsal.sh
 
-      - name: Verify authenticated external edge lockdown
+      - name: Install, read back, and verify the authenticated edge lockdown
         id: edge
         if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
         env:
-          EDGE_LOCKDOWN_REPORT_B64: ${{ secrets.EDGE_LOCKDOWN_REPORT_B64 }}
           EDGE_EVIDENCE_HMAC_KEY: ${{ secrets.EDGE_EVIDENCE_HMAC_KEY }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
         run: |
-          if [[ -z "$EDGE_LOCKDOWN_REPORT_B64" || -z "$PRODUCTION_BASE_URL" ]]; then
-            echo "NOT_RUN: protected edge-lockdown evidence or formal domain is missing" >&2
-            exit 3
-          fi
-          printf '%s' "$EDGE_LOCKDOWN_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/edge-lockdown.json"
+          echo "attempted=true" >> "$GITHUB_OUTPUT"
+          python scripts/release/manage_edge_lockdown.py lockdown \
+            --vercel-cli "$VERCEL_CLI" \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --bypass-state-output "$RUNNER_TEMP/edge-bypass-state.json" \
+            --output "$RUNNER_TEMP/edge-lockdown.json"
           python scripts/release/verify_edge_lockdown.py \
             --report "$RUNNER_TEMP/edge-lockdown.json" \
             --expected-source-sha "$SOURCE_SHA" \
@@ -198,6 +317,7 @@ jobs:
           payload = json.loads(Path(os.environ["EDGE_VERIFIED"]).read_text(encoding="utf-8"))
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
               handle.write(f"after_config_sha256={payload['after_config_sha256']}\n")
+              handle.write(f"baseline_config_sha256={payload['baseline_config_sha256']}\n")
           PY
 
       - name: Persist protected evidence before the first irreversible boundary
@@ -249,6 +369,30 @@ jobs:
             --restore-report "$EVIDENCE_DIR/restore/restore-summary.json" \
             --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
             --output "$EVIDENCE_DIR/reservation.json"
+
+      - name: Provision and publish the two least-privilege application logins
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+        run: |
+          python scripts/release/provision_production_database_logins.py \
+            --vercel-cli "$VERCEL_CLI" \
+            --output "$EVIDENCE_DIR/database-logins.json"
+
+      - name: Configure and read back the protected Vercel automation bypass
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
+        run: |
+          python scripts/release/ensure_vercel_automation_bypass.py \
+            --output "$EVIDENCE_DIR/vercel-automation-bypass.json"
 
       - name: Compute the immutable safe-baseline runtime identity
         id: runtime
@@ -584,28 +728,43 @@ jobs:
             --manifest-sha256 "$MANIFEST_SHA256" \
             --output "$EVIDENCE_DIR/phase-staged.json"
 
+      - name: Collect the staged runtime DDL audit from PostgreSQL statistics
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
+          RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
+          RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
+        run: |
+          python scripts/release/collect_runtime_ddl_audit.py \
+            --base-url "$DEPLOYMENT_URL" \
+            --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$EVIDENCE_DIR/runtime-ddl-audit-staged.json"
+
       - name: Verify the staged application and authenticated runtime DDL audit
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
         env:
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
-          RUNTIME_DDL_AUDIT_REPORT_B64: ${{ secrets.RUNTIME_DDL_AUDIT_REPORT_B64 }}
           RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
           RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
           DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
           DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
         run: |
-          if [[ -z "$RUNTIME_DDL_AUDIT_REPORT_B64" ]]; then
-            echo "NOT_RUN: authenticated runtime DDL audit report is missing" >&2
-            exit 3
-          fi
-          printf '%s' "$RUNTIME_DDL_AUDIT_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/runtime-ddl-audit.json"
           python scripts/release/verify_safe_baseline.py \
             --base-url "$DEPLOYMENT_URL" \
             --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
-            --runtime-ddl-audit-report "$RUNNER_TEMP/runtime-ddl-audit.json" \
+            --runtime-ddl-audit-report "$EVIDENCE_DIR/runtime-ddl-audit-staged.json" \
             --runtime-audit-hmac-key-env RUNTIME_AUDIT_HMAC_KEY \
             --expected-source-sha "$SOURCE_SHA" \
             --expected-runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
@@ -751,31 +910,56 @@ jobs:
           DECISION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["decision"])' "$RUNNER_TEMP/recorded-promotion.json")"
           [[ "$DECISION" = "ADVANCE_FORMAL_VERIFICATION" || "$DECISION" = "COMPLETE_WITHOUT_PROMOTE" ]]
 
-      - name: Verify formal-domain handoff without an edge bypass
+      - name: Collect the formal-domain runtime DDL audit from PostgreSQL statistics
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
+          DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
+        run: |
+          python scripts/release/collect_runtime_ddl_audit.py \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$EVIDENCE_DIR/runtime-ddl-audit-formal.json"
+
+      - name: Hand off every edge group and verify the formal domain without a bypass
         env:
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
-          RUNTIME_DDL_AUDIT_REPORT_B64: ${{ secrets.RUNTIME_DDL_AUDIT_REPORT_B64 }}
-          EDGE_HANDOFF_REPORT_B64: ${{ secrets.EDGE_HANDOFF_REPORT_B64 }}
           RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
           EDGE_EVIDENCE_HMAC_KEY: ${{ secrets.EDGE_EVIDENCE_HMAC_KEY }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           LOCKDOWN_AFTER_CONFIG_SHA256: ${{ steps.edge.outputs.after_config_sha256 }}
+          LOCKDOWN_BASELINE_CONFIG_SHA256: ${{ steps.edge.outputs.baseline_config_sha256 }}
           RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
           DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
           DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
         run: |
-          if [[ -z "$RUNTIME_DDL_AUDIT_REPORT_B64" || -z "$EDGE_HANDOFF_REPORT_B64" ]]; then
-            echo "NOT_RUN: authenticated runtime DDL or edge-handoff evidence is missing" >&2
-            exit 3
-          fi
-          printf '%s' "$RUNTIME_DDL_AUDIT_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/runtime-ddl-audit-formal.json"
-          printf '%s' "$EDGE_HANDOFF_REPORT_B64" | base64 --decode > "$RUNNER_TEMP/edge-handoff.json"
+          python scripts/release/manage_edge_lockdown.py handoff \
+            --vercel-cli "$VERCEL_CLI" \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-lockdown-after-config-sha256 "${LOCKDOWN_AFTER_CONFIG_SHA256:-}" \
+            --expected-baseline-config-sha256 "${LOCKDOWN_BASELINE_CONFIG_SHA256:-}" \
+            --bypass-state "$RUNNER_TEMP/edge-bypass-state.json" \
+            --output "$RUNNER_TEMP/edge-handoff.json"
           python scripts/release/verify_safe_baseline.py \
             --base-url "$PRODUCTION_BASE_URL" \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
-            --runtime-ddl-audit-report "$RUNNER_TEMP/runtime-ddl-audit-formal.json" \
+            --runtime-ddl-audit-report "$EVIDENCE_DIR/runtime-ddl-audit-formal.json" \
             --edge-handoff-report "$RUNNER_TEMP/edge-handoff.json" \
             --runtime-audit-hmac-key-env RUNTIME_AUDIT_HMAC_KEY \
             --edge-evidence-hmac-key-env EDGE_EVIDENCE_HMAC_KEY \
@@ -786,6 +970,7 @@ jobs:
             --expected-project-id "$VERCEL_PROJECT_ID" \
             --expected-formal-domain "$PRODUCTION_BASE_URL" \
             --expected-lockdown-after-config-sha256 "${LOCKDOWN_AFTER_CONFIG_SHA256:-}" \
+            --expected-lockdown-baseline-config-sha256 "${LOCKDOWN_BASELINE_CONFIG_SHA256:-}" \
             --expected-schema 20260712_0014 \
             --expected-deployment-url "$DEPLOYMENT_URL" \
             --expected-deployment-id "$DEPLOYMENT_ID" \
@@ -912,3 +1097,15 @@ jobs:
           if-no-files-found: error
           retention-days: 90
           compression-level: 9
+
+      - name: Remove the ephemeral runner bypass on every attempted lockdown path
+        if: ${{ always() && steps.edge.outputs.attempted == 'true' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+        run: |
+          python scripts/release/manage_edge_lockdown.py cleanup-bypass \
+            --vercel-cli "$VERCEL_CLI" \
+            --base-url "$PRODUCTION_BASE_URL"

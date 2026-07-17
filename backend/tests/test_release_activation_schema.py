@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 import unittest
 
@@ -60,6 +61,49 @@ class ReleaseActivationSchemaTest(unittest.TestCase):
             )
             self.assertNotIn("postgres.", database_line)
             self.assertNotIn("postgres:", database_line)
+
+    def test_runtime_group_has_only_the_reviewed_stage_one_business_surface(self) -> None:
+        migration = (
+            ROOT / "backend" / "alembic" / "versions" / "20260710_0013_ops_feature_flags.py"
+        ).read_text(encoding="utf-8")
+        contract = json.loads(
+            (ROOT / "release" / "safe-baseline-contract.json").read_text(encoding="utf-8")
+        )["database_roles"]
+        provisioner = (
+            ROOT / "scripts" / "release" / "provision_production_database_logins.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("SAFE_BASELINE_RUNTIME_PRIVILEGES", migration)
+        privileges = contract["runtime_business_privileges"]
+        for table in (
+            "users",
+            "orders",
+            "live_portrait_jobs",
+            "user_credits",
+            "credit_transactions",
+            "credit_purchases",
+            "leads",
+            "click_stats",
+            "subscription_plans",
+            "user_subscriptions",
+            "subscription_credit_grants",
+            "payment_events",
+            "admin_audit_logs",
+            "remote_join_sessions",
+            "email_delivery_logs",
+            "account_risk_events",
+        ):
+            self.assertIn(table, privileges)
+        self.assertFalse(
+            {"DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
+            & {verb for verbs in privileges.values() for verb in verbs}
+        )
+        self.assertEqual(
+            contract["runtime_forbidden_business_privileges"],
+            ["DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"],
+        )
+        self.assertIn("configure_safe_baseline_database_roles", provisioner)
+        self.assertIn("ENABLE ROW LEVEL SECURITY", provisioner)
+        self.assertIn("USING (true) WITH CHECK (true)", provisioner)
 
     def test_fault_intent_expiry_is_anchored_to_creation_not_mutable_updated_at(self) -> None:
         migration = (

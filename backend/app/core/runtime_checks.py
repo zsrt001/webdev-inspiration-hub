@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.database import async_session_maker, control_plane_async_session_maker
+from app.core.database_role_proof import validate_database_role_proof
 from app.core.redis_client import get_redis
 from app.core.task_queue import get_pool
 from app.services.generation_service import generation_service
@@ -197,29 +198,6 @@ async def _check_database() -> tuple[bool, str]:
     return True, "ok"
 
 
-def validate_database_role_proof(
-    proof: dict[str, Any],
-    *,
-    required_group: str,
-    forbidden_group: str,
-) -> str:
-    current_user = str(proof.get("current_user") or "").strip()
-    owner = str(proof.get("control_table_owner") or "").strip()
-    if not current_user or not owner:
-        raise RuntimeError("database role proof is incomplete")
-    if bool(proof.get("role_superuser")):
-        raise RuntimeError("database runtime role must not be a superuser")
-    if bool(proof.get("role_bypass_rls")):
-        raise RuntimeError("database runtime role must be NOBYPASSRLS")
-    if current_user == owner:
-        raise RuntimeError("database runtime role must not own control-plane tables")
-    if not bool(proof.get("required_group_member")):
-        raise RuntimeError(f"database role must be a member of {required_group}")
-    if bool(proof.get("forbidden_group_member")):
-        raise RuntimeError(f"database role must not be a member of {forbidden_group}")
-    return f"{current_user}:{required_group}"
-
-
 async def _check_database_role(
     session_maker,
     required_group: str,
@@ -231,7 +209,12 @@ async def _check_database_role(
                 text(
                     """
                     SELECT current_user AS current_user,
+                           role.rolcanlogin AS role_can_login,
+                           role.rolinherit AS role_inherit,
                            role.rolsuper AS role_superuser,
+                           role.rolcreatedb AS role_create_db,
+                           role.rolcreaterole AS role_create_role,
+                           role.rolreplication AS role_replication,
                            role.rolbypassrls AS role_bypass_rls,
                            pg_get_userbyid(control.relowner) AS control_table_owner,
                            pg_has_role(current_user, :required_group, 'MEMBER') AS required_group_member,

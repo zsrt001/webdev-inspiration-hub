@@ -614,11 +614,11 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
     def test_preflight_inventory_reservation_and_verification_precede_deploy_secret(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         preflight = workflow.index("--action preflight")
-        inventory = workflow.index("inventory_production.py")
+        inventory = workflow.index("inventory_production.py", preflight)
         preflight_command = workflow[preflight:inventory]
-        rehearsal = workflow.index("backup_restore_rehearsal.py")
+        rehearsal = workflow.index("run_isolated_restore_rehearsal.sh", preflight)
         reservation = workflow.index("--phase RESERVED")
-        deployment_secret = workflow.index("secrets.VERCEL_TOKEN")
+        deployment_secret = workflow.index("secrets.VERCEL_TOKEN", reservation)
         build = workflow.index('"$VERCEL_CLI" build')
         edge_lockdown = workflow.index("verify_edge_lockdown.py")
         self.assertLess(preflight, inventory)
@@ -633,6 +633,113 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("build_runtime_bundle_id.py", workflow)
         self.assertIn("verify_safe_baseline.py", workflow)
         self.assertIn("register_safe_baseline.py --phase COMPLETED", workflow)
+
+    def test_restore_target_is_ephemeral_loopback_postgres_17(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        restore = _read("scripts/release/run_isolated_restore_rehearsal.sh")
+        self.assertIn("postgresql-17", workflow)
+        self.assertIn('PG_BIN="${PG_BIN:-/usr/lib/postgresql/17/bin}"', restore)
+        self.assertIn('= "17"', workflow)
+        self.assertIn("--auth-host=trust --auth-local=trust", restore)
+        self.assertIn("scram-sha-256", restore)
+        self.assertIn("127.0.0.1:$RESTORE_PORT", restore)
+        self.assertIn("vowpic_restore_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}", restore)
+        self.assertIn('RUNNER_TEMP_RESOLVED="$(realpath -m "$RUNNER_TEMP")"', restore)
+        self.assertIn('"$RUNNER_TEMP_RESOLVED"/*', restore)
+        self.assertIn('"$WORKSPACE_ARTIFACTS_RESOLVED"/*', restore)
+        self.assertIn('rm -rf -- "$RESTORE_PGDATA" "$RESTORE_SCRATCH_DIR"', restore)
+        self.assertIn('rm -f -- "$RESTORE_PGLOG"', restore)
+        self.assertNotIn("secrets.RESTORE_TARGET_", workflow)
+        self.assertNotIn(
+            "--target-credential-expires-at-env RESTORE_TARGET_CREDENTIAL_EXPIRES_AT",
+            workflow,
+        )
+        self.assertIn(
+            "https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt",
+            workflow,
+        )
+        self.assertIn(
+            "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7",
+            workflow,
+        )
+
+    def test_legacy_bridge_is_evidence_first_exact_and_idempotent(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        discovery = workflow.index("Discover the exact Production schema boundary")
+        legacy_inventory = workflow.index("Inventory the legacy source")
+        legacy_restore = workflow.index("Rehearse the legacy source")
+        durable_evidence = workflow.index("id: legacy_evidence")
+        bridge = workflow.index("alembic upgrade 20260516_0012")
+        formal_preflight = workflow.index("--action preflight")
+        self.assertLess(discovery, legacy_inventory)
+        self.assertLess(legacy_inventory, legacy_restore)
+        self.assertLess(legacy_restore, durable_evidence)
+        self.assertLess(durable_evidence, bridge)
+        self.assertLess(bridge, formal_preflight)
+        self.assertIn(
+            'allowed = {"20260427_0006", "20260516_0012", "20260712_0014"}',
+            workflow,
+        )
+        self.assertIn("legacy bridge revision mismatch", workflow)
+        self.assertIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
+
+    def test_application_logins_are_provisioned_before_the_first_build(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        reservation = workflow.index("--phase RESERVED")
+        provisioning = workflow.index("provision_production_database_logins.py")
+        build = workflow.index('"$VERCEL_CLI" build')
+        self.assertLess(reservation, provisioning)
+        self.assertLess(provisioning, build)
+        step_start = workflow.rindex(
+            "Provision and publish the two least-privilege application logins",
+            0,
+            provisioning,
+        )
+        step_end = workflow.index(
+            "Configure and read back the protected Vercel automation bypass",
+            provisioning,
+        )
+        provisioning_step = workflow[step_start:step_end]
+        self.assertIn("secrets.PRODUCTION_MIGRATION_DATABASE_URL", provisioning_step)
+        self.assertIn(
+            "CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}",
+            provisioning_step,
+        )
+        self.assertNotIn("secrets.DATABASE_URL", workflow)
+        self.assertNotIn("secrets.CONTROL_PLANE_DATABASE_URL", workflow)
+
+    def test_vercel_automation_bypass_is_configured_before_the_first_build(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        provisioning = workflow.index("provision_production_database_logins.py")
+        bypass = workflow.index("ensure_vercel_automation_bypass.py")
+        build = workflow.index('"$VERCEL_CLI" build')
+        self.assertLess(provisioning, bypass)
+        self.assertLess(bypass, build)
+        self.assertIn(
+            "VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}",
+            workflow,
+        )
+
+    def test_runtime_ddl_evidence_is_collected_from_the_exact_deployment(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        staged_collect = workflow.index(
+            "Collect the staged runtime DDL audit from PostgreSQL statistics"
+        )
+        staged_verify = workflow.index(
+            "Verify the staged application and authenticated runtime DDL audit"
+        )
+        formal_collect = workflow.index(
+            "Collect the formal-domain runtime DDL audit from PostgreSQL statistics"
+        )
+        formal_verify = workflow.index(
+            "Hand off every edge group and verify the formal domain without a bypass"
+        )
+        self.assertLess(staged_collect, staged_verify)
+        self.assertLess(formal_collect, formal_verify)
+        self.assertEqual(workflow.count("collect_runtime_ddl_audit.py"), 2)
+        self.assertIn("runtime-ddl-audit-staged.json", workflow)
+        self.assertIn("runtime-ddl-audit-formal.json", workflow)
+        self.assertNotIn("RUNTIME_DDL_AUDIT_REPORT_B64", workflow)
 
     def test_sanitized_attempt_evidence_is_preserved_without_dump_or_runner_temp(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
@@ -720,6 +827,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "active_deploy_hook_count": 0,
             "before_config_sha256": "b" * 64,
             "after_config_sha256": "c" * 64,
+            "baseline_config_sha256": "d" * 64,
             "route_groups": {
                 name: {
                     "rule_id": physical_rule_by_group[name],
@@ -730,7 +838,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             },
             "runner_bypass": {
                 "rule_id": "rule_runner_bypass",
-                "expires_at": (now + timedelta(minutes=20)).isoformat(),
+                "lease_expires_at": (now + timedelta(minutes=20)).isoformat(),
                 "read_back": True,
             },
         }
@@ -809,7 +917,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "runner_bypass": {
                 **payload["runner_bypass"],
-                "expires_at": (now + timedelta(minutes=4)).isoformat(),
+                "lease_expires_at": (now + timedelta(minutes=4)).isoformat(),
             },
         }
         short_lease["signature_hmac_sha256"] = verify.compute_report_hmac(short_lease, key)
@@ -2152,6 +2260,7 @@ class BaselineToolContractTest(unittest.TestCase):
         runtime_bundle_id = "rtb_" + "b" * 64
         deployment_id = "dpl_exact"
         lockdown_after = "c" * 64
+        lockdown_baseline = "d" * 64
 
         runtime_payload = {
             "schema_version": "vowpic.runtime-ddl-audit.v1",
@@ -2182,13 +2291,15 @@ class BaselineToolContractTest(unittest.TestCase):
             "lockdown_after_config_sha256": lockdown_after,
             "before_config_sha256": lockdown_after,
             "after_config_sha256": "d" * 64,
+            "lockdown_baseline_config_sha256": lockdown_baseline,
             "runner_bypass_removed": True,
             "route_groups": {
                 name: {
                     "rule_removed": True,
                     "read_back": True,
                     "no_side_effects": True,
-                    "application_status": 503,
+                    "application_status": verify.EDGE_APPLICATION_GUARDS[name][0],
+                    "application_code": verify.EDGE_APPLICATION_GUARDS[name][1],
                 }
                 for name in verify.EDGE_ROUTE_GROUPS
             },
@@ -2226,6 +2337,7 @@ class BaselineToolContractTest(unittest.TestCase):
                 project_id="prj_vowpic",
                 formal_domain="www.vowpic.com",
                 expected_lockdown_after_config_sha256=lockdown_after,
+                expected_lockdown_baseline_config_sha256=lockdown_baseline,
                 hmac_key=key,
                 now=now,
             )
@@ -2271,6 +2383,7 @@ class BaselineToolContractTest(unittest.TestCase):
                     project_id="prj_vowpic",
                     formal_domain="www.vowpic.com",
                     expected_lockdown_after_config_sha256=lockdown_after,
+                    expected_lockdown_baseline_config_sha256=lockdown_baseline,
                     hmac_key=key,
                     now=now,
                 )
@@ -2282,18 +2395,22 @@ class BaselineToolContractTest(unittest.TestCase):
             3,
         )
         edge_step = workflow[
-            workflow.index("- name: Verify authenticated external edge lockdown") :
+            workflow.index("- name: Install, read back, and verify the authenticated edge lockdown") :
             workflow.index("- name: Atomically migrate and reserve the install")
         ]
         self.assertIn("RETRY_FORMAL_VERIFIED", edge_step)
         self.assertIn("!=", edge_step)
         formal_step = workflow[
-            workflow.index("- name: Verify formal-domain handoff without an edge bypass") :
+            workflow.index("- name: Hand off every edge group and verify the formal domain without a bypass") :
             workflow.index("- name: Complete the immutable one-time install")
         ]
         self.assertIn("--expected-project-id", formal_step)
         self.assertIn("--expected-formal-domain", formal_step)
         self.assertIn("--expected-lockdown-after-config-sha256", formal_step)
+        self.assertIn("--expected-lockdown-baseline-config-sha256", formal_step)
+        self.assertIn("manage_edge_lockdown.py handoff", formal_step)
+        self.assertNotIn("EDGE_HANDOFF_REPORT_B64", workflow)
+        self.assertNotIn("EDGE_LOCKDOWN_REPORT_B64", workflow)
         self.assertIn("github_artifact_evidence.py build-reference", formal_step)
         self.assertIn("steps.formal_evidence.outputs.artifact-id", formal_step)
         self.assertIn("steps.formal_evidence.outputs.artifact-digest", formal_step)
