@@ -995,30 +995,89 @@ def _adopt_staged_verifier(
         engine.dispose()
 
 
-def verify_pulled_runtime_secret(
+def verify_sensitive_runtime_secret_proof(
     vercel_env_file: Path,
     *,
     secret_name: str,
+    fingerprint_name: str,
     expected_secret: str,
+    vercel_token: str,
+    project_id: str,
+    team_id: str,
     source_sha: str,
     runner_sha: str,
     workflow_run_id: str,
     workflow_attempt: int,
 ) -> dict[str, Any]:
-    """Prove a protected GitHub secret matches the pulled Vercel Production value."""
+    """Prove one unreadable Vercel Sensitive value has the protected rotation."""
     if secret_name != "ACCEPTANCE_IDENTITY_HMAC_KEY":
         raise ValueError("only the acceptance identity runtime secret can be verified")
+    if fingerprint_name != "ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256":
+        raise ValueError("only the acceptance identity runtime fingerprint can be verified")
     expected = str(expected_secret or "").strip()
     if len(expected) < 32:
         raise ValueError("protected acceptance identity secret must contain at least 32 characters")
+    if (
+        not vercel_token.strip()
+        or re.fullmatch(r"[A-Za-z0-9_-]{1,200}", project_id) is None
+        or re.fullmatch(r"[A-Za-z0-9_-]{1,200}", team_id) is None
+    ):
+        raise ValueError("protected Vercel project coordinates are incomplete")
     if vercel_env_file.is_symlink() or not vercel_env_file.is_file():
         raise ValueError("pulled Vercel Production environment file is missing")
-    actual_value = dotenv_values(vercel_env_file).get(secret_name)
-    actual = str(actual_value or "").strip()
-    if len(actual) < 32:
-        raise ValueError("Vercel Production acceptance identity secret is missing or too short")
-    if not secrets.compare_digest(actual, expected):
-        raise ValueError("GitHub and Vercel acceptance identity secrets do not match")
+    pulled_fingerprint = str(
+        dotenv_values(vercel_env_file).get(fingerprint_name) or ""
+    ).strip()
+    if re.fullmatch(r"[0-9a-f]{64}", pulled_fingerprint) is None:
+        raise ValueError("Vercel Production acceptance identity fingerprint is missing or invalid")
+    expected_fingerprint = hashlib.sha256(expected.encode("utf-8")).hexdigest()
+    if not secrets.compare_digest(pulled_fingerprint, expected_fingerprint):
+        raise ValueError("GitHub secret and Vercel Production fingerprint do not match")
+
+    response = httpx.get(
+        f"https://api.vercel.com/v10/projects/{quote(project_id, safe='')}/env",
+        params={"teamId": team_id, "target": "production"},
+        headers={"Authorization": f"Bearer {vercel_token}"},
+        timeout=30.0,
+        follow_redirects=False,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload, list):
+        records = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("envs"), list):
+        records = payload["envs"]
+    else:
+        raise ValueError("Vercel Production environment metadata is malformed")
+    matches = [
+        record
+        for record in records
+        if isinstance(record, dict) and record.get("key") == secret_name
+    ]
+    if len(matches) != 1:
+        raise ValueError("Vercel Production acceptance identity secret metadata is not unique")
+    secret_record = matches[0]
+    record_id = str(secret_record.get("id") or secret_record.get("uid") or "").strip()
+    targets = secret_record.get("target")
+    if isinstance(targets, str):
+        targets = [targets]
+    custom_environment_ids = secret_record.get("customEnvironmentIds")
+    if custom_environment_ids is None:
+        custom_environment_ids = []
+    if (
+        re.fullmatch(r"[A-Za-z0-9_-]{1,200}", record_id) is None
+        or secret_record.get("type") != "sensitive"
+        or not isinstance(targets, list)
+        or any(not isinstance(target, str) for target in targets)
+        or targets != ["production"]
+        or secret_record.get("gitBranch") not in (None, "")
+        or not isinstance(custom_environment_ids, list)
+        or custom_environment_ids
+        or secret_record.get("decrypted") is True
+    ):
+        raise ValueError(
+            "Vercel acceptance identity secret is not Sensitive and Production-only"
+        )
     if (
         re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is None
         or re.fullmatch(r"[0-9a-f]{40,64}", runner_sha) is None
@@ -1027,11 +1086,17 @@ def verify_pulled_runtime_secret(
     ):
         raise ValueError("runtime secret evidence coordinates are invalid")
     return {
-        "schema_version": "vowpic.runtime-secret-match.v1",
+        "schema_version": "vowpic.runtime-secret-control-proof.v1",
         "passed": True,
         "secret_name": secret_name,
+        "fingerprint_name": fingerprint_name,
         "minimum_length": 32,
         "vercel_environment": "production",
+        "vercel_value_readable": False,
+        "vercel_secret_type": "sensitive",
+        "vercel_target": ["production"],
+        "project_id": project_id,
+        "team_id": team_id,
         "source_sha": source_sha,
         "runner_sha": runner_sha,
         "workflow_run_id": workflow_run_id,
@@ -1046,16 +1111,24 @@ def _validate_runtime_secret_evidence(
     runner_sha: str,
     workflow_run_id: str,
     workflow_attempt: int,
+    project_id: str,
+    team_id: str,
 ) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
-        raise ValueError("staged rearm requires runtime secret match evidence")
+        raise ValueError("staged rearm requires runtime secret control evidence")
     payload = json.loads(path.read_text(encoding="utf-8"))
     expected = {
-        "schema_version": "vowpic.runtime-secret-match.v1",
+        "schema_version": "vowpic.runtime-secret-control-proof.v1",
         "passed": True,
         "secret_name": "ACCEPTANCE_IDENTITY_HMAC_KEY",
+        "fingerprint_name": "ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
         "minimum_length": 32,
         "vercel_environment": "production",
+        "vercel_value_readable": False,
+        "vercel_secret_type": "sensitive",
+        "vercel_target": ["production"],
+        "project_id": project_id,
+        "team_id": team_id,
         "source_sha": source_sha,
         "runner_sha": runner_sha,
         "workflow_run_id": workflow_run_id,
@@ -1081,6 +1154,8 @@ def _rearm_invalid_staged(
     approval: str,
     evidence_prefix: str,
     runtime_secret_evidence: Path,
+    project_id: str,
+    team_id: str,
 ) -> dict[str, Any]:
     """Atomically clear one invalid, unpromoted STAGED binding for an exact-source rebuild."""
     source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
@@ -1114,6 +1189,8 @@ def _rearm_invalid_staged(
         runner_sha=runner_sha,
         workflow_run_id=workflow_run_id,
         workflow_attempt=workflow_attempt,
+        project_id=project_id,
+        team_id=team_id,
     )
 
     engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
@@ -1967,6 +2044,10 @@ def main() -> int:
         "--runtime-secret-env",
         default="ACCEPTANCE_IDENTITY_HMAC_KEY",
     )
+    parser.add_argument(
+        "--runtime-secret-fingerprint",
+        default="ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
+    )
     parser.add_argument("--runtime-secret-evidence")
     parser.add_argument(
         "--inject-failure",
@@ -1987,16 +2068,31 @@ def main() -> int:
             raise ValueError("choose exactly one of --action or --phase")
         if args.action == "verify-runtime-secret":
             expected_secret = _required_env(args.runtime_secret_env)
-            if not expected_secret or not args.vercel_env_file:
+            vercel_token = _required_env(args.vercel_token_env)
+            project_id = _required_env(args.vercel_project_id_env)
+            team_id = _required_env(args.vercel_team_id_env)
+            if not all(
+                (
+                    expected_secret,
+                    args.vercel_env_file,
+                    vercel_token,
+                    project_id,
+                    team_id,
+                )
+            ):
                 print(
-                    "NOT_RUN: protected runtime secret and pulled Vercel environment are required",
+                    "NOT_RUN: protected runtime secret and Vercel proof coordinates are required",
                     file=sys.stderr,
                 )
                 return NOT_RUN_EXIT
-            result = verify_pulled_runtime_secret(
+            result = verify_sensitive_runtime_secret_proof(
                 Path(args.vercel_env_file),
                 secret_name=args.runtime_secret_env,
+                fingerprint_name=args.runtime_secret_fingerprint,
                 expected_secret=expected_secret,
+                vercel_token=vercel_token,
+                project_id=project_id,
+                team_id=team_id,
                 source_sha=args.source_sha,
                 runner_sha=args.runner_sha,
                 workflow_run_id=args.workflow_run_id,
@@ -2053,9 +2149,11 @@ def main() -> int:
             )
         elif args.action == "rearm-staged":
             approval = _required_env(args.approval_id_env)
-            if not approval or not args.runtime_secret_evidence:
+            project_id = _required_env(args.vercel_project_id_env)
+            team_id = _required_env(args.vercel_team_id_env)
+            if not all((approval, args.runtime_secret_evidence, project_id, team_id)):
                 print(
-                    "NOT_RUN: protected staged-rearm approval and runtime secret evidence are required",
+                    "NOT_RUN: protected staged-rearm approval and Vercel proof are required",
                     file=sys.stderr,
                 )
                 return NOT_RUN_EXIT
@@ -2071,6 +2169,8 @@ def main() -> int:
                 approval=approval,
                 evidence_prefix=args.evidence_prefix,
                 runtime_secret_evidence=Path(args.runtime_secret_evidence),
+                project_id=project_id,
+                team_id=team_id,
             )
         elif args.action == "bind-build":
             result = _bind_build_manifest(

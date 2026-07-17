@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -615,7 +616,8 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertNotIn("@latest", workflow)
         self.assertNotIn("npm install -g vercel", workflow)
         self.assertIn("--skip-domain", workflow)
-        self.assertNotIn("--force", workflow)
+        self.assertEqual(workflow.count("--force"), 1)
+        self.assertNotRegex(workflow, r'"\$VERCEL_CLI" (?:deploy|promote)[^\n]*--force')
 
     def test_release_cli_is_installed_from_a_committed_integrity_lock(self) -> None:
         package = json.loads(_read("scripts/release-tools/package.json"))
@@ -1376,7 +1378,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("runtime_bundle_id IS NOT NULL", statement)
         self.assertIn("report_sha256 IS NULL", statement)
 
-    def test_runtime_secret_match_evidence_never_contains_the_secret(self) -> None:
+    def test_sensitive_runtime_secret_proof_never_contains_secret_or_fingerprint(self) -> None:
         register = _load_script(
             "scripts/release/register_safe_baseline.py",
             "register_safe_baseline_runtime_secret_contract",
@@ -1384,34 +1386,117 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         source_sha = "a" * 40
         runner_sha = "b" * 40
         protected_secret = "k" * 64
+        fingerprint = hashlib.sha256(protected_secret.encode("utf-8")).hexdigest()
+        response = mock.MagicMock()
+        response.json.return_value = [
+            {
+                "id": "env_acceptance_identity",
+                "key": "ACCEPTANCE_IDENTITY_HMAC_KEY",
+                "type": "sensitive",
+                "target": ["production"],
+                "gitBranch": None,
+                "customEnvironmentIds": [],
+                "decrypted": False,
+            }
+        ]
         with tempfile.TemporaryDirectory(prefix="vowpic-runtime-secret-") as directory:
             env_file = Path(directory, ".env.production.local")
             env_file.write_text(
-                f'ACCEPTANCE_IDENTITY_HMAC_KEY="{protected_secret}"\n',
+                f'ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256="{fingerprint}"\n',
                 encoding="utf-8",
             )
-            evidence = register.verify_pulled_runtime_secret(
-                env_file,
-                secret_name="ACCEPTANCE_IDENTITY_HMAC_KEY",
-                expected_secret=protected_secret,
-                source_sha=source_sha,
-                runner_sha=runner_sha,
-                workflow_run_id="123",
-                workflow_attempt=1,
-            )
-            self.assertTrue(evidence["passed"])
-            self.assertEqual(evidence["minimum_length"], 32)
-            self.assertNotIn(protected_secret, json.dumps(evidence, sort_keys=True))
-            with self.assertRaisesRegex(ValueError, "do not match"):
-                register.verify_pulled_runtime_secret(
+            with mock.patch.object(register.httpx, "get", return_value=response) as vercel_get:
+                evidence = register.verify_sensitive_runtime_secret_proof(
                     env_file,
                     secret_name="ACCEPTANCE_IDENTITY_HMAC_KEY",
-                    expected_secret="z" * 64,
+                    fingerprint_name="ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
+                    expected_secret=protected_secret,
+                    vercel_token="vercel-token",
+                    project_id="prj_project",
+                    team_id="team_owner",
                     source_sha=source_sha,
                     runner_sha=runner_sha,
                     workflow_run_id="123",
                     workflow_attempt=1,
                 )
+            self.assertTrue(evidence["passed"])
+            self.assertEqual(evidence["minimum_length"], 32)
+            serialized = json.dumps(evidence, sort_keys=True)
+            self.assertNotIn(protected_secret, serialized)
+            self.assertNotIn(fingerprint, serialized)
+            self.assertFalse(evidence["vercel_value_readable"])
+            self.assertEqual(evidence["vercel_secret_type"], "sensitive")
+            vercel_get.assert_called_once_with(
+                "https://api.vercel.com/v10/projects/prj_project/env",
+                params={"teamId": "team_owner", "target": "production"},
+                headers={"Authorization": "Bearer vercel-token"},
+                timeout=30.0,
+                follow_redirects=False,
+            )
+            with self.assertRaisesRegex(ValueError, "do not match"):
+                register.verify_sensitive_runtime_secret_proof(
+                    env_file,
+                    secret_name="ACCEPTANCE_IDENTITY_HMAC_KEY",
+                    fingerprint_name="ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
+                    expected_secret="z" * 64,
+                    vercel_token="vercel-token",
+                    project_id="prj_project",
+                    team_id="team_owner",
+                    source_sha=source_sha,
+                    runner_sha=runner_sha,
+                    workflow_run_id="123",
+                    workflow_attempt=1,
+                )
+
+            invalid_records = (
+                {**response.json.return_value[0], "type": "encrypted"},
+                {**response.json.return_value[0], "target": ["preview", "production"]},
+                {**response.json.return_value[0], "gitBranch": "main"},
+                {**response.json.return_value[0], "customEnvironmentIds": ["env_custom"]},
+                {**response.json.return_value[0], "decrypted": True},
+            )
+            for record in invalid_records:
+                with self.subTest(record=record):
+                    invalid_response = mock.MagicMock()
+                    invalid_response.json.return_value = [record]
+                    with (
+                        mock.patch.object(register.httpx, "get", return_value=invalid_response),
+                        self.assertRaisesRegex(ValueError, "not Sensitive and Production-only"),
+                    ):
+                        register.verify_sensitive_runtime_secret_proof(
+                            env_file,
+                            secret_name="ACCEPTANCE_IDENTITY_HMAC_KEY",
+                            fingerprint_name="ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
+                            expected_secret=protected_secret,
+                            vercel_token="vercel-token",
+                            project_id="prj_project",
+                            team_id="team_owner",
+                            source_sha=source_sha,
+                            runner_sha=runner_sha,
+                            workflow_run_id="123",
+                            workflow_attempt=1,
+                        )
+            for records in ([], response.json.return_value * 2):
+                with self.subTest(record_count=len(records)):
+                    invalid_response = mock.MagicMock()
+                    invalid_response.json.return_value = records
+                    with (
+                        mock.patch.object(register.httpx, "get", return_value=invalid_response),
+                        self.assertRaisesRegex(ValueError, "metadata is not unique"),
+                    ):
+                        register.verify_sensitive_runtime_secret_proof(
+                            env_file,
+                            secret_name="ACCEPTANCE_IDENTITY_HMAC_KEY",
+                            fingerprint_name="ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
+                            expected_secret=protected_secret,
+                            vercel_token="vercel-token",
+                            project_id="prj_project",
+                            team_id="team_owner",
+                            source_sha=source_sha,
+                            runner_sha=runner_sha,
+                            workflow_run_id="123",
+                            workflow_attempt=1,
+                        )
 
     def test_invalid_staged_rearm_is_exact_cas_and_restores_the_regression_trigger(self) -> None:
         register = _load_script(
@@ -1450,11 +1535,17 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             evidence_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "vowpic.runtime-secret-match.v1",
+                        "schema_version": "vowpic.runtime-secret-control-proof.v1",
                         "passed": True,
                         "secret_name": "ACCEPTANCE_IDENTITY_HMAC_KEY",
+                        "fingerprint_name": "ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
                         "minimum_length": 32,
                         "vercel_environment": "production",
+                        "vercel_value_readable": False,
+                        "vercel_secret_type": "sensitive",
+                        "vercel_target": ["production"],
+                        "project_id": "prj_project",
+                        "team_id": "team_owner",
                         "source_sha": source_sha,
                         "runner_sha": runner_sha,
                         "workflow_run_id": "789",
@@ -1483,6 +1574,8 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     approval="protected-approval",
                     evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
                     runtime_secret_evidence=evidence_path,
+                    project_id="prj_project",
+                    team_id="team_owner",
                 )
 
         control_diff.assert_called_once_with(source_sha, runner_sha)
@@ -1520,7 +1613,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn('"verify-runtime-secret"', register_source)
         self.assertIn('"rearm-staged"', register_source)
         secret_proof = workflow.index(
-            "- name: Prove the repaired Production runtime secret matches GitHub"
+            "- name: Prove the repaired Production Sensitive secret control"
         )
         reservation_upload = workflow.index(
             "- name: Persist protected evidence before the first irreversible boundary"
@@ -1534,8 +1627,15 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertLess(secret_proof, reservation_upload)
         self.assertLess(reservation_upload, rearm)
         self.assertLess(rearm, adopt)
+        secret_proof_step = workflow[secret_proof:reservation_upload]
+        self.assertIn("ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256 production", secret_proof_step)
+        self.assertIn("--force --no-sensitive --yes", secret_proof_step)
+        self.assertIn('os.environ["ACCEPTANCE_IDENTITY_HMAC_KEY"]', secret_proof_step)
+        self.assertNotIn("echo $ACCEPTANCE_IDENTITY_HMAC_KEY", secret_proof_step)
         rearm_step = workflow[rearm:adopt]
         self.assertIn("--runtime-secret-evidence", rearm_step)
+        self.assertIn("VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}", rearm_step)
+        self.assertIn("VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}", rearm_step)
         self.assertIn("exit 75", rearm_step)
         adopt_condition = workflow[adopt : workflow.index("- name: Provision and publish", adopt)]
         self.assertIn("inputs.rearm_staged_after_config_repair != true", adopt_condition)
@@ -1547,6 +1647,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn('git -C "$RUNTIME_SOURCE_DIR" rev-parse HEAD', build_step)
         self.assertIn('--directory "$RUNTIME_SOURCE_DIR/.vercel" output', build_step)
         self.assertIn("--action verify-runtime-secret", build_step)
+        self.assertIn("--runtime-secret-fingerprint ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256", build_step)
         self.assertNotIn('"$VERCEL_CLI" build --prod', build_step.split("cd \"$RUNTIME_SOURCE_DIR\"", 1)[0])
 
     def test_staged_verifier_takeover_diff_is_exactly_release_control_only(self) -> None:

@@ -471,11 +471,18 @@ verification and Promote gates.
 
 A second, distinct exception exists only when an unpromoted STAGED deployment
 is proven fail-closed because `ACCEPTANCE_IDENTITY_HMAC_KEY` was missing or
-invalid in the Vercel Production environment. The protected GitHub secret and
-the value pulled from the exact Vercel Production project must both contain at
-least 32 characters and match in constant time; the evidence records only the
-key name, minimum length, environment, source/runner/run coordinates, and PASS
-state. This is not a general runtime-configuration repair mechanism. That sanitized
+invalid in the Vercel Production environment. Vercel Sensitive values are
+deliberately unreadable after creation, so the protected GitHub secret must
+contain at least 32 characters while the exact project metadata must prove one
+project-level `sensitive`, Production-only, non-branch variable. A separately
+rotated non-sensitive `ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256` companion is pulled
+from that same Production project and compared in constant time with the
+SHA-256 of the protected GitHub secret. The protected rearm step computes and
+force-upserts only that companion through Vercel CLI before pulling it back; the
+secret itself is neither printed nor written by this step. The evidence records
+only the key names, minimum length, Sensitive/Production controls, project/team
+and run coordinates, and PASS state; it contains neither value nor fingerprint.
+This is not a general runtime-configuration repair mechanism. That sanitized
 proof, the old activation coordinates, and fresh edge evidence must be durable
 before mutation. The migration owner then takes the release advisory lock and
 an ACCESS EXCLUSIVE table lock, temporarily disables only the activation
@@ -485,8 +492,9 @@ RESERVED row, and restores the trigger before commit. The old coordinates are
 retained by hash and durable preflight evidence; no application data or feature
 state is changed. The repair attempt intentionally stops, and only the next
 attempt of that same workflow run may continue. It must rebuild from a detached
-worktree at the original immutable `source_sha`, verify the pulled Vercel secret
-again, bind a new encrypted build artifact and deployment, and then pass every
+worktree at the original immutable `source_sha`, verify the Sensitive metadata
+and companion fingerprint again, bind a new encrypted build artifact and
+deployment, and then pass every
 ordinary staged, Promote, formal-domain, edge-handoff, and completion gate.
 
 The immutable reservation expiry is an audit/recovery deadline, not a lease
