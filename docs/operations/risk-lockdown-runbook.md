@@ -497,6 +497,25 @@ and companion fingerprint again, bind a new encrypted build artifact and
 deployment, and then pass every
 ordinary staged, Promote, formal-domain, edge-handoff, and completion gate.
 
+A third exception exists only for a `RESERVED` row whose encrypted prebuild is
+already bound but no Vercel deployment coordinate, runtime bundle, report,
+worker, target snapshot, or fault-injection state exists. `vercel build` may
+emit static-file symlinks into the immutable source tree; preserving those
+links in the encrypted archive makes the recovered `.vercel/output` incomplete.
+The reviewed builder must first materialize every in-root link into ordinary
+file or directory bytes, reject broken/cyclic/out-of-root links, and hash and
+encrypt only that self-contained directory. A different protected run may
+rearm the old bound prebuild only when the runtime source is unchanged, the
+reviewed runner is its release-control-only descendant, the approval and exact
+old run/version/artifact ID/digest still match, fresh edge evidence is durable,
+and every deployment/output field is still empty. The transaction takes the
+release advisory lock and ACCESS EXCLUSIVE table lock, temporarily disables
+only the activation regression trigger, clears only the invalid manifest and
+artifact coordinates, transfers run ownership, increments the version, and
+restores the trigger before commit. It intentionally stops; attempt 2 of that
+same new run must build, materialize, encrypt, bind, deploy once, and pass every
+ordinary gate. This path cannot clear or replace an existing deployment.
+
 The immutable reservation expiry is an audit/recovery deadline, not a lease
 that transfers ownership. An expired `RESERVED`, `STAGED`, `PROMOTION_ARMED`,
 `PROMOTED`, or `FORMAL_VERIFIED` activation may be resumed only by the exact source SHA and
@@ -504,9 +523,10 @@ workflow run ID after all protected-environment and edge checks are fresh; its
 workflow attempt must increase monotonically. `FORMAL_VERIFIED` additionally
 requires its already bound artifact reference to remain downloadable and
 byte-hash valid; retention expiry does not authorize replacement. Except for
-the exact STAGED verifier takeover and invalid-runtime-config rearm above, a
+the exact STAGED verifier takeover, invalid-runtime-config rearm, and bound
+undeployed prebuild rearm above, a
 different run or source remains a conflict and requires audited manual forward
-disposition. Neither recovery path changes the deployed source.
+disposition. None of these recovery paths changes the deployed source.
 
 ## Emergency recovery
 

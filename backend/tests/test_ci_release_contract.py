@@ -1145,6 +1145,24 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             ),
             "CONFLICTING_INSTALL",
         )
+        bound_reserved = {
+            **adoptable,
+            "source_sha": sha,
+            "workflow_run_id": "123",
+            "approval": "protected-approval",
+            "manifest_sha256": "d" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "e" * 64,
+        }
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation=bound_reserved,
+                source_sha=sha,
+                workflow_run_id="789",
+            ),
+            "TAKEOVER_RESERVED_BUILD",
+        )
         staged = {
             "source_sha": sha,
             "workflow_run_id": "123",
@@ -1498,6 +1516,120 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                             workflow_attempt=1,
                         )
 
+    def test_invalid_reserved_build_rearm_is_exact_cas_and_never_clears_a_deployment(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_build_rearm_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 2,
+            "phase": "RESERVED",
+            "version": 12,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "manifest_sha256": "d" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "e" * 64,
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
+            "id": activation["id"],
+            "version": 13,
+        }
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(register, "validate_staged_control_descendant") as control_diff,
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_configure_migration_timeouts") as configure_timeouts,
+            mock.patch.object(register, "_advisory_lock"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+        ):
+            result = register._rearm_invalid_reserved_build(
+                "postgresql://migration",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+                expected_source_sha=source_sha,
+                expected_workflow_run_id="123",
+                expected_version=12,
+                expected_build_artifact_id="456",
+                expected_build_artifact_digest="sha256:" + "e" * 64,
+                approval="protected-approval",
+                evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
+            )
+
+        control_diff.assert_called_once_with(source_sha, runner_sha)
+        self.assertEqual(result["state"], "RESERVED_BUILD_REARMED")
+        self.assertEqual(result["next_workflow_attempt"], 2)
+        statements = [str(call.args[0]) for call in connection.execute.call_args_list]
+        disable_index = next(
+            index for index, statement in enumerate(statements)
+            if "DISABLE TRIGGER trg_release_activation_regression" in statement
+        )
+        update_index = next(
+            index for index, statement in enumerate(statements)
+            if "UPDATE release_activations" in statement
+        )
+        enable_index = next(
+            index for index, statement in enumerate(statements)
+            if "ENABLE TRIGGER trg_release_activation_regression" in statement
+        )
+        self.assertLess(disable_index, update_index)
+        self.assertLess(update_index, enable_index)
+        update = statements[update_index]
+        self.assertIn("phase = 'RESERVED'", update)
+        self.assertIn("runtime_bundle_id IS NULL", update)
+        self.assertIn("manifest_sha256 = NULL", update)
+        self.assertIn("build_artifact_id = NULL", update)
+        self.assertIn("api_deployment_id IS NULL", update)
+        self.assertNotIn("api_deployment_id = NULL", update)
+        self.assertIn("version = :expected_version", update)
+        configure_timeouts.assert_called_once_with(connection)
+        self.assertRegex(result["previous_coordinates_sha256"], r"^[0-9a-f]{64}$")
+
+        for changed in (
+            {"api_deployment_id": "dpl_existing", "api_deployment_url": "https://x.vercel.app"},
+            {"runtime_bundle_id": "rtb_" + "f" * 64},
+            {"report_sha256": "f" * 64},
+        ):
+            with self.subTest(changed=changed):
+                self.assertFalse(register.reserved_build_rearm_is_adoptable({**activation, **changed}))
+
+    def test_bound_reserved_prebuild_repair_is_explicit_evidence_first_and_rerun_fenced(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        register_source = _read("scripts/release/register_safe_baseline.py")
+        self.assertIn("rearm_reserved_after_prebuilt_output_repair", workflow)
+        self.assertIn('"TAKEOVER_RESERVED_BUILD"', workflow)
+        self.assertIn('"rearm-reserved-build"', register_source)
+        durable_evidence = workflow.index("id: reservation_evidence")
+        main_recheck = workflow.index(
+            "Recheck current main before migration, reservation, or staged verifier takeover",
+            durable_evidence,
+        )
+        guard = workflow.index(
+            "Fail closed unless the bound RESERVED prebuild repair was explicitly selected",
+            main_recheck,
+        )
+        rearm = workflow.index("Atomically rearm the invalid bound RESERVED prebuild", guard)
+        provisioning = workflow.index("Provision and publish the two least-privilege", rearm)
+        self.assertLess(durable_evidence, main_recheck)
+        self.assertLess(main_recheck, guard)
+        self.assertLess(guard, rearm)
+        self.assertLess(rearm, provisioning)
+        step = workflow[rearm:provisioning]
+        self.assertIn("steps.preflight.outputs.activation_build_artifact_id", step)
+        self.assertIn("steps.preflight.outputs.activation_build_artifact_digest", step)
+        self.assertIn("exit 75", step)
+
     def test_invalid_staged_rearm_is_exact_cas_and_restores_the_regression_trigger(self) -> None:
         register = _load_script(
             "scripts/release/register_safe_baseline.py",
@@ -1645,7 +1777,9 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         build_step = workflow[build_start:build_end]
         self.assertIn('git worktree add --detach "$RUNTIME_SOURCE_DIR" "$SOURCE_SHA"', build_step)
         self.assertIn('git -C "$RUNTIME_SOURCE_DIR" rev-parse HEAD', build_step)
-        self.assertIn('--directory "$RUNTIME_SOURCE_DIR/.vercel" output', build_step)
+        self.assertIn('--directory "$MATERIALIZED_ROOT" output', build_step)
+        self.assertIn("--action materialize-build-output", build_step)
+        self.assertIn('--source-output "$RUNTIME_OUTPUT"', build_step)
         self.assertIn("--action verify-runtime-secret", build_step)
         self.assertIn("--runtime-secret-fingerprint ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256", build_step)
         self.assertNotIn('"$VERCEL_CLI" build --prod', build_step.split("cd \"$RUNTIME_SOURCE_DIR\"", 1)[0])
@@ -2143,6 +2277,8 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         for action in (
             "preflight",
             "adopt-reserved",
+            "rearm-reserved-build",
+            "materialize-build-output",
             "bind-build",
             "recover-deployment",
             "recover-promotion",
@@ -2221,6 +2357,9 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("build_artifact_id", migration)
         self.assertIn("build_artifact_digest", migration)
         self.assertIn(".vercel/output", workflow)
+        self.assertIn("build-output-materialization.json", workflow)
+        self.assertIn('test ! -e "$MATERIALIZED_ROOT"', workflow)
+        self.assertIn('--directory "$MATERIALIZED_ROOT" output', workflow)
 
         new_build_condition = workflow[
             workflow.index("- name: Build the predeploy output") :
@@ -2354,6 +2493,120 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 sidecar.write_bytes(invalid)
                 with self.assertRaises(ValueError):
                     register._read_manifest_sidecar(sidecar)
+
+    def test_vercel_build_output_materialization_copies_regular_files(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_regular_materialized_output_contract",
+        )
+        with tempfile.TemporaryDirectory(prefix="vowpic-regular-output-") as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_output = source_root / ".vercel" / "output"
+            destination = root / "artifact" / "output"
+            source_output.mkdir(parents=True)
+            destination.parent.mkdir()
+            (source_output / "config.json").write_text("{}", encoding="utf-8")
+            report = register.materialize_vercel_build_output(
+                source_output,
+                source_root=source_root,
+                destination_output=destination,
+                source_sha="a" * 40,
+                runner_sha="b" * 40,
+                workflow_run_id="123",
+                workflow_attempt=2,
+            )
+            self.assertEqual((destination / "config.json").read_text(encoding="utf-8"), "{}")
+            self.assertEqual(report["materialized_symlinks"], 0)
+            self.assertEqual(report["manifest_sha256"], register._directory_sha256(destination))
+            with self.assertRaisesRegex(ValueError, "destination already exists"):
+                register.materialize_vercel_build_output(
+                    source_output,
+                    source_root=source_root,
+                    destination_output=destination,
+                    source_sha="a" * 40,
+                    runner_sha="b" * 40,
+                    workflow_run_id="123",
+                    workflow_attempt=2,
+                )
+
+    def test_vercel_build_output_materialization_is_self_contained_and_rejects_escape(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_materialized_output_contract",
+        )
+        with tempfile.TemporaryDirectory(prefix="vowpic-materialized-output-") as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_output = source_root / ".vercel" / "output"
+            assets = source_root / "frontend" / "dist" / "build" / "h5" / "assets"
+            destination_parent = root / "artifact"
+            destination = destination_parent / "output"
+            source_output.mkdir(parents=True)
+            assets.mkdir(parents=True)
+            destination_parent.mkdir()
+            (source_output / "config.json").write_text("{}", encoding="utf-8")
+            asset = assets / "helper.js"
+            asset.write_text("export const helper = true;\n", encoding="utf-8")
+            static_assets = source_output / "static" / "assets"
+            static_assets.mkdir(parents=True)
+            link = static_assets / "helper.js"
+            try:
+                link.symlink_to(asset)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable on this platform: {exc}")
+
+            report = register.materialize_vercel_build_output(
+                source_output,
+                source_root=source_root,
+                destination_output=destination,
+                source_sha="a" * 40,
+                runner_sha="b" * 40,
+                workflow_run_id="123",
+                workflow_attempt=2,
+            )
+            materialized = destination / "static" / "assets" / "helper.js"
+            self.assertTrue(materialized.is_file())
+            self.assertFalse(materialized.is_symlink())
+            self.assertEqual(materialized.read_bytes(), asset.read_bytes())
+            self.assertEqual(report["materialized_symlinks"], 1)
+            self.assertEqual(report["manifest_sha256"], register._directory_sha256(destination))
+            asset.write_text("changed after materialization\n", encoding="utf-8")
+            self.assertNotEqual(materialized.read_bytes(), asset.read_bytes())
+
+            second_output = source_root / ".vercel" / "second-output"
+            second_output.mkdir()
+            external = root / "outside.txt"
+            external.write_text("outside", encoding="utf-8")
+            (second_output / "escape.txt").symlink_to(external)
+            second_destination = destination_parent / "second-output"
+            with self.assertRaisesRegex(ValueError, "escapes the immutable source root"):
+                register.materialize_vercel_build_output(
+                    second_output,
+                    source_root=source_root,
+                    destination_output=second_destination,
+                    source_sha="a" * 40,
+                    runner_sha="b" * 40,
+                    workflow_run_id="123",
+                    workflow_attempt=2,
+                )
+            self.assertFalse(second_destination.exists())
+
+            third_output = source_root / ".vercel" / "third-output"
+            third_output.mkdir()
+            sensitive = source_root / ".vercel" / ".env.production.local"
+            sensitive.write_text("SECRET=not-for-output", encoding="utf-8")
+            (third_output / "secret.txt").symlink_to(sensitive)
+            with self.assertRaisesRegex(ValueError, "protected source metadata"):
+                register.materialize_vercel_build_output(
+                    third_output,
+                    source_root=source_root,
+                    destination_output=destination_parent / "third-output",
+                    source_sha="a" * 40,
+                    runner_sha="b" * 40,
+                    workflow_run_id="123",
+                    workflow_attempt=2,
+                )
 
     def test_formal_verified_reference_cannot_be_silently_replaced_on_retry(self) -> None:
         register = _load_script(
