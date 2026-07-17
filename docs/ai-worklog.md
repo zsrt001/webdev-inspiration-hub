@@ -1414,3 +1414,21 @@
 
 - The hosted probe deliberately raised an exception after the default-privilege assertion, so both probe roles and their ACL changes rolled back. The failed production bootstrap also rolled back completely and returned no credential payload.
 - No Proxifier setting was read or changed.
+
+## 2026-07-17 - Production bootstrap ownership idempotency repair
+
+### Goal and evidence
+
+- The first successful hosted bootstrap transferred public relations and routines to `vowpic_migration_owner`. A later credential-rotation rerun then failed transactionally with SQLSTATE `42501` on `ALTER TABLE public.account_risk_events OWNER TO vowpic_migration_owner`, because the protected SQL Editor identity no longer owned that already-migrated table.
+- The failed rerun rolled back its password rotations, so the previously committed database roles and passwords remained unchanged.
+
+### Changes
+
+- Excluded relations already owned by `vowpic_migration_owner` from the relation ownership loop.
+- Excluded routines already owned by `vowpic_migration_owner` from the routine ownership loop.
+- Added ordering assertions that both owner filters are present before their corresponding dynamic ownership statements.
+
+### Verification and boundary
+
+- The change preserves first-run ownership transfer while making subsequent credential rotations idempotent for already-migrated objects. Extension-owned and revision-specific exclusions remain unchanged.
+- No secret value was returned or persisted from the failed rerun. No Proxifier setting was read or changed.

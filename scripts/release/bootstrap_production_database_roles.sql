@@ -252,6 +252,7 @@ BEGIN
         JOIN pg_namespace namespace ON namespace.oid = class.relnamespace
         WHERE namespace.nspname = 'public'
           AND class.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+          AND class.relowner <> 'vowpic_migration_owner'::regrole
           AND NOT EXISTS (
               SELECT 1 FROM pg_depend dependency
               WHERE dependency.classid = 'pg_class'::regclass
@@ -284,6 +285,7 @@ BEGIN
         FROM pg_proc procedure
         JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
         WHERE namespace.nspname = 'public'
+          AND procedure.proowner <> 'vowpic_migration_owner'::regrole
           AND NOT EXISTS (
               SELECT 1 FROM pg_depend dependency
               WHERE dependency.classid = 'pg_proc'::regclass
