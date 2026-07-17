@@ -62,7 +62,9 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "NOBYPASSRLS",
             "SET role TO 'vowpic_migration_owner'",
             "GRANT SELECT ON ALL TABLES IN SCHEMA public",
-            "ALTER DEFAULT PRIVILEGES FOR ROLE vowpic_migration_owner",
+            "SET LOCAL ROLE vowpic_migration_owner",
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public",
+            "RESET ROLE",
             "vowpic.database-bootstrap.secrets.v1",
             "vowpic_rotate_application_database_logins",
             "application database login rotation requires the migration login",
@@ -74,6 +76,10 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("pg_read_all_data", source)
         self.assertNotIn("GRANT postgres", source)
+        self.assertNotIn(
+            "ALTER DEFAULT PRIVILEGES FOR ROLE vowpic_migration_owner",
+            source,
+        )
         self.assertNotIn("PASSWORD 'change", source)
         self.assertIsNone(re.search(r"(?<!NO)BYPASSRLS", source))
         self.assertIsNone(
@@ -109,6 +115,19 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             source.index(owner_set_check),
             source.index("'ALTER %s %I.%I OWNER TO vowpic_migration_owner'"),
         )
+        default_role_start = source.index("SET LOCAL ROLE vowpic_migration_owner")
+        default_table_grant = source.index(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public\n"
+            "      GRANT SELECT ON TABLES TO vowpic_inventory_login;"
+        )
+        default_sequence_grant = source.index(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public\n"
+            "      GRANT SELECT ON SEQUENCES TO vowpic_inventory_login;"
+        )
+        default_role_reset = source.index("RESET ROLE;", default_role_start)
+        self.assertLess(default_role_start, default_table_grant)
+        self.assertLess(default_table_grant, default_sequence_grant)
+        self.assertLess(default_sequence_grant, default_role_reset)
 
     def test_pooler_url_keeps_project_suffix_and_replaces_password(self) -> None:
         result = provision.database_url_for_login(
