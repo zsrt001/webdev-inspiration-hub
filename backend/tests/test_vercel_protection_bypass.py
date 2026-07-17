@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 from scripts.release import ensure_vercel_automation_bypass as bypass
 
 
 SECRET = "a" * 48
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeApi:
@@ -31,6 +36,25 @@ class FakeApi:
 
 
 class VercelAutomationBypassTest(unittest.TestCase):
+    def test_direct_script_entrypoint_resolves_repository_package(self) -> None:
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/release/ensure_vercel_automation_bypass.py"),
+                "--help",
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--header-env", completed.stdout)
+
     def test_exact_header_is_parsed_without_returning_the_name(self) -> None:
         self.assertEqual(
             bypass.parse_bypass_header(f"x-vercel-protection-bypass: {SECRET}"),
