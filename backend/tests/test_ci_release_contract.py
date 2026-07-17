@@ -652,6 +652,30 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("verify_safe_baseline.py", workflow)
         self.assertIn("register_safe_baseline.py --phase COMPLETED", workflow)
 
+    def test_unbound_reservation_adoption_is_evidence_first_and_precedes_external_writes(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        preflight = workflow.index('"TAKEOVER_RESERVED"')
+        edge_lockdown = workflow.index("verify_edge_lockdown.py", preflight)
+        durable_evidence = workflow.index("id: reservation_evidence", edge_lockdown)
+        main_recheck = workflow.index(
+            "Recheck current main before migration and reservation",
+            durable_evidence,
+        )
+        adoption = workflow.index("--action adopt-reserved", main_recheck)
+        provisioning = workflow.index("provision_production_database_logins.py", adoption)
+        build = workflow.index('"$VERCEL_CLI" build', provisioning)
+        self.assertLess(preflight, edge_lockdown)
+        self.assertLess(edge_lockdown, durable_evidence)
+        self.assertLess(durable_evidence, main_recheck)
+        self.assertLess(main_recheck, adoption)
+        self.assertLess(adoption, provisioning)
+        self.assertLess(provisioning, build)
+        self.assertIn('effective_state = "RETRY_RESERVED" if takeover_required else state', workflow)
+        self.assertIn("steps.preflight.outputs.expected_source_sha", workflow)
+        self.assertIn("steps.preflight.outputs.expected_workflow_run_id", workflow)
+        self.assertIn("steps.preflight.outputs.expected_version", workflow)
+        self.assertIn("steps.reservation_evidence.outputs.artifact-url", workflow)
+
     def test_restore_target_is_ephemeral_loopback_postgres_17(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         restore = _read("scripts/release/run_isolated_restore_rehearsal.sh")
@@ -1013,6 +1037,33 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             ),
             "RETRY_RESERVED",
         )
+        adoptable = {
+            "source_sha": "b" * 40,
+            "workflow_run_id": "run-0",
+            "workflow_attempt": 1,
+            "phase": "RESERVED",
+            "version": 2,
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/1/artifacts/2",
+        }
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation=adoptable,
+                source_sha=sha,
+                workflow_run_id="run-1",
+            ),
+            "TAKEOVER_RESERVED",
+        )
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation={**adoptable, "manifest_sha256": "d" * 64},
+                source_sha=sha,
+                workflow_run_id="run-1",
+            ),
+            "CONFLICTING_INSTALL",
+        )
         expired_at = datetime.now(timezone.utc) - timedelta(minutes=1)
         for phase in (
             "RESERVED",
@@ -1083,6 +1134,59 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             register.validate_phase_transition("STAGED", "PROMOTED")
         register.validate_phase_transition("STAGED", "PROMOTION_ARMED")
         register.validate_phase_transition("PROMOTION_ARMED", "PROMOTED")
+
+    def test_unbound_reservation_adoption_uses_ancestry_approval_and_exact_cas(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_adoption_contract",
+        )
+        previous_source = "a" * 40
+        source_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": previous_source,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "RESERVED",
+            "version": 2,
+            "approval": "protected-approval",
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "current_snapshot_hash": "c" * 64,
+        }
+        connection = mock.MagicMock()
+        update_result = {"id": activation["id"], "version": 3}
+        connection.execute.return_value.mappings.return_value.one_or_none.return_value = update_result
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+
+        with (
+            mock.patch.object(register, "validate_descendant_source") as ancestry,
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_advisory_lock"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+        ):
+            result = register._adopt_reserved(
+                "postgresql://migration",
+                source_sha=source_sha,
+                workflow_run_id="456",
+                workflow_attempt=1,
+                expected_source_sha=previous_source,
+                expected_workflow_run_id="123",
+                expected_version=2,
+                approval="protected-approval",
+                evidence_prefix="https://github.com/o/r/actions/runs/456/artifacts/2",
+            )
+
+        ancestry.assert_called_once_with(previous_source, source_sha)
+        self.assertEqual(result["state"], "RESERVATION_ADOPTED")
+        self.assertEqual(result["previous_evidence_prefix"], activation["private_evidence_prefix"])
+        statement = str(connection.execute.call_args.args[0])
+        self.assertIn("version = :expected_version", statement)
+        self.assertIn("phase = 'RESERVED'", statement)
+        self.assertIn("manifest_sha256 IS NULL", statement)
+        self.assertIn("api_deployment_id IS NULL", statement)
+        self.assertIn("acceptance_fault_state IS NULL", statement)
 
     def test_reserved_retry_rejects_a_decreasing_workflow_attempt(self) -> None:
         register = _load_script(
@@ -1525,7 +1629,15 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         register_source = _read("scripts/release/register_safe_baseline.py")
         migration = _read("backend/alembic/versions/20260710_0013_ops_feature_flags.py")
-        self.assertIn('choices=("preflight", "bind-build", "recover-deployment", "recover-promotion")', register_source)
+        for action in (
+            "preflight",
+            "adopt-reserved",
+            "bind-build",
+            "recover-deployment",
+            "recover-promotion",
+        ):
+            with self.subTest(action=action):
+                self.assertIn(f'"{action}"', register_source)
         self.assertGreaterEqual(
             register_source.count("if not token or not project_id or not team_id"),
             2,
