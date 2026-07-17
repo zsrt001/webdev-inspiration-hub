@@ -1691,3 +1691,16 @@
 - The repaired proof requires exact Vercel metadata (`sensitive`, Production-only, no branch/custom environment) plus a same-rotation non-sensitive SHA-256 companion matched in constant time to the protected GitHub secret. The protected rearm step force-upserts only that computed companion, then pulls it back for proof; it never prints or writes the secret itself. Sanitized evidence contains neither the secret nor its fingerprint and is bound to project/team/source/runner/run coordinates.
 - The same proof runs before STAGED rearm and again inside the detached immutable-source build. The failed run remains a safe diagnostic attempt; a new reviewed runner commit and new protected run are required.
 - The focused release contract passed 78/78, the full backend suite passed 797 tests with 36 environment-dependent skips, Python compilation and workflow YAML parsing passed, and `git diff --check` was clean after the correction.
+
+## 2026-07-17 - Self-contained Vercel prebuild and bound-RESERVED recovery
+
+### Goal and evidence
+
+- Protected run `29600476644`, attempt 2, rebuilt the immutable runtime source, encrypted and bound artifact `8414944333`, then failed before any Vercel deployment was created. Vercel CLI reported that a hashed frontend asset referenced from the recovered prebuild did not exist.
+- The workflow archived `.vercel/output` with its source-tree symlinks intact. The encrypted artifact therefore retained link paths but not the linked frontend bytes; recovering it in another checkout made those links dangling. The activation remained `RESERVED`, with no deployment, Promote, domain switch, formal handoff, or completion.
+
+### Changes and verification
+
+- The build now materializes all in-source Vercel output links into ordinary files/directories before hashing, encryption, and upload. Broken, cyclic, unsupported, out-of-source, pre-existing-destination, and still-linked outputs fail closed.
+- Added one exact recovery for a bound but undeployed `RESERVED` prebuild. It preserves source and business state, requires a reviewed release-control-only descendant plus exact approval/run/version/artifact CAS, clears only the invalid manifest/artifact coordinates under the advisory and table locks, restores the regression trigger, and stops for an attempt-2 rebuild. It cannot operate after any deployment coordinate or later-phase state exists.
+- The focused release contract passed 82 tests with one Windows-only symlink-capability skip; the full backend suite passed 801 tests with 37 explicit environment/platform-dependent skips. Python compilation, workflow YAML structure parsing, and `git diff --check` passed. No Production domain or Proxifier setting was changed by the repair itself, and no Subagent was used.

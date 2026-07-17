@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -68,6 +69,23 @@ ADOPTABLE_RESERVED_EMPTY_FIELDS = (
 )
 STAGED_TAKEOVER_EMPTY_FIELDS = (
     "report_sha256",
+    "worker_deployment_id",
+    "worker_role",
+    "worker_image_digest",
+    "target_snapshot_hash",
+    "acceptance_fault_intent_id",
+    "acceptance_fault_intent_sha256",
+    "acceptance_fault_state",
+    "acceptance_fault_expires_at",
+    "acceptance_fault_cleanup_claim_id",
+    "acceptance_fault_cleanup_fencing_token",
+)
+RESERVED_BUILD_REARM_EMPTY_FIELDS = (
+    "runtime_bundle_id",
+    "report_sha256",
+    "api_deployment_id",
+    "api_deployment_url",
+    "api_role",
     "worker_deployment_id",
     "worker_role",
     "worker_image_digest",
@@ -232,6 +250,56 @@ def staged_verifier_takeover_is_adoptable(activation: dict[str, Any]) -> bool:
     )
 
 
+def reserved_build_rearm_is_adoptable(activation: dict[str, Any]) -> bool:
+    """Allow one reviewed repair of a bound prebuild that was never deployed."""
+    try:
+        version = int(_activation_value(activation, "version") or 0)
+        workflow_attempt = int(_activation_value(activation, "workflow_attempt") or 0)
+    except (TypeError, ValueError):
+        return False
+    source_sha = str(_activation_value(activation, "source_sha") or "")
+    workflow_run_id = str(_activation_value(activation, "workflow_run_id") or "")
+    evidence_prefix = str(_activation_value(activation, "private_evidence_prefix") or "")
+    return (
+        str(_activation_value(activation, "phase") or "") == "RESERVED"
+        and version > 0
+        and workflow_attempt > 0
+        and re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is not None
+        and re.fullmatch(r"[1-9][0-9]*", workflow_run_id) is not None
+        and bool(str(_activation_value(activation, "approval") or "").strip())
+        and re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
+            r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
+            evidence_prefix,
+        )
+        is not None
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(_activation_value(activation, "manifest_sha256") or ""),
+        )
+        is not None
+        and re.fullmatch(
+            r"[1-9][0-9]{0,19}",
+            str(_activation_value(activation, "build_artifact_id") or ""),
+        )
+        is not None
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(_activation_value(activation, "build_artifact_digest") or ""),
+        )
+        is not None
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(_activation_value(activation, "current_snapshot_hash") or ""),
+        )
+        is not None
+        and all(
+            _activation_value(activation, field) in (None, "")
+            for field in RESERVED_BUILD_REARM_EMPTY_FIELDS
+        )
+    )
+
+
 def validate_descendant_source(previous_source_sha: str, source_sha: str) -> None:
     """Prove the reviewed checkout is the requested descendant before adoption."""
     head = subprocess.run(
@@ -365,10 +433,14 @@ def classify_install_state(
     activation_source_sha = str(_activation_value(activation, "source_sha") or "")
     activation_workflow_run_id = str(_activation_value(activation, "workflow_run_id") or "")
     if activation_source_sha != source_sha:
-        return "TAKEOVER_RESERVED" if reserved_install_is_adoptable(activation) else "CONFLICTING_INSTALL"
+        if reserved_install_is_adoptable(activation):
+            return "TAKEOVER_RESERVED"
+        return "CONFLICTING_INSTALL"
     if activation_workflow_run_id != workflow_run_id:
         if reserved_install_is_adoptable(activation):
             return "TAKEOVER_RESERVED"
+        if reserved_build_rearm_is_adoptable(activation):
+            return "TAKEOVER_RESERVED_BUILD"
         if staged_verifier_takeover_is_adoptable(activation):
             return "TAKEOVER_STAGED"
         return "CONFLICTING_INSTALL"
@@ -482,6 +554,111 @@ def _directory_sha256(path: Path) -> str:
         entries.append(entry)
     canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def materialize_vercel_build_output(
+    source_output: Path,
+    *,
+    source_root: Path,
+    destination_output: Path,
+    source_sha: str,
+    runner_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+) -> dict[str, Any]:
+    """Create a self-contained Vercel Build Output API directory.
+
+    `vercel build` may represent static assets as symlinks into the source tree.
+    A durable prebuilt artifact must contain those bytes instead of preserving
+    references that become dangling when the artifact is recovered elsewhere.
+    """
+    source_sha = _validate_sha(source_sha, name="source SHA", lengths=(40, 64))
+    runner_sha = _validate_sha(runner_sha, name="runner SHA", lengths=(40, 64))
+    if not re.fullmatch(r"[1-9][0-9]*", str(workflow_run_id or "")):
+        raise ValueError("workflow run ID must be a positive decimal ID")
+    if workflow_attempt < 1:
+        raise ValueError("workflow attempt must be positive")
+    if source_output.is_symlink() or not source_output.is_dir():
+        raise ValueError("Vercel build output directory does not exist")
+    if source_root.is_symlink() or not source_root.is_dir():
+        raise ValueError("immutable source root does not exist")
+    if destination_output.exists() or destination_output.is_symlink():
+        raise ValueError("materialized build output destination already exists")
+
+    resolved_root = source_root.resolve(strict=True)
+    resolved_output = source_output.resolve(strict=True)
+    if not resolved_output.is_relative_to(resolved_root):
+        raise ValueError("Vercel build output is outside the immutable source root")
+    destination_parent = destination_output.parent.resolve(strict=True)
+    if destination_parent == resolved_root or destination_parent.is_relative_to(resolved_root):
+        raise ValueError("materialized build output must be outside the immutable source root")
+
+    staging = destination_output.with_name(
+        f".{destination_output.name}.materializing-{uuid.uuid4().hex}"
+    )
+    counts = {"directories": 0, "files": 0, "materialized_symlinks": 0}
+
+    def checked_effective_path(path: Path) -> tuple[Path, bool]:
+        is_link = path.is_symlink()
+        try:
+            effective = path.resolve(strict=True) if is_link else path
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("Vercel build output contains a broken or cyclic symlink") from exc
+        resolved = effective.resolve(strict=True)
+        if not resolved.is_relative_to(resolved_root):
+            raise ValueError("Vercel build output symlink escapes the immutable source root")
+        relative = resolved.relative_to(resolved_root)
+        if not resolved.is_relative_to(resolved_output) and (
+            (relative.parts and relative.parts[0] == ".vercel")
+            or any(part == ".git" or part.startswith(".env") for part in relative.parts)
+        ):
+            raise ValueError("Vercel build output references protected source metadata")
+        if is_link:
+            counts["materialized_symlinks"] += 1
+        return effective, is_link
+
+    def copy_entry(path: Path, destination: Path, ancestors: frozenset[Path]) -> None:
+        effective, _was_link = checked_effective_path(path)
+        metadata = effective.stat()
+        mode = metadata.st_mode
+        if stat.S_ISREG(mode):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(effective, destination, follow_symlinks=True)
+            counts["files"] += 1
+            return
+        if not stat.S_ISDIR(mode):
+            raise ValueError("Vercel build output contains an unsupported filesystem entry")
+        resolved_directory = effective.resolve(strict=True)
+        if resolved_directory in ancestors:
+            raise ValueError("Vercel build output contains a cyclic directory reference")
+        destination.mkdir()
+        counts["directories"] += 1
+        next_ancestors = ancestors | {resolved_directory}
+        for child in sorted(effective.iterdir(), key=lambda item: item.name):
+            copy_entry(child, destination / child.name, next_ancestors)
+        shutil.copystat(effective, destination, follow_symlinks=True)
+
+    try:
+        copy_entry(resolved_output, staging, frozenset())
+        if any(entry.is_symlink() for entry in staging.rglob("*")):
+            raise ValueError("materialized Vercel build output still contains a symlink")
+        manifest_sha256 = _directory_sha256(staging)
+        staging.replace(destination_output)
+    except Exception:
+        if staging.exists() and staging.is_dir() and not staging.is_symlink():
+            shutil.rmtree(staging)
+        raise
+
+    return {
+        "schema_version": "vowpic.vercel-build-output-materialization.v1",
+        "passed": True,
+        "source_sha": source_sha,
+        "runner_sha": runner_sha,
+        "workflow_run_id": str(workflow_run_id),
+        "workflow_attempt": workflow_attempt,
+        "manifest_sha256": manifest_sha256,
+        **counts,
+    }
 
 
 def _read_manifest_sidecar(path: Path) -> str:
@@ -1139,6 +1316,191 @@ def _validate_runtime_secret_evidence(
     if set(payload) != set(expected):
         raise ValueError("runtime secret evidence contains unexpected fields")
     return payload
+
+
+def _rearm_invalid_reserved_build(
+    database_url: str,
+    *,
+    source_sha: str,
+    runner_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    expected_source_sha: str,
+    expected_workflow_run_id: str,
+    expected_version: int,
+    expected_build_artifact_id: str,
+    expected_build_artifact_digest: str,
+    approval: str,
+    evidence_prefix: str,
+) -> dict[str, Any]:
+    """Clear one invalid bound prebuild only when no deployment was created."""
+    source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
+    runner_sha = _validate_sha(runner_sha, name="reviewed runner SHA", lengths=(40, 64))
+    expected_source_sha = _validate_sha(
+        expected_source_sha,
+        name="recorded deployed source SHA",
+        lengths=(40, 64),
+    )
+    expected_build_artifact_id = str(expected_build_artifact_id or "").strip()
+    expected_build_artifact_digest = str(expected_build_artifact_digest or "").strip().lower()
+    if source_sha != expected_source_sha:
+        raise SafeBaselineRegistrationError("reserved build rearm cannot change the deployed source")
+    if (
+        not re.fullmatch(r"[1-9][0-9]*", expected_workflow_run_id)
+        or not re.fullmatch(r"[1-9][0-9]*", workflow_run_id)
+        or workflow_attempt < 1
+        or expected_version < 1
+        or not re.fullmatch(r"[1-9][0-9]{0,19}", expected_build_artifact_id)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_build_artifact_digest)
+    ):
+        raise ValueError("current and recorded RESERVED build coordinates are required")
+    if not approval or len(approval) > 160:
+        raise ValueError("protected reserved-build rearm approval is required")
+    if not re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
+        r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
+        evidence_prefix,
+    ):
+        raise ValueError("reserved build rearm requires one durable GitHub artifact URL")
+    validate_staged_control_descendant(source_sha, runner_sha)
+
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _configure_migration_timeouts(connection)
+            _advisory_lock(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError("reserved build rearm requires schema 0014")
+            activation = _read_activation(connection, for_update=True)
+            if activation is None:
+                raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
+            if (
+                str(activation.get("source_sha") or "") != source_sha
+                or str(activation.get("workflow_run_id") or "") != expected_workflow_run_id
+                or int(activation.get("version") or 0) != expected_version
+                or str(activation.get("build_artifact_id") or "")
+                != expected_build_artifact_id
+                or str(activation.get("build_artifact_digest") or "").lower()
+                != expected_build_artifact_digest
+            ):
+                raise SafeBaselineRegistrationError("reserved build rearm coordinates changed")
+            if str(activation.get("approval") or "") != approval:
+                raise SafeBaselineRegistrationError("reserved build rearm approval does not match")
+            if not reserved_build_rearm_is_adoptable(activation):
+                raise SafeBaselineRegistrationError(
+                    "only a bound, undeployed RESERVED prebuild can be rearmed"
+                )
+
+            previous_coordinates = {
+                key: activation.get(key)
+                for key in (
+                    "source_sha",
+                    "workflow_run_id",
+                    "workflow_attempt",
+                    "version",
+                    "manifest_sha256",
+                    "build_artifact_id",
+                    "build_artifact_digest",
+                    "private_evidence_prefix",
+                )
+            }
+            previous_coordinates_sha256 = hashlib.sha256(
+                json.dumps(
+                    previous_coordinates,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            next_workflow_attempt = workflow_attempt + 1
+
+            # The regression trigger makes bound build coordinates immutable.
+            # ACCESS EXCLUSIVE keeps this one reviewed repair atomic while the
+            # trigger is disabled inside the same transaction.
+            connection.execute(
+                text(
+                    "ALTER TABLE release_activations "
+                    "DISABLE TRIGGER trg_release_activation_regression"
+                )
+            )
+            try:
+                result = connection.execute(
+                    text(
+                        """
+                        UPDATE release_activations
+                        SET workflow_run_id = :workflow_run_id,
+                            workflow_attempt = :next_workflow_attempt,
+                            manifest_sha256 = NULL,
+                            build_artifact_id = NULL,
+                            build_artifact_digest = NULL,
+                            private_evidence_prefix = :evidence_prefix,
+                            updated_at = CURRENT_TIMESTAMP,
+                            version = version + 1
+                        WHERE id = CAST(:activation_id AS uuid)
+                          AND version = :expected_version
+                          AND phase = 'RESERVED'
+                          AND source_sha = :source_sha
+                          AND workflow_run_id = :expected_workflow_run_id
+                          AND approval = :approval
+                          AND runtime_bundle_id IS NULL
+                          AND manifest_sha256 IS NOT NULL
+                          AND build_artifact_id = :expected_build_artifact_id
+                          AND build_artifact_digest = :expected_build_artifact_digest
+                          AND report_sha256 IS NULL
+                          AND api_deployment_id IS NULL
+                          AND api_deployment_url IS NULL
+                          AND api_role IS NULL
+                          AND worker_deployment_id IS NULL
+                          AND worker_role IS NULL
+                          AND worker_image_digest IS NULL
+                          AND target_snapshot_hash IS NULL
+                          AND acceptance_fault_intent_id IS NULL
+                          AND acceptance_fault_intent_sha256 IS NULL
+                          AND acceptance_fault_state IS NULL
+                          AND acceptance_fault_expires_at IS NULL
+                          AND acceptance_fault_cleanup_claim_id IS NULL
+                          AND acceptance_fault_cleanup_fencing_token IS NULL
+                        RETURNING id::text, version
+                        """
+                    ),
+                    {
+                        "workflow_run_id": workflow_run_id,
+                        "next_workflow_attempt": next_workflow_attempt,
+                        "evidence_prefix": evidence_prefix,
+                        "activation_id": activation["id"],
+                        "expected_version": expected_version,
+                        "source_sha": source_sha,
+                        "expected_workflow_run_id": expected_workflow_run_id,
+                        "expected_build_artifact_id": expected_build_artifact_id,
+                        "expected_build_artifact_digest": expected_build_artifact_digest,
+                        "approval": approval,
+                    },
+                ).mappings().one_or_none()
+            finally:
+                connection.execute(
+                    text(
+                        "ALTER TABLE release_activations "
+                        "ENABLE TRIGGER trg_release_activation_regression"
+                    )
+                )
+            if result is None:
+                raise SafeBaselineRegistrationError("reserved build rearm CAS lost")
+        return {
+            "action": "rearm-reserved-build",
+            "state": "RESERVED_BUILD_REARMED",
+            "activation_id": result["id"],
+            "version": result["version"],
+            "source_sha": source_sha,
+            "runner_sha": runner_sha,
+            "workflow_run_id": workflow_run_id,
+            "workflow_attempt": workflow_attempt,
+            "next_workflow_attempt": next_workflow_attempt,
+            "previous_coordinates_sha256": previous_coordinates_sha256,
+            "previous_evidence_prefix": previous_coordinates["private_evidence_prefix"],
+            "evidence_prefix": evidence_prefix,
+        }
+    finally:
+        engine.dispose()
 
 
 def _rearm_invalid_staged(
@@ -2001,8 +2363,10 @@ def main() -> int:
         choices=(
             "preflight",
             "verify-runtime-secret",
+            "materialize-build-output",
             "adopt-reserved",
             "adopt-staged-verifier",
+            "rearm-reserved-build",
             "rearm-staged",
             "bind-build",
             "recover-deployment",
@@ -2034,6 +2398,9 @@ def main() -> int:
     parser.add_argument("--build-artifact-attempt", type=int)
     parser.add_argument("--build-artifact-id")
     parser.add_argument("--build-artifact-digest")
+    parser.add_argument("--source-output")
+    parser.add_argument("--source-root")
+    parser.add_argument("--destination-output")
     parser.add_argument("--formal-report")
     parser.add_argument("--vercel-token-env", default="VERCEL_TOKEN")
     parser.add_argument("--vercel-project-id-env", default="VERCEL_PROJECT_ID")
@@ -2102,6 +2469,24 @@ def main() -> int:
                 _write_create_once(Path(args.output), result)
             print(json.dumps(result, sort_keys=True))
             return 0
+        if args.action == "materialize-build-output":
+            if not all((args.source_output, args.source_root, args.destination_output)):
+                raise ValueError(
+                    "source output, source root, and destination output are required"
+                )
+            result = materialize_vercel_build_output(
+                Path(args.source_output),
+                source_root=Path(args.source_root),
+                destination_output=Path(args.destination_output),
+                source_sha=args.source_sha,
+                runner_sha=args.runner_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+            )
+            if args.output:
+                _write_create_once(Path(args.output), result)
+            print(json.dumps(result, sort_keys=True))
+            return 0
         database_url = _required_env(args.database_url_env)
         if not database_url:
             print(f"NOT_RUN: protected database variable {args.database_url_env} is missing", file=sys.stderr)
@@ -2127,6 +2512,25 @@ def main() -> int:
                 expected_source_sha=args.expected_source_sha or "",
                 expected_workflow_run_id=args.expected_workflow_run_id or "",
                 expected_version=args.expected_version or 0,
+                approval=approval,
+                evidence_prefix=args.evidence_prefix,
+            )
+        elif args.action == "rearm-reserved-build":
+            approval = _required_env(args.approval_id_env)
+            if not approval:
+                print("NOT_RUN: protected reserved-build approval is required", file=sys.stderr)
+                return NOT_RUN_EXIT
+            result = _rearm_invalid_reserved_build(
+                database_url,
+                source_sha=args.source_sha,
+                runner_sha=args.runner_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                expected_source_sha=args.expected_source_sha or "",
+                expected_workflow_run_id=args.expected_workflow_run_id or "",
+                expected_version=args.expected_version or 0,
+                expected_build_artifact_id=args.build_artifact_id or "",
+                expected_build_artifact_digest=args.build_artifact_digest or "",
                 approval=approval,
                 evidence_prefix=args.evidence_prefix,
             )
