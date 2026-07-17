@@ -85,9 +85,57 @@ class VercelAutomationBypassTest(unittest.TestCase):
         self.assertFalse(report["created"])
         self.assertEqual(api.generated, [])
 
-    def test_unrelated_automation_secret_fails_before_mutation(self) -> None:
-        api = FakeApi({"b" * 48: {"scope": "automation-bypass"}})
-        with self.assertRaisesRegex(bypass.EdgeLockdownError, "unrelated"):
+    def test_unrelated_automation_secret_is_preserved_when_target_is_created(self) -> None:
+        unrelated = "b" * 48
+        metadata = {"scope": "automation-bypass", "note": "existing monitor"}
+        api = FakeApi({unrelated: metadata})
+        report = bypass.ensure_automation_bypass(api, SECRET)
+        self.assertEqual(api.generated, [(SECRET, bypass.NOTE)])
+        self.assertEqual(api.entries[unrelated], metadata)
+        self.assertEqual(report["automation_secret_count"], 2)
+        self.assertEqual(report["preexisting_automation_secret_count"], 1)
+        self.assertEqual(report["preserved_unrelated_secret_count"], 1)
+        self.assertNotIn(SECRET, str(report))
+        self.assertNotIn(unrelated, str(report))
+
+    def test_exact_and_unrelated_secrets_are_idempotent_together(self) -> None:
+        unrelated = "b" * 48
+        api = FakeApi(
+            {
+                SECRET: {"scope": "automation-bypass", "note": bypass.NOTE},
+                unrelated: {"scope": "automation-bypass", "note": "existing monitor"},
+            }
+        )
+        report = bypass.ensure_automation_bypass(api, SECRET)
+        self.assertFalse(report["created"])
+        self.assertEqual(api.generated, [])
+        self.assertEqual(report["automation_secret_count"], 2)
+        self.assertEqual(report["preserved_unrelated_secret_count"], 1)
+
+    def test_preexisting_metadata_change_fails_readback(self) -> None:
+        unrelated = "b" * 48
+
+        class MutatingReadbackApi(FakeApi):
+            def __init__(self) -> None:
+                super().__init__(
+                    {
+                        SECRET: {"scope": "automation-bypass", "note": bypass.NOTE},
+                        unrelated: {
+                            "scope": "automation-bypass",
+                            "note": "existing monitor",
+                        },
+                    }
+                )
+                self.project_calls = 0
+
+            def project(self):
+                self.project_calls += 1
+                if self.project_calls == 2:
+                    self.entries[unrelated]["note"] = "changed concurrently"
+                return super().project()
+
+        api = MutatingReadbackApi()
+        with self.assertRaisesRegex(bypass.EdgeLockdownError, "changed"):
             bypass.ensure_automation_bypass(api, SECRET)
         self.assertEqual(api.generated, [])
 

@@ -67,7 +67,8 @@ provide only the scoped, expiring inputs used by the one-purpose workflow:
 - Vercel token, org ID, and project ID
 - one `x-vercel-protection-bypass: <secret>` header pair used only for the staged
   deployment URL; the workflow creates/read-backs that exact secret through the
-  Vercel project API and refuses an unrelated existing automation bypass
+  Vercel project API, preserves every pre-existing automation bypass without
+  overwrite or revocation, and fails if readback shows an unexpected entry change
 - the cleanup cron token used to reach the authenticated cleanup guard; the
   workflow also publishes it as a Vercel Production Sensitive variable
 - approval ID and the exact reviewed source SHA
