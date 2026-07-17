@@ -359,7 +359,10 @@ report, staged/formal verification is `NOT_RUN`.
 6. Provision and reconnect through the two application logins, publish them as
    Vercel Production Sensitive variables, and verify that the old administrator
    URL is not used for either application setting. Then install the release
-   toolchain with
+   toolchain after installing `uv 0.10.11` through the immutable
+   `astral-sh/setup-uv` action commit and verifying the official Linux x86_64
+   release checksum. Require the exact `uv 0.10.11` version before continuing
+   with
    `npm ci --prefix scripts/release-tools --ignore-scripts`, resolve the
    committed-lock Vercel CLI executable, and require its version output to be
    exactly `56.2.0`. Require nonempty protected `VERCEL_PROJECT_ID` and

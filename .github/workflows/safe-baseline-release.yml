@@ -50,6 +50,14 @@ jobs:
           cache: npm
           cache-dependency-path: scripts/release-tools/package-lock.json
 
+      - name: Install the Vercel-compatible uv build tool
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.11"
+          checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"
+          enable-cache: false
+          download-from-astral-mirror: false
+
       - name: Prove exact clean current main
         run: |
           if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -63,6 +71,7 @@ jobs:
 
       - name: Install the hash-locked release tooling
         run: |
+          test "$(uv --version)" = "uv 0.10.11"
           python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
           npm ci --prefix scripts/release-tools --ignore-scripts
           VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
