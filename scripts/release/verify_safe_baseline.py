@@ -747,6 +747,43 @@ def _run_route_probe(
     return {"name": probe.name, "status": response.status_code, "code": code}
 
 
+def _verify_runtime_identity(
+    client: httpx.Client,
+    headers: dict[str, str],
+    *,
+    expected_source_sha: str,
+    expected_runtime_bundle_id: str,
+    expected_deployment_id: str,
+) -> dict[str, str]:
+    health = client.get("/health", headers=headers)
+    if health.status_code != 200:
+        raise SafeBaselineVerificationError(f"liveness returned {health.status_code}")
+    if health.json() != {
+        "status": "healthy",
+        "kind": "liveness",
+        "readiness": "/health/ready",
+    }:
+        raise SafeBaselineVerificationError(
+            "liveness response contains non-process state or is unhealthy"
+        )
+
+    version = client.get("/version", headers=headers)
+    if version.status_code != 200:
+        raise SafeBaselineVerificationError(
+            f"runtime version attestation returned {version.status_code}"
+        )
+    version_payload = version.json()
+    expected_coordinates = {
+        "source_sha": expected_source_sha,
+        "runtime_bundle_id": expected_runtime_bundle_id,
+        "deployment_id": expected_deployment_id,
+    }
+    for key, expected in expected_coordinates.items():
+        if str(version_payload.get(key) or "") != expected:
+            raise SafeBaselineVerificationError(f"runtime {key} mismatch")
+    return expected_coordinates
+
+
 def _verify_http(
     base_url: str,
     *,
@@ -758,18 +795,13 @@ def _verify_http(
 ) -> dict[str, Any]:
     headers = {"User-Agent": "vowpic-safe-baseline-verifier/1", **protected_headers}
     with httpx.Client(base_url=base_url.rstrip("/"), timeout=20.0, follow_redirects=False) as client:
-        health = client.get("/health", headers=headers)
-        if health.status_code != 200:
-            raise SafeBaselineVerificationError(f"liveness returned {health.status_code}")
-        health_payload = health.json()
-        expected_coordinates = {
-            "source_sha": expected_source_sha,
-            "runtime_bundle_id": expected_runtime_bundle_id,
-            "deployment_id": expected_deployment_id,
-        }
-        for key, expected in expected_coordinates.items():
-            if str(health_payload.get(key) or "") != expected:
-                raise SafeBaselineVerificationError(f"runtime {key} mismatch")
+        expected_coordinates = _verify_runtime_identity(
+            client,
+            headers,
+            expected_source_sha=expected_source_sha,
+            expected_runtime_bundle_id=expected_runtime_bundle_id,
+            expected_deployment_id=expected_deployment_id,
+        )
 
         guarded = [
             _run_route_probe(

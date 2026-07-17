@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact reviewed remediation commit on current main
+        description: Exact immutable source commit of the staged runtime
+        required: true
+        type: string
+      runner_sha:
+        description: Exact reviewed release-control commit on current main
         required: true
         type: string
 
@@ -29,11 +33,12 @@ jobs:
       EVIDENCE_DIR: artifacts/security-baseline
       LEGACY_BRIDGE_EVIDENCE_DIR: artifacts/security-legacy-bridge
       SOURCE_SHA: ${{ inputs.source_sha }}
+      RUNNER_SHA: ${{ inputs.runner_sha }}
     steps:
-      - name: Check out the exact reviewed commit
+      - name: Check out the exact reviewed release-control commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.runner_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -64,9 +69,14 @@ jobs:
             echo "source_sha must be one exact lowercase 40-character commit SHA" >&2
             exit 1
           fi
+          if [[ ! "$RUNNER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "runner_sha must be one exact lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
           test "$GITHUB_REF" = "refs/heads/main"
-          test "$GITHUB_SHA" = "$SOURCE_SHA"
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$GITHUB_SHA" = "$RUNNER_SHA"
+          test "$(git rev-parse HEAD)" = "$RUNNER_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" "$RUNNER_SHA"
           test -z "$(git status --porcelain)"
 
       - name: Install the hash-locked release tooling
@@ -134,7 +144,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-inventory-rls.json"
 
@@ -198,7 +208,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-legacy-bridge.json"
 
@@ -239,6 +249,7 @@ jobs:
           python scripts/release/register_safe_baseline.py --action preflight \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
             --output "$EVIDENCE_DIR/preflight.json"
@@ -253,6 +264,7 @@ jobs:
           allowed = {
               "FRESH_INSTALL",
               "TAKEOVER_RESERVED",
+              "TAKEOVER_STAGED",
               "RETRY_RESERVED",
               "RETRY_STAGED",
               "RETRY_PROMOTION_ARMED",
@@ -280,32 +292,48 @@ jobs:
               raise SystemExit("activation build manifest is invalid")
           if activation_attempt and not re.fullmatch(r"[1-9][0-9]*", activation_attempt):
               raise SystemExit("activation workflow attempt is invalid")
-          takeover_required = state == "TAKEOVER_RESERVED"
+          reservation_takeover_required = state == "TAKEOVER_RESERVED"
+          staged_verifier_takeover_required = state == "TAKEOVER_STAGED"
+          takeover_required = (
+              reservation_takeover_required or staged_verifier_takeover_required
+          )
           if takeover_required:
               if not re.fullmatch(r"[0-9a-f]{40,64}", activation_source_sha):
-                  raise SystemExit("adoptable reservation source SHA is invalid")
+                  raise SystemExit("adoptable activation source SHA is invalid")
               if not re.fullmatch(r"[1-9][0-9]*", activation_workflow_run_id):
-                  raise SystemExit("adoptable reservation workflow run ID is invalid")
+                  raise SystemExit("adoptable activation workflow run ID is invalid")
               if not re.fullmatch(r"[1-9][0-9]*", activation_version):
-                  raise SystemExit("adoptable reservation version is invalid")
+                  raise SystemExit("adoptable activation version is invalid")
               if not re.fullmatch(
                   r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
                   r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
                   activation_evidence_reference,
               ):
-                  raise SystemExit("adoptable reservation evidence chain is invalid")
+                  raise SystemExit("adoptable activation evidence chain is invalid")
           if state == "RETRY_FORMAL_VERIFIED":
               if not activation_evidence_reference.startswith("gha:v1:"):
                   raise SystemExit("FORMAL_VERIFIED is missing its immutable evidence reference")
               if not re.fullmatch(r"[0-9a-f]{64}", activation_report_sha256):
                   raise SystemExit("FORMAL_VERIFIED is missing its report SHA-256")
-          effective_state = "RETRY_RESERVED" if takeover_required else state
+          effective_state = (
+              "RETRY_RESERVED" if reservation_takeover_required
+              else "RETRY_STAGED" if staged_verifier_takeover_required
+              else state
+          )
           effective_attempt = (
               os.environ["GITHUB_RUN_ATTEMPT"] if takeover_required else activation_attempt
           )
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
               handle.write(f"state={effective_state}\n")
               handle.write(f"takeover_required={str(takeover_required).lower()}\n")
+              handle.write(
+                  "reservation_takeover_required="
+                  f"{str(reservation_takeover_required).lower()}\n"
+              )
+              handle.write(
+                  "staged_verifier_takeover_required="
+                  f"{str(staged_verifier_takeover_required).lower()}\n"
+              )
               handle.write(f"expected_source_sha={activation_source_sha}\n")
               handle.write(f"expected_workflow_run_id={activation_workflow_run_id}\n")
               handle.write(f"expected_version={activation_version}\n")
@@ -398,7 +426,7 @@ jobs:
           test -n "${{ steps.reservation_evidence.outputs.artifact-digest }}"
           test -n "${{ steps.reservation_evidence.outputs.artifact-url }}"
 
-      - name: Recheck current main before migration and reservation
+      - name: Recheck current main before migration, reservation, or staged verifier takeover
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.takeover_required == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -406,7 +434,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-reservation.json"
 
@@ -431,7 +459,7 @@ jobs:
             --output "$EVIDENCE_DIR/reservation.json"
 
       - name: Atomically adopt the unbound reservation into the reviewed descendant run
-        if: ${{ steps.preflight.outputs.takeover_required == 'true' }}
+        if: ${{ steps.preflight.outputs.reservation_takeover_required == 'true' }}
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
@@ -448,6 +476,26 @@ jobs:
             --approval-id-env SAFE_BASELINE_APPROVAL_ID \
             --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
             --output "$EVIDENCE_DIR/reservation-adoption.json"
+
+      - name: Atomically adopt the immutable STAGED deployment into the reviewed verifier run
+        if: ${{ steps.preflight.outputs.staged_verifier_takeover_required == 'true' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
+          RESERVATION_EVIDENCE_URL: ${{ steps.reservation_evidence.outputs.artifact-url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action adopt-staged-verifier \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-source-sha "${{ steps.preflight.outputs.expected_source_sha }}" \
+            --expected-workflow-run-id "${{ steps.preflight.outputs.expected_workflow_run_id }}" \
+            --expected-version "${{ steps.preflight.outputs.expected_version }}" \
+            --approval-id-env SAFE_BASELINE_APPROVAL_ID \
+            --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
+            --output "$EVIDENCE_DIR/staged-verifier-adoption.json"
 
       - name: Provision and publish the two least-privilege application logins
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' }}
@@ -679,7 +727,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-deploy.json"
 
@@ -887,7 +935,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-promote.json"
 
@@ -969,7 +1017,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-after-promote.json"
 
@@ -1116,7 +1164,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-formal-verified.json"
 
@@ -1161,7 +1209,7 @@ jobs:
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \
-            --expected-sha "$SOURCE_SHA" \
+            --expected-sha "$RUNNER_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-completed.json"
 
@@ -1187,6 +1235,7 @@ jobs:
               payload = {
                   "schema": "vowpic.safe-baseline.failure.v1",
                   "source_sha": os.environ["SOURCE_SHA"],
+                  "runner_sha": os.environ["RUNNER_SHA"],
                   "workflow_run_id": os.environ["GITHUB_RUN_ID"],
                   "workflow_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                   "job": os.environ["GITHUB_JOB"],

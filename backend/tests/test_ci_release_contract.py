@@ -604,7 +604,11 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("permissions:", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("actions: read", workflow)
-        self.assertIn('test "$GITHUB_SHA" = "$SOURCE_SHA"', workflow)
+        self.assertIn("runner_sha:", workflow)
+        self.assertIn('test "$GITHUB_SHA" = "$RUNNER_SHA"', workflow)
+        self.assertIn('git merge-base --is-ancestor "$SOURCE_SHA" "$RUNNER_SHA"', workflow)
+        self.assertNotIn('--expected-sha "$SOURCE_SHA"', workflow)
+        self.assertGreaterEqual(workflow.count('--expected-sha "$RUNNER_SHA"'), 6)
         self.assertGreaterEqual(workflow.count("verify_github_ref.py"), 6)
         self.assertNotIn("git ls-remote", workflow)
         self.assertNotIn("git fetch", workflow)
@@ -710,7 +714,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         edge_lockdown = workflow.index("verify_edge_lockdown.py", preflight)
         durable_evidence = workflow.index("id: reservation_evidence", edge_lockdown)
         main_recheck = workflow.index(
-            "Recheck current main before migration and reservation",
+            "Recheck current main before migration, reservation, or staged verifier takeover",
             durable_evidence,
         )
         adoption = workflow.index("--action adopt-reserved", main_recheck)
@@ -722,11 +726,34 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertLess(main_recheck, adoption)
         self.assertLess(adoption, provisioning)
         self.assertLess(provisioning, build)
-        self.assertIn('effective_state = "RETRY_RESERVED" if takeover_required else state', workflow)
+        self.assertIn('"RETRY_RESERVED" if reservation_takeover_required', workflow)
+        self.assertIn('else "RETRY_STAGED" if staged_verifier_takeover_required', workflow)
         self.assertIn("steps.preflight.outputs.expected_source_sha", workflow)
         self.assertIn("steps.preflight.outputs.expected_workflow_run_id", workflow)
         self.assertIn("steps.preflight.outputs.expected_version", workflow)
         self.assertIn("steps.reservation_evidence.outputs.artifact-url", workflow)
+
+    def test_staged_verifier_takeover_is_evidence_first_and_preserves_runtime_source(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        preflight = workflow.index('"TAKEOVER_STAGED"')
+        durable_evidence = workflow.index("id: reservation_evidence", preflight)
+        main_recheck = workflow.index(
+            "Recheck current main before migration, reservation, or staged verifier takeover",
+            durable_evidence,
+        )
+        adoption = workflow.index("--action adopt-staged-verifier", main_recheck)
+        staged_verification = workflow.index(
+            "Verify the staged application and authenticated runtime DDL audit",
+            adoption,
+        )
+        self.assertLess(preflight, durable_evidence)
+        self.assertLess(durable_evidence, main_recheck)
+        self.assertLess(main_recheck, adoption)
+        self.assertLess(adoption, staged_verification)
+        adoption_step = workflow[adoption:staged_verification]
+        self.assertIn('--source-sha "$SOURCE_SHA"', adoption_step)
+        self.assertIn('--runner-sha "$RUNNER_SHA"', adoption_step)
+        self.assertNotIn("--expected-runner-sha", adoption_step)
 
     def test_restore_target_is_ephemeral_loopback_postgres_17(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
@@ -1116,6 +1143,50 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             ),
             "CONFLICTING_INSTALL",
         )
+        staged = {
+            "source_sha": sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "STAGED",
+            "version": 4,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/2",
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_exact",
+            "api_deployment_url": "https://exact.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation=staged,
+                source_sha=sha,
+                workflow_run_id="789",
+            ),
+            "TAKEOVER_STAGED",
+        )
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation={**staged, "api_deployment_id": None},
+                source_sha=sha,
+                workflow_run_id="789",
+            ),
+            "CONFLICTING_INSTALL",
+        )
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation=staged,
+                source_sha="b" * 40,
+                workflow_run_id="789",
+            ),
+            "CONFLICTING_INSTALL",
+        )
         expired_at = datetime.now(timezone.utc) - timedelta(minutes=1)
         for phase in (
             "RESERVED",
@@ -1239,6 +1310,120 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("manifest_sha256 IS NULL", statement)
         self.assertIn("api_deployment_id IS NULL", statement)
         self.assertIn("acceptance_fault_state IS NULL", statement)
+
+    def test_staged_verifier_takeover_updates_only_run_ownership_and_evidence(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_takeover_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "STAGED",
+            "version": 4,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_exact",
+            "api_deployment_url": "https://exact.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
+            "id": activation["id"],
+            "version": 5,
+        }
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+
+        with (
+            mock.patch.object(register, "validate_staged_control_descendant") as control_diff,
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_advisory_lock"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+        ):
+            result = register._adopt_staged_verifier(
+                "postgresql://migration",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+                expected_source_sha=source_sha,
+                expected_workflow_run_id="123",
+                expected_version=4,
+                approval="protected-approval",
+                evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
+            )
+
+        control_diff.assert_called_once_with(source_sha, runner_sha)
+        self.assertEqual(result["state"], "STAGED_VERIFIER_ADOPTED")
+        self.assertEqual(result["source_sha"], source_sha)
+        self.assertEqual(result["runner_sha"], runner_sha)
+        statement = str(connection.execute.call_args.args[0])
+        self.assertNotIn("SET source_sha", statement)
+        self.assertIn("workflow_run_id = :workflow_run_id", statement)
+        self.assertIn("private_evidence_prefix = :evidence_prefix", statement)
+        self.assertIn("phase = 'STAGED'", statement)
+        self.assertIn("runtime_bundle_id IS NOT NULL", statement)
+        self.assertIn("report_sha256 IS NULL", statement)
+
+    def test_staged_verifier_takeover_diff_is_exactly_release_control_only(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_control_diff_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(register.STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS)
+        ) + "\nM\tbackend/tests/test_ci_release_contract.py\n"
+        successful_calls = [
+            subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=allowed_diff, stderr=""),
+        ]
+        with mock.patch.object(register.subprocess, "run", side_effect=successful_calls):
+            register.validate_staged_control_descendant(source_sha, runner_sha)
+
+        unsafe_diff = allowed_diff + "M\tbackend/app/main.py\n"
+        unsafe_calls = [
+            subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=unsafe_diff, stderr=""),
+        ]
+        with (
+            mock.patch.object(register.subprocess, "run", side_effect=unsafe_calls),
+            self.assertRaisesRegex(
+                register.SafeBaselineRegistrationError,
+                "non-control path: backend/app/main.py",
+            ),
+        ):
+            register.validate_staged_control_descendant(source_sha, runner_sha)
+
+        missing_required_diff = "M\tscripts/release/verify_safe_baseline.py\n"
+        missing_calls = [
+            subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=missing_required_diff, stderr=""),
+        ]
+        with (
+            mock.patch.object(register.subprocess, "run", side_effect=missing_calls),
+            self.assertRaisesRegex(
+                register.SafeBaselineRegistrationError,
+                "missing required reviewed control changes",
+            ),
+        ):
+            register.validate_staged_control_descendant(source_sha, runner_sha)
 
     def test_reserved_retry_rejects_a_decreasing_workflow_attempt(self) -> None:
         register = _load_script(
@@ -1783,7 +1968,9 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
     def test_workflow_rechecks_current_main_at_each_irreversible_boundary(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         checks = [
-            workflow.index("- name: Recheck current main before migration and reservation"),
+            workflow.index(
+                "- name: Recheck current main before migration, reservation, or staged verifier takeover"
+            ),
             workflow.index("- name: Recheck current main before staged deployment"),
             workflow.index("- name: Recheck current main immediately before Promote"),
             workflow.index("- name: Recheck current main immediately after Promote"),
@@ -1805,7 +1992,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             snippet = workflow[start : start + 900]
             self.assertIn("verify_github_ref.py", snippet)
             self.assertIn("GITHUB_TOKEN: ${{ github.token }}", snippet)
-            self.assertIn('--expected-sha "$SOURCE_SHA"', snippet)
+            self.assertIn('--expected-sha "$RUNNER_SHA"', snippet)
         self.assertNotIn("git ls-remote", workflow)
         post_promote = workflow[checks[3] : workflow.index("- name: Reconfirm an already recorded promotion")]
         self.assertNotIn("if: ${{", post_promote)
@@ -2229,12 +2416,77 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
 
 
 class BaselineToolContractTest(unittest.TestCase):
-    def test_liveness_exposes_only_nonsecret_immutable_runtime_coordinates(self) -> None:
+    def test_liveness_is_process_only_and_version_exposes_public_runtime_coordinates(self) -> None:
+        main_source = _read("backend/app/main.py")
         config_source = _read("backend/app/core/config.py")
         runtime_source = _read("backend/app/services/runtime_bundle_service.py")
+        liveness_body = main_source[main_source.index('@app.get("/health")'):main_source.index('@app.get("/version")')]
+        self.assertIn('"kind": "liveness"', liveness_body)
+        self.assertNotIn("source_sha", liveness_body)
         self.assertIn("vercel_git_commit_sha", config_source)
         for coordinate in ("source_sha", "runtime_bundle_id", "deployment_id"):
             self.assertIn(f"{coordinate}:", runtime_source)
+
+    def test_safe_baseline_verifier_reads_identity_from_version_not_liveness(self) -> None:
+        verify = _load_script(
+            "scripts/release/verify_safe_baseline.py",
+            "verify_safe_baseline_runtime_identity_contract",
+        )
+        source_sha = "a" * 40
+        runtime_bundle_id = "rtb_" + "b" * 64
+        deployment_id = "dpl_exact"
+        health = mock.MagicMock(status_code=200)
+        health.json.return_value = {
+            "status": "healthy",
+            "kind": "liveness",
+            "readiness": "/health/ready",
+        }
+        version = mock.MagicMock(status_code=200)
+        version.json.return_value = {
+            "source_sha": source_sha,
+            "runtime_bundle_id": runtime_bundle_id,
+            "deployment_id": deployment_id,
+        }
+        client = mock.MagicMock()
+        client.get.side_effect = [health, version]
+
+        result = verify._verify_runtime_identity(
+            client,
+            {"User-Agent": "test"},
+            expected_source_sha=source_sha,
+            expected_runtime_bundle_id=runtime_bundle_id,
+            expected_deployment_id=deployment_id,
+        )
+
+        self.assertEqual(result["source_sha"], source_sha)
+        self.assertEqual([call.args[0] for call in client.get.call_args_list], ["/health", "/version"])
+
+        health_with_state = mock.MagicMock(status_code=200)
+        health_with_state.json.return_value = {**health.json.return_value, "source_sha": source_sha}
+        client.get.side_effect = [health_with_state]
+        with self.assertRaisesRegex(
+            verify.SafeBaselineVerificationError,
+            "liveness response contains non-process state",
+        ):
+            verify._verify_runtime_identity(
+                client,
+                {},
+                expected_source_sha=source_sha,
+                expected_runtime_bundle_id=runtime_bundle_id,
+                expected_deployment_id=deployment_id,
+            )
+
+        wrong_version = mock.MagicMock(status_code=200)
+        wrong_version.json.return_value = {**version.json.return_value, "source_sha": "c" * 40}
+        client.get.side_effect = [health, wrong_version]
+        with self.assertRaisesRegex(verify.SafeBaselineVerificationError, "runtime source_sha mismatch"):
+            verify._verify_runtime_identity(
+                client,
+                {},
+                expected_source_sha=source_sha,
+                expected_runtime_bundle_id=runtime_bundle_id,
+                expected_deployment_id=deployment_id,
+            )
 
     def test_local_baseline_runs_the_real_frontend_unit_suite(self) -> None:
         script = _read("scripts/release/verify_baseline.ps1")

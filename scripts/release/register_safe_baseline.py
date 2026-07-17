@@ -64,6 +64,34 @@ ADOPTABLE_RESERVED_EMPTY_FIELDS = (
     "acceptance_fault_cleanup_claim_id",
     "acceptance_fault_cleanup_fencing_token",
 )
+STAGED_TAKEOVER_EMPTY_FIELDS = (
+    "report_sha256",
+    "worker_deployment_id",
+    "worker_role",
+    "worker_image_digest",
+    "target_snapshot_hash",
+    "acceptance_fault_intent_id",
+    "acceptance_fault_intent_sha256",
+    "acceptance_fault_state",
+    "acceptance_fault_expires_at",
+    "acceptance_fault_cleanup_claim_id",
+    "acceptance_fault_cleanup_fencing_token",
+)
+STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS = frozenset(
+    {
+        ".github/workflows/safe-baseline-release.yml",
+        "scripts/release/register_safe_baseline.py",
+        "scripts/release/verify_safe_baseline.py",
+    }
+)
+STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS = frozenset(
+    {
+        *STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS,
+        "backend/tests/test_ci_release_contract.py",
+        "docs/ai-worklog.md",
+        "docs/operations/risk-lockdown-runbook.md",
+    }
+)
 PHASE_RANK = {
     "RESERVED": 0,
     "STAGED": 10,
@@ -143,6 +171,65 @@ def reserved_install_is_adoptable(activation: dict[str, Any]) -> bool:
     )
 
 
+def staged_verifier_takeover_is_adoptable(activation: dict[str, Any]) -> bool:
+    """Allow only release-control recovery of a fully bound, unpromoted STAGED row."""
+    try:
+        version = int(_activation_value(activation, "version") or 0)
+        workflow_attempt = int(_activation_value(activation, "workflow_attempt") or 0)
+    except (TypeError, ValueError):
+        return False
+    source_sha = str(_activation_value(activation, "source_sha") or "")
+    workflow_run_id = str(_activation_value(activation, "workflow_run_id") or "")
+    evidence_prefix = str(_activation_value(activation, "private_evidence_prefix") or "")
+    deployment_id = str(_activation_value(activation, "api_deployment_id") or "")
+    deployment_url = str(_activation_value(activation, "api_deployment_url") or "")
+    build_artifact_id = str(_activation_value(activation, "build_artifact_id") or "")
+    return (
+        str(_activation_value(activation, "phase") or "") == "STAGED"
+        and version > 0
+        and workflow_attempt > 0
+        and re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is not None
+        and re.fullmatch(r"[1-9][0-9]*", workflow_run_id) is not None
+        and bool(str(_activation_value(activation, "approval") or "").strip())
+        and re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
+            r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
+            evidence_prefix,
+        )
+        is not None
+        and re.fullmatch(
+            r"rtb_[0-9a-f]{64}",
+            str(_activation_value(activation, "runtime_bundle_id") or ""),
+        )
+        is not None
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(_activation_value(activation, "manifest_sha256") or ""),
+        )
+        is not None
+        and re.fullmatch(r"[1-9][0-9]*", build_artifact_id) is not None
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(_activation_value(activation, "build_artifact_digest") or ""),
+        )
+        is not None
+        and bool(deployment_id)
+        and len(deployment_id) <= 160
+        and not any(char.isspace() for char in deployment_id)
+        and re.fullmatch(r"https://[A-Za-z0-9-]+\.vercel\.app", deployment_url) is not None
+        and str(_activation_value(activation, "api_role") or "") == "SAFE_BASELINE"
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(_activation_value(activation, "current_snapshot_hash") or ""),
+        )
+        is not None
+        and all(
+            _activation_value(activation, field) in (None, "")
+            for field in STAGED_TAKEOVER_EMPTY_FIELDS
+        )
+    )
+
+
 def validate_descendant_source(previous_source_sha: str, source_sha: str) -> None:
     """Prove the reviewed checkout is the requested descendant before adoption."""
     head = subprocess.run(
@@ -164,6 +251,75 @@ def validate_descendant_source(previous_source_sha: str, source_sha: str) -> Non
     if ancestry.returncode != 0:
         raise SafeBaselineRegistrationError(
             "reservation adoption source is not a descendant of the reserving source"
+        )
+
+
+def validate_staged_control_descendant(runtime_source_sha: str, runner_sha: str) -> None:
+    """Prove a staged takeover changes release control only, never deployed inputs."""
+    if (
+        re.fullmatch(r"[0-9a-f]{40,64}", runtime_source_sha) is None
+        or re.fullmatch(r"[0-9a-f]{40,64}", runner_sha) is None
+        or runtime_source_sha == runner_sha
+    ):
+        raise SafeBaselineRegistrationError(
+            "staged verifier takeover requires a distinct reviewed descendant runner"
+        )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or head.stdout.strip() != runner_sha:
+        raise SafeBaselineRegistrationError(
+            "staged verifier takeover runner is not the reviewed checkout"
+        )
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", runtime_source_sha, runner_sha],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged verifier takeover runner is not a descendant of the deployed source"
+        )
+    diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--no-renames",
+            f"{runtime_source_sha}..{runner_sha}",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise SafeBaselineRegistrationError("staged verifier takeover diff could not be proven")
+    changed_paths: set[str] = set()
+    for line in diff.stdout.splitlines():
+        try:
+            status_code, path = line.split("\t", 1)
+        except ValueError as exc:
+            raise SafeBaselineRegistrationError(
+                "staged verifier takeover diff is malformed"
+            ) from exc
+        normalized = path.replace("\\", "/")
+        if status_code != "M" or normalized not in STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS:
+            raise SafeBaselineRegistrationError(
+                f"staged verifier takeover changed a non-control path: {normalized}"
+            )
+        changed_paths.add(normalized)
+    missing = STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS - changed_paths
+    if missing:
+        raise SafeBaselineRegistrationError(
+            "staged verifier takeover is missing required reviewed control changes: "
+            + ", ".join(sorted(missing))
         )
 
 
@@ -204,11 +360,16 @@ def classify_install_state(
         return "INVALID_RESERVATION_WITH_OLD_SCHEMA"
     if phase == "COMPLETED":
         return "ALREADY_COMPLETED"
-    if (
-        str(_activation_value(activation, "source_sha") or "") != source_sha
-        or str(_activation_value(activation, "workflow_run_id") or "") != workflow_run_id
-    ):
+    activation_source_sha = str(_activation_value(activation, "source_sha") or "")
+    activation_workflow_run_id = str(_activation_value(activation, "workflow_run_id") or "")
+    if activation_source_sha != source_sha:
         return "TAKEOVER_RESERVED" if reserved_install_is_adoptable(activation) else "CONFLICTING_INSTALL"
+    if activation_workflow_run_id != workflow_run_id:
+        if reserved_install_is_adoptable(activation):
+            return "TAKEOVER_RESERVED"
+        if staged_verifier_takeover_is_adoptable(activation):
+            return "TAKEOVER_STAGED"
+        return "CONFLICTING_INSTALL"
     if phase not in PHASE_RANK:
         return "UNKNOWN_PHASE"
     # Expiry is an audit deadline, not permission for another run to take over.
@@ -501,7 +662,9 @@ def _preflight(
     source_sha: str,
     workflow_run_id: str,
     workflow_attempt: int,
+    runner_sha: str | None = None,
 ) -> dict[str, Any]:
+    effective_runner_sha = runner_sha or source_sha
     engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
     try:
         with engine.connect() as connection:
@@ -530,7 +693,14 @@ def _preflight(
                 workflow_run_id=workflow_run_id,
                 workflow_attempt=workflow_attempt,
             )
-        if state not in {"FRESH_INSTALL", "TAKEOVER_RESERVED", *RETRIABLE_STATES}:
+        if state == "TAKEOVER_STAGED":
+            validate_staged_control_descendant(source_sha, effective_runner_sha)
+        if state not in {
+            "FRESH_INSTALL",
+            "TAKEOVER_RESERVED",
+            "TAKEOVER_STAGED",
+            *RETRIABLE_STATES,
+        }:
             raise SafeBaselineRegistrationError(f"safe-baseline preflight rejected state: {state}")
         if state == "RETRY_FORMAL_VERIFIED":
             parse_reference(str(activation.get("private_evidence_prefix") or ""))
@@ -560,6 +730,7 @@ def _preflight(
                 )
             } if activation else None,
             "source_sha": source_sha,
+            "runner_sha": effective_runner_sha,
             "workflow_run_id": workflow_run_id,
             "reservation_expired": reservation_is_expired(activation),
             "build_artifact_recovery_expired": build_artifact_recovery_is_expired(
@@ -682,6 +853,134 @@ def _adopt_reserved(
             "previous_workflow_run_id": expected_workflow_run_id,
             "previous_evidence_prefix": previous_evidence_prefix,
             "source_sha": source_sha,
+            "workflow_run_id": workflow_run_id,
+            "workflow_attempt": workflow_attempt,
+            "evidence_prefix": evidence_prefix,
+        }
+    finally:
+        engine.dispose()
+
+
+def _adopt_staged_verifier(
+    database_url: str,
+    *,
+    source_sha: str,
+    runner_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    expected_source_sha: str,
+    expected_workflow_run_id: str,
+    expected_version: int,
+    approval: str,
+    evidence_prefix: str,
+) -> dict[str, Any]:
+    source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
+    runner_sha = _validate_sha(runner_sha, name="reviewed runner SHA", lengths=(40, 64))
+    expected_source_sha = _validate_sha(
+        expected_source_sha,
+        name="recorded deployed source SHA",
+        lengths=(40, 64),
+    )
+    if source_sha != expected_source_sha:
+        raise SafeBaselineRegistrationError(
+            "staged verifier takeover cannot change the deployed source"
+        )
+    if (
+        not re.fullmatch(r"[1-9][0-9]*", expected_workflow_run_id)
+        or not re.fullmatch(r"[1-9][0-9]*", workflow_run_id)
+        or workflow_attempt < 1
+        or expected_version < 1
+    ):
+        raise ValueError("current/recorded workflow coordinates and positive version are required")
+    if not approval or len(approval) > 160:
+        raise ValueError("protected staged-verifier approval is required")
+    if not re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
+        r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
+        evidence_prefix,
+    ):
+        raise ValueError("staged verifier takeover requires one durable GitHub artifact URL")
+    validate_staged_control_descendant(source_sha, runner_sha)
+
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _advisory_lock(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError("staged verifier takeover requires schema 0014")
+            activation = _read_activation(connection, for_update=True)
+            if activation is None:
+                raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
+            if (
+                str(activation.get("source_sha") or "") != source_sha
+                or str(activation.get("workflow_run_id") or "") != expected_workflow_run_id
+                or int(activation.get("version") or 0) != expected_version
+            ):
+                raise SafeBaselineRegistrationError("staged verifier takeover coordinates changed")
+            if str(activation.get("approval") or "") != approval:
+                raise SafeBaselineRegistrationError("staged verifier takeover approval does not match")
+            if not staged_verifier_takeover_is_adoptable(activation):
+                raise SafeBaselineRegistrationError(
+                    "only a fully bound, unpromoted STAGED install can be adopted"
+                )
+            previous_evidence_prefix = str(activation.get("private_evidence_prefix") or "")
+            result = connection.execute(
+                text(
+                    """
+                    UPDATE release_activations
+                    SET workflow_run_id = :workflow_run_id,
+                        workflow_attempt = :workflow_attempt,
+                        private_evidence_prefix = :evidence_prefix,
+                        version = version + 1
+                    WHERE id = CAST(:activation_id AS uuid)
+                      AND version = :expected_version
+                      AND phase = 'STAGED'
+                      AND source_sha = :source_sha
+                      AND workflow_run_id = :expected_workflow_run_id
+                      AND approval = :approval
+                      AND runtime_bundle_id IS NOT NULL
+                      AND manifest_sha256 IS NOT NULL
+                      AND build_artifact_id IS NOT NULL
+                      AND build_artifact_digest IS NOT NULL
+                      AND report_sha256 IS NULL
+                      AND api_deployment_id IS NOT NULL
+                      AND api_deployment_url IS NOT NULL
+                      AND api_role = 'SAFE_BASELINE'
+                      AND worker_deployment_id IS NULL
+                      AND worker_role IS NULL
+                      AND worker_image_digest IS NULL
+                      AND target_snapshot_hash IS NULL
+                      AND acceptance_fault_intent_id IS NULL
+                      AND acceptance_fault_intent_sha256 IS NULL
+                      AND acceptance_fault_state IS NULL
+                      AND acceptance_fault_expires_at IS NULL
+                      AND acceptance_fault_cleanup_claim_id IS NULL
+                      AND acceptance_fault_cleanup_fencing_token IS NULL
+                    RETURNING id::text, version
+                    """
+                ),
+                {
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_attempt": workflow_attempt,
+                    "evidence_prefix": evidence_prefix,
+                    "activation_id": activation["id"],
+                    "expected_version": expected_version,
+                    "source_sha": source_sha,
+                    "expected_workflow_run_id": expected_workflow_run_id,
+                    "approval": approval,
+                },
+            ).mappings().one_or_none()
+            if result is None:
+                raise SafeBaselineRegistrationError("staged verifier takeover CAS lost")
+        return {
+            "action": "adopt-staged-verifier",
+            "state": "STAGED_VERIFIER_ADOPTED",
+            "activation_id": result["id"],
+            "version": result["version"],
+            "previous_workflow_run_id": expected_workflow_run_id,
+            "previous_evidence_prefix": previous_evidence_prefix,
+            "source_sha": source_sha,
+            "runner_sha": runner_sha,
             "workflow_run_id": workflow_run_id,
             "workflow_attempt": workflow_attempt,
             "evidence_prefix": evidence_prefix,
@@ -1351,6 +1650,7 @@ def main() -> int:
         choices=(
             "preflight",
             "adopt-reserved",
+            "adopt-staged-verifier",
             "bind-build",
             "recover-deployment",
             "recover-promotion",
@@ -1363,6 +1663,7 @@ def main() -> int:
         default="PRODUCTION_READ_ONLY_DATABASE_URL",
     )
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--runner-sha")
     parser.add_argument("--workflow-run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
     parser.add_argument("--workflow-attempt", type=int, default=int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")))
     parser.add_argument("--expected-source-sha")
@@ -1393,6 +1694,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         args.source_sha = _validate_sha(args.source_sha, name="source SHA", lengths=(40, 64))
+        args.runner_sha = _validate_sha(
+            args.runner_sha or args.source_sha,
+            name="runner SHA",
+            lengths=(40, 64),
+        )
         if not args.workflow_run_id.strip() or args.workflow_attempt < 1:
             raise ValueError("workflow run ID and positive attempt are required")
         if bool(args.action) == bool(args.phase):
@@ -1407,6 +1713,7 @@ def main() -> int:
                 source_sha=args.source_sha,
                 workflow_run_id=args.workflow_run_id,
                 workflow_attempt=args.workflow_attempt,
+                runner_sha=args.runner_sha,
             )
         elif args.action == "adopt-reserved":
             approval = _required_env(args.approval_id_env)
@@ -1416,6 +1723,23 @@ def main() -> int:
             result = _adopt_reserved(
                 database_url,
                 source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                expected_source_sha=args.expected_source_sha or "",
+                expected_workflow_run_id=args.expected_workflow_run_id or "",
+                expected_version=args.expected_version or 0,
+                approval=approval,
+                evidence_prefix=args.evidence_prefix,
+            )
+        elif args.action == "adopt-staged-verifier":
+            approval = _required_env(args.approval_id_env)
+            if not approval:
+                print("NOT_RUN: protected staged-verifier approval is required", file=sys.stderr)
+                return NOT_RUN_EXIT
+            result = _adopt_staged_verifier(
+                database_url,
+                source_sha=args.source_sha,
+                runner_sha=args.runner_sha,
                 workflow_run_id=args.workflow_run_id,
                 workflow_attempt=args.workflow_attempt,
                 expected_source_sha=args.expected_source_sha or "",

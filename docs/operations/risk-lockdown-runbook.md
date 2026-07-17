@@ -72,7 +72,11 @@ provide only the scoped, expiring inputs used by the one-purpose workflow:
   overwrite or revocation, and fails if readback shows an unexpected entry change
 - the cleanup cron token used to reach the authenticated cleanup guard; the
   workflow also publishes it as a Vercel Production Sensitive variable
-- approval ID and the exact reviewed source SHA
+- approval ID, the exact immutable runtime `source_sha`, and the exact reviewed
+  release-control `runner_sha` on current `main`; they are identical for a
+  fresh install or ordinary retry, while the one narrowly defined STAGED
+  verifier takeover below keeps the old deployed source and uses a newer
+  control-only runner
 - one 32-byte base64 `SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64`, retained unchanged
   for at least the full ninety-day build-recovery window
 
@@ -443,14 +447,34 @@ recollects the runtime audit and regenerates fresh signed edge evidence inside
 the protected job; it reuses the recorded deployment and never rebuilds after
 STAGED.
 
+One exception exists for a verifier defect discovered only after the immutable
+deployment has reached exactly `STAGED`. A newly approved workflow run may
+adopt verification ownership without changing `source_sha`, runtime bundle,
+manifest, encrypted build-artifact coordinates, deployment ID/URL, role, phase,
+or snapshots. Both the read-only preflight and the migration-login CAS require
+the deployed source to be an ancestor of the exact current-main `runner_sha`.
+The complete source-to-runner diff must consist only of modified release-control
+workflow/scripts, their contract test, and this runbook/worklog; application,
+migration, dependency, build, configuration, deletion, addition, or rename
+changes fail closed. The three takeover implementation/verifier/workflow files
+must all be present in that diff. Fresh protected edge evidence is uploaded
+before the CAS; the CAS changes only workflow run/attempt, its durable evidence
+URL, and the monotonically increasing row version. The old evidence URL is
+carried into the adoption record, and the new adoption record is included in
+later staged/formal/completion artifacts. The adopted run must reuse the
+recorded STAGED deployment and can only move forward through the ordinary
+verification and Promote gates.
+
 The immutable reservation expiry is an audit/recovery deadline, not a lease
 that transfers ownership. An expired `RESERVED`, `STAGED`, `PROMOTION_ARMED`,
 `PROMOTED`, or `FORMAL_VERIFIED` activation may be resumed only by the exact source SHA and
 workflow run ID after all protected-environment and edge checks are fresh; its
 workflow attempt must increase monotonically. `FORMAL_VERIFIED` additionally
 requires its already bound artifact reference to remain downloadable and
-byte-hash valid; retention expiry does not authorize replacement. A different run or source remains
-a conflict and requires audited manual forward disposition.
+byte-hash valid; retention expiry does not authorize replacement. Except for
+the exact STAGED verifier takeover above, a different run or source remains a
+conflict and requires audited manual forward disposition. A takeover never
+changes the deployed source.
 
 ## Emergency recovery
 
