@@ -66,6 +66,8 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "vowpic.database-bootstrap.secrets.v1",
             "vowpic_rotate_application_database_logins",
             "application database login rotation requires the migration login",
+            "an existing VowPic login violates the least-privilege contract",
+            "an application database login violates the least-privilege contract",
             "an existing VowPic NOLOGIN role has unexpected memberships",
             "a VowPic application group owns database objects",
         ):
@@ -74,6 +76,20 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
         self.assertNotIn("GRANT postgres", source)
         self.assertNotIn("PASSWORD 'change", source)
         self.assertIsNone(re.search(r"(?<!NO)BYPASSRLS", source))
+        self.assertIsNone(
+            re.search(
+                r"ALTER ROLE vowpic_(?:inventory_login|migration_login|app_runtime|"
+                r"control_writer_login) WITH LOGIN NOSUPERUSER",
+                source,
+            )
+        )
+        self.assertIsNone(
+            re.search(
+                r"ALTER ROLE vowpic_(?:inventory_login|migration_login|app_runtime|"
+                r"control_writer_login)[^\n]*NOBYPASSRLS",
+                source,
+            )
+        )
         self.assertIn(
             "REVOKE ALL ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)",
             source,

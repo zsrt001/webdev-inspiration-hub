@@ -1340,3 +1340,23 @@
 - A fresh PostgreSQL 17 instance migrated `base -> 0006`, ran the revised bootstrap, reconnected through the generated-role shapes, and migrated through the exact restricted login to `0014`. Policy reconciliation proved 8/8 RLS tables; real inventory completed; custom-format dump/restore compared all 25 tables, row counts, foreign keys, ledger, and URL checksum; the disposable database and role were removed.
 - A separate two-cluster PostgreSQL 17 rehearsal repeated the legacy `0006` inventory/restore topology. An RLS fixture forced two missing policy-role placeholders to be created on the isolated target; restore comparison passed, both placeholders were dropped, and target role readback returned zero remaining policy roles.
 - No Production role, schema, data, GitHub secret, Vercel setting, deployment, domain, external Provider, customer record, or Proxifier state was changed in this repair pass. Production execution remains gated on review/merge and protected workflow success. No Subagent was used.
+
+## 2026-07-17 - Hosted Supabase password-rotation compatibility repair
+
+### Goal and evidence
+
+- A second real Supabase SQL Editor execution reached the password-rotation statement and failed with SQLSTATE `42501`: hosted `postgres` may create the least-privilege roles, but an `ALTER ROLE` that explicitly repeats `NOSUPERUSER` or `NOBYPASSRLS` is still treated as a protected role-attribute change. The function call rolled back; the generated passwords and role changes did not become valid.
+- The minimum compatible operation is to validate the existing role attributes first and then alter only `LOGIN`, `PASSWORD`, and `VALID UNTIL`. The same restriction applies to the later application-login rotation function.
+
+### Changes
+
+- Added a pre-rotation fail-closed check for inventory, migration, runtime, and control-writer logins. Any superuser, database-creator, role-creator, replication, RLS-bypass, or non-inheriting role is rejected before a password is changed.
+- Reduced the four password-rotation statements to the non-privileged login/password/expiry fields. The application rotation function independently repeats its elevated-attribute check on every call.
+- Added regression assertions that protected attributes may appear in role creation and verification, but never in an `ALTER ROLE` password rotation.
+
+### Verification and boundary
+
+- Focused database-login and runtime-audit tests passed 9/9. The correctly invoked backend suite passed 773/773 with 35 explicit external-service skips. `git diff --check` passed before the worklog update.
+- A disposable local PostgreSQL container demoted `postgres` to non-superuser with `CREATEROLE`, created a least-privilege login, and successfully executed the password-only rotation; readback proved the admin remained non-superuser and the target had no superuser, role-creator, or RLS-bypass attribute. The container was removed.
+- An exact PostgreSQL 17 container rerun was unavailable because the image is not cached and Docker Desktop could not reach Docker Hub without changing its proxy. No proxy or Proxifier setting was changed. The exact hosted-PostgreSQL proof therefore remains the guarded Supabase rerun after review and merge.
+- No Subagent was used.
