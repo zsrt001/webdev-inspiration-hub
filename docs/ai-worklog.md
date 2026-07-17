@@ -1482,3 +1482,16 @@
 - Scoped the pinned Supabase CA to libpq/PostgreSQL via `PGSSLROOTCERT`. GitHub, Vercel, S3, npm, and other HTTPS clients continue using the runner's normal system trust store.
 - Added a contract assertion for the PostgreSQL-only environment variable and a regression rejection for global `SSL_CERT_FILE` in the protected workflow.
 - The failed run stopped before every database policy mutation, migration, Vercel mutation, Firewall publish, deployment, Promote, alias, and domain step. Its sanitized early-failure artifact uploaded successfully. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Asyncpg scoped database CA loading
+
+### Goal and evidence
+
+- Protected run `29576570930` passed GitHub ref verification and the read-only RLS-policy reconciliation, then failed before writing inventory evidence because `asyncpg` does not consume libpq's `PGSSLROOTCERT` automatically.
+- The database TLS handshake reported a self-signed certificate in the chain. The workflow had correctly stopped using global `SSL_CERT_FILE`, so HTTPS trust remained intact and no migration or deployment step ran.
+
+### Changes and boundary
+
+- The shared async database TLS builder now explicitly adds the existing `PGSSLROOTCERT` file to its database-only SSL context while retaining CA verification and hostname verification. A missing configured file fails closed before a connection attempt.
+- Added focused tests proving the scoped CA is loaded into the `asyncpg` context and a missing file is rejected. The workflow continues to use the same pinned and checksum-verified Supabase CA without changing global HTTPS trust.
+- The failed run's RLS reconciliation was read back successfully but no legacy inventory, restore, schema migration, reservation, Vercel mutation, Firewall publish, deployment, Promote, alias, or domain action completed. No Proxifier setting was read or changed, and no Subagent was used.

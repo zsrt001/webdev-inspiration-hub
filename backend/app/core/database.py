@@ -1,5 +1,7 @@
 """Async SQLAlchemy database configuration."""
 
+import os
+from pathlib import Path
 import ssl
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -95,7 +97,14 @@ def _route_supabase_direct_to_pooler(raw: str) -> str:
 
 
 def _ssl_context() -> ssl.SSLContext:
+    root_cert_raw = os.environ.get("PGSSLROOTCERT", "").strip()
+    root_cert = Path(root_cert_raw) if root_cert_raw else None
+    if root_cert is not None and not root_cert.is_file():
+        raise RuntimeError("PGSSLROOTCERT must reference an existing certificate file")
+
     context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+    if root_cert is not None:
+        context.load_verify_locations(cafile=str(root_cert))
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     return context
