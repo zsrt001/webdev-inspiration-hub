@@ -133,6 +133,20 @@ BEGIN
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
 
+    SELECT count(*) INTO invalid_role_count
+    FROM pg_roles
+    WHERE (rolname IN ('vowpic_inventory_login', 'vowpic_migration_login') AND (
+              NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
+              rolreplication OR rolbypassrls OR NOT rolinherit
+          ))
+       OR (rolname IN ('vowpic_app_runtime', 'vowpic_control_writer_login') AND (
+              rolsuper OR rolcreatedb OR rolcreaterole OR
+              rolreplication OR rolbypassrls OR NOT rolinherit
+          ));
+    IF invalid_role_count <> 0 THEN
+        RAISE EXCEPTION 'an existing VowPic login violates the least-privilege contract';
+    END IF;
+
     SELECT array_agg(parent.rolname ORDER BY parent.rolname)
     INTO unexpected_memberships
     FROM pg_auth_members membership
@@ -199,8 +213,7 @@ BEGIN
     END IF;
 
     EXECUTE format(
-        'ALTER ROLE vowpic_inventory_login WITH LOGIN NOSUPERUSER NOCREATEDB '
-        'NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT PASSWORD %L VALID UNTIL ''infinity''',
+        'ALTER ROLE vowpic_inventory_login WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
         inventory_password
     );
     ALTER ROLE vowpic_inventory_login SET default_transaction_read_only = on;
@@ -213,8 +226,7 @@ BEGIN
     GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO vowpic_inventory_login;
 
     EXECUTE format(
-        'ALTER ROLE vowpic_migration_login WITH LOGIN NOSUPERUSER NOCREATEDB '
-        'NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT PASSWORD %L VALID UNTIL ''infinity''',
+        'ALTER ROLE vowpic_migration_login WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
         migration_password
     );
     GRANT vowpic_migration_owner TO vowpic_migration_login;
@@ -341,14 +353,23 @@ BEGIN
            OR runtime_password = writer_password THEN
             RAISE EXCEPTION 'application database login passwords are invalid';
         END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_roles
+            WHERE rolname IN ('vowpic_app_runtime', 'vowpic_control_writer_login')
+              AND (
+                  rolsuper OR rolcreatedb OR rolcreaterole OR
+                  rolreplication OR rolbypassrls OR NOT rolinherit
+              )
+        ) THEN
+            RAISE EXCEPTION 'an application database login violates the least-privilege contract';
+        END IF;
         EXECUTE format(
-            'ALTER ROLE vowpic_app_runtime WITH LOGIN NOSUPERUSER NOCREATEDB '
-            'NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT PASSWORD %L VALID UNTIL ''infinity''',
+            'ALTER ROLE vowpic_app_runtime WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
             runtime_password
         );
         EXECUTE format(
-            'ALTER ROLE vowpic_control_writer_login WITH LOGIN NOSUPERUSER NOCREATEDB '
-            'NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT PASSWORD %L VALID UNTIL ''infinity''',
+            'ALTER ROLE vowpic_control_writer_login WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
             writer_password
         );
         REVOKE vowpic_control_writer FROM vowpic_app_runtime;
@@ -363,20 +384,6 @@ BEGIN
       FROM PUBLIC;
     GRANT EXECUTE ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)
       TO vowpic_migration_owner;
-
-    SELECT count(*) INTO invalid_role_count
-    FROM pg_roles
-        WHERE (rolname = 'vowpic_inventory_login' AND (
-              NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
-              rolreplication OR rolbypassrls OR NOT rolinherit
-          ))
-       OR (rolname = 'vowpic_migration_login' AND (
-              NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
-              rolreplication OR rolbypassrls OR NOT rolinherit
-          ));
-    IF invalid_role_count <> 0 THEN
-        RAISE EXCEPTION 'a generated VowPic login violates the least-privilege contract';
-    END IF;
 
     SELECT count(*) INTO writable_table_count
     FROM information_schema.tables
