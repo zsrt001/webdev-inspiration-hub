@@ -67,6 +67,9 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "RESET ROLE",
             "class.relowner <> 'vowpic_migration_owner'::regrole",
             "procedure.proowner <> 'vowpic_migration_owner'::regrole",
+            "procedure.proname = 'vowpic_runtime_statement_audit'",
+            "procedure.proname = 'vowpic_rotate_application_database_logins'",
+            "'runtime_password text, writer_password text'",
             "vowpic.database-bootstrap.secrets.v1",
             "vowpic_rotate_application_database_logins",
             "application database login rotation requires the migration login",
@@ -139,6 +142,19 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             source.index(
                 "'ALTER ROUTINE %I.%I(%s) OWNER TO vowpic_migration_owner'"
             ),
+        )
+        routine_transfer = source.index(
+            "'ALTER ROUTINE %I.%I(%s) OWNER TO vowpic_migration_owner'"
+        )
+        self.assertLess(
+            source.index("procedure.proname = 'vowpic_runtime_statement_audit'"),
+            routine_transfer,
+        )
+        self.assertLess(
+            source.index(
+                "procedure.proname = 'vowpic_rotate_application_database_logins'"
+            ),
+            routine_transfer,
         )
 
     def test_pooler_url_keeps_project_suffix_and_replaces_password(self) -> None:
