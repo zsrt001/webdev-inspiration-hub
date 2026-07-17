@@ -1432,3 +1432,21 @@
 
 - The change preserves first-run ownership transfer while making subsequent credential rotations idempotent for already-migrated objects. Extension-owned and revision-specific exclusions remain unchanged.
 - No secret value was returned or persisted from the failed rerun. No Proxifier setting was read or changed.
+
+## 2026-07-17 - Bootstrap-managed routine ownership exclusion
+
+### Goal and evidence
+
+- After relation/routine owner idempotency was merged, the hosted rerun progressed past the previously failing table and then failed transactionally with SQLSTATE `42501` while replacing `public.vowpic_runtime_statement_audit()`.
+- Read-only Production catalog evidence showed the two bootstrap-managed signatures are `vowpic_runtime_statement_audit()` and `vowpic_rotate_application_database_logins(runtime_password text, writer_password text)`. Both are intentionally recreated as `SECURITY DEFINER` helpers and owned by `postgres`, so they must not enter the general migration-owner routine loop.
+
+### Changes
+
+- Excluded the exact zero-argument runtime-audit function from the general routine ownership transfer.
+- Excluded the exact two-text-argument application-login rotation function from the same loop.
+- Added regression assertions that both signature-specific exclusions occur before the dynamic routine ownership statement.
+
+### Verification and boundary
+
+- The exclusions are signature-specific and do not exempt unrelated overloads or application routines from the migration-owner contract.
+- The failed hosted rerun rolled back password rotation and routine ownership changes. No secret value was returned or persisted, and no Proxifier setting was read or changed.

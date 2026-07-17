@@ -293,6 +293,15 @@ BEGIN
                 AND dependency.deptype = 'e'
           )
           AND NOT (
+            procedure.proname = 'vowpic_runtime_statement_audit'
+            AND pg_get_function_identity_arguments(procedure.oid) = ''
+          )
+          AND NOT (
+            procedure.proname = 'vowpic_rotate_application_database_logins'
+            AND pg_get_function_identity_arguments(procedure.oid) =
+                'runtime_password text, writer_password text'
+          )
+          AND NOT (
             current_revision = '20260712_0014'
             AND procedure.proname = 'app_current_user_id'
             AND pg_get_function_identity_arguments(procedure.oid) = ''
