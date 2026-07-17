@@ -1563,3 +1563,15 @@
 - The control-plane migration now validates or creates the exact `NOLOGIN`, `NOBYPASSRLS` migration-owner shape, grants only control-plane DML, and creates one forced-RLS `FOR ALL` policy for that role on each of the eight control-plane tables. Runtime and control-writer policy boundaries remain unchanged.
 - Added a real non-superuser, non-role-creator, non-RLS-bypass migration login to the PostgreSQL integration test. Its database default role becomes `vowpic_migration_owner`; readback proves the exact role shape and eight policies before the exact reservation insert succeeds.
 - A fresh isolated PostgreSQL 17 cluster migrated from empty through head and passed all 7 control-plane RLS integration tests, including the new reservation path. The server stopped and its test data/log were deleted. Focused schema/workflow tests passed 74/74 and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Linux Vercel automation-bypass entrypoint repair
+
+### Goal and evidence
+
+- Protected run `29579791731` proved the migration-owner RLS repair by atomically upgrading Production from `0012` through `0014` and reserving the install. It also created and published the two least-privilege application logins.
+- The next step failed before constructing a Vercel client because direct execution of `scripts/release/ensure_vercel_automation_bypass.py` could not resolve its `scripts.release` import. The workflow preserved sanitized failure evidence and removed the ephemeral runner bypass; no build, deployment, Promote, alias, or formal-domain handoff began.
+
+### Changes and verification
+
+- Added the repository root to that direct script's import path before its package import, matching the established release-entrypoint contract.
+- Added a subprocess regression that removes inherited `PYTHONPATH` and invokes the exact script with `--help` from the repository root. The focused bypass and protected-workflow contract suites passed 73/73, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.

@@ -14,7 +14,11 @@ from typing import Any
 
 import httpx
 
-from scripts.release.vercel_firewall import EdgeLockdownError, VercelFirewallApi
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.release.vercel_firewall import EdgeLockdownError, VercelFirewallApi  # noqa: E402
 
 
 NOTE = "VowPic safe baseline CI"
