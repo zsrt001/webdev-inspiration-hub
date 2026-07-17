@@ -1450,3 +1450,22 @@
 
 - The exclusions are signature-specific and do not exempt unrelated overloads or application routines from the migration-owner contract.
 - The failed hosted rerun rolled back password rotation and routine ownership changes. No secret value was returned or persisted, and no Proxifier setting was read or changed.
+
+## 2026-07-17 - Linux release-tool lock completeness repair
+
+### Goal and evidence
+
+- Protected run `29575028918` proved the exact reviewed `main` SHA and completed the hash-locked Python install, then stopped before every database, edge, Vercel, deploy, Promote, and domain step.
+- The Ubuntu runner's `npm ci` rejected the committed release-tool lock because the Linux optional dependency graph required `@emnapi/core@1.11.2` and `@emnapi/runtime@1.11.2`, but neither package was present in the lock. The later artifact upload also failed because an early tooling failure had not created the evidence directory.
+
+### Changes
+
+- Added both required Emscripten N-API peer packages as exact release-tool development dependencies and committed their integrity-checked lock entries. This makes the Linux optional graph explicit instead of relying on a Windows-generated omission.
+- Added a sanitized early-failure evidence record only when no earlier evidence file exists. The existing fail-closed artifact upload remains unchanged and can no longer overwrite the primary failure with a missing-directory error.
+- Extended the release contract tests to pin both versions, require their SHA-512 integrity entries, and require the early-failure record before diagnostic upload.
+
+### Verification and boundary
+
+- The complete workflow contract suite passed 67/67. A clean local `npm ci --ignore-scripts` installed 298 release-tool packages, and the installed CLI read back exact version `56.2.0`.
+- An npm Linux/x64/glibc dry-run accepted the repaired lock and resolved the Linux platform packages without the two missing-package errors from the protected runner. `git diff --check` passed before this worklog update.
+- The failed protected run made no Production database, Vercel, Firewall, deployment, alias, domain, Provider, customer-data, or Proxifier change. No Subagent was used.

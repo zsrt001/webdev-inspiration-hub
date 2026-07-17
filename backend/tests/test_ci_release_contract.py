@@ -579,8 +579,26 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "undici@5.29.0": "6.27.0",
         }
         self.assertEqual(package["devDependencies"]["vercel"], "56.2.0")
+        self.assertEqual(package["devDependencies"]["@emnapi/core"], "1.11.2")
+        self.assertEqual(package["devDependencies"]["@emnapi/runtime"], "1.11.2")
         self.assertEqual(package["overrides"], expected_security_overrides)
         self.assertEqual(lock["packages"][""]["devDependencies"]["vercel"], "56.2.0")
+        self.assertEqual(
+            lock["packages"][""]["devDependencies"]["@emnapi/core"],
+            "1.11.2",
+        )
+        self.assertEqual(
+            lock["packages"][""]["devDependencies"]["@emnapi/runtime"],
+            "1.11.2",
+        )
+        self.assertRegex(
+            lock["packages"]["node_modules/@emnapi/core"]["integrity"],
+            r"^sha512-",
+        )
+        self.assertRegex(
+            lock["packages"]["node_modules/@emnapi/runtime"]["integrity"],
+            r"^sha512-",
+        )
         self.assertEqual(lock["packages"]["node_modules/vercel"]["version"], "56.2.0")
         self.assertEqual(lock["packages"]["node_modules/@tootallnate/once"]["version"], "2.0.1")
         self.assertEqual(lock["packages"]["node_modules/ajv"]["version"], "8.18.0")
@@ -752,6 +770,12 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         self.assertIn("if: failure()", workflow)
         self.assertIn("path: artifacts/security-baseline", workflow)
+        self.assertIn("Materialize sanitized early failure evidence", workflow)
+        self.assertIn('evidence_dir / "early-failure.json"', workflow)
+        self.assertLess(
+            workflow.index("Materialize sanitized early failure evidence"),
+            workflow.index("Preserve sanitized failure diagnostics"),
+        )
         runner_temp_paths = re.findall(
             r"^\s*path:\s*(\$\{\{ runner\.temp \}\}[^\r\n]*)$",
             workflow,

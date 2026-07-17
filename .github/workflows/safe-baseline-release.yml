@@ -1113,6 +1113,31 @@ jobs:
         run: |
           python scripts/release/register_safe_baseline.py --phase COMPLETED --database-url-env PRODUCTION_MIGRATION_DATABASE_URL --source-sha "$SOURCE_SHA" --workflow-run-id "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" --deployment-id "$DEPLOYMENT_ID" --deployment-url "$DEPLOYMENT_URL" --output "$EVIDENCE_DIR/phase-completed.json"
 
+      - name: Materialize sanitized early failure evidence
+        if: failure()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          evidence_dir = Path(os.environ["EVIDENCE_DIR"])
+          evidence_dir.mkdir(parents=True, exist_ok=True)
+          if not any(path.is_file() for path in evidence_dir.rglob("*")):
+              payload = {
+                  "schema": "vowpic.safe-baseline.failure.v1",
+                  "source_sha": os.environ["SOURCE_SHA"],
+                  "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+                  "workflow_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "job": os.environ["GITHUB_JOB"],
+                  "diagnostic": "The failing step is recorded in the protected GitHub job log.",
+              }
+              (evidence_dir / "early-failure.json").write_text(
+                  json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+          PY
+
       - name: Preserve sanitized failure diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

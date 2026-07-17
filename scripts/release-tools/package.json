@@ -17,6 +17,8 @@
     "undici@5.29.0": "6.27.0"
   },
   "devDependencies": {
+    "@emnapi/core": "1.11.2",
+    "@emnapi/runtime": "1.11.2",
     "vercel": "56.2.0"
   }
 }
