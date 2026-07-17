@@ -18,6 +18,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from scripts.release.edge_lockdown_contract import (
     BYPASS_HEADER_NAME,
     BYPASS_RULE_NAME,
