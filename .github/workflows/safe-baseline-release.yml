@@ -11,6 +11,11 @@ on:
         description: Exact reviewed release-control commit on current main
         required: true
         type: string
+      rearm_staged_after_config_repair:
+        description: Rearm one invalid unpromoted STAGED binding after protected runtime-secret repair
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -408,6 +413,28 @@ jobs:
               handle.write(f"baseline_config_sha256={payload['baseline_config_sha256']}\n")
           PY
 
+      - name: Prove the repaired Production runtime secret matches GitHub
+        if: ${{ inputs.rearm_staged_after_config_repair == true && steps.preflight.outputs.staged_verifier_takeover_required == 'true' }}
+        env:
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          test -n "$ACCEPTANCE_IDENTITY_HMAC_KEY"
+          test -n "$VERCEL_TOKEN"
+          test -n "$VERCEL_PROJECT_ID"
+          test -n "$VERCEL_ORG_ID"
+          "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+          python scripts/release/register_safe_baseline.py --action verify-runtime-secret \
+            --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --vercel-env-file .vercel/.env.production.local \
+            --runtime-secret-env ACCEPTANCE_IDENTITY_HMAC_KEY \
+            --output "$EVIDENCE_DIR/staged-rearm-runtime-secret.json"
+
       - name: Persist protected evidence before the first irreversible boundary
         id: reservation_evidence
         if: ${{ steps.preflight.outputs.state != 'RETRY_FORMAL_VERIFIED' }}
@@ -477,8 +504,31 @@ jobs:
             --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
             --output "$EVIDENCE_DIR/reservation-adoption.json"
 
+      - name: Atomically rearm the invalid unpromoted STAGED binding
+        if: ${{ inputs.rearm_staged_after_config_repair == true && steps.preflight.outputs.staged_verifier_takeover_required == 'true' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
+          RESERVATION_EVIDENCE_URL: ${{ steps.reservation_evidence.outputs.artifact-url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action rearm-staged \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-source-sha "${{ steps.preflight.outputs.expected_source_sha }}" \
+            --expected-workflow-run-id "${{ steps.preflight.outputs.expected_workflow_run_id }}" \
+            --expected-version "${{ steps.preflight.outputs.expected_version }}" \
+            --approval-id-env SAFE_BASELINE_APPROVAL_ID \
+            --runtime-secret-evidence "$EVIDENCE_DIR/staged-rearm-runtime-secret.json" \
+            --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
+            --output "$EVIDENCE_DIR/staged-rearm.json"
+          echo "STAGED was safely rearmed; rerun this exact workflow run so attempt $((GITHUB_RUN_ATTEMPT + 1)) rebuilds the immutable source" >&2
+          exit 75
+
       - name: Atomically adopt the immutable STAGED deployment into the reviewed verifier run
-        if: ${{ steps.preflight.outputs.staged_verifier_takeover_required == 'true' }}
+        if: ${{ steps.preflight.outputs.staged_verifier_takeover_required == 'true' && inputs.rearm_staged_after_config_repair != true }}
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
@@ -594,19 +644,46 @@ jobs:
         id: new_build
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || (steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 == '' && steps.build_lookup.outputs.state == 'NOT_FOUND' && steps.preflight.outputs.build_artifact_recovery_expired == 'false') }}
         env:
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
         run: |
+          test -n "$ACCEPTANCE_IDENTITY_HMAC_KEY"
           test -n "$VERCEL_TOKEN"
           test -n "$VERCEL_PROJECT_ID"
           test -n "$VERCEL_ORG_ID"
-          "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
-          "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
-          MANIFEST_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
+          RUNTIME_SOURCE_DIR="$RUNNER_TEMP/safe-baseline-runtime-source"
+          test ! -e "$RUNTIME_SOURCE_DIR"
+          git worktree add --detach "$RUNTIME_SOURCE_DIR" "$SOURCE_SHA"
+          test "$(git -C "$RUNTIME_SOURCE_DIR" rev-parse HEAD)" = "$SOURCE_SHA"
+          (
+            cd "$RUNTIME_SOURCE_DIR"
+            "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+            python "$GITHUB_WORKSPACE/scripts/release/register_safe_baseline.py" \
+              --action verify-runtime-secret \
+              --source-sha "$SOURCE_SHA" \
+              --runner-sha "$RUNNER_SHA" \
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+              --vercel-env-file .vercel/.env.production.local \
+              --runtime-secret-env ACCEPTANCE_IDENTITY_HMAC_KEY \
+              --output "$GITHUB_WORKSPACE/$EVIDENCE_DIR/build-runtime-secret.json"
+            "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
+          )
+          RUNTIME_OUTPUT="$RUNTIME_SOURCE_DIR/.vercel/output"
+          MANIFEST_SHA256="$(RUNTIME_OUTPUT="$RUNTIME_OUTPUT" python -c 'import os; from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(os.environ["RUNTIME_OUTPUT"])))')"
           [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          tar --create --file "$RUNNER_TEMP/safe-baseline-build.tar" --directory .vercel output
+          tar --create --file "$RUNNER_TEMP/safe-baseline-build.tar" \
+            --directory "$RUNTIME_SOURCE_DIR/.vercel" output
           test -s "$RUNNER_TEMP/safe-baseline-build.tar"
+          test -s "$RUNTIME_SOURCE_DIR/.vercel/project.json"
+          test ! -e .vercel/output
+          mkdir -p .vercel
+          cp "$RUNTIME_SOURCE_DIR/.vercel/project.json" .vercel/project.json
+          tar --extract --file "$RUNNER_TEMP/safe-baseline-build.tar" --directory .vercel
+          test -d .vercel/output
+          test "$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')" = "$MANIFEST_SHA256"
           printf '%s\n' "$MANIFEST_SHA256" > "$RUNNER_TEMP/safe-baseline-build.manifest.sha256"
           echo "manifest_sha256=$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
 

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -28,6 +29,7 @@ if str(BACKEND) not in sys.path:
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 import httpx  # noqa: E402
+from dotenv import dotenv_values  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 from scripts.release.github_artifact_evidence import parse_reference  # noqa: E402
 from scripts.release.production_inventory_rls import reconcile_inventory_rls_policies  # noqa: E402
@@ -718,11 +720,15 @@ def _preflight(
                 for key in (
                     "runtime_bundle_id",
                     "manifest_sha256",
+                    "build_artifact_id",
+                    "build_artifact_digest",
                     "source_sha",
                     "workflow_run_id",
                     "workflow_attempt",
                     "api_deployment_id",
                     "api_deployment_url",
+                    "api_role",
+                    "current_snapshot_hash",
                     "private_evidence_prefix",
                     "report_sha256",
                     "phase",
@@ -983,6 +989,274 @@ def _adopt_staged_verifier(
             "runner_sha": runner_sha,
             "workflow_run_id": workflow_run_id,
             "workflow_attempt": workflow_attempt,
+            "evidence_prefix": evidence_prefix,
+        }
+    finally:
+        engine.dispose()
+
+
+def verify_pulled_runtime_secret(
+    vercel_env_file: Path,
+    *,
+    secret_name: str,
+    expected_secret: str,
+    source_sha: str,
+    runner_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+) -> dict[str, Any]:
+    """Prove a protected GitHub secret matches the pulled Vercel Production value."""
+    if secret_name != "ACCEPTANCE_IDENTITY_HMAC_KEY":
+        raise ValueError("only the acceptance identity runtime secret can be verified")
+    expected = str(expected_secret or "").strip()
+    if len(expected) < 32:
+        raise ValueError("protected acceptance identity secret must contain at least 32 characters")
+    if vercel_env_file.is_symlink() or not vercel_env_file.is_file():
+        raise ValueError("pulled Vercel Production environment file is missing")
+    actual_value = dotenv_values(vercel_env_file).get(secret_name)
+    actual = str(actual_value or "").strip()
+    if len(actual) < 32:
+        raise ValueError("Vercel Production acceptance identity secret is missing or too short")
+    if not secrets.compare_digest(actual, expected):
+        raise ValueError("GitHub and Vercel acceptance identity secrets do not match")
+    if (
+        re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is None
+        or re.fullmatch(r"[0-9a-f]{40,64}", runner_sha) is None
+        or re.fullmatch(r"[1-9][0-9]*", workflow_run_id) is None
+        or workflow_attempt < 1
+    ):
+        raise ValueError("runtime secret evidence coordinates are invalid")
+    return {
+        "schema_version": "vowpic.runtime-secret-match.v1",
+        "passed": True,
+        "secret_name": secret_name,
+        "minimum_length": 32,
+        "vercel_environment": "production",
+        "source_sha": source_sha,
+        "runner_sha": runner_sha,
+        "workflow_run_id": workflow_run_id,
+        "workflow_attempt": workflow_attempt,
+    }
+
+
+def _validate_runtime_secret_evidence(
+    path: Path,
+    *,
+    source_sha: str,
+    runner_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("staged rearm requires runtime secret match evidence")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "schema_version": "vowpic.runtime-secret-match.v1",
+        "passed": True,
+        "secret_name": "ACCEPTANCE_IDENTITY_HMAC_KEY",
+        "minimum_length": 32,
+        "vercel_environment": "production",
+        "source_sha": source_sha,
+        "runner_sha": runner_sha,
+        "workflow_run_id": workflow_run_id,
+        "workflow_attempt": workflow_attempt,
+    }
+    if not isinstance(payload, dict) or any(payload.get(key) != value for key, value in expected.items()):
+        raise ValueError("runtime secret evidence is not bound to this protected rearm")
+    if set(payload) != set(expected):
+        raise ValueError("runtime secret evidence contains unexpected fields")
+    return payload
+
+
+def _rearm_invalid_staged(
+    database_url: str,
+    *,
+    source_sha: str,
+    runner_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    expected_source_sha: str,
+    expected_workflow_run_id: str,
+    expected_version: int,
+    approval: str,
+    evidence_prefix: str,
+    runtime_secret_evidence: Path,
+) -> dict[str, Any]:
+    """Atomically clear one invalid, unpromoted STAGED binding for an exact-source rebuild."""
+    source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
+    runner_sha = _validate_sha(runner_sha, name="reviewed runner SHA", lengths=(40, 64))
+    expected_source_sha = _validate_sha(
+        expected_source_sha,
+        name="recorded deployed source SHA",
+        lengths=(40, 64),
+    )
+    if source_sha != expected_source_sha:
+        raise SafeBaselineRegistrationError("staged rearm cannot change the deployed source")
+    if (
+        not re.fullmatch(r"[1-9][0-9]*", expected_workflow_run_id)
+        or not re.fullmatch(r"[1-9][0-9]*", workflow_run_id)
+        or workflow_attempt < 1
+        or expected_version < 1
+    ):
+        raise ValueError("current/recorded workflow coordinates and positive version are required")
+    if not approval or len(approval) > 160:
+        raise ValueError("protected staged-rearm approval is required")
+    if not re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
+        r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
+        evidence_prefix,
+    ):
+        raise ValueError("staged rearm requires one durable GitHub artifact URL")
+    validate_staged_control_descendant(source_sha, runner_sha)
+    _validate_runtime_secret_evidence(
+        runtime_secret_evidence,
+        source_sha=source_sha,
+        runner_sha=runner_sha,
+        workflow_run_id=workflow_run_id,
+        workflow_attempt=workflow_attempt,
+    )
+
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _configure_migration_timeouts(connection)
+            _advisory_lock(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError("staged rearm requires schema 0014")
+            activation = _read_activation(connection, for_update=True)
+            if activation is None:
+                raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
+            if (
+                str(activation.get("source_sha") or "") != source_sha
+                or str(activation.get("workflow_run_id") or "") != expected_workflow_run_id
+                or int(activation.get("version") or 0) != expected_version
+            ):
+                raise SafeBaselineRegistrationError("staged rearm coordinates changed")
+            if str(activation.get("approval") or "") != approval:
+                raise SafeBaselineRegistrationError("staged rearm approval does not match")
+            if not staged_verifier_takeover_is_adoptable(activation):
+                raise SafeBaselineRegistrationError(
+                    "only a fully bound, unpromoted STAGED install can be rearmed"
+                )
+
+            previous_coordinates = {
+                key: activation.get(key)
+                for key in (
+                    "source_sha",
+                    "workflow_run_id",
+                    "workflow_attempt",
+                    "version",
+                    "runtime_bundle_id",
+                    "manifest_sha256",
+                    "build_artifact_id",
+                    "build_artifact_digest",
+                    "api_deployment_id",
+                    "api_deployment_url",
+                    "private_evidence_prefix",
+                )
+            }
+            previous_coordinates_sha256 = hashlib.sha256(
+                json.dumps(
+                    previous_coordinates,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            next_workflow_attempt = workflow_attempt + 1
+
+            # ACCESS EXCLUSIVE is held by ALTER TABLE until commit, so no other
+            # session can mutate the row while its regression trigger is disabled.
+            connection.execute(
+                text(
+                    "ALTER TABLE release_activations "
+                    "DISABLE TRIGGER trg_release_activation_regression"
+                )
+            )
+            try:
+                result = connection.execute(
+                    text(
+                        """
+                        UPDATE release_activations
+                        SET workflow_run_id = :workflow_run_id,
+                            workflow_attempt = :next_workflow_attempt,
+                            phase = 'RESERVED',
+                            phase_rank = 0,
+                            runtime_bundle_id = NULL,
+                            manifest_sha256 = NULL,
+                            build_artifact_id = NULL,
+                            build_artifact_digest = NULL,
+                            report_sha256 = NULL,
+                            api_deployment_id = NULL,
+                            api_deployment_url = NULL,
+                            api_role = NULL,
+                            worker_deployment_id = NULL,
+                            worker_role = NULL,
+                            worker_image_digest = NULL,
+                            target_snapshot_hash = NULL,
+                            private_evidence_prefix = :evidence_prefix,
+                            updated_at = CURRENT_TIMESTAMP,
+                            version = version + 1
+                        WHERE id = CAST(:activation_id AS uuid)
+                          AND version = :expected_version
+                          AND phase = 'STAGED'
+                          AND source_sha = :source_sha
+                          AND workflow_run_id = :expected_workflow_run_id
+                          AND approval = :approval
+                          AND runtime_bundle_id IS NOT NULL
+                          AND manifest_sha256 IS NOT NULL
+                          AND build_artifact_id IS NOT NULL
+                          AND build_artifact_digest IS NOT NULL
+                          AND report_sha256 IS NULL
+                          AND api_deployment_id IS NOT NULL
+                          AND api_deployment_url IS NOT NULL
+                          AND api_role = 'SAFE_BASELINE'
+                          AND worker_deployment_id IS NULL
+                          AND worker_role IS NULL
+                          AND worker_image_digest IS NULL
+                          AND target_snapshot_hash IS NULL
+                          AND acceptance_fault_intent_id IS NULL
+                          AND acceptance_fault_intent_sha256 IS NULL
+                          AND acceptance_fault_state IS NULL
+                          AND acceptance_fault_expires_at IS NULL
+                          AND acceptance_fault_cleanup_claim_id IS NULL
+                          AND acceptance_fault_cleanup_fencing_token IS NULL
+                        RETURNING id::text, version
+                        """
+                    ),
+                    {
+                        "workflow_run_id": workflow_run_id,
+                        "next_workflow_attempt": next_workflow_attempt,
+                        "evidence_prefix": evidence_prefix,
+                        "activation_id": activation["id"],
+                        "expected_version": expected_version,
+                        "source_sha": source_sha,
+                        "expected_workflow_run_id": expected_workflow_run_id,
+                        "approval": approval,
+                    },
+                ).mappings().one_or_none()
+            finally:
+                connection.execute(
+                    text(
+                        "ALTER TABLE release_activations "
+                        "ENABLE TRIGGER trg_release_activation_regression"
+                    )
+                )
+            if result is None:
+                raise SafeBaselineRegistrationError("staged rearm CAS lost")
+        return {
+            "action": "rearm-staged",
+            "state": "STAGED_REARMED",
+            "activation_id": result["id"],
+            "version": result["version"],
+            "source_sha": source_sha,
+            "runner_sha": runner_sha,
+            "workflow_run_id": workflow_run_id,
+            "workflow_attempt": workflow_attempt,
+            "next_workflow_attempt": next_workflow_attempt,
+            "previous_coordinates_sha256": previous_coordinates_sha256,
+            "previous_deployment_id": previous_coordinates["api_deployment_id"],
+            "previous_evidence_prefix": previous_coordinates["private_evidence_prefix"],
             "evidence_prefix": evidence_prefix,
         }
     finally:
@@ -1649,8 +1923,10 @@ def main() -> int:
         "--action",
         choices=(
             "preflight",
+            "verify-runtime-secret",
             "adopt-reserved",
             "adopt-staged-verifier",
+            "rearm-staged",
             "bind-build",
             "recover-deployment",
             "recover-promotion",
@@ -1686,6 +1962,12 @@ def main() -> int:
     parser.add_argument("--vercel-project-id-env", default="VERCEL_PROJECT_ID")
     parser.add_argument("--vercel-team-id-env", default="VERCEL_ORG_ID")
     parser.add_argument("--formal-domain")
+    parser.add_argument("--vercel-env-file")
+    parser.add_argument(
+        "--runtime-secret-env",
+        default="ACCEPTANCE_IDENTITY_HMAC_KEY",
+    )
+    parser.add_argument("--runtime-secret-evidence")
     parser.add_argument(
         "--inject-failure",
         choices=("BEFORE_MIGRATION", "AFTER_MIGRATION_BEFORE_RESERVATION", "AFTER_RESERVATION_BEFORE_COMMIT"),
@@ -1703,6 +1985,27 @@ def main() -> int:
             raise ValueError("workflow run ID and positive attempt are required")
         if bool(args.action) == bool(args.phase):
             raise ValueError("choose exactly one of --action or --phase")
+        if args.action == "verify-runtime-secret":
+            expected_secret = _required_env(args.runtime_secret_env)
+            if not expected_secret or not args.vercel_env_file:
+                print(
+                    "NOT_RUN: protected runtime secret and pulled Vercel environment are required",
+                    file=sys.stderr,
+                )
+                return NOT_RUN_EXIT
+            result = verify_pulled_runtime_secret(
+                Path(args.vercel_env_file),
+                secret_name=args.runtime_secret_env,
+                expected_secret=expected_secret,
+                source_sha=args.source_sha,
+                runner_sha=args.runner_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+            )
+            if args.output:
+                _write_create_once(Path(args.output), result)
+            print(json.dumps(result, sort_keys=True))
+            return 0
         database_url = _required_env(args.database_url_env)
         if not database_url:
             print(f"NOT_RUN: protected database variable {args.database_url_env} is missing", file=sys.stderr)
@@ -1747,6 +2050,27 @@ def main() -> int:
                 expected_version=args.expected_version or 0,
                 approval=approval,
                 evidence_prefix=args.evidence_prefix,
+            )
+        elif args.action == "rearm-staged":
+            approval = _required_env(args.approval_id_env)
+            if not approval or not args.runtime_secret_evidence:
+                print(
+                    "NOT_RUN: protected staged-rearm approval and runtime secret evidence are required",
+                    file=sys.stderr,
+                )
+                return NOT_RUN_EXIT
+            result = _rearm_invalid_staged(
+                database_url,
+                source_sha=args.source_sha,
+                runner_sha=args.runner_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                expected_source_sha=args.expected_source_sha or "",
+                expected_workflow_run_id=args.expected_workflow_run_id or "",
+                expected_version=args.expected_version or 0,
+                approval=approval,
+                evidence_prefix=args.evidence_prefix,
+                runtime_secret_evidence=Path(args.runtime_secret_evidence),
             )
         elif args.action == "bind-build":
             result = _bind_build_manifest(
