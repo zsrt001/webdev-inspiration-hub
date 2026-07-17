@@ -106,6 +106,30 @@ class CiReleaseContractTest(unittest.TestCase):
 
         self.assertEqual(seen_actions, set(expected_actions))
 
+    def test_safe_baseline_pins_vercel_compatible_uv_before_build(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        setup = workflow.index(
+            "uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2"
+        )
+        release_tools = workflow.index("- name: Install the hash-locked release tooling")
+        build = workflow.index('"$VERCEL_CLI" build')
+        setup_step = workflow[
+            workflow.rindex("- name:", 0, setup):release_tools
+        ]
+        tooling_step = workflow[release_tools:build]
+
+        self.assertIn('version: "0.10.11"', setup_step)
+        self.assertIn(
+            'checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"',
+            setup_step,
+        )
+        self.assertIn("enable-cache: false", setup_step)
+        self.assertIn("download-from-astral-mirror: false", setup_step)
+        self.assertIn('test "$(uv --version)" = "uv 0.10.11"', tooling_step)
+        self.assertLess(setup, release_tools)
+        self.assertLess(release_tools, build)
+        self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 1)
+
     def test_backend_ci_runs_the_real_control_plane_rls_postgresql_test(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
         backend_job = workflow[

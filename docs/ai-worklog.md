@@ -1624,3 +1624,17 @@
 
 - The parser now accepts only the exact Vercel format and rejects 31/33-character and underscore/hyphen cases before constructing an API client. Existing secret redaction and no-plaintext reporting remain unchanged.
 - The protected GitHub Production header secret must be rotated to a cryptographically generated 32-character alphanumeric value after this contract passes review; generation is process-only and the value must never be printed or persisted. Focused release coverage passed 96/96, the full backend suite passed 788 tests with 36 explicit environment-dependent skips, and Python compilation plus `git diff --check` passed. No existing Vercel bypass is revoked. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Deterministic uv tooling for local Vercel builds
+
+### Goal and evidence
+
+- Protected run `29583942291` passed least-privilege database-login authentication and publication, created and read back the protected Vercel automation bypass, and reached the first `vercel build --prod`. The frontend build completed, but Vercel CLI 56.2.0 then failed before producing `.vercel/output` because `uv` was absent from the runner `PATH`.
+- The exact official Vercel CLI 56.2.0 source fixes its Python builder uv version at `0.10.11` and requires at least `0.9.25`. The official Astral version manifest publishes SHA-256 `5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583` for the `0.10.11` Linux x86_64 GNU archive.
+- The failed run did not upload or bind a build artifact and did not deploy, Promote, change the formal-domain alias, or begin the formal handoff. Its unconditional runner-bypass cleanup passed.
+
+### Changes and verification
+
+- The protected workflow now installs `uv 0.10.11` through official `astral-sh/setup-uv` v8.3.2 pinned to full commit `11f9893b081a58869d3b5fccaea48c9e9e46f990`, disables the unrelated uv dependency cache, downloads from the official GitHub release, and checks the exact official archive checksum.
+- The release-tooling step requires exact `uv 0.10.11` output before installing any other tooling or invoking Vercel. A closed contract test proves the immutable action pin, version, checksum, source, cache setting, singleton action use, and ordering before the first build.
+- Focused release coverage passed 97/97, the full backend suite passed 789 tests with 36 explicit environment-dependent skips, workflow YAML parsing, Python compilation, and `git diff --check` passed. No application runtime dependency, cloud configuration, secret, domain, or Proxifier setting was changed, and no Subagent was used.
