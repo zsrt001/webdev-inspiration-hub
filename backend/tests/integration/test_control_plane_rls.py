@@ -154,7 +154,7 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
             self.assertEqual(len(roles), 2)
             self.assertTrue(all(not can_login and not superuser and not bypass for _, can_login, superuser, bypass in roles))
 
-    def test_migration_login_can_reserve_through_forced_rls_without_bypass(self) -> None:
+    def test_migration_login_can_reserve_and_adopt_unbound_install_without_bypass(self) -> None:
         connection = psycopg2.connect(self.migration_url)
         try:
             with connection.cursor() as cursor:
@@ -202,6 +202,28 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
                     ("a" * 40, "b" * 64),
                 )
                 self.assertEqual(cursor.fetchone()[0], "RESERVED")
+                cursor.execute(
+                    """
+                    UPDATE release_activations
+                    SET source_sha = %s,
+                        workflow_run_id = 'migration-rls-adoption-test',
+                        workflow_attempt = 1,
+                        private_evidence_prefix = 'https://github.com/o/r/actions/runs/2/artifacts/3',
+                        version = version + 1
+                    WHERE id = '00000000-0000-4000-8000-000000000013'
+                      AND version = 1
+                      AND phase = 'RESERVED'
+                      AND manifest_sha256 IS NULL
+                      AND build_artifact_id IS NULL
+                      AND api_deployment_id IS NULL
+                    RETURNING source_sha, workflow_run_id, version
+                    """,
+                    ("c" * 40,),
+                )
+                self.assertEqual(
+                    cursor.fetchone(),
+                    ("c" * 40, "migration-rls-adoption-test", 2),
+                )
         finally:
             connection.rollback()
             connection.close()

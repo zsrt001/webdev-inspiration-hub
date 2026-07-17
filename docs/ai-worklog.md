@@ -1575,3 +1575,16 @@
 
 - Added the repository root to that direct script's import path before its package import, matching the established release-entrypoint contract.
 - Added a subprocess regression that removes inherited `PYTHONPATH` and invokes the exact script with `--help` from the repository root. The focused bypass and protected-workflow contract suites passed 73/73, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Unbound Production reservation adoption contract
+
+### Goal and evidence
+
+- Protected run `29580419600` reached schema `0014` and then failed in the read-only preflight with `CONFLICTING_INSTALL`. The existing `RESERVED` row belonged to the earlier reviewed run/SHA that had completed migration and application-login publication before a release-script import failure; a fixed descendant SHA therefore could not enter the existing same-run-only recovery path.
+- The failed retry stopped before inventory, edge mutation, application-login rotation, Vercel bypass mutation, build, deploy, Promote, alias, and formal-domain handoff. It preserved sanitized failure diagnostics and did not attempt a runner bypass.
+
+### Changes and verification
+
+- Added a controlled adoption path only for a `RESERVED` row with no runtime bundle, manifest, build artifact, report, API/worker deployment, target snapshot, or acceptance-fault binding. Bound or later-phase activations remain conflicting and immutable to this path.
+- Adoption requires the reserving SHA to be a Git ancestor of the exact reviewed checkout, the same protected approval, exact prior source/run/version coordinates, the migration advisory lock, row lock, and a version CAS. The durable preflight/edge artifact is written before mutation and becomes the new evidence-chain head while preserving the prior evidence reference inside the preflight report.
+- Focused release/workflow tests passed 75/75; the PostgreSQL integration extension is wired into CI's real database job and was locally collected with its seven explicit environment-dependent skips. Python compilation, YAML parsing, Git ancestry proof, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.

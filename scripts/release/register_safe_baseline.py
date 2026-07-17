@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -43,6 +44,26 @@ TARGET_SCHEMA = "20260712_0014"
 ACTIVATION_KIND = "SAFE_BASELINE_INSTALL"
 RESERVATION_TTL_MINUTES = 120
 BUILD_ARTIFACT_RECOVERY_DAYS = 90
+ADOPTABLE_RESERVED_EMPTY_FIELDS = (
+    "runtime_bundle_id",
+    "manifest_sha256",
+    "build_artifact_id",
+    "build_artifact_digest",
+    "report_sha256",
+    "api_deployment_id",
+    "api_deployment_url",
+    "api_role",
+    "worker_deployment_id",
+    "worker_role",
+    "worker_image_digest",
+    "target_snapshot_hash",
+    "acceptance_fault_intent_id",
+    "acceptance_fault_intent_sha256",
+    "acceptance_fault_state",
+    "acceptance_fault_expires_at",
+    "acceptance_fault_cleanup_claim_id",
+    "acceptance_fault_cleanup_fencing_token",
+)
 PHASE_RANK = {
     "RESERVED": 0,
     "STAGED": 10,
@@ -103,6 +124,49 @@ def build_artifact_recovery_is_expired(
     return recovery_deadline <= (now or datetime.now(timezone.utc))
 
 
+def reserved_install_is_adoptable(activation: dict[str, Any]) -> bool:
+    """Allow a new reviewed run to adopt only a completely unbound reservation."""
+    try:
+        version = int(_activation_value(activation, "version") or 0)
+        workflow_attempt = int(_activation_value(activation, "workflow_attempt") or 0)
+    except (TypeError, ValueError):
+        return False
+    source_sha = str(_activation_value(activation, "source_sha") or "")
+    workflow_run_id = str(_activation_value(activation, "workflow_run_id") or "")
+    return (
+        str(_activation_value(activation, "phase") or "") == "RESERVED"
+        and version > 0
+        and workflow_attempt > 0
+        and re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is not None
+        and bool(workflow_run_id.strip())
+        and all(_activation_value(activation, field) in (None, "") for field in ADOPTABLE_RESERVED_EMPTY_FIELDS)
+    )
+
+
+def validate_descendant_source(previous_source_sha: str, source_sha: str) -> None:
+    """Prove the reviewed checkout is the requested descendant before adoption."""
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or head.stdout.strip() != source_sha:
+        raise SafeBaselineRegistrationError("reservation adoption source is not the reviewed checkout")
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", previous_source_sha, source_sha],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "reservation adoption source is not a descendant of the reserving source"
+        )
+
+
 def validate_resume_coordinates(
     activation: dict[str, Any],
     *,
@@ -144,7 +208,7 @@ def classify_install_state(
         str(_activation_value(activation, "source_sha") or "") != source_sha
         or str(_activation_value(activation, "workflow_run_id") or "") != workflow_run_id
     ):
-        return "CONFLICTING_INSTALL"
+        return "TAKEOVER_RESERVED" if reserved_install_is_adoptable(activation) else "CONFLICTING_INSTALL"
     if phase not in PHASE_RANK:
         return "UNKNOWN_PHASE"
     # Expiry is an audit deadline, not permission for another run to take over.
@@ -397,8 +461,12 @@ def _read_activation(connection, *, for_update: bool = False) -> dict[str, Any] 
                    phase_rank, version, reservation_expires_at, runtime_bundle_id,
                    manifest_sha256, build_artifact_id, build_artifact_digest,
                    report_sha256, api_deployment_id,
-                   api_deployment_url, api_role, current_snapshot_hash,
-                   target_snapshot_hash, private_evidence_prefix, created_at
+                   api_deployment_url, api_role, worker_deployment_id, worker_role,
+                   worker_image_digest, current_snapshot_hash, target_snapshot_hash,
+                   private_evidence_prefix, approval, acceptance_fault_intent_id,
+                   acceptance_fault_intent_sha256, acceptance_fault_state,
+                   acceptance_fault_expires_at, acceptance_fault_cleanup_claim_id,
+                   acceptance_fault_cleanup_fencing_token, created_at
             FROM release_activations
             WHERE environment = 'production' AND kind = 'SAFE_BASELINE_INSTALL'
             """ + suffix
@@ -462,7 +530,7 @@ def _preflight(
                 workflow_run_id=workflow_run_id,
                 workflow_attempt=workflow_attempt,
             )
-        if state not in {"FRESH_INSTALL", *RETRIABLE_STATES}:
+        if state not in {"FRESH_INSTALL", "TAKEOVER_RESERVED", *RETRIABLE_STATES}:
             raise SafeBaselineRegistrationError(f"safe-baseline preflight rejected state: {state}")
         if state == "RETRY_FORMAL_VERIFIED":
             parse_reference(str(activation.get("private_evidence_prefix") or ""))
@@ -480,6 +548,8 @@ def _preflight(
                 for key in (
                     "runtime_bundle_id",
                     "manifest_sha256",
+                    "source_sha",
+                    "workflow_run_id",
                     "workflow_attempt",
                     "api_deployment_id",
                     "api_deployment_url",
@@ -495,6 +565,126 @@ def _preflight(
             "build_artifact_recovery_expired": build_artifact_recovery_is_expired(
                 activation
             ),
+        }
+    finally:
+        engine.dispose()
+
+
+def _adopt_reserved(
+    database_url: str,
+    *,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    expected_source_sha: str,
+    expected_workflow_run_id: str,
+    expected_version: int,
+    approval: str,
+    evidence_prefix: str,
+) -> dict[str, Any]:
+    expected_source_sha = _validate_sha(
+        expected_source_sha,
+        name="reserving source SHA",
+        lengths=(40, 64),
+    )
+    if (
+        not re.fullmatch(r"[1-9][0-9]*", expected_workflow_run_id)
+        or not re.fullmatch(r"[1-9][0-9]*", workflow_run_id)
+        or expected_version < 1
+    ):
+        raise ValueError("current/reserving workflow run IDs and positive version are required")
+    if not approval or len(approval) > 160:
+        raise ValueError("protected reservation approval is required")
+    if not re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
+        r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
+        evidence_prefix,
+    ):
+        raise ValueError("reservation adoption requires one durable GitHub artifact URL")
+    validate_descendant_source(expected_source_sha, source_sha)
+
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _advisory_lock(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError("reservation adoption requires schema 0014")
+            activation = _read_activation(connection, for_update=True)
+            if activation is None:
+                raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
+            if (
+                str(activation.get("source_sha") or "") != expected_source_sha
+                or str(activation.get("workflow_run_id") or "") != expected_workflow_run_id
+                or int(activation.get("version") or 0) != expected_version
+            ):
+                raise SafeBaselineRegistrationError("reservation adoption coordinates changed")
+            if str(activation.get("approval") or "") != approval:
+                raise SafeBaselineRegistrationError("reservation adoption approval does not match")
+            if not reserved_install_is_adoptable(activation):
+                raise SafeBaselineRegistrationError("only an unbound RESERVED install can be adopted")
+            previous_evidence_prefix = str(activation.get("private_evidence_prefix") or "")
+            result = connection.execute(
+                text(
+                    """
+                    UPDATE release_activations
+                    SET source_sha = :source_sha,
+                        workflow_run_id = :workflow_run_id,
+                        workflow_attempt = :workflow_attempt,
+                        private_evidence_prefix = :evidence_prefix,
+                        version = version + 1
+                    WHERE id = CAST(:activation_id AS uuid)
+                      AND version = :expected_version
+                      AND phase = 'RESERVED'
+                      AND source_sha = :expected_source_sha
+                      AND workflow_run_id = :expected_workflow_run_id
+                      AND approval = :approval
+                      AND runtime_bundle_id IS NULL
+                      AND manifest_sha256 IS NULL
+                      AND build_artifact_id IS NULL
+                      AND build_artifact_digest IS NULL
+                      AND report_sha256 IS NULL
+                      AND api_deployment_id IS NULL
+                      AND api_deployment_url IS NULL
+                      AND api_role IS NULL
+                      AND worker_deployment_id IS NULL
+                      AND worker_role IS NULL
+                      AND worker_image_digest IS NULL
+                      AND target_snapshot_hash IS NULL
+                      AND acceptance_fault_intent_id IS NULL
+                      AND acceptance_fault_intent_sha256 IS NULL
+                      AND acceptance_fault_state IS NULL
+                      AND acceptance_fault_expires_at IS NULL
+                      AND acceptance_fault_cleanup_claim_id IS NULL
+                      AND acceptance_fault_cleanup_fencing_token IS NULL
+                    RETURNING id::text, version
+                    """
+                ),
+                {
+                    "source_sha": source_sha,
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_attempt": workflow_attempt,
+                    "evidence_prefix": evidence_prefix,
+                    "activation_id": activation["id"],
+                    "expected_version": expected_version,
+                    "expected_source_sha": expected_source_sha,
+                    "expected_workflow_run_id": expected_workflow_run_id,
+                    "approval": approval,
+                },
+            ).mappings().one_or_none()
+            if result is None:
+                raise SafeBaselineRegistrationError("reservation adoption CAS lost")
+        return {
+            "action": "adopt-reserved",
+            "state": "RESERVATION_ADOPTED",
+            "activation_id": result["id"],
+            "version": result["version"],
+            "previous_source_sha": expected_source_sha,
+            "previous_workflow_run_id": expected_workflow_run_id,
+            "previous_evidence_prefix": previous_evidence_prefix,
+            "source_sha": source_sha,
+            "workflow_run_id": workflow_run_id,
+            "workflow_attempt": workflow_attempt,
+            "evidence_prefix": evidence_prefix,
         }
     finally:
         engine.dispose()
@@ -1158,7 +1348,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--action",
-        choices=("preflight", "bind-build", "recover-deployment", "recover-promotion"),
+        choices=(
+            "preflight",
+            "adopt-reserved",
+            "bind-build",
+            "recover-deployment",
+            "recover-promotion",
+        ),
     )
     parser.add_argument("--phase", choices=PHASE_SEQUENCE)
     parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
@@ -1169,6 +1365,9 @@ def main() -> int:
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--workflow-run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
     parser.add_argument("--workflow-attempt", type=int, default=int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")))
+    parser.add_argument("--expected-source-sha")
+    parser.add_argument("--expected-workflow-run-id")
+    parser.add_argument("--expected-version", type=int)
     parser.add_argument("--approval-id-env", default="SAFE_BASELINE_APPROVAL_ID")
     parser.add_argument("--inventory-report")
     parser.add_argument("--restore-report")
@@ -1208,6 +1407,22 @@ def main() -> int:
                 source_sha=args.source_sha,
                 workflow_run_id=args.workflow_run_id,
                 workflow_attempt=args.workflow_attempt,
+            )
+        elif args.action == "adopt-reserved":
+            approval = _required_env(args.approval_id_env)
+            if not approval:
+                print("NOT_RUN: protected reservation approval is required", file=sys.stderr)
+                return NOT_RUN_EXIT
+            result = _adopt_reserved(
+                database_url,
+                source_sha=args.source_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                expected_source_sha=args.expected_source_sha or "",
+                expected_workflow_run_id=args.expected_workflow_run_id or "",
+                expected_version=args.expected_version or 0,
+                approval=approval,
+                evidence_prefix=args.evidence_prefix,
             )
         elif args.action == "bind-build":
             result = _bind_build_manifest(
