@@ -1600,3 +1600,15 @@
 
 - Added four bounded proof attempts over 105 seconds, and only for an exact password-authentication failure when both generated role URLs target `*.pooler.supabase.com`. Direct-database authentication failures, timeouts, privilege mismatches, and every other error still fail immediately.
 - Vercel publication remains after the application logins authenticate and their exact SQL surfaces pass, so unverified credentials are not promoted. Focused login/release tests passed 85/85 with seven explicit database-environment skips; Python compilation and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Preserve independent Vercel automation bypasses
+
+### Goal and evidence
+
+- Protected run `29582211168` proved the bounded Supavisor repair: both least-privilege application logins authenticated through the pooler, passed their SQL-surface checks, and were published as Vercel Production Sensitive variables.
+- The next step stopped before build or deployment because the project already had a different automation-bypass secret. Vercel's current contract explicitly supports multiple project secrets for independent automation tools, so treating every additional secret as a conflict was stricter than the platform contract and blocked the reviewed VowPic secret without improving ownership safety.
+
+### Changes and verification
+
+- Reconciliation now preserves all pre-existing automation bypasses, creates the protected VowPic target only when absent, and requires exact readback of the prior key set plus that target. It also fails if any pre-existing metadata changed, so it neither overwrites nor revokes an unknown integration.
+- The report contains only counts and the existing target fingerprint; no bypass plaintext is logged or persisted. Focused release coverage passed 96/96, and the full backend suite passed 788 tests with 36 explicit environment-dependent skips. Python compilation, workflow YAML parsing, and `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.

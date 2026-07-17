@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -51,7 +52,7 @@ def _automation_bypasses(project: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if not isinstance(secret, str) or not isinstance(metadata, dict):
             raise EdgeLockdownError("Vercel project protection bypass entry is malformed")
         if metadata.get("scope") == "automation-bypass":
-            result[secret] = metadata
+            result[secret] = copy.deepcopy(metadata)
     return result
 
 
@@ -66,11 +67,6 @@ def ensure_automation_bypass(
     ):
         raise EdgeLockdownError("Vercel project resolved outside the protected project or team")
     existing = _automation_bypasses(before)
-    unexpected = sorted(value for value in existing if value != secret)
-    if unexpected:
-        raise EdgeLockdownError(
-            "an unrelated Vercel automation bypass exists; refusing to overwrite or revoke it"
-        )
     created = False
     if secret not in existing:
         response = api.generate_automation_bypass(secret=secret, note=NOTE)
@@ -79,12 +75,23 @@ def ensure_automation_bypass(
             raise EdgeLockdownError("Vercel did not confirm the requested automation bypass")
         created = True
     after = _automation_bypasses(api.project())
-    if set(after) != {secret} or after[secret].get("scope") != "automation-bypass":
+    expected_secrets = set(existing) | {secret}
+    if set(after) != expected_secrets:
+        raise EdgeLockdownError(
+            "Vercel automation bypass readback added or removed an unexpected entry"
+        )
+    if any(after[value] != metadata for value, metadata in existing.items()):
+        raise EdgeLockdownError(
+            "a pre-existing Vercel automation bypass changed during target reconciliation"
+        )
+    if after[secret].get("scope") != "automation-bypass":
         raise EdgeLockdownError("Vercel automation bypass readback is not exact")
     return {
         "state": "READY",
         "created": created,
-        "automation_secret_count": 1,
+        "automation_secret_count": len(after),
+        "preexisting_automation_secret_count": len(existing),
+        "preserved_unrelated_secret_count": len(existing) - int(secret in existing),
         "secret_sha256": hashlib.sha256(secret.encode("utf-8")).hexdigest(),
         "scope": "automation-bypass",
     }
