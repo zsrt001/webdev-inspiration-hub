@@ -44,11 +44,13 @@ class ReleaseActivationSchemaTest(unittest.TestCase):
         for required in (
             "vowpic_runtime",
             "vowpic_control_writer",
+            "vowpic_migration_owner",
             "NOLOGIN",
             "NOBYPASSRLS",
             "FORCE ROW LEVEL SECURITY",
             "TO vowpic_runtime",
             "TO vowpic_control_writer",
+            "TO vowpic_migration_owner USING (true) WITH CHECK (true)",
         ):
             self.assertIn(required, migration)
         self.assertNotIn("FOR ALL TO PUBLIC", migration)
