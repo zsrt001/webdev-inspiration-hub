@@ -210,9 +210,50 @@ class RehearsalValidationTest(unittest.TestCase):
             self.assertNotIn("restore-only", rendered)
             self.assertNotIn("postgresql://", rendered)
             self.assertEqual(dump.env["PGPASSWORD"], "source-only")
-            self.assertEqual(restore.env["PGPASSWORD"], "restore-only")
+            self.assertIn("--enable-row-security", dump.argv)
+            self.assertEqual(restore.env["PGPASSWORD"], "admin-only")
+            self.assertEqual(restore.argv[restore.argv.index("--username") + 1], "postgres")
+            self.assertEqual(
+                restore.argv[restore.argv.index("--dbname") + 1],
+                "vowpic_restore_test",
+            )
             self.assertNotIn("source-only", dump.redacted())
             self.assertNotIn("restore-only", restore.redacted())
+
+    def test_source_and_target_snapshots_use_inventory_and_isolated_admin_roles(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(module, Path(directory))
+            with patch.object(
+                module,
+                "_database_snapshot",
+                side_effect=[
+                    {
+                        "schema_revision": "20260516_0012",
+                        "tables": ["users"],
+                        "row_counts": {"users": 1},
+                        "fk_orphans": 0,
+                        "ledger_mismatch_users": 0,
+                        "url_inventory_sha256": "a" * 64,
+                    },
+                    {
+                        "schema_revision": "20260516_0012",
+                        "tables": ["users"],
+                        "row_counts": {"users": 1},
+                        "fk_orphans": 0,
+                        "ledger_mismatch_users": 0,
+                        "url_inventory_sha256": "a" * 64,
+                    },
+                ],
+            ) as snapshot:
+                comparison = module.compare_source_and_target(config)
+
+            self.assertTrue(comparison["matches"])
+            self.assertIs(snapshot.call_args_list[0].args[0], config.source)
+            target_admin = snapshot.call_args_list[1].args[0]
+            self.assertEqual(target_admin.username, "postgres")
+            self.assertEqual(target_admin.password, "admin-only")
+            self.assertEqual(target_admin.database, "vowpic_restore_test")
 
     def test_raw_dump_is_never_created_under_the_upload_artifact_directory(self) -> None:
         module = _module()
@@ -274,13 +315,24 @@ class RehearsalCleanupTest(unittest.TestCase):
         config = _config(module, Path(temporary.name))
         config.artifact_dir.mkdir(parents=True, exist_ok=True)
         source_proof = {
+            "authenticated_role_name": "vowpic_inventory_login",
+            "role_name": "vowpic_inventory_login",
             "transaction_read_only": True,
             "default_transaction_read_only": True,
             "role_superuser": False,
             "role_create_db": False,
             "role_create_role": False,
             "role_replication": False,
-            "role_bypass_rls": True,
+            "role_bypass_rls": False,
+            "role_membership_count": 0,
+            "owned_object_count": 0,
+            "inventory_table_count": 20,
+            "readable_inventory_table_count": 20,
+            "inventory_sequence_count": 2,
+            "readable_inventory_sequence_count": 2,
+            "rls_table_count": 8,
+            "inventory_select_policy_count": 8,
+            "invalid_inventory_policy_count": 0,
             "writable_table_count": 0,
             "write_probe_sqlstate": "25006",
         }
@@ -314,6 +366,7 @@ class RehearsalCleanupTest(unittest.TestCase):
         with (
             patch.object(module, "verify_source_read_only", return_value=source_proof),
             patch.object(module, "verify_target_controls", return_value=target_proof) as target_controls,
+            patch.object(module, "prepare_restore_policy_roles", return_value=()),
             patch.object(module, "run_invocation", side_effect=fake_run),
             patch.object(module, "compare_source_and_target", return_value=comparison),
             patch.object(
@@ -335,10 +388,12 @@ class RehearsalCleanupTest(unittest.TestCase):
             else:
                 report = module.run_backup_restore_rehearsal(config)
                 self.assertTrue(report["passed"])
-                self.assertEqual(report["target_controls"], target_proof)
+                for key, value in target_proof.items():
+                    self.assertEqual(report["target_controls"][key], value)
+                self.assertEqual(report["target_controls"]["policy_placeholder_role_count"], 0)
                 self.assertTrue(config.report_path.exists())
             target_controls.assert_called_once_with(config)
-            cleanup.assert_called_once_with(config)
+            cleanup.assert_called_once_with(config, created_policy_roles=())
         self.assertFalse(config.archive_path.exists())
 
     def test_cleanup_runs_after_success(self) -> None:
@@ -374,7 +429,7 @@ class RehearsalCleanupTest(unittest.TestCase):
             ):
                 with self.assertRaises(module.RehearsalError):
                     module.run_backup_restore_rehearsal(config)
-            cleanup.assert_called_once_with(config)
+            cleanup.assert_called_once_with(config, created_policy_roles=())
 
     def test_cleanup_runs_when_scratch_directory_creation_fails(self) -> None:
         module = _module()
@@ -387,7 +442,7 @@ class RehearsalCleanupTest(unittest.TestCase):
             ):
                 with self.assertRaises(module.RehearsalError):
                     module.run_backup_restore_rehearsal(config)
-            cleanup.assert_called_once_with(config)
+            cleanup.assert_called_once_with(config, created_policy_roles=())
 
 
 if __name__ == "__main__":

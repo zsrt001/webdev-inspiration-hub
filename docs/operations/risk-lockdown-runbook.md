@@ -99,12 +99,25 @@ control-plane DML surface. It does not create login passwords.
 
 Run `scripts/release/bootstrap_production_database_roles.sql` once in the exact
 Production project's SQL Editor. It creates a transaction-read-only inventory
-login with only public-schema SELECT access, a separate migration login whose
-default role owns the application schema, and the fixed application logins in a
-disabled state. Its one-result JSON contains newly generated inventory and
+login with only public-schema SELECT access and no `BYPASSRLS`, a separate
+migration login whose default role owns the application schema, the fixed
+application logins in a disabled state, and the NOLOGIN identity roles required
+by migration `0014`. The migration owner receives only the role membership
+needed to transfer the reviewed identity sequence/function ownership; the
+migration login remains `NOCREATEROLE`. Its one-result JSON contains newly generated inventory and
 migration passwords for immediate transfer to the GitHub `production`
 Environment. Do not save that result in the repository, logs, artifacts, or
 shell history, and never substitute the legacy administrator URL.
+
+Before any aggregate inventory, the protected workflow rechecks current
+`main`, then runs `production_inventory_rls.py` through the migration login.
+Every public RLS table must be owned by the migration owner and receive exactly
+one permissive, role-scoped, SELECT-only `vowpic_inventory_select` policy. The
+inventory proof requires NOBYPASSRLS, zero memberships/ownership/write grants,
+direct read privilege on every public table/sequence, and exact policy coverage.
+The same reconciliation runs inside the `0012 -> 0014` reservation transaction
+after Alembic and before the reservation row, so migration and inventory
+visibility cannot commit separately.
 
 Before staging, the protected workflow creates or rotates two distinct
 non-owner, non-superuser, NOBYPASSRLS logins, grants each exactly one matching
@@ -307,7 +320,9 @@ report, staged/formal verification is `NOT_RUN`.
 
 ## One-time release sequence
 
-1. Read the exact Production Alembic revision through the inventory role. If it
+1. Read the exact Production Alembic revision through the inventory role,
+   recheck current `main`, and reconcile/prove the dedicated NOBYPASSRLS
+   inventory policies through the migration login. If it
    is legacy `0006`, run inventory and an isolated PostgreSQL 17 restore, upload
    and prove the sanitized bridge artifact, recheck `main`, then use only the
    protected migration login to upgrade exactly to `0012` and read the revision
@@ -317,8 +332,11 @@ report, staged/formal verification is `NOT_RUN`.
    activation is `ORPHANED_SCHEMA`; `0012` with an activation is invalid; a
    completed install blocks every future SHA before build.
 3. Run Production inventory and isolated backup/restore. Preserve only the
-   sanitized reports. Create the raw dump under runner temp, outside the upload
-   tree, and delete the dump/target/temporary role in all paths.
+   sanitized reports. Dump with `--enable-row-security`, restore through the
+   isolated target Admin while separately proving the target owner role is
+   non-superuser/NOBYPASSRLS, and create only the isolated NOLOGIN placeholders
+   required by restored policies. Create the raw dump under runner temp,
+   outside the upload tree, and delete the dump/target/temporary roles in all paths.
 4. In the same protected job, install and read back the two packed deny rules
    and the first-priority ephemeral runner bypass, probe all seven groups as 403,
    prove the preserved webhook/readiness/logout paths are not denied, and emit
@@ -327,8 +345,9 @@ report, staged/formal verification is `NOT_RUN`.
    and stripped baseline hash. Persist the sanitized checkpoint and prove its
    artifact ID/digest before migration or any other Production database write.
 5. Under one PostgreSQL advisory lock and transaction, upgrade exactly
-   `0012 -> 0013` and insert `SAFE_BASELINE_INSTALL/RESERVED`. Either both
-   commit or both roll back. Before the transaction writes, compare
+   `0012 -> 0014` (including `0013` plus the reviewed repair), reconcile the
+   inventory policies, and insert `SAFE_BASELINE_INSTALL/RESERVED`. All three
+   commit or all roll back. Before the transaction writes, compare
    `pg_control_system().system_identifier`, current database name, and database
    OID through the read-only and migration connections; a mismatch fails before
    migration so inventory of one database cannot authorize mutation of another.
@@ -472,7 +491,7 @@ status remains `NOT_RUN`.
 
 Local PostgreSQL integration can prove the mechanics but not Production state.
 The current local verification covered a legacy `0012` shape, real
-`pg_dump/pg_restore` comparison and cleanup, atomic `0012 -> 0013 + RESERVED`,
+`pg_dump/pg_restore` comparison and cleanup, atomic `0012 -> 0014 + RESERVED`,
 all Production seeds OFF, and rollback at the injected post-migration failure
 boundary. Production inventory, Production restore, project-setting evidence,
 edge changes, deployment, promotion, and formal-domain verification remain

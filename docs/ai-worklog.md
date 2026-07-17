@@ -1320,3 +1320,23 @@
 - GitHub `production` now contains independent generated `EDGE_EVIDENCE_HMAC_KEY`, `RUNTIME_AUDIT_HMAC_KEY`, `CLEANUP_CRON_TOKEN`, `SAFE_BASELINE_APPROVAL_ID`, `SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64`, and `VERCEL_AUTOMATION_BYPASS_HEADER`; only names/timestamps were read back. Secret plaintext was not printed, saved, or passed in command arguments.
 - The existing `PRODUCTION_READ_ONLY_DATABASE_URL` is not accepted as proof of the new inventory login and must be replaced. `PRODUCTION_MIGRATION_DATABASE_URL` remains absent. Both must come from the new Supabase SQL-Editor bootstrap result; the legacy administrator URL must not be copied into either slot.
 - No Production Supabase role/schema/data migration, Vercel environment mutation, Vercel Firewall publish, deployment, Promote, alias/domain change, Provider request, payment, email, storage object, Redis state, customer data, or Proxifier setting was changed during this implementation pass.
+
+## 2026-07-17 - Hosted Supabase inventory-role compatibility repair
+
+### Goal and evidence
+
+- A real Supabase SQL Editor execution disproved the earlier inventory-role contract: hosted `postgres` has `CREATEROLE` but is not superuser, so PostgreSQL correctly rejects creating or altering a role with `BYPASSRLS`. The failed function call rolled back and created no login.
+- The reviewed target migration also creates `vowpic_identity_owner` and `vowpic_identity_service`; a correctly constrained `NOCREATEROLE` migration login cannot create those cluster roles itself. The bootstrap must precreate them and grant the migration owner only the membership needed for the reviewed identity owner transfers.
+
+### Changes
+
+- Replaced the inventory login's `BYPASSRLS` dependency with NOBYPASSRLS plus one exact permissive, SELECT-only policy per public RLS table. Inventory evidence now proves the exact authenticated role, no memberships or ownership, complete table/sequence read grants, exact RLS policy coverage, zero write grants, read-only transaction/default, and SQLSTATE `25006` on a write probe.
+- Added an idempotent policy reconciler before protected inventory and inside the atomic `0012 -> 0014 + RESERVED` transaction. The bootstrap now precreates both identity NOLOGIN roles while keeping the migration login `NOCREATEROLE`.
+- Added `pg_dump --enable-row-security`. The isolated Admin performs restore and comparison so forced RLS cannot reject `COPY`; the non-superuser disposable target owner remains separately verified. Missing role names referenced by restored policies are created as isolated NOLOGIN placeholders and deleted during mandatory cleanup.
+
+### Verification and boundary
+
+- Focused inventory/login/restore/workflow tests passed 102/102 after red-first failures.
+- A fresh PostgreSQL 17 instance migrated `base -> 0006`, ran the revised bootstrap, reconnected through the generated-role shapes, and migrated through the exact restricted login to `0014`. Policy reconciliation proved 8/8 RLS tables; real inventory completed; custom-format dump/restore compared all 25 tables, row counts, foreign keys, ledger, and URL checksum; the disposable database and role were removed.
+- A separate two-cluster PostgreSQL 17 rehearsal repeated the legacy `0006` inventory/restore topology. An RLS fixture forced two missing policy-role placeholders to be created on the isolated target; restore comparison passed, both placeholders were dropped, and target role readback returned zero remaining policy roles.
+- No Production role, schema, data, GitHub secret, Vercel setting, deployment, domain, external Provider, customer record, or Proxifier state was changed in this repair pass. Production execution remains gated on review/merge and protected workflow success. No Subagent was used.

@@ -118,6 +118,31 @@ jobs:
           print(json.dumps({"revision": revision, "bridge_required": bridge_required}))
           PY
 
+      - name: Recheck current main before inventory policy reconciliation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-inventory-rls.json"
+
+      - name: Reconcile and prove NOBYPASSRLS inventory visibility
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          python scripts/release/production_inventory_rls.py \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --output "$EVIDENCE_DIR/inventory-rls.json"
+          if [[ "${{ steps.schema.outputs.bridge_required }}" == "true" ]]; then
+            mkdir -p "$LEGACY_BRIDGE_EVIDENCE_DIR/before"
+            cp "$EVIDENCE_DIR/inventory-rls.json" \
+              "$LEGACY_BRIDGE_EVIDENCE_DIR/before/inventory-rls.json"
+          fi
+
       - name: Inventory the legacy source before any bridge mutation
         if: ${{ steps.schema.outputs.bridge_required == 'true' }}
         env:

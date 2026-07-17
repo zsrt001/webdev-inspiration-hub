@@ -54,13 +54,25 @@ BEGIN
         CREATE ROLE vowpic_control_writer
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_identity_owner') THEN
+        CREATE ROLE vowpic_identity_owner
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_identity_service') THEN
+        CREATE ROLE vowpic_identity_service
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
+    GRANT vowpic_identity_owner TO vowpic_migration_owner
+      WITH INHERIT FALSE, SET TRUE;
 
     SELECT count(*) INTO invalid_role_count
     FROM pg_roles
     WHERE rolname IN (
         'vowpic_migration_owner',
         'vowpic_runtime',
-        'vowpic_control_writer'
+        'vowpic_control_writer',
+        'vowpic_identity_owner',
+        'vowpic_identity_service'
     )
       AND (
         rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
@@ -78,8 +90,14 @@ BEGIN
     WHERE member.rolname IN (
         'vowpic_migration_owner',
         'vowpic_runtime',
-        'vowpic_control_writer'
-    );
+        'vowpic_control_writer',
+        'vowpic_identity_owner',
+        'vowpic_identity_service'
+    )
+      AND NOT (
+        member.rolname = 'vowpic_migration_owner'
+        AND parent.rolname = 'vowpic_identity_owner'
+      );
     IF coalesce(unexpected_memberships, ARRAY[]::text[]) <> ARRAY[]::text[] THEN
         RAISE EXCEPTION 'an existing VowPic NOLOGIN role has unexpected memberships';
     END IF;
@@ -100,7 +118,7 @@ BEGIN
 
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_inventory_login') THEN
         CREATE ROLE vowpic_inventory_login
-          LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS INHERIT;
+          LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_migration_login') THEN
         CREATE ROLE vowpic_migration_login
@@ -182,7 +200,7 @@ BEGIN
 
     EXECUTE format(
         'ALTER ROLE vowpic_inventory_login WITH LOGIN NOSUPERUSER NOCREATEDB '
-        'NOCREATEROLE NOREPLICATION BYPASSRLS INHERIT PASSWORD %L VALID UNTIL ''infinity''',
+        'NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT PASSWORD %L VALID UNTIL ''infinity''',
         inventory_password
     );
     ALTER ROLE vowpic_inventory_login SET default_transaction_read_only = on;
@@ -219,6 +237,11 @@ BEGIN
                 AND dependency.objid = class.oid
                 AND dependency.deptype = 'e'
           )
+          AND NOT (
+            current_revision = '20260712_0014'
+            AND class.relkind = 'S'
+            AND class.relname = 'identity_legacy_fallback_uses_seq'
+          )
     LOOP
         EXECUTE format(
             'ALTER %s %I.%I OWNER TO vowpic_migration_owner',
@@ -245,6 +268,11 @@ BEGIN
               WHERE dependency.classid = 'pg_proc'::regclass
                 AND dependency.objid = procedure.oid
                 AND dependency.deptype = 'e'
+          )
+          AND NOT (
+            current_revision = '20260712_0014'
+            AND procedure.proname = 'app_current_user_id'
+            AND pg_get_function_identity_arguments(procedure.oid) = ''
           )
     LOOP
         EXECUTE format(
@@ -338,9 +366,9 @@ BEGIN
 
     SELECT count(*) INTO invalid_role_count
     FROM pg_roles
-    WHERE (rolname = 'vowpic_inventory_login' AND (
+        WHERE (rolname = 'vowpic_inventory_login' AND (
               NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
-              rolreplication OR NOT rolbypassrls OR NOT rolinherit
+              rolreplication OR rolbypassrls OR NOT rolinherit
           ))
        OR (rolname = 'vowpic_migration_login' AND (
               NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR

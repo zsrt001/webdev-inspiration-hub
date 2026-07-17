@@ -713,16 +713,21 @@ It reads the target database owner and role `rolvaliduntil`, privilege flags,
 `rolbypassrls`, and privileged memberships from PostgreSQL; a mismatch from the
 dedicated owner, protected expiry, private address, or unprivileged
 NOBYPASSRLS contract fails before `pg_dump`. The evidence retains only counts,
-booleans, and an address hash. It runs `pg_dump --format=custom --no-owner --no-acl`,
-restores with `pg_restore --clean --if-exists --no-owner --no-acl
---exit-on-error`, and compares revision, tables, exact row counts, FK orphans,
+booleans, and an address hash. The inventory login is NOBYPASSRLS and receives
+full visibility only through an exact SELECT-only policy on every public RLS
+table. It runs `pg_dump --format=custom --no-owner --no-acl
+--enable-row-security`, restores through the isolated Admin with
+`pg_restore --clean --if-exists --no-owner --no-acl --exit-on-error`, and
+compares revision, tables, exact row counts, FK orphans,
 ledger/balance, and URL-inventory checksum. Credentials are never printed. The
 dump is created only under runner temp so even an interrupted deletion cannot
 place it in an evidence upload. In one mandatory `finally` path it terminates
 target connections, drops the rehearsal database, revokes/drops the temporary
 target role or proves provider TTL destruction, and deletes the archive.
 Cleanup runs after success, restore failure, and comparison failure; any
-database/credential cleanup failure makes the gate FAIL and alerts. Only
+database/credential cleanup failure makes the gate FAIL and alerts. Roles
+referenced by restored policies are created as NOLOGIN placeholders only on the
+isolated target and are deleted with it. Only
 sanitized checksums/counts survive as evidence; neither the dump nor a restored
 Production-data database is a normal artifact.
 
@@ -741,25 +746,26 @@ docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 
 docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP ROLE IF EXISTS vowpic_restore_local_role"
 docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE vowpic_restore_local_role LOGIN PASSWORD 'restore_local_only'"
 docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE vowpic_restore_local OWNER vowpic_restore_local_role"
-$roleExists = docker compose exec -T postgres psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='vowpic_inventory_local'"
+$roleExists = docker compose exec -T postgres psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='vowpic_inventory_login'"
 if ($roleExists.Trim() -ne '1') {
-    docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE vowpic_inventory_local LOGIN PASSWORD 'inventory_local_only'"
+    docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE vowpic_inventory_login LOGIN PASSWORD 'inventory_local_only'"
 }
-docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE vowpic_inventory_local LOGIN PASSWORD 'inventory_local_only'"
-docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE vowpic_inventory_local SET default_transaction_read_only = on"
-docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE vowpic_inventory_local BYPASSRLS"
-docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE ai_wedding TO vowpic_inventory_local"
-docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA public TO vowpic_inventory_local"
-docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO vowpic_inventory_local"
-docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO vowpic_inventory_local"
-$env:PRODUCTION_READ_ONLY_DATABASE_URL='postgresql://vowpic_inventory_local:inventory_local_only@localhost:5432/ai_wedding'
+docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE vowpic_inventory_login LOGIN PASSWORD 'inventory_local_only'"
+docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE vowpic_inventory_login SET default_transaction_read_only = on"
+docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE vowpic_inventory_login NOBYPASSRLS"
+docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE ai_wedding TO vowpic_inventory_login"
+docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA public TO vowpic_inventory_login"
+docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO vowpic_inventory_login"
+docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO vowpic_inventory_login"
+docker compose exec -T postgres psql -U postgres -d ai_wedding -v ON_ERROR_STOP=1 -c "DO `$`$ DECLARE item record; BEGIN FOR item IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relrowsecurity LOOP EXECUTE format('DROP POLICY IF EXISTS vowpic_inventory_select ON %I.%I', item.nspname, item.relname); EXECUTE format('CREATE POLICY vowpic_inventory_select ON %I.%I FOR SELECT TO vowpic_inventory_login USING (true)', item.nspname, item.relname); END LOOP; END `$`$"
+$env:PRODUCTION_READ_ONLY_DATABASE_URL='postgresql://vowpic_inventory_login:inventory_local_only@localhost:5432/ai_wedding'
 $env:RESTORE_REHEARSAL_DATABASE_URL='postgresql://vowpic_restore_local_role:restore_local_only@localhost:5432/vowpic_restore_local'
 $env:RESTORE_REHEARSAL_ADMIN_DATABASE_URL='postgresql://postgres:postgres@localhost:5432/postgres'
 $env:RESTORE_REHEARSAL_ROLE_NAME='vowpic_restore_local_role'
 python backend/scripts/backup_restore_rehearsal.py --source-url-env PRODUCTION_READ_ONLY_DATABASE_URL --target-url-env RESTORE_REHEARSAL_DATABASE_URL --target-admin-url-env RESTORE_REHEARSAL_ADMIN_DATABASE_URL --target-role-name-env RESTORE_REHEARSAL_ROLE_NAME --expected-target-db-prefix vowpic_restore_ --artifact-dir "artifacts/security-baseline/$env:GITHUB_RUN_ID/restore" --scratch-dir "$env:RUNNER_TEMP/safe-baseline-restore-scratch"
 ```
 
-Expected: exit 0 with sanitized dump checksum, restored Alembic revision, row-count report, no source mutation, and proof that neither `vowpic_restore_local` nor `vowpic_restore_local_role` exists after the report is written. The rehearsal must also attempt a harmless write in a rolled-back source transaction and fail with read-only SQLSTATE `25006`; a source superuser or write-capable role is a hard failure. Production likewise uses a temporary target role; the admin role is used only for terminate/drop/revoke cleanup and is never the restore connection.
+Expected: exit 0 with sanitized dump checksum, restored Alembic revision, row-count report, no source mutation, and proof that neither `vowpic_restore_local` nor `vowpic_restore_local_role` exists after the report is written. The rehearsal must also attempt a harmless write in a rolled-back source transaction and fail with read-only SQLSTATE `25006`; a source superuser or write-capable role is a hard failure. Production likewise uses a temporary target role; the isolated Admin is the restore/comparison/cleanup connection and is never a Production source credential.
 
 - [ ] **Step 5: Commit reviewed inventory/restore tooling before any Production credential is exposed**
 
