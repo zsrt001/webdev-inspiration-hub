@@ -9,14 +9,28 @@ import unittest
 from urllib.parse import urlsplit
 
 import psycopg2
+from psycopg2.extras import RealDictCursor
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine
 
-from app.core.runtime_checks import validate_database_role_proof
+from app.core.database_role_proof import validate_database_role_proof
 
 
 ROOT = Path(__file__).resolve().parents[3]
+RELEASE_SCRIPTS = ROOT / "scripts" / "release"
+if str(RELEASE_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(RELEASE_SCRIPTS))
+
+from provision_production_database_logins import (  # noqa: E402
+    RUNTIME_LOGIN as PRODUCTION_RUNTIME_LOGIN,
+    WRITER_LOGIN as PRODUCTION_WRITER_LOGIN,
+    configure_safe_baseline_database_roles,
+    load_database_role_contract,
+    provision_database_logins,
+)
+
+
 RUNTIME_LOGIN = "vowpic_runtime_login_test"
 WRITER_LOGIN = "vowpic_control_login_test"
 
@@ -35,6 +49,18 @@ def _dsn_with_user(database_url: str, username: str, password: str) -> str:
 )
 class ControlPlaneRlsIntegrationTest(unittest.TestCase):
     @classmethod
+    def _drop_production_logins(cls) -> None:
+        with psycopg2.connect(cls.admin_url) as connection, connection.cursor() as cursor:
+            for login, group in (
+                (PRODUCTION_RUNTIME_LOGIN, "vowpic_runtime"),
+                (PRODUCTION_WRITER_LOGIN, "vowpic_control_writer"),
+            ):
+                cursor.execute("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s)", (login,))
+                if cursor.fetchone()[0]:
+                    cursor.execute(f'REVOKE "{group}" FROM "{login}"')
+                    cursor.execute(f'DROP ROLE "{login}"')
+
+    @classmethod
     def setUpClass(cls) -> None:
         cls.admin_url = os.environ.get("CONTROL_PLANE_RLS_TEST_DATABASE_URL", "").strip()
         if not cls.admin_url:
@@ -48,7 +74,10 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
                 command.upgrade(alembic, "head")
         finally:
             engine.dispose()
-        with psycopg2.connect(cls.admin_url) as connection, connection.cursor() as cursor:
+        with psycopg2.connect(cls.admin_url) as connection, connection.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+            configure_safe_baseline_database_roles(cursor, load_database_role_contract())
             cursor.execute(f'DROP ROLE IF EXISTS "{RUNTIME_LOGIN}"')
             cursor.execute(f'DROP ROLE IF EXISTS "{WRITER_LOGIN}"')
             cursor.execute(
@@ -116,6 +145,56 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
                 )
             connection.rollback()
 
+    def test_runtime_business_privileges_are_explicit_and_writer_has_none(self) -> None:
+        with psycopg2.connect(self.admin_url) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT tablename, cmd
+                FROM pg_policies
+                WHERE schemaname = 'public'
+                  AND tablename IN ('users', 'orders', 'click_stats')
+                  AND policyname LIKE '%_vowpic_runtime_%'
+                  AND 'vowpic_runtime' = ANY(roles)
+                ORDER BY tablename, cmd
+                """
+            )
+            self.assertEqual(
+                cursor.fetchall(),
+                [
+                    ("click_stats", "INSERT"),
+                    ("click_stats", "SELECT"),
+                    ("click_stats", "UPDATE"),
+                    ("orders", "INSERT"),
+                    ("orders", "SELECT"),
+                    ("orders", "UPDATE"),
+                    ("users", "INSERT"),
+                    ("users", "SELECT"),
+                    ("users", "UPDATE"),
+                ],
+            )
+        with psycopg2.connect(self.runtime_url) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT has_table_privilege(current_user, 'users', 'SELECT'),
+                       has_table_privilege(current_user, 'users', 'INSERT'),
+                       has_table_privilege(current_user, 'users', 'UPDATE'),
+                       has_table_privilege(current_user, 'users', 'DELETE'),
+                       has_table_privilege(current_user, 'subscription_plans', 'SELECT'),
+                       has_table_privilege(current_user, 'subscription_plans', 'UPDATE')
+                """
+            )
+            self.assertEqual(cursor.fetchone(), (True, True, True, False, True, False))
+        with psycopg2.connect(self.writer_url) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT has_table_privilege(current_user, 'users', 'SELECT'),
+                       has_table_privilege(current_user, 'users', 'INSERT'),
+                       has_table_privilege(current_user, 'users', 'UPDATE'),
+                       has_table_privilege(current_user, 'users', 'DELETE')
+                """
+            )
+            self.assertEqual(cursor.fetchone(), (False, False, False, False))
+
     def test_control_writer_can_apply_an_audited_off_transition(self) -> None:
         with psycopg2.connect(self.writer_url) as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -132,7 +211,12 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
                 cursor.execute(
                     """
                     SELECT current_user AS current_user,
+                           role.rolcanlogin AS role_can_login,
+                           role.rolinherit AS role_inherit,
                            role.rolsuper AS role_superuser,
+                           role.rolcreatedb AS role_create_db,
+                           role.rolcreaterole AS role_create_role,
+                           role.rolreplication AS role_replication,
                            role.rolbypassrls AS role_bypass_rls,
                            pg_get_userbyid(control.relowner) AS control_table_owner,
                            pg_has_role(current_user, 'vowpic_runtime', 'MEMBER') AS required_group_member,
@@ -154,6 +238,34 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
         finally:
             with psycopg2.connect(self.admin_url) as connection, connection.cursor() as cursor:
                 cursor.execute(f'REVOKE vowpic_control_writer FROM "{RUNTIME_LOGIN}"')
+
+    def test_provisioner_creates_two_fixed_non_owner_logins_and_proves_split(self) -> None:
+        self._drop_production_logins()
+        try:
+            runtime_url, writer_url, proof = provision_database_logins(self.admin_url)
+            self.assertEqual(proof["credential_rotation"], "superuser_test_fallback")
+            self.assertEqual(urlsplit(runtime_url).username, PRODUCTION_RUNTIME_LOGIN)
+            self.assertEqual(urlsplit(writer_url).username, PRODUCTION_WRITER_LOGIN)
+            runtime = proof["roles"][PRODUCTION_RUNTIME_LOGIN]
+            writer = proof["roles"][PRODUCTION_WRITER_LOGIN]
+            self.assertTrue(runtime["required_group_member"])
+            self.assertFalse(runtime["forbidden_group_member"])
+            self.assertTrue(runtime["users_update"])
+            self.assertFalse(runtime["flags_update"])
+            self.assertFalse(runtime["users_delete"])
+            self.assertTrue(runtime["business_tables"]["users"]["row_security_enabled"])
+            self.assertEqual(
+                set(runtime["business_tables"]["users"]["runtime_policy_commands"]),
+                {"SELECT", "INSERT", "UPDATE"},
+            )
+            self.assertFalse(runtime["business_tables"]["users"]["can_delete"])
+            self.assertTrue(writer["required_group_member"])
+            self.assertFalse(writer["forbidden_group_member"])
+            self.assertFalse(writer["users_select"])
+            self.assertTrue(writer["flags_update"])
+            self.assertFalse(writer["business_tables"]["users"]["can_select"])
+        finally:
+            self._drop_production_logins()
 
 
 if __name__ == "__main__":

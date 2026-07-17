@@ -208,7 +208,12 @@ class RuntimeConfigTest(unittest.TestCase):
         runtime_checks = importlib.import_module("app.core.runtime_checks")
         valid = {
             "current_user": "vowpic_app_runtime",
+            "role_can_login": True,
+            "role_inherit": True,
             "role_superuser": False,
+            "role_create_db": False,
+            "role_create_role": False,
+            "role_replication": False,
             "role_bypass_rls": False,
             "control_table_owner": "postgres",
             "required_group_member": True,
@@ -224,10 +229,16 @@ class RuntimeConfigTest(unittest.TestCase):
         )
         for override in (
             {"current_user": "postgres", "control_table_owner": "postgres"},
+            {"role_can_login": False},
+            {"role_inherit": False},
             {"role_superuser": True},
+            {"role_create_db": True},
+            {"role_create_role": True},
+            {"role_replication": True},
             {"role_bypass_rls": True},
             {"required_group_member": False},
             {"forbidden_group_member": True},
+            {"role_create_db": None},
         ):
             with self.subTest(override=override):
                 with self.assertRaises(RuntimeError):

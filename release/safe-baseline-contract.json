@@ -20,5 +20,38 @@
     "rows_per_environment": 7,
     "authoritative_store": "postgresql",
     "redis_cache": "OFF_ONLY_MAX_30_SECONDS"
+  },
+  "database_roles": {
+    "inventory_login": "vowpic_inventory_login",
+    "migration_owner": "vowpic_migration_owner",
+    "migration_login": "vowpic_migration_login",
+    "runtime_group": "vowpic_runtime",
+    "runtime_login": "vowpic_app_runtime",
+    "control_writer_group": "vowpic_control_writer",
+    "control_writer_login": "vowpic_control_writer_login",
+    "runtime_business_privileges": {
+      "users": ["SELECT", "INSERT", "UPDATE"],
+      "orders": ["SELECT", "INSERT", "UPDATE"],
+      "live_portrait_jobs": ["SELECT", "INSERT", "UPDATE"],
+      "user_credits": ["SELECT", "INSERT", "UPDATE"],
+      "credit_transactions": ["SELECT", "INSERT"],
+      "credit_purchases": ["SELECT", "INSERT", "UPDATE"],
+      "leads": ["SELECT", "INSERT"],
+      "click_stats": ["SELECT", "INSERT", "UPDATE"],
+      "subscription_plans": ["SELECT"],
+      "user_subscriptions": ["SELECT", "INSERT", "UPDATE"],
+      "subscription_credit_grants": ["SELECT", "INSERT"],
+      "payment_events": ["SELECT", "INSERT", "UPDATE"],
+      "admin_audit_logs": ["SELECT", "INSERT"],
+      "remote_join_sessions": ["SELECT", "INSERT", "UPDATE"],
+      "email_delivery_logs": ["SELECT", "INSERT", "UPDATE"],
+      "account_risk_events": ["SELECT", "INSERT", "UPDATE"]
+    },
+    "runtime_forbidden_business_privileges": [
+      "DELETE",
+      "TRUNCATE",
+      "REFERENCES",
+      "TRIGGER"
+    ]
   }
 }

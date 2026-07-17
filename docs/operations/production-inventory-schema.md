@@ -122,5 +122,12 @@ overrides any prior success and fails the gate. Only the create-once sanitized
 restored Production-data database is never a normal artifact.
 
 Generated evidence and disposable archives are ignored by Git. Production
-inventory and restore remain `NOT_RUN` until protected credentials and an
-isolated target are deliberately supplied by the Production owner.
+inventory remains `NOT_RUN` until the protected read-only source credential is
+supplied. The protected workflow creates its own password-authenticated,
+loopback-only PostgreSQL 17 restore target and destroys it after the rehearsal.
+When the observed Production revision is legacy `20260427_0006`, the protected
+workflow runs this same inventory/restore pair and persists its sanitized
+artifact before any bridge write. Only then may the distinct migration login
+upgrade to `20260516_0012`; the normal safe-baseline preflight, inventory, and
+restore are rerun at `0012`. The legacy administrator URL is neither an
+inventory source nor an application runtime secret.

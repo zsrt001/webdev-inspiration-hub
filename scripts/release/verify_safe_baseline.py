@@ -71,6 +71,15 @@ EDGE_ROUTE_GROUPS = {
     "retired_addons",
     "leads_recommendations",
 }
+EDGE_APPLICATION_GUARDS = {
+    "auth_upload": (410, "auth_method_retired"),
+    "generation": (410, "admin_generation_execution_retired"),
+    "credit_checkout": (410, "legacy_credit_mutation_retired"),
+    "subscription": (401, "session_missing"),
+    "partner_invite": (410, "partner_session_retired"),
+    "retired_addons": (410, "live_portrait_retired"),
+    "leads_recommendations": (410, "local_recommendations_retired"),
+}
 
 
 class SafeBaselineVerificationError(RuntimeError):
@@ -895,6 +904,7 @@ def _validate_edge_handoff(
     project_id: str,
     formal_domain: str,
     expected_lockdown_after_config_sha256: str | None,
+    expected_lockdown_baseline_config_sha256: str | None,
     hmac_key: bytes,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -930,7 +940,13 @@ def _validate_edge_handoff(
             or result.get("read_back") is not True
         ):
             raise SafeBaselineVerificationError(f"edge route group {name} was not removed/read back")
-        if result.get("no_side_effects") is not True or int(result.get("application_status", 0)) not in {410, 503}:
+        expected_status, expected_code = EDGE_APPLICATION_GUARDS[name]
+        if (
+            result.get("no_side_effects") is not True
+            or type(result.get("application_status")) is not int
+            or result["application_status"] != expected_status
+            or result.get("application_code") != expected_code
+        ):
             raise SafeBaselineVerificationError(f"edge route group {name} lacks application guard evidence")
     if payload.get("runner_bypass_removed") is not True:
         raise SafeBaselineVerificationError("temporary edge runner bypass was not removed")
@@ -952,6 +968,20 @@ def _validate_edge_handoff(
         raise SafeBaselineVerificationError(
             "edge handoff does not match the verified lockdown config"
         )
+    baseline_hash = str(payload.get("lockdown_baseline_config_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", baseline_hash):
+        raise SafeBaselineVerificationError("edge handoff baseline config hash is invalid")
+    if payload["after_config_sha256"] != baseline_hash:
+        raise SafeBaselineVerificationError(
+            "edge handoff did not restore the signed pre-lockdown baseline"
+        )
+    if (
+        expected_lockdown_baseline_config_sha256
+        and baseline_hash != expected_lockdown_baseline_config_sha256
+    ):
+        raise SafeBaselineVerificationError(
+            "edge handoff does not match the verified baseline config"
+        )
     return {
         "report_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "route_groups": sorted(groups),
@@ -959,6 +989,7 @@ def _validate_edge_handoff(
         "before_config_sha256": payload["before_config_sha256"],
         "after_config_sha256": payload["after_config_sha256"],
         "lockdown_after_config_sha256": lockdown_hash,
+        "lockdown_baseline_config_sha256": baseline_hash,
         "workflow_run_id": workflow_run_id,
         "workflow_attempt": workflow_attempt,
         "project_id": project_id,
@@ -996,6 +1027,7 @@ def main() -> int:
     parser.add_argument("--expected-project-id")
     parser.add_argument("--expected-formal-domain")
     parser.add_argument("--expected-lockdown-after-config-sha256")
+    parser.add_argument("--expected-lockdown-baseline-config-sha256")
     parser.add_argument("--require-platform-deployment-id", action="store_true")
     parser.add_argument("--expected-layer", choices=("app",), default="app")
     parser.add_argument("--output", required=True)
@@ -1066,6 +1098,9 @@ def main() -> int:
                 formal_domain=args.expected_formal_domain,
                 expected_lockdown_after_config_sha256=(
                     args.expected_lockdown_after_config_sha256 or None
+                ),
+                expected_lockdown_baseline_config_sha256=(
+                    args.expected_lockdown_baseline_config_sha256 or None
                 ),
                 hmac_key=edge_evidence_hmac_key,
             )

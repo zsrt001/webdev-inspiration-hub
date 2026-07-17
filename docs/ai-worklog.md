@@ -1291,3 +1291,32 @@
 - Focused Vitest passed 3/3. Full frontend Vitest passed 11/11, `vue-tsc --noEmit` passed, the real Uni-app Web build completed, and `git diff --check` passed. The known upstream Dart Sass legacy-JavaScript-API warnings remain visible.
 - Browser verification on the formal domain confirmed Home and Create render the browse-only safety state, Account reports the deployment-not-ready error, and Login reports Google auth unavailable. Before this fix, Orders incorrectly rendered an empty gallery during the same `503`; the new bundle has not yet been merged or redeployed.
 - No environment variable, secret, database role/schema/data, Supabase object, Redis instance, Provider request, payment, email, or customer record was changed. No rollback to the unsafe pre-kill-switch deployment occurred. No Subagent was used.
+
+## 2026-07-17 - Least-privilege Production database and protected release closure
+
+### Goal and evidence
+
+- Replace the unsafe assumption that one administrator database URL could serve inventory, migration, application runtime, and control-plane writes. The one-time bootstrap now creates a transaction-read-only inventory login, a scoped migration owner/login, and disabled fixed application logins without reusing or exposing the legacy administrator URL.
+- The protected workflow inventories and restores the exact legacy source before a `0006 -> 0012` bridge, persists sanitized evidence before mutation, then reruns normal inventory/restore before the atomic `0012 -> 0013` reservation.
+- Vercel's current Project API and the pinned CLI source establish `autoAssignCustomDomains`, `link.deployHooks`, the staged Firewall draft endpoints/actions, and `PATCH /v1/projects/{id}/protection-bypass` as the platform contracts used by the automation.
+
+### Changes
+
+- Added exact database role/privilege contracts, scoped password rotation, reconnect-based per-login/per-table proof, runtime elevated-role drift checks, PostgreSQL statement auditing, and direct stdin-only publication of `DATABASE_URL`, `CONTROL_PLANE_DATABASE_URL`, and `CLEANUP_CRON_TOKEN` as Vercel Production Sensitive variables.
+- Added a workflow-owned PostgreSQL 17 loopback restore target. Raw dumps, PostgreSQL data, logs, and passwords remain under runner temp and are deleted on every path; only sanitized inventory/restore evidence is uploaded.
+- Replaced impossible static edge-report secrets with job-bound Vercel Firewall creation, draft/publish/readback, seven logical group probes packed into two Hobby-compatible deny rules, an ephemeral first-priority custom bypass, exact application-guard handoff, database no-side-effect snapshots, signed reports, and `always()` bypass cleanup.
+- Added protected Vercel automation-bypass creation/readback using one GitHub header-pair secret. An unrelated existing automation bypass fails before mutation and is never silently revoked.
+- Split database publication from read-only role proof and split edge contract, platform adapter, probes, and orchestration so each module has one bounded responsibility.
+
+### Verification
+
+- The hash-locked backend environment completed 770 tests successfully with 35 explicit external-service skips. The focused database/release/edge/workflow suites completed 136/136, and the final workflow contract suite completed 67/67.
+- A fresh local PostgreSQL 17 cluster migrated through the reviewed schema. The real control-plane RLS suite passed 6/6. The complete bootstrap and scoped rotation reconnected through both application logins, proved the exact 16-table SQL/RLS surface, observed 24 runtime statements and zero DDL, then removed the verified temporary cluster.
+- Frontend Vitest passed 11/11, `vue-tsc --noEmit` passed, and the real Web SaaS build completed. Git Bash `bash -n` accepted the isolated restore script; Python parsed the workflow YAML; `git diff --check` is required again before commit.
+- No Subagent was used.
+
+### Protected state and remaining external gate
+
+- GitHub `production` now contains independent generated `EDGE_EVIDENCE_HMAC_KEY`, `RUNTIME_AUDIT_HMAC_KEY`, `CLEANUP_CRON_TOKEN`, `SAFE_BASELINE_APPROVAL_ID`, `SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64`, and `VERCEL_AUTOMATION_BYPASS_HEADER`; only names/timestamps were read back. Secret plaintext was not printed, saved, or passed in command arguments.
+- The existing `PRODUCTION_READ_ONLY_DATABASE_URL` is not accepted as proof of the new inventory login and must be replaced. `PRODUCTION_MIGRATION_DATABASE_URL` remains absent. Both must come from the new Supabase SQL-Editor bootstrap result; the legacy administrator URL must not be copied into either slot.
+- No Production Supabase role/schema/data migration, Vercel environment mutation, Vercel Firewall publish, deployment, Promote, alias/domain change, Provider request, payment, email, storage object, Redis state, customer data, or Proxifier setting was changed during this implementation pass.

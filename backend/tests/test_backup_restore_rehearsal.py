@@ -171,6 +171,34 @@ class RehearsalValidationTest(unittest.TestCase):
                         local_target=False,
                     )
 
+    def test_postgres_inet_server_addresses_are_normalized_before_comparison(self) -> None:
+        module = _module()
+        now = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+        proof = module.validate_target_control_proof(
+            {
+                "database": "vowpic_restore_test",
+                "database_owner": "vowpic_restore_role",
+                "role": "vowpic_restore_role",
+                "role_valid_until": None,
+                "role_superuser": False,
+                "role_create_db": False,
+                "role_create_role": False,
+                "role_replication": False,
+                "role_bypass_rls": False,
+                "privileged_membership_count": 0,
+                "server_address": "127.0.0.1/32",
+                "admin_server_address": "127.0.0.1/32",
+            },
+            expected_database="vowpic_restore_test",
+            expected_role="vowpic_restore_role",
+            expected_expires_at=None,
+            resolved_addresses={"127.0.0.1"},
+            now=now,
+            local_target=True,
+        )
+        self.assertTrue(proof["network_isolated"])
+        self.assertEqual(proof["resolved_address_count"], 1)
+
     def test_dump_and_restore_commands_never_contain_passwords_or_urls(self) -> None:
         module = _module()
         with tempfile.TemporaryDirectory() as directory:

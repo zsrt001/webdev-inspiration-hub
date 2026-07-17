@@ -155,7 +155,7 @@ def validate_edge_lockdown_report(
     if int(payload.get("active_deploy_hook_count", -1)) != 0:
         raise ValueError("active Vercel deploy hooks remain")
 
-    for field in ("before_config_sha256", "after_config_sha256"):
+    for field in ("before_config_sha256", "after_config_sha256", "baseline_config_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get(field) or "")):
             raise ValueError(f"edge lockdown {field} is invalid")
     _bounded_identifier(payload.get("last_known_deployment_id"), name="last-known deployment ID")
@@ -181,9 +181,12 @@ def validate_edge_lockdown_report(
     if not isinstance(bypass, dict) or bypass.get("read_back") is not True:
         raise ValueError("temporary runner bypass was not read back")
     _bounded_identifier(bypass.get("rule_id"), name="runner bypass rule ID")
-    bypass_expiry = _parse_datetime(bypass.get("expires_at"), name="runner bypass expiry")
+    bypass_expiry = _parse_datetime(
+        bypass.get("lease_expires_at"),
+        name="runner bypass lease expiry",
+    )
     if bypass_expiry <= current or bypass_expiry > expires_at:
-        raise ValueError("temporary runner bypass expiry is outside the report lease")
+        raise ValueError("temporary runner bypass lease is outside the report lease")
 
     return {
         "passed": True,
@@ -198,6 +201,7 @@ def validate_edge_lockdown_report(
         "physical_deny_rule_count": len(physical_deny_rule_ids),
         "before_config_sha256": payload["before_config_sha256"],
         "after_config_sha256": payload["after_config_sha256"],
+        "baseline_config_sha256": payload["baseline_config_sha256"],
         "report_expires_at": expires_at.isoformat(),
     }
 

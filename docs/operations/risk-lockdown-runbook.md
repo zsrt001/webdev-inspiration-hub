@@ -52,27 +52,37 @@ If any setting cannot be read back, the protected release is `NOT_RUN`.
 The GitHub `production` Environment must require an authorized reviewer and
 provide only the scoped, expiring inputs used by the one-purpose workflow:
 
-- read-only inventory and verification database URLs
-- a migration database URL used only after inventory/restore succeeds
-- the deployed API `DATABASE_URL` using a non-owner `NOBYPASSRLS` login that
-  is a member of `vowpic_runtime`, plus a distinct
-  `CONTROL_PLANE_DATABASE_URL` login that is a member only of
+- a GitHub Environment secret containing the dedicated read-only inventory and
+  verification URL
+- a separate GitHub Environment secret containing the workflow-only migration
+  URL, used only after inventory/restore evidence is durable
+- Vercel Production Sensitive variables for the deployed API `DATABASE_URL`
+  using a non-owner `NOBYPASSRLS` login that is a member of `vowpic_runtime`,
+  plus a distinct `CONTROL_PLANE_DATABASE_URL` login that is a member only of
   `vowpic_control_writer`
-- disposable restore database/Admin credentials and explicit credential expiry
+- a workflow-generated loopback PostgreSQL restore target with distinct random
+  Admin/restore passwords; no long-lived restore credential leaves the runner
 - inventory HMAC key
 - independent HMAC keys for edge evidence and runtime-statement-audit evidence
 - Vercel token, org ID, and project ID
-- deployment-protection and edge-bypass header pairs
-- a short-lived existing user probe bearer, backend Admin token, and cleanup
-  cron token used only to reach application guards
+- one `x-vercel-protection-bypass: <secret>` header pair used only for the staged
+  deployment URL; the workflow creates/read-backs that exact secret through the
+  Vercel project API and refuses an unrelated existing automation bypass
+- the cleanup cron token used to reach the authenticated cleanup guard; the
+  workflow also publishes it as a Vercel Production Sensitive variable
 - approval ID and the exact reviewed source SHA
 - one 32-byte base64 `SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64`, retained unchanged
   for at least the full ninety-day build-recovery window
 
-The workflow consumes base64 transport copies of the externally generated
-`vowpic.edge-lockdown.v1`, `vowpic.runtime-ddl-audit.v1`, and
-`vowpic.edge-handoff.v1` reports. The transport is not authority: each report
-must carry a valid SHA-256 HMAC from the separately protected evidence signer.
+The workflow generates `vowpic.edge-lockdown.v1`, `vowpic.edge-handoff.v1`, and
+`vowpic.runtime-ddl-audit.v1` inside the same protected job that consumes them.
+The edge collector reads and changes only the three exact VowPic custom-rule
+names, inspects the Vercel draft before every publish, reads the active rules
+back after publish, and stops before mutation if any unrelated rule or existing
+draft appears. It creates a random runner-bypass value in a mode-0600 runner
+temp file; the value is never a GitHub/Vercel secret, report field, log, or
+artifact. Transport or workflow location is not authority: each report must
+carry a valid SHA-256 HMAC from its separately protected evidence signer.
 Changing `passed`, coverage, route groups, source/runtime/deployment
 coordinates, workflow run/attempt, generated/expiry timestamps, or any other
 field invalidates the signature. Every signed report has at most a one-hour
@@ -87,20 +97,37 @@ control-plane table, removes PUBLIC access, grants runtime SELECT plus only the
 acceptance-binding consumption columns, and grants the writer the audited
 control-plane DML surface. It does not create login passwords.
 
-Before staging, an approved database administrator must create two distinct
-non-owner, non-superuser, NOBYPASSRLS logins, grant each exactly one matching
-group, and grant the runtime login only the explicitly reviewed business-table
-privileges needed by the retained safe-baseline paths. The writer login gets no
-general business-table privileges. Do not reuse `postgres`, a table owner,
-`service_role`, a superuser, or any BYPASSRLS credential. Store the two URLs as
-separate protected secrets and read back `current_user`, `rolsuper`,
-`rolbypassrls`, membership in both fixed groups, and the owner of
-`ops_feature_flags`.
-Production/Preview readiness performs the same query and fails if the runtime
-or writer is owner, superuser, BYPASSRLS, outside its required group, or a
-member of the other role's group. Configuration also requires distinct login
-names and one matching database target; Supabase direct/pooler URLs are matched
-by project reference so two projects cannot pass as one database.
+Run `scripts/release/bootstrap_production_database_roles.sql` once in the exact
+Production project's SQL Editor. It creates a transaction-read-only inventory
+login with only public-schema SELECT access, a separate migration login whose
+default role owns the application schema, and the fixed application logins in a
+disabled state. Its one-result JSON contains newly generated inventory and
+migration passwords for immediate transfer to the GitHub `production`
+Environment. Do not save that result in the repository, logs, artifacts, or
+shell history, and never substitute the legacy administrator URL.
+
+Before staging, the protected workflow creates or rotates two distinct
+non-owner, non-superuser, NOBYPASSRLS logins, grants each exactly one matching
+group, and verifies the exact SQL surface. The provisioning transaction grants
+the runtime group only the reviewed SELECT/INSERT/UPDATE verbs for the retained
+Stage-1 business tables and creates one command-specific RLS policy per granted
+verb; DELETE is absent. Any unexpected group membership, object ownership,
+policy, or privilege fails closed. The writer login gets no general
+business-table privileges. The workflow writes the two
+URLs directly to separate Vercel Production Sensitive variables over stdin and
+reads back only key/type/target metadata. Passwords and URLs are never emitted
+as evidence. Do not reuse `postgres`, the workflow migration login, a table
+owner, `service_role`, a superuser, or any BYPASSRLS credential.
+The verification reconnects as each new login and reads back `current_user`,
+LOGIN/INHERIT state, `rolsuper`, `rolcreatedb`, `rolcreaterole`,
+`rolreplication`, `rolbypassrls`, membership in both fixed groups, reviewed
+business privileges, forbidden DELETE, and the owner of `ops_feature_flags`.
+Production/Preview readiness performs the same role query and fails if either
+application login loses LOGIN/INHERIT, becomes an owner, gains any elevated
+role flag, leaves its required group, or joins the other application's group.
+Configuration also requires distinct login names and one matching database
+target; Supabase direct/pooler URLs are matched by project reference so two
+projects cannot pass as one database.
 
 The migration URL remains a separate protected workflow-only administrator; it
 is never exposed to the application. CI and pre-release verification must run
@@ -125,7 +152,7 @@ before the `FORMAL_VERIFIED` CAS, and completion evidence before the terminal
 digest; `if-no-files-found=error` is mandatory. A final failure artifact is only
 a diagnostic copy and never authorizes a phase transition.
 
-The raw externally transported reports stay in runner temp. `restore.dump` is
+The raw signed edge and runtime reports stay in runner temp. `restore.dump` is
 created only under a separate runner-temp scratch directory, never below
 `artifacts/security-baseline`, so even an interrupted deletion cannot place it
 in an evidence upload. Credentials, database rows, raw SQL, URLs, and tokens are
@@ -165,7 +192,8 @@ requires audited manual forward disposition.
 
 The restore target must meet
 [`production-inventory-schema.md`](./production-inventory-schema.md). Missing
-credentials return `NOT_RUN`; the workflow must not fill them with fixtures.
+source credentials return `NOT_RUN`; the restore target is a real PostgreSQL 17
+cluster created on runner loopback, not a fixture or an application mock.
 For nonlocal targets, a private-looking hostname and caller-supplied expiry are
 not proof. The tool resolves every address, compares actual PostgreSQL
 `inet_server_addr()` from restore/Admin connections, and reads database owner,
@@ -182,8 +210,7 @@ configuration must be read from the actual project; never invent or overwrite
 the whole configuration from a generic template.
 
 Before inventory/restore can authorize the first Production database write,
-the Production owner or an approved, separately reviewed firewall automation
-must:
+the protected firewall automation must:
 
 1. snapshot and hash the active firewall configuration;
 2. install/read back route-group deny rules for anonymous upload/Gatekeeper,
@@ -191,7 +218,9 @@ must:
    recommendations, leads, and retired add-ons;
 3. leave signed Creem webhook, incident evidence, reconciliation, and logout
    paths outside the deny groups;
-4. create a short-lived allowlisted runner bypass and record its rule ID/TTL;
+4. create a random job-local header bypass, put it first, record its rule ID and
+   signed evidence lease, and arrange an `always()` cleanup after every attempted
+   lockdown path;
 5. emit a signed/create-once edge report bound to project, source SHA, workflow
    run and attempt, formal domain, rule IDs, and the pre-change configuration
    hash.
@@ -215,10 +244,11 @@ generator:
 | `vowpic-lock-identity-generation` | `auth_upload`, `generation`, `partner_invite` |
 | `vowpic-lock-commercial-retired` | `credit_checkout`, `subscription`, `retired_addons`, `leads_recommendations` |
 
-Each logical group is a separate OR condition group inside its physical rule.
-Scope every condition to the Production hostnames and the exact method/path
-boundary below; a parent-prefix deny is forbidden when it would also cover a
-preserved path.
+Each logical group owns one or more deterministic OR condition groups inside its
+physical rule, split by HTTP method where needed to avoid a method/path Cartesian
+product. Scope every condition to the formal Production hostname and the exact
+method/raw-path boundary below; a parent-prefix deny is forbidden when it would
+also cover a preserved path.
 
 | Logical group | Required deny boundary |
 | --- | --- |
@@ -243,11 +273,13 @@ Vercel stages custom-rule changes until an explicit publish, so inspect the
 draft diff before every publish ([Firewall CLI contract](https://vercel.com/docs/cli/firewall)).
 
 The workflow treats a missing or mismatched edge report as `NOT_RUN`. After
-Promote, remove one route-group deny at a time, read it back, and immediately
-prove the un-bypassed request reaches the application `503
-capability_disabled` response with no data delta. On mismatch, restore that
-exact rule from the captured snapshot. Remove the runner bypass only after all
-application guards pass.
+Promote, remove one logical route group at a time, publish and read it back, and
+immediately prove that the un-bypassed representative request reaches its exact
+application rejection: the permanently retired routes return their exact 410
+code, while subscription checkout returns 401 `session_missing`. A read-only
+database snapshot before and after every probe must be identical. On mismatch,
+restore the full semantic lockdown from the captured snapshot. Remove the
+runner bypass only after all application boundaries pass.
 
 `vowpic.edge-handoff.v1` is independently fresh and signed. It is bound to the
 same run/attempt, project, formal domain, source/runtime/deployment, and records
@@ -260,10 +292,13 @@ handoff/current-state readback before terminal completion.
 
 ## Database statement-audit evidence
 
-Static zero-DDL scans are necessary but do not prove the deployed runtime. A
-database/provider statement recorder must cover cold start, auth, Admin,
-credit, signed webhook, logout (or explicit pre-Task-7 absence), reconciliation,
-and readiness for the exact deployment. It emits
+Static zero-DDL scans are necessary but do not prove the deployed runtime. The
+protected workflow reads aggregate `pg_stat_statements` counts through a
+fixed-output `SECURITY DEFINER` function that is executable only by the
+dedicated migration owner. It snapshots the application runtime login's counts,
+runs the exact cold-start, auth, Admin, credit, signed-webhook, logout,
+reconciliation, cleanup, and readiness HTTP suite, then requires a positive
+statement delta and a zero cumulative DDL count. It emits
 `vowpic.runtime-ddl-audit.v1` with source SHA, runtime bundle ID, deployment ID,
 workflow run/attempt, generated/expiry timestamps, exact coverage, a strictly
 positive total statement count, `ddl_statement_count=0`, and `passed=true`.
@@ -272,17 +307,26 @@ report, staged/formal verification is `NOT_RUN`.
 
 ## One-time release sequence
 
-1. Run the read-only preflight. `0013` without the unique activation is
-   `ORPHANED_SCHEMA`; `0012` with an activation is invalid; a completed install
-   blocks every future SHA before build.
-2. Run Production inventory and isolated backup/restore. Preserve only the
+1. Read the exact Production Alembic revision through the inventory role. If it
+   is legacy `0006`, run inventory and an isolated PostgreSQL 17 restore, upload
+   and prove the sanitized bridge artifact, recheck `main`, then use only the
+   protected migration login to upgrade exactly to `0012` and read the revision
+   back. `0012` and the already-installed `0014` retry state skip this bridge;
+   every other revision fails closed.
+2. Run the read-only safe-baseline preflight. `0013` without the unique
+   activation is `ORPHANED_SCHEMA`; `0012` with an activation is invalid; a
+   completed install blocks every future SHA before build.
+3. Run Production inventory and isolated backup/restore. Preserve only the
    sanitized reports. Create the raw dump under runner temp, outside the upload
    tree, and delete the dump/target/temporary role in all paths.
-3. Verify the fresh signed edge-lockdown report against the exact project,
-   source SHA, workflow run/attempt, formal domain, rule IDs, lease, and pre-
-   change configuration hash. Persist the sanitized checkpoint and prove its
+4. In the same protected job, install and read back the two packed deny rules
+   and the first-priority ephemeral runner bypass, probe all seven groups as 403,
+   prove the preserved webhook/readiness/logout paths are not denied, and emit
+   and verify a fresh signed edge-lockdown report against the exact project,
+   source SHA, workflow run/attempt, formal domain, rule IDs, lease, active hash,
+   and stripped baseline hash. Persist the sanitized checkpoint and prove its
    artifact ID/digest before migration or any other Production database write.
-4. Under one PostgreSQL advisory lock and transaction, upgrade exactly
+5. Under one PostgreSQL advisory lock and transaction, upgrade exactly
    `0012 -> 0013` and insert `SAFE_BASELINE_INSTALL/RESERVED`. Either both
    commit or both roll back. Before the transaction writes, compare
    `pg_control_system().system_identifier`, current database name, and database
@@ -291,7 +335,10 @@ report, staged/formal verification is `NOT_RUN`.
    Immediately before this boundary, read `refs/heads/main` through the
    authenticated GitHub API and require it still equals the approved source
    SHA.
-5. Install the release toolchain with
+6. Provision and reconnect through the two application logins, publish them as
+   Vercel Production Sensitive variables, and verify that the old administrator
+   URL is not used for either application setting. Then install the release
+   toolchain with
    `npm ci --prefix scripts/release-tools --ignore-scripts`, resolve the
    committed-lock Vercel CLI executable, and require its version output to be
    exactly `56.2.0`. Require nonempty protected `VERCEL_PROJECT_ID` and
@@ -314,7 +361,7 @@ report, staged/formal verification is `NOT_RUN`.
    binding is forbidden. Register the exact deployment ID and URL as `STAGED`.
    Re-read remote `main` immediately before any staged deployment and stop on
    drift.
-6. Verify the staged URL through deployment protection. All seven Production
+7. Verify the staged URL through deployment protection. All seven Production
    capability rows are OFF; all 33 Stage-1 blocked route/method pairs return
    their exact application-level 503 `capability_disabled`, `cleanup_paused`,
    or `credit_catalog_unavailable` code, and all 17 permanent guest/OpenID,
@@ -323,7 +370,7 @@ report, staged/formal verification is `NOT_RUN`.
    rejection; cleanup is paused; table counts and URL checksum do not change;
    static and database runtime DDL counts are zero. Persist the staged
    checkpoint and prove its artifact ID/digest before Promote.
-7. After durable staged evidence, CAS `STAGED -> PROMOTION_ARMED` before the
+8. After durable staged evidence, CAS `STAGED -> PROMOTION_ARMED` before the
    only permitted Promote request. The attempt that performed that CAS may send
    the request once. A retry that starts from `PROMOTION_ARMED` is read-only: it
    checks the exact project's `lastAliasRequest` and the formal domain, and can
@@ -335,7 +382,7 @@ report, staged/formal verification is `NOT_RUN`.
    Read remote `main` through the authenticated GitHub API immediately before
    and immediately after Promote; an API error or mismatch cannot be recorded
    as a completed current-main install.
-8. Require the formal domain to resolve to a READY deployment in the exact
+9. Require the formal domain to resolve to a READY deployment in the exact
    Vercel project. Verify the formal domain through the temporary edge bypass,
    hand off one route group at a time, persist the formal checkpoint before the
    `FORMAL_VERIFIED` CAS, then persist completion evidence before the terminal
@@ -363,11 +410,12 @@ skipped target request, another active alias request, Rolling Release, or non-
 READY response is unknown/incomplete state and must never authorize another
 Promote.
 
-A missing post-deploy statement-audit or edge-handoff report deliberately
-stops the attempt with the activation retained at its last durable phase. A
-GitHub rerun of the same workflow run ID and source SHA may continue after the
-fresh signed evidence is supplied; it reuses the recorded deployment and never
-rebuilds after STAGED.
+A failed or missing post-deploy statement audit, or a missing edge-handoff
+report, deliberately stops the attempt with the activation retained at its last
+durable phase. A GitHub rerun of the same workflow run ID and source SHA
+recollects the runtime audit and regenerates fresh signed edge evidence inside
+the protected job; it reuses the recorded deployment and never rebuilds after
+STAGED.
 
 The immutable reservation expiry is an audit/recovery deadline, not a lease
 that transfers ownership. An expired `RESERVED`, `STAGED`, `PROMOTION_ARMED`,
