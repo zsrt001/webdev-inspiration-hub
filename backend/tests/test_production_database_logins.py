@@ -65,6 +65,8 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "SET LOCAL ROLE vowpic_migration_owner",
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public",
             "RESET ROLE",
+            "class.relowner <> 'vowpic_migration_owner'::regrole",
+            "procedure.proowner <> 'vowpic_migration_owner'::regrole",
             "vowpic.database-bootstrap.secrets.v1",
             "vowpic_rotate_application_database_logins",
             "application database login rotation requires the migration login",
@@ -128,6 +130,16 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
         self.assertLess(default_role_start, default_table_grant)
         self.assertLess(default_table_grant, default_sequence_grant)
         self.assertLess(default_sequence_grant, default_role_reset)
+        self.assertLess(
+            source.index("class.relowner <> 'vowpic_migration_owner'::regrole"),
+            source.index("'ALTER %s %I.%I OWNER TO vowpic_migration_owner'"),
+        )
+        self.assertLess(
+            source.index("procedure.proowner <> 'vowpic_migration_owner'::regrole"),
+            source.index(
+                "'ALTER ROUTINE %I.%I(%s) OWNER TO vowpic_migration_owner'"
+            ),
+        )
 
     def test_pooler_url_keeps_project_suffix_and_replaces_password(self) -> None:
         result = provision.database_url_for_login(
