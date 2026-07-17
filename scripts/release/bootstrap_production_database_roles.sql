@@ -46,6 +46,11 @@ BEGIN
         CREATE ROLE vowpic_migration_owner
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
+    -- PostgreSQL 17 gives a non-superuser CREATEROLE creator ADMIN but not SET
+    -- on a role it creates. Object ownership transfer requires SET to the new
+    -- owner, so grant that capability explicitly without inheriting privileges.
+    GRANT vowpic_migration_owner TO CURRENT_USER
+      WITH INHERIT FALSE, SET TRUE;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_runtime') THEN
         CREATE ROLE vowpic_runtime
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
