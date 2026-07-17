@@ -211,6 +211,7 @@ class RehearsalValidationTest(unittest.TestCase):
             self.assertNotIn("postgresql://", rendered)
             self.assertEqual(dump.env["PGPASSWORD"], "source-only")
             self.assertIn("--enable-row-security", dump.argv)
+            self.assertIn("--schema=public", dump.argv)
             self.assertEqual(restore.env["PGPASSWORD"], "admin-only")
             self.assertEqual(restore.argv[restore.argv.index("--username") + 1], "postgres")
             self.assertEqual(
