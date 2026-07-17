@@ -1469,3 +1469,16 @@
 - The complete workflow contract suite passed 67/67. A clean local `npm ci --ignore-scripts` installed 298 release-tool packages, and the installed CLI read back exact version `56.2.0`.
 - An npm Linux/x64/glibc dry-run accepted the repaired lock and resolved the Linux platform packages without the two missing-package errors from the protected runner. `git diff --check` passed before this worklog update.
 - The failed protected run made no Production database, Vercel, Firewall, deployment, alias, domain, Provider, customer-data, or Proxifier change. No Subagent was used.
+
+## 2026-07-17 - Production database CA scope repair
+
+### Goal and evidence
+
+- Protected run `29576156344` completed the repaired release-tool install and discovered the Production schema boundary, then failed on the first GitHub ref recheck with `CERTIFICATE_VERIFY_FAILED`.
+- Readback proved `main` still matched the exact reviewed source. The failure was caused by publishing the Supabase database CA as global `SSL_CERT_FILE`, which replaced the HTTPS trust chain used by `httpx` before any database policy reconciliation or migration began.
+
+### Changes and verification
+
+- Scoped the pinned Supabase CA to libpq/PostgreSQL via `PGSSLROOTCERT`. GitHub, Vercel, S3, npm, and other HTTPS clients continue using the runner's normal system trust store.
+- Added a contract assertion for the PostgreSQL-only environment variable and a regression rejection for global `SSL_CERT_FILE` in the protected workflow.
+- The failed run stopped before every database policy mutation, migration, Vercel mutation, Firewall publish, deployment, Promote, alias, and domain step. Its sanitized early-failure artifact uploaded successfully. No Proxifier setting was read or changed, and no Subagent was used.

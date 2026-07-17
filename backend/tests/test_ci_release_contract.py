@@ -680,6 +680,11 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7",
             workflow,
         )
+        self.assertIn(
+            'echo "PGSSLROOTCERT=$RUNNER_TEMP/prod-ca-2021.crt" >> "$GITHUB_ENV"',
+            workflow,
+        )
+        self.assertNotIn("SSL_CERT_FILE", workflow)
 
     def test_legacy_bridge_is_evidence_first_exact_and_idempotent(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")

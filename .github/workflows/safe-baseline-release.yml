@@ -83,7 +83,7 @@ jobs:
             https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt
           echo "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7  $RUNNER_TEMP/prod-ca-2021.crt" \
             | sha256sum --check --strict
-          echo "SSL_CERT_FILE=$RUNNER_TEMP/prod-ca-2021.crt" >> "$GITHUB_ENV"
+          echo "PGSSLROOTCERT=$RUNNER_TEMP/prod-ca-2021.crt" >> "$GITHUB_ENV"
 
       - name: Discover the exact Production schema boundary
         id: schema
