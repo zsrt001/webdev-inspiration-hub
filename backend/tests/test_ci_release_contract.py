@@ -130,6 +130,34 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertLess(release_tools, build)
         self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 1)
 
+    def test_upload_artifact_raw_digest_is_canonicalized_before_binding(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        step = workflow[
+            workflow.index("- name: Resolve and bind one durable build manifest"):
+            workflow.index("- name: Recheck current main before staged deployment")
+        ]
+
+        self.assertIn(
+            '[[ "$RECOVERED_BUILD_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
+            step,
+        )
+        self.assertIn(
+            '[[ "$NEW_BUILD_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]',
+            step,
+        )
+        self.assertIn(
+            'BUILD_ARTIFACT_DIGEST="sha256:$NEW_BUILD_ARTIFACT_DIGEST"',
+            step,
+        )
+        self.assertIn(
+            '[[ "$BUILD_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
+            step,
+        )
+        self.assertNotIn(
+            '${RECOVERED_BUILD_ARTIFACT_DIGEST:-$NEW_BUILD_ARTIFACT_DIGEST}',
+            step,
+        )
+
     def test_backend_ci_runs_the_real_control_plane_rls_postgresql_test(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
         backend_job = workflow[

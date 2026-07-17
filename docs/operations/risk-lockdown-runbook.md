@@ -372,7 +372,9 @@ report, staged/formal verification is `NOT_RUN`.
    the exact `.vercel/output`, AES-256-GCM encrypt the tar plus manifest sidecar,
    and upload only their `.enc` envelopes. Prove the
    mode/link/content-aware manifest and
-   artifact ID/digest, and CAS-bind its manifest while still `RESERVED`. If a
+   artifact ID/digest, canonicalizing the upload action's raw 64-hex digest to
+   the stored `sha256:<64 lowercase hex>` form before CAS-binding its manifest
+   while still `RESERVED`. If a
    build is already bound, download that recorded ciphertext, authenticate and
    decrypt it with the same coordinate-bound AAD, then require its recomputed
    manifest to match. Enumerate every Vercel deployment-result page
