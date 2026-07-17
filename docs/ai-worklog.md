@@ -1495,3 +1495,16 @@
 - The shared async database TLS builder now explicitly adds the existing `PGSSLROOTCERT` file to its database-only SSL context while retaining CA verification and hostname verification. A missing configured file fails closed before a connection attempt.
 - Added focused tests proving the scoped CA is loaded into the `asyncpg` context and a missing file is rejected. The workflow continues to use the same pinned and checksum-verified Supabase CA without changing global HTTPS trust.
 - The failed run's RLS reconciliation was read back successfully but no legacy inventory, restore, schema migration, reservation, Vercel mutation, Firewall publish, deployment, Promote, alias, or domain action completed. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Isolated restore runner socket repair
+
+### Goal and evidence
+
+- Protected run `29576965688` completed the real legacy Production inventory through the new read-only login, then initialized the isolated PostgreSQL 17 cluster but could not start its local server.
+- The PGDG Ubuntu package can default Unix sockets to the distribution-owned runtime directory. The GitHub runner starts the disposable cluster as the unprivileged `runner` user, while the script previously constrained only TCP listen address and port.
+
+### Changes and boundary
+
+- Bound the disposable server's Unix socket to its runner-owned, per-run `PGDATA` directory. TCP remains restricted to `127.0.0.1` and the existing validated restore port.
+- On startup failure only, the script now emits at most 80 lines from the pre-credential server log before mandatory cleanup. The database passwords are not applied until after this diagnostic boundary, and the raw log is still deleted on every path.
+- Extended the workflow contract to require the private socket location, bounded startup diagnostic, diagnostic-before-password ordering, and existing cleanup. The failed run completed no restore, schema migration, reservation, Vercel mutation, Firewall publish, deployment, Promote, alias, or domain action. No Proxifier setting was read or changed, and no Subagent was used.

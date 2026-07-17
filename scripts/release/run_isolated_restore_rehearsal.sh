@@ -66,8 +66,16 @@ mkdir -p "$RESTORE_ARTIFACT_DIR" "$RESTORE_SCRATCH_DIR"
 
 "$PG_BIN/initdb" -D "$RESTORE_PGDATA" --username=postgres \
   --auth-host=trust --auth-local=trust --encoding=UTF8 --no-locale
-"$PG_BIN/pg_ctl" -D "$RESTORE_PGDATA" -l "$RESTORE_PGLOG" \
-  -o "-h 127.0.0.1 -p $RESTORE_PORT" -w start
+if ! "$PG_BIN/pg_ctl" -D "$RESTORE_PGDATA" -l "$RESTORE_PGLOG" \
+  -o "-h 127.0.0.1 -k $RESTORE_PGDATA -p $RESTORE_PORT" -w start; then
+  echo "isolated PostgreSQL failed to start; pre-credential server log follows" >&2
+  if [[ -s "$RESTORE_PGLOG" ]]; then
+    tail -n 80 "$RESTORE_PGLOG" >&2
+  else
+    echo "isolated PostgreSQL did not create a server log" >&2
+  fi
+  exit 1
+fi
 "$PG_BIN/psql" --host 127.0.0.1 --port "$RESTORE_PORT" \
   --username postgres --dbname postgres --set ON_ERROR_STOP=1 <<SQL
 ALTER ROLE postgres WITH PASSWORD '$RESTORE_ADMIN_PASSWORD';
