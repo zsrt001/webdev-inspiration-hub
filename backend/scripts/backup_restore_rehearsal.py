@@ -429,6 +429,7 @@ def build_pg_dump_invocation(config: RehearsalConfig, archive_path: Path) -> Com
             "--no-owner",
             "--no-acl",
             "--enable-row-security",
+            "--schema=public",
             "--file",
             str(archive_path),
             "--host",

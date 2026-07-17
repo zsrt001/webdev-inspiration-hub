@@ -1508,3 +1508,16 @@
 - Bound the disposable server's Unix socket to its runner-owned, per-run `PGDATA` directory. TCP remains restricted to `127.0.0.1` and the existing validated restore port.
 - On startup failure only, the script now emits at most 80 lines from the pre-credential server log before mandatory cleanup. The database passwords are not applied until after this diagnostic boundary, and the raw log is still deleted on every path.
 - Extended the workflow contract to require the private socket location, bounded startup diagnostic, diagnostic-before-password ordering, and existing cleanup. The failed run completed no restore, schema migration, reservation, Vercel mutation, Firewall publish, deployment, Promote, alias, or domain action. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - VowPic-only restore schema boundary
+
+### Goal and evidence
+
+- Protected run `29577449102` proved the private runner socket repair: PostgreSQL 17 started, the disposable role and database were created, and authentication was changed from temporary trust to SCRAM.
+- The subsequent source dump failed because unrestricted `pg_dump` attempted to lock Supabase-managed `auth`, `storage`, and `realtime` relations. The inventory login intentionally has SELECT only on VowPic's `public` schema and must not gain access to platform-internal data.
+
+### Changes and boundary
+
+- Restricted the encrypted scratch dump to `--schema=public`, matching the inventory, migration, comparison, and application ownership boundary. Supabase platform schemas are neither requested nor granted to the VowPic inventory login.
+- Added a regression assertion that every rehearsal dump is explicitly public-schema-only while retaining row-level-security enforcement, no-owner/no-ACL restore, isolated Admin restore, and mandatory raw-dump cleanup.
+- The failed run did not complete a dump or restore and did not execute schema migration, reservation, Vercel mutation, Firewall publish, deployment, Promote, alias, or domain actions. No Proxifier setting was read or changed, and no Subagent was used.
