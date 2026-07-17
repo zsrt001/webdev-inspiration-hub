@@ -1521,3 +1521,17 @@
 - Restricted the encrypted scratch dump to `--schema=public`, matching the inventory, migration, comparison, and application ownership boundary. Supabase platform schemas are neither requested nor granted to the VowPic inventory login.
 - Added a regression assertion that every rehearsal dump is explicitly public-schema-only while retaining row-level-security enforcement, no-owner/no-ACL restore, isolated Admin restore, and mandatory raw-dump cleanup.
 - The failed run did not complete a dump or restore and did not execute schema migration, reservation, Vercel mutation, Firewall publish, deployment, Promote, alias, or domain actions. No Proxifier setting was read or changed, and no Subagent was used.
+
+## 2026-07-17 - Linux edge-lockdown script entrypoint repair
+
+### Goal and evidence
+
+- Protected run `29577828484` completed the legacy Production inventory, the first isolated PostgreSQL 17 restore rehearsal, the exact `0006 -> 0012` bridge, the post-bridge read-only inventory, and a second isolated restore rehearsal.
+- The run then failed before its first Vercel operation because direct execution of `scripts/release/manage_edge_lockdown.py` set Python's import path to `scripts/release`, so its repository-package import raised `ModuleNotFoundError: No module named 'scripts'`. The unconditional bypass-cleanup step failed at the same pre-main import boundary.
+- Because both failures occurred while importing the module, neither path constructed a Vercel client, created a Firewall draft, published a rule, or created a runner bypass. Reservation, application-login publication, build, deploy, Promote, alias, and formal-domain verification did not start. Production remains safely bridged at schema `0012`.
+
+### Changes and verification
+
+- Added the repository root to the script import path before its `scripts.release` imports, following the existing release-script entrypoint pattern.
+- Added a subprocess regression that removes inherited `PYTHONPATH` and invokes the exact workflow form from the repository root. The direct `--help` entrypoint now exits zero and exposes `cleanup-bypass`.
+- The focused edge manager and protected workflow contract suites passed 75/75. `git diff --check` passed. No Proxifier setting was read or changed, and no Subagent was used.

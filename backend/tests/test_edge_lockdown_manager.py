@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import copy
+import os
+from pathlib import Path
 import re
+import subprocess
+import sys
 import unittest
 
 from scripts.release import manage_edge_lockdown as edge
@@ -9,6 +13,7 @@ from scripts.release import manage_edge_lockdown as edge
 
 HOST = "www.vowpic.com"
 UUID = "00000000-0000-0000-0000-000000000000"
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _matches(group: str, method: str, path: str, host: str = HOST) -> bool:
@@ -80,6 +85,21 @@ class FakeProjectApi:
 
 
 class EdgeRouteContractTest(unittest.TestCase):
+    def test_direct_script_entrypoint_resolves_repository_package(self) -> None:
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/release/manage_edge_lockdown.py"), "--help"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("cleanup-bypass", completed.stdout)
+
     def test_project_safety_uses_the_current_vercel_project_fields(self) -> None:
         project = {
             "id": FakeProjectApi.project_id,
