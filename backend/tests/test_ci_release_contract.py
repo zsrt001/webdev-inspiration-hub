@@ -666,12 +666,15 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
     def test_legacy_bridge_is_evidence_first_exact_and_idempotent(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         discovery = workflow.index("Discover the exact Production schema boundary")
+        inventory_rls = workflow.index("production_inventory_rls.py")
         legacy_inventory = workflow.index("Inventory the legacy source")
         legacy_restore = workflow.index("Rehearse the legacy source")
         durable_evidence = workflow.index("id: legacy_evidence")
         bridge = workflow.index("alembic upgrade 20260516_0012")
         formal_preflight = workflow.index("--action preflight")
         self.assertLess(discovery, legacy_inventory)
+        self.assertLess(discovery, inventory_rls)
+        self.assertLess(inventory_rls, legacy_inventory)
         self.assertLess(legacy_inventory, legacy_restore)
         self.assertLess(legacy_restore, durable_evidence)
         self.assertLess(durable_evidence, bridge)
@@ -1130,6 +1133,13 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 "_alembic_upgrade_on_connection",
                 side_effect=lambda _connection: events.append("upgrade"),
             ),
+            mock.patch.object(
+                register,
+                "reconcile_inventory_rls_policies",
+                side_effect=lambda _connection: events.append("inventory-rls") or {
+                    "policy_contract_complete": True
+                },
+            ),
         ):
             result = register._reserve(
                 "postgresql://migration",
@@ -1144,7 +1154,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 inject_failure=None,
             )
 
-        self.assertEqual(events, ["timeouts", "lock", "upgrade"])
+        self.assertEqual(events, ["timeouts", "lock", "upgrade", "inventory-rls"])
         self.assertEqual(result["state"], "RESERVED")
 
     def test_migration_timeouts_are_finite_transaction_local_settings(self) -> None:
@@ -1203,13 +1213,24 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "register_safe_baseline_evidence_contract",
         )
         read_only = {
+            "authenticated_role_name": "vowpic_inventory_login",
+            "role_name": "vowpic_inventory_login",
             "transaction_read_only": True,
             "default_transaction_read_only": True,
             "role_superuser": False,
             "role_create_db": False,
             "role_create_role": False,
             "role_replication": False,
-            "role_bypass_rls": True,
+            "role_bypass_rls": False,
+            "role_membership_count": 0,
+            "owned_object_count": 0,
+            "inventory_table_count": 1,
+            "readable_inventory_table_count": 1,
+            "inventory_sequence_count": 0,
+            "readable_inventory_sequence_count": 0,
+            "rls_table_count": 0,
+            "inventory_select_policy_count": 0,
+            "invalid_inventory_policy_count": 0,
             "writable_table_count": 0,
             "write_probe_sqlstate": "25006",
         }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -48,9 +49,13 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
         for required in (
             "vowpic_inventory_login",
             "default_transaction_read_only = on",
-            "BYPASSRLS",
+            "NOBYPASSRLS",
             "vowpic_migration_owner",
             "vowpic_migration_login",
+            "vowpic_identity_owner",
+            "vowpic_identity_service",
+            "GRANT vowpic_identity_owner TO vowpic_migration_owner",
+            "WITH INHERIT FALSE, SET TRUE",
             "vowpic_app_runtime",
             "vowpic_control_writer_login",
             "NOCREATEROLE",
@@ -68,6 +73,7 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
         self.assertNotIn("pg_read_all_data", source)
         self.assertNotIn("GRANT postgres", source)
         self.assertNotIn("PASSWORD 'change", source)
+        self.assertIsNone(re.search(r"(?<!NO)BYPASSRLS", source))
         self.assertIn(
             "REVOKE ALL ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)",
             source,

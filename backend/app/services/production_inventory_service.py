@@ -15,6 +15,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.production_inventory_policy import (
+    inventory_policy_proof_sql,
+    validate_inventory_policy_proof,
+)
+
 
 MIN_IDENTIFIER_HMAC_KEY_BYTES = 32
 
@@ -98,8 +103,7 @@ def validate_read_only_proof(proof: dict[str, Any]) -> None:
     )
     if any(proof.get(field) is True for field in privileged):
         raise ValueError("inventory source role has privileged write capabilities")
-    if proof.get("role_bypass_rls") is not True:
-        raise ValueError("inventory source role cannot prove complete RLS-visible coverage")
+    validate_inventory_policy_proof(proof)
     if int(proof.get("writable_table_count") or 0) != 0:
         raise ValueError("inventory source role has table mutation privileges")
     if proof.get("write_probe_sqlstate") != "25006":
@@ -121,6 +125,8 @@ async def _read_only_proof(db: AsyncSession) -> dict[str, bool | int | str]:
         )
     )
     role = role_result.mappings().one()
+    policy_result = await db.execute(text(inventory_policy_proof_sql()))
+    policy_proof = dict(policy_result.mappings().one())
     writable_table_count = int(
         await db.scalar(
             text(
@@ -152,6 +158,7 @@ async def _read_only_proof(db: AsyncSession) -> dict[str, bool | int | str]:
         )
 
     proof: dict[str, bool | int | str] = {
+        **policy_proof,
         "transaction_read_only": transaction_read_only,
         "default_transaction_read_only": default_transaction_read_only,
         "role_superuser": bool(role["rolsuper"]),

@@ -23,11 +23,13 @@ BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from app.services.production_inventory_policy import inventory_policy_proof_sql  # noqa: E402
 from app.services.production_inventory_service import validate_read_only_proof  # noqa: E402
 
 
 NOT_RUN_EXIT = 3
 MAX_REMOTE_CREDENTIAL_TTL = timedelta(hours=2)
+MAX_RESTORE_POLICY_ROLES = 64
 
 
 class RehearsalError(RuntimeError):
@@ -213,6 +215,18 @@ class RehearsalConfig:
     @property
     def report_path(self) -> Path:
         return self.artifact_dir / "restore-summary.json"
+
+
+def target_admin_database_connection(config: RehearsalConfig) -> DatabaseConnection:
+    """Use the isolated admin on the disposable database, never on Production."""
+    return DatabaseConnection(
+        host=config.target_admin.host,
+        port=config.target_admin.port,
+        database=config.target.database,
+        username=config.target_admin.username,
+        password=config.target_admin.password,
+        sslmode=config.target_admin.sslmode,
+    )
 
 
 def resolve_private_target_addresses(
@@ -414,6 +428,7 @@ def build_pg_dump_invocation(config: RehearsalConfig, archive_path: Path) -> Com
             "--format=custom",
             "--no-owner",
             "--no-acl",
+            "--enable-row-security",
             "--file",
             str(archive_path),
             "--host",
@@ -430,7 +445,7 @@ def build_pg_dump_invocation(config: RehearsalConfig, archive_path: Path) -> Com
 
 
 def build_pg_restore_invocation(config: RehearsalConfig, archive_path: Path) -> CommandInvocation:
-    target = config.target
+    target = target_admin_database_connection(config)
     return CommandInvocation(
         [
             config.pg_restore_executable,
@@ -502,6 +517,9 @@ def verify_source_read_only(config: RehearsalConfig) -> dict[str, bool | int | s
                 """
             )
             role = cursor.fetchone()
+            cursor.execute(inventory_policy_proof_sql())
+            policy_columns = [str(column[0]) for column in cursor.description]
+            policy_proof = dict(zip(policy_columns, cursor.fetchone(), strict=True))
             cursor.execute(
                 """
                 SELECT count(*)
@@ -518,6 +536,7 @@ def verify_source_read_only(config: RehearsalConfig) -> dict[str, bool | int | s
             write_probe_sqlstate = _source_write_probe(cursor)
         connection.rollback()
     proof: dict[str, bool | int | str] = {
+        **policy_proof,
         "transaction_read_only": transaction_read_only,
         "default_transaction_read_only": default_transaction_read_only,
         "role_superuser": bool(role[0]),
@@ -530,6 +549,49 @@ def verify_source_read_only(config: RehearsalConfig) -> dict[str, bool | int | s
     }
     validate_read_only_proof(proof)
     return proof
+
+
+def prepare_restore_policy_roles(config: RehearsalConfig) -> tuple[str, ...]:
+    """Create only missing NOLOGIN placeholders needed by restored RLS policies."""
+    import psycopg2
+    from psycopg2 import sql
+
+    with psycopg2.connect(**config.source.connect_kwargs()) as source_connection:
+        source_connection.set_session(readonly=True)
+        with source_connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT role.rolname
+                FROM pg_policy policy
+                JOIN pg_class class ON class.oid = policy.polrelid
+                JOIN pg_namespace namespace ON namespace.oid = class.relnamespace
+                CROSS JOIN LATERAL unnest(policy.polroles) policy_role(oid)
+                JOIN pg_roles role ON role.oid = policy_role.oid
+                WHERE namespace.nspname = 'public'
+                ORDER BY role.rolname
+                """
+            )
+            policy_roles = tuple(str(row[0]) for row in cursor.fetchall())
+    if len(policy_roles) > MAX_RESTORE_POLICY_ROLES:
+        raise RehearsalError("source has too many role-bound public RLS policies")
+    if any(not role or len(role.encode("utf-8")) > 63 or "\x00" in role for role in policy_roles):
+        raise RehearsalError("source returned an invalid RLS policy role name")
+
+    created: list[str] = []
+    with psycopg2.connect(**config.target_admin.connect_kwargs()) as admin_connection:
+        with admin_connection.cursor() as cursor:
+            for role_name in policy_roles:
+                cursor.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,))
+                if cursor.fetchone() is not None:
+                    continue
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                        "NOREPLICATION NOBYPASSRLS"
+                    ).format(sql.Identifier(role_name))
+                )
+                created.append(role_name)
+    return tuple(created)
 
 
 def _table_names(connection) -> list[str]:
@@ -752,7 +814,7 @@ def _database_snapshot(connection_spec: DatabaseConnection) -> dict[str, Any]:
 
 def compare_source_and_target(config: RehearsalConfig) -> dict[str, Any]:
     source = _database_snapshot(config.source)
-    target = _database_snapshot(config.target)
+    target = _database_snapshot(target_admin_database_connection(config))
     row_counts_payload = json.dumps(source["row_counts"], sort_keys=True, separators=(",", ":"))
     comparable_keys = (
         "schema_revision",
@@ -775,7 +837,11 @@ def compare_source_and_target(config: RehearsalConfig) -> dict[str, Any]:
     }
 
 
-def cleanup_target(config: RehearsalConfig) -> dict[str, bool]:
+def cleanup_target(
+    config: RehearsalConfig,
+    *,
+    created_policy_roles: tuple[str, ...] = (),
+) -> dict[str, bool | int]:
     import psycopg2
     from psycopg2 import sql
 
@@ -797,15 +863,26 @@ def cleanup_target(config: RehearsalConfig) -> dict[str, bool]:
             )
             cursor.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(config.target.database)))
             cursor.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(config.target_role_name)))
+            for role_name in reversed(created_policy_roles):
+                cursor.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name)))
             cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (config.target.database,))
             database_exists = cursor.fetchone() is not None
             cursor.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (config.target_role_name,))
             role_exists = cursor.fetchone() is not None
+            cursor.execute(
+                "SELECT count(*) FROM pg_roles WHERE rolname = ANY(%s)",
+                (list(created_policy_roles),),
+            )
+            policy_role_count = int(cursor.fetchone()[0])
     finally:
         connection.close()
-    if database_exists or role_exists:
+    if database_exists or role_exists or policy_role_count:
         raise CleanupFailureError("disposable database or role still exists after cleanup")
-    return {"database_dropped": True, "role_dropped": True}
+    return {
+        "database_dropped": True,
+        "role_dropped": True,
+        "policy_placeholder_roles_dropped": len(created_policy_roles),
+    }
 
 
 def _file_sha256(path: Path) -> str:
@@ -825,7 +902,8 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
 def run_backup_restore_rehearsal(config: RehearsalConfig) -> dict[str, Any]:
     primary_error: Exception | None = None
     report: dict[str, Any] | None = None
-    cleanup_result: dict[str, bool] | None = None
+    cleanup_result: dict[str, bool | int] | None = None
+    created_policy_roles: tuple[str, ...] = ()
     try:
         config.artifact_dir.mkdir(parents=True, exist_ok=True)
         config.scratch_dir.mkdir(parents=True, exist_ok=True)
@@ -833,6 +911,14 @@ def run_backup_restore_rehearsal(config: RehearsalConfig) -> dict[str, Any]:
             raise RehearsalError("rehearsal archive/report path already exists")
         target_controls = verify_target_controls(config)
         source_proof = verify_source_read_only(config)
+        created_policy_roles = prepare_restore_policy_roles(config)
+        target_controls = {
+            **target_controls,
+            "policy_placeholder_role_count": len(created_policy_roles),
+            "policy_placeholder_roles_sha256": hashlib.sha256(
+                json.dumps(created_policy_roles, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        }
         run_invocation(build_pg_dump_invocation(config, config.archive_path))
         if not config.archive_path.exists() or config.archive_path.stat().st_size <= 0:
             raise CommandExecutionError("pg_dump did not create a non-empty archive")
@@ -853,10 +939,11 @@ def run_backup_restore_rehearsal(config: RehearsalConfig) -> dict[str, Any]:
         primary_error = exc
     finally:
         try:
-            result = cleanup_target(config)
+            result = cleanup_target(config, created_policy_roles=created_policy_roles)
             cleanup_result = result if isinstance(result, dict) else {
                 "database_dropped": True,
                 "role_dropped": True,
+                "policy_placeholder_roles_dropped": len(created_policy_roles),
             }
         except Exception as cleanup_exc:
             config.archive_path.unlink(missing_ok=True)

@@ -29,6 +29,7 @@ from alembic.config import Config  # noqa: E402
 import httpx  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 from scripts.release.github_artifact_evidence import parse_reference  # noqa: E402
+from scripts.release.production_inventory_rls import reconcile_inventory_rls_policies  # noqa: E402
 
 from app.services.production_inventory_service import (  # noqa: E402
     ProductionInventoryReport,
@@ -547,6 +548,7 @@ def _reserve(
             _alembic_upgrade_on_connection(connection)
             if _current_revision(connection) != TARGET_SCHEMA:
                 raise SafeBaselineRegistrationError("Alembic did not reach the exact safe-baseline schema")
+            inventory_rls = reconcile_inventory_rls_policies(connection)
             if inject_failure == "AFTER_MIGRATION_BEFORE_RESERVATION":
                 raise SafeBaselineRegistrationError("injected failure after migration")
             activation_id = str(uuid.uuid4())
@@ -584,6 +586,7 @@ def _reserve(
             "activation_id": activation_id,
             "schema_revision": TARGET_SCHEMA,
             "evidence_pair_sha256": evidence_hash,
+            "inventory_rls": inventory_rls,
         }
     finally:
         engine.dispose()

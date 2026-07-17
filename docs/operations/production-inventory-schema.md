@@ -71,22 +71,29 @@ requires all of the following:
 
 - `transaction_read_only=true`
 - `default_transaction_read_only=true`
-- current role is not superuser and has no create-database, create-role, or
-  replication privilege
-- current role has `BYPASSRLS`, so RLS cannot silently hide rows from the
-  aggregate
+- current role is exactly `vowpic_inventory_login`, is not superuser, and has
+  no create-database, create-role, replication, `BYPASSRLS`, role membership,
+  or object ownership
+- every public table and sequence has direct read privilege
+- every public RLS table has exactly one permissive
+  `vowpic_inventory_select` policy, scoped only to the inventory login and only
+  to `SELECT ... USING (true)`; missing, write-capable, or malformed inventory
+  policies fail closed
 - zero `INSERT`, `UPDATE`, or `DELETE` table privileges in `public`
 - a rolled-back no-op DML write probe fails with PostgreSQL SQLSTATE `25006`
 
-`BYPASSRLS` is required only on the dedicated inventory role and does not
-replace the read-only default or zero-write checks. Any failed proof aborts
-before a report is written.
+The protected migration login reconciles the dedicated SELECT policies before
+inventory and again inside the atomic safe-baseline migration transaction.
+This preserves full row visibility on hosted Supabase without granting the
+inventory login the superuser-controlled `BYPASSRLS` attribute. Any failed
+proof aborts before a report is written.
 
 ## Backup/restore rehearsal evidence
 
 `backend/scripts/backup_restore_rehearsal.py` accepts three distinct
 connections: the read-only source, a disposable restore role/database, and a
-separate target-Admin connection used only for cleanup. It rejects:
+separate target-Admin connection used only inside the isolated target for
+restore, comparison, and cleanup. It rejects:
 
 - a target with the same database identity as the source
 - a target database outside the `vowpic_restore_` prefix
@@ -99,8 +106,15 @@ separate target-Admin connection used only for cleanup. It rejects:
 - a raw-dump scratch directory equal to or nested below the sanitized artifact
   directory
 
-The archive command is `pg_dump --format=custom --no-owner --no-acl`. Restore
-uses `pg_restore --clean --if-exists --no-owner --no-acl --exit-on-error`.
+The archive command is
+`pg_dump --format=custom --no-owner --no-acl --enable-row-security`, so the
+NOBYPASSRLS source is dumped through the proven full-visibility policies.
+Restore uses the isolated target Admin connection with
+`pg_restore --clean --if-exists --no-owner --no-acl --exit-on-error`; the
+non-superuser disposable target role is still independently verified as the
+database owner before the dump starts. Missing NOLOGIN placeholders for roles
+referenced by restored RLS policies are created only on the isolated target,
+then dropped during mandatory cleanup.
 Passwords are supplied only through `PGPASSWORD`; URLs and passwords are not
 placed in command arguments or error evidence.
 
@@ -115,8 +129,8 @@ already exist.
 `--artifact-dir`. `restore.dump` is created only in that scratch directory, so
 an interrupted or failed deletion cannot place raw Production bytes in the
 uploaded evidence tree. One mandatory `finally` path terminates target sessions,
-drops the disposable database and role, proves both are absent, and deletes the
-dump after success, restore failure, or comparison failure. Cleanup failure
+drops the disposable database, target role, and any policy-placeholder roles,
+proves they are absent, and deletes the dump after success, restore failure, or comparison failure. Cleanup failure
 overrides any prior success and fails the gate. Only the create-once sanitized
 `restore-summary.json` may survive under the artifact directory; a dump or
 restored Production-data database is never a normal artifact.
