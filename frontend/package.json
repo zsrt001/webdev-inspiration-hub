@@ -44,6 +44,7 @@
         "@babel/plugin-transform-modules-systemjs": "7.29.4",
         "@intlify/core-base": "9.14.5",
         "@intlify/message-resolver": "9.1.11",
+        "adm-zip": "0.6.0",
         "cookie": "0.7.0",
         "esbuild": "0.25.0",
         "glob": "10.5.0",

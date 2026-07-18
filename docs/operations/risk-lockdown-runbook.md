@@ -504,17 +504,27 @@ emit static-file symlinks into the immutable source tree; preserving those
 links in the encrypted archive makes the recovered `.vercel/output` incomplete.
 The reviewed builder must first materialize every in-root link into ordinary
 file or directory bytes, reject broken/cyclic/out-of-root links, and hash and
-encrypt only that self-contained directory. A different protected run may
-rearm the old bound prebuild only when the runtime source is unchanged, the
-reviewed runner is its release-control-only descendant, the approval and exact
-old run/version/artifact ID/digest still match, fresh edge evidence is durable,
-and every deployment/output field is still empty. The transaction takes the
-release advisory lock and ACCESS EXCLUSIVE table lock, temporarily disables
-only the activation regression trigger, clears only the invalid manifest and
-artifact coordinates, transfers run ownership, increments the version, and
-restores the trigger before commit. It intentionally stops; attempt 2 of that
-same new run must build, materialize, encrypt, bind, deploy once, and pass every
-ordinary gate. This path cannot clear or replace an existing deployment.
+encrypt only that self-contained directory. Because no deployment exists, a
+different protected run may advance the bound source to the exact current-main
+repair descendant instead of rebuilding the obsolete source. The runner and
+new source must be the same reviewed commit; the old source must be its Git
+ancestor; and the complete diff may contain only modified release workflow,
+registration/verifier scripts, the exact frontend dependency manifest and lock,
+their contract test, and this runbook/worklog. The three release-control files
+and both frontend dependency files are mandatory; application, migration,
+configuration, addition, deletion, rename, or unrelated dependency changes
+fail closed.
+
+The approval and exact old source/run/version/artifact ID/digest must still
+match, fresh edge evidence must be durable, and every deployment/runtime/report/
+worker/target/fault field must still be empty. The transaction takes the release
+advisory lock and ACCESS EXCLUSIVE table lock, temporarily disables only the
+activation regression trigger, atomically replaces the undeployed source,
+clears the invalid manifest/artifact coordinates, transfers run ownership,
+increments the version, and restores the trigger before commit. It intentionally
+stops; attempt 2 of that same new run must build, materialize, encrypt, bind,
+deploy once, and pass every ordinary gate. This path cannot clear or replace an
+existing deployment.
 
 The immutable reservation expiry is an audit/recovery deadline, not a lease
 that transfers ownership. An expired `RESERVED`, `STAGED`, `PROMOTION_ARMED`,
@@ -527,6 +537,8 @@ the exact STAGED verifier takeover, invalid-runtime-config rearm, and bound
 undeployed prebuild rearm above, a
 different run or source remains a conflict and requires audited manual forward
 disposition. None of these recovery paths changes the deployed source.
+The bound-prebuild exception may change only a source that has never produced a
+deployment.
 
 ## Emergency recovery
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -112,6 +113,34 @@ STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS = frozenset(
         "docs/operations/risk-lockdown-runbook.md",
     }
 )
+RESERVED_BUILD_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        ".github/workflows/safe-baseline-release.yml",
+        "scripts/release/register_safe_baseline.py",
+        "scripts/release/verify_safe_baseline.py",
+        "frontend/package.json",
+        "frontend/package-lock.json",
+    }
+)
+RESERVED_BUILD_REPAIR_ALLOWED_PATHS = frozenset(
+    {
+        *RESERVED_BUILD_REPAIR_REQUIRED_PATHS,
+        "backend/tests/test_ci_release_contract.py",
+        "docs/ai-worklog.md",
+        "docs/operations/risk-lockdown-runbook.md",
+    }
+)
+ADM_ZIP_REPAIR_VERSION = "0.6.0"
+ADM_ZIP_REPAIR_LOCK_ENTRY = {
+    "version": ADM_ZIP_REPAIR_VERSION,
+    "resolved": "https://registry.npmmirror.com/adm-zip/-/adm-zip-0.6.0.tgz",
+    "integrity": (
+        "sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/"
+        "ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg=="
+    ),
+    "license": "MIT",
+    "engines": {"node": ">=14.0"},
+}
 PHASE_RANK = {
     "RESERVED": 0,
     "STAGED": 10,
@@ -393,6 +422,145 @@ def validate_staged_control_descendant(runtime_source_sha: str, runner_sha: str)
         )
 
 
+def validate_reserved_build_repair_descendant(
+    previous_source_sha: str,
+    source_sha: str,
+) -> None:
+    """Prove an undeployed bound prebuild advances through one exact repair diff."""
+    if (
+        re.fullmatch(r"[0-9a-f]{40,64}", previous_source_sha) is None
+        or re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is None
+        or previous_source_sha == source_sha
+    ):
+        raise SafeBaselineRegistrationError(
+            "reserved build repair requires a distinct reviewed descendant source"
+        )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or head.stdout.strip() != source_sha:
+        raise SafeBaselineRegistrationError(
+            "reserved build repair source is not the reviewed checkout"
+        )
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", previous_source_sha, source_sha],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "reserved build repair source is not a descendant of the bound source"
+        )
+    diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--no-renames",
+            f"{previous_source_sha}..{source_sha}",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise SafeBaselineRegistrationError("reserved build repair diff could not be proven")
+    changed_paths: set[str] = set()
+    for line in diff.stdout.splitlines():
+        try:
+            status_code, path = line.split("\t", 1)
+        except ValueError as exc:
+            raise SafeBaselineRegistrationError(
+                "reserved build repair diff is malformed"
+            ) from exc
+        normalized = path.replace("\\", "/")
+        if status_code != "M" or normalized not in RESERVED_BUILD_REPAIR_ALLOWED_PATHS:
+            raise SafeBaselineRegistrationError(
+                f"reserved build repair changed an unauthorized path: {normalized}"
+            )
+        changed_paths.add(normalized)
+    missing = RESERVED_BUILD_REPAIR_REQUIRED_PATHS - changed_paths
+    if missing:
+        raise SafeBaselineRegistrationError(
+            "reserved build repair is missing required reviewed changes: "
+            + ", ".join(sorted(missing))
+        )
+    validate_reserved_build_dependency_repair(previous_source_sha, source_sha)
+
+
+def _read_git_json(revision: str, path: str) -> dict[str, Any]:
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            f"reserved build repair could not read {path} at {revision}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SafeBaselineRegistrationError(
+            f"reserved build repair found invalid JSON in {path} at {revision}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise SafeBaselineRegistrationError(
+            f"reserved build repair expected an object in {path} at {revision}"
+        )
+    return payload
+
+
+def validate_reserved_build_dependency_repair(
+    previous_source_sha: str,
+    source_sha: str,
+) -> None:
+    """Require the dependency diff to be only the exact adm-zip security override."""
+    previous_package = _read_git_json(previous_source_sha, "frontend/package.json")
+    source_package = _read_git_json(source_sha, "frontend/package.json")
+    previous_overrides = previous_package.get("overrides")
+    if not isinstance(previous_overrides, dict) or "adm-zip" in previous_overrides:
+        raise SafeBaselineRegistrationError(
+            "reserved build repair has an unexpected prior adm-zip override"
+        )
+    expected_package = copy.deepcopy(previous_package)
+    expected_package["overrides"]["adm-zip"] = ADM_ZIP_REPAIR_VERSION
+    if source_package != expected_package:
+        raise SafeBaselineRegistrationError(
+            "reserved build repair changed frontend/package.json beyond adm-zip"
+        )
+
+    previous_lock = _read_git_json(previous_source_sha, "frontend/package-lock.json")
+    source_lock = _read_git_json(source_sha, "frontend/package-lock.json")
+    previous_packages = previous_lock.get("packages")
+    if not isinstance(previous_packages, dict):
+        raise SafeBaselineRegistrationError(
+            "reserved build repair prior package lock has no packages object"
+        )
+    previous_adm_zip = previous_packages.get("node_modules/adm-zip")
+    if not isinstance(previous_adm_zip, dict) or previous_adm_zip.get("version") != "0.5.16":
+        raise SafeBaselineRegistrationError(
+            "reserved build repair prior package lock is not the reviewed adm-zip 0.5.16 graph"
+        )
+    expected_lock = copy.deepcopy(previous_lock)
+    expected_lock["packages"]["node_modules/adm-zip"] = copy.deepcopy(
+        ADM_ZIP_REPAIR_LOCK_ENTRY
+    )
+    if source_lock != expected_lock:
+        raise SafeBaselineRegistrationError(
+            "reserved build repair changed frontend/package-lock.json beyond adm-zip"
+        )
+
+
 def validate_resume_coordinates(
     activation: dict[str, Any],
     *,
@@ -435,12 +603,12 @@ def classify_install_state(
     if activation_source_sha != source_sha:
         if reserved_install_is_adoptable(activation):
             return "TAKEOVER_RESERVED"
+        if reserved_build_rearm_is_adoptable(activation):
+            return "TAKEOVER_RESERVED_BUILD"
         return "CONFLICTING_INSTALL"
     if activation_workflow_run_id != workflow_run_id:
         if reserved_install_is_adoptable(activation):
             return "TAKEOVER_RESERVED"
-        if reserved_build_rearm_is_adoptable(activation):
-            return "TAKEOVER_RESERVED_BUILD"
         if staged_verifier_takeover_is_adoptable(activation):
             return "TAKEOVER_STAGED"
         return "CONFLICTING_INSTALL"
@@ -872,11 +1040,21 @@ def _preflight(
                 workflow_run_id=workflow_run_id,
                 workflow_attempt=workflow_attempt,
             )
+        if state == "TAKEOVER_RESERVED_BUILD":
+            if activation is None or effective_runner_sha != source_sha:
+                raise SafeBaselineRegistrationError(
+                    "reserved build repair must run and build the same reviewed source"
+                )
+            validate_reserved_build_repair_descendant(
+                str(activation.get("source_sha") or ""),
+                source_sha,
+            )
         if state == "TAKEOVER_STAGED":
             validate_staged_control_descendant(source_sha, effective_runner_sha)
         if state not in {
             "FRESH_INSTALL",
             "TAKEOVER_RESERVED",
+            "TAKEOVER_RESERVED_BUILD",
             "TAKEOVER_STAGED",
             *RETRIABLE_STATES,
         }:
@@ -1334,17 +1512,19 @@ def _rearm_invalid_reserved_build(
     evidence_prefix: str,
 ) -> dict[str, Any]:
     """Clear one invalid bound prebuild only when no deployment was created."""
-    source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
+    source_sha = _validate_sha(source_sha, name="replacement source SHA", lengths=(40, 64))
     runner_sha = _validate_sha(runner_sha, name="reviewed runner SHA", lengths=(40, 64))
     expected_source_sha = _validate_sha(
         expected_source_sha,
-        name="recorded deployed source SHA",
+        name="recorded bound source SHA",
         lengths=(40, 64),
     )
     expected_build_artifact_id = str(expected_build_artifact_id or "").strip()
     expected_build_artifact_digest = str(expected_build_artifact_digest or "").strip().lower()
-    if source_sha != expected_source_sha:
-        raise SafeBaselineRegistrationError("reserved build rearm cannot change the deployed source")
+    if runner_sha != source_sha:
+        raise SafeBaselineRegistrationError(
+            "reserved build rearm must run and build the same reviewed source"
+        )
     if (
         not re.fullmatch(r"[1-9][0-9]*", expected_workflow_run_id)
         or not re.fullmatch(r"[1-9][0-9]*", workflow_run_id)
@@ -1362,7 +1542,7 @@ def _rearm_invalid_reserved_build(
         evidence_prefix,
     ):
         raise ValueError("reserved build rearm requires one durable GitHub artifact URL")
-    validate_staged_control_descendant(source_sha, runner_sha)
+    validate_reserved_build_repair_descendant(expected_source_sha, source_sha)
 
     engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
     try:
@@ -1375,7 +1555,7 @@ def _rearm_invalid_reserved_build(
             if activation is None:
                 raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
             if (
-                str(activation.get("source_sha") or "") != source_sha
+                str(activation.get("source_sha") or "") != expected_source_sha
                 or str(activation.get("workflow_run_id") or "") != expected_workflow_run_id
                 or int(activation.get("version") or 0) != expected_version
                 or str(activation.get("build_artifact_id") or "")
@@ -1428,7 +1608,8 @@ def _rearm_invalid_reserved_build(
                     text(
                         """
                         UPDATE release_activations
-                        SET workflow_run_id = :workflow_run_id,
+                        SET source_sha = :source_sha,
+                            workflow_run_id = :workflow_run_id,
                             workflow_attempt = :next_workflow_attempt,
                             manifest_sha256 = NULL,
                             build_artifact_id = NULL,
@@ -1439,7 +1620,7 @@ def _rearm_invalid_reserved_build(
                         WHERE id = CAST(:activation_id AS uuid)
                           AND version = :expected_version
                           AND phase = 'RESERVED'
-                          AND source_sha = :source_sha
+                          AND source_sha = :expected_source_sha
                           AND workflow_run_id = :expected_workflow_run_id
                           AND approval = :approval
                           AND runtime_bundle_id IS NULL
@@ -1470,6 +1651,7 @@ def _rearm_invalid_reserved_build(
                         "activation_id": activation["id"],
                         "expected_version": expected_version,
                         "source_sha": source_sha,
+                        "expected_source_sha": expected_source_sha,
                         "expected_workflow_run_id": expected_workflow_run_id,
                         "expected_build_artifact_id": expected_build_artifact_id,
                         "expected_build_artifact_digest": expected_build_artifact_digest,
@@ -1491,6 +1673,7 @@ def _rearm_invalid_reserved_build(
             "activation_id": result["id"],
             "version": result["version"],
             "source_sha": source_sha,
+            "previous_source_sha": expected_source_sha,
             "runner_sha": runner_sha,
             "workflow_run_id": workflow_run_id,
             "workflow_attempt": workflow_attempt,

@@ -407,6 +407,7 @@ class CiReleaseContractTest(unittest.TestCase):
             "@babel/plugin-transform-modules-systemjs": "7.29.4",
             "@intlify/core-base": "9.14.5",
             "@intlify/message-resolver": "9.1.11",
+            "adm-zip": "0.6.0",
             "cookie": "0.7.0",
             "esbuild": "0.25.0",
             "glob": "10.5.0",
@@ -421,6 +422,7 @@ class CiReleaseContractTest(unittest.TestCase):
             "yaml": "1.10.3",
         }
         self.assertEqual(package["overrides"], expected_overrides)
+        self.assertEqual(lock["packages"]["node_modules/adm-zip"]["version"], "0.6.0")
 
     def test_unused_uni_automator_and_its_jest27_chain_are_absent(self) -> None:
         package = json.loads(_read("frontend/package.json"))
@@ -1158,10 +1160,19 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             register.classify_install_state(
                 current_revision=register.TARGET_SCHEMA,
                 activation=bound_reserved,
-                source_sha=sha,
+                source_sha="b" * 40,
                 workflow_run_id="789",
             ),
             "TAKEOVER_RESERVED_BUILD",
+        )
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation=bound_reserved,
+                source_sha=sha,
+                workflow_run_id="789",
+            ),
+            "CONFLICTING_INSTALL",
         )
         staged = {
             "source_sha": sha,
@@ -1521,11 +1532,12 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "scripts/release/register_safe_baseline.py",
             "register_safe_baseline_reserved_build_rearm_contract",
         )
-        source_sha = "a" * 40
-        runner_sha = "b" * 40
+        previous_source_sha = "a" * 40
+        source_sha = "b" * 40
+        runner_sha = source_sha
         activation = {
             "id": "11111111-1111-1111-1111-111111111111",
-            "source_sha": source_sha,
+            "source_sha": previous_source_sha,
             "workflow_run_id": "123",
             "workflow_attempt": 2,
             "phase": "RESERVED",
@@ -1545,7 +1557,10 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         engine = mock.MagicMock()
         engine.begin.return_value.__enter__.return_value = connection
         with (
-            mock.patch.object(register, "validate_staged_control_descendant") as control_diff,
+            mock.patch.object(
+                register,
+                "validate_reserved_build_repair_descendant",
+            ) as repair_diff,
             mock.patch.object(register, "create_engine", return_value=engine),
             mock.patch.object(register, "_configure_migration_timeouts") as configure_timeouts,
             mock.patch.object(register, "_advisory_lock"),
@@ -1558,7 +1573,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 runner_sha=runner_sha,
                 workflow_run_id="789",
                 workflow_attempt=1,
-                expected_source_sha=source_sha,
+                expected_source_sha=previous_source_sha,
                 expected_workflow_run_id="123",
                 expected_version=12,
                 expected_build_artifact_id="456",
@@ -1567,8 +1582,10 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
             )
 
-        control_diff.assert_called_once_with(source_sha, runner_sha)
+        repair_diff.assert_called_once_with(previous_source_sha, source_sha)
         self.assertEqual(result["state"], "RESERVED_BUILD_REARMED")
+        self.assertEqual(result["source_sha"], source_sha)
+        self.assertEqual(result["previous_source_sha"], previous_source_sha)
         self.assertEqual(result["next_workflow_attempt"], 2)
         statements = [str(call.args[0]) for call in connection.execute.call_args_list]
         disable_index = next(
@@ -1587,6 +1604,8 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertLess(update_index, enable_index)
         update = statements[update_index]
         self.assertIn("phase = 'RESERVED'", update)
+        self.assertIn("SET source_sha = :source_sha", update)
+        self.assertIn("source_sha = :expected_source_sha", update)
         self.assertIn("runtime_bundle_id IS NULL", update)
         self.assertIn("manifest_sha256 = NULL", update)
         self.assertIn("build_artifact_id = NULL", update)
@@ -1603,6 +1622,52 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         ):
             with self.subTest(changed=changed):
                 self.assertFalse(register.reserved_build_rearm_is_adoptable({**activation, **changed}))
+
+    def test_bound_reserved_build_preflight_accepts_only_a_control_descendant(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_build_preflight_contract",
+        )
+        previous_source_sha = "a" * 40
+        source_sha = "b" * 40
+        runner_sha = source_sha
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": previous_source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 2,
+            "phase": "RESERVED",
+            "version": 12,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "manifest_sha256": "d" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "e" * 64,
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.scalar_one.return_value = "on"
+        engine = mock.MagicMock()
+        engine.connect.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+            mock.patch.object(
+                register,
+                "validate_reserved_build_repair_descendant",
+            ) as repair_diff,
+        ):
+            report = register._preflight(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+            )
+
+        self.assertEqual(report["state"], "TAKEOVER_RESERVED_BUILD")
+        repair_diff.assert_called_once_with(previous_source_sha, source_sha)
 
     def test_bound_reserved_prebuild_repair_is_explicit_evidence_first_and_rerun_fenced(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
@@ -1832,6 +1897,124 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             ),
         ):
             register.validate_staged_control_descendant(source_sha, runner_sha)
+
+    def test_reserved_build_repair_diff_is_exactly_the_reviewed_forward_fix(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_build_repair_diff_contract",
+        )
+        previous_source_sha = "a" * 40
+        source_sha = "b" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(register.RESERVED_BUILD_REPAIR_REQUIRED_PATHS)
+        ) + "\nM\tbackend/tests/test_ci_release_contract.py\n"
+
+        def calls_for(diff: str) -> list[subprocess.CompletedProcess[str]]:
+            return [
+                subprocess.CompletedProcess([], 0, stdout=source_sha + "\n", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout=diff, stderr=""),
+            ]
+
+        with mock.patch.object(
+            register.subprocess,
+            "run",
+            side_effect=calls_for(allowed_diff),
+        ), mock.patch.object(register, "validate_reserved_build_dependency_repair"):
+            register.validate_reserved_build_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+
+        for unsafe_diff, error in (
+            (
+                allowed_diff + "M\tbackend/app/main.py\n",
+                "unauthorized path: backend/app/main.py",
+            ),
+            (
+                allowed_diff.replace(
+                    "M\tfrontend/package-lock.json\n",
+                    "A\tfrontend/package-lock.json\n",
+                ),
+                "unauthorized path: frontend/package-lock.json",
+            ),
+            (
+                allowed_diff.replace("M\tfrontend/package-lock.json\n", ""),
+                "missing required reviewed changes",
+            ),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(
+                    register.subprocess,
+                    "run",
+                    side_effect=calls_for(unsafe_diff),
+                ),
+                mock.patch.object(register, "validate_reserved_build_dependency_repair"),
+                self.assertRaisesRegex(register.SafeBaselineRegistrationError, error),
+            ):
+                register.validate_reserved_build_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
+
+    def test_reserved_build_dependency_repair_is_only_adm_zip_060(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_dependency_repair_contract",
+        )
+        previous_source_sha = "a" * 40
+        source_sha = "b" * 40
+        package = json.loads(_read("frontend/package.json"))
+        lock = json.loads(_read("frontend/package-lock.json"))
+        previous_package = json.loads(json.dumps(package))
+        previous_package["overrides"].pop("adm-zip")
+        previous_lock = json.loads(json.dumps(lock))
+        previous_lock["packages"]["node_modules/adm-zip"] = {
+            "version": "0.5.16",
+            "resolved": "https://registry.npmmirror.com/adm-zip/-/adm-zip-0.5.16.tgz",
+            "integrity": (
+                "sha512-TGw5yVi4saajsSEgz25grObGHEUaDrniwvA2qwSC060KfqGPdglh"
+                "vPMA2lPIoxs3PQIItj2iag35fONcQqgUaQ=="
+            ),
+            "license": "MIT",
+            "engines": {"node": ">=12.0"},
+        }
+
+        def validate(source_package: dict, source_lock: dict) -> None:
+            with mock.patch.object(
+                register,
+                "_read_git_json",
+                side_effect=[
+                    previous_package,
+                    source_package,
+                    previous_lock,
+                    source_lock,
+                ],
+            ):
+                register.validate_reserved_build_dependency_repair(
+                    previous_source_sha,
+                    source_sha,
+                )
+
+        validate(package, lock)
+
+        unsafe_package = json.loads(json.dumps(package))
+        unsafe_package["dependencies"]["vue"] = "3.4.22"
+        with self.assertRaisesRegex(
+            register.SafeBaselineRegistrationError,
+            "package.json beyond adm-zip",
+        ):
+            validate(unsafe_package, lock)
+
+        unsafe_lock = json.loads(json.dumps(lock))
+        unsafe_lock["packages"]["node_modules/adm-zip"]["integrity"] = "sha512:unexpected"
+        with self.assertRaisesRegex(
+            register.SafeBaselineRegistrationError,
+            "package-lock.json beyond adm-zip",
+        ):
+            validate(package, unsafe_lock)
 
     def test_reserved_retry_rejects_a_decreasing_workflow_attempt(self) -> None:
         register = _load_script(
