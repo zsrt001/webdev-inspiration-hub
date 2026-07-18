@@ -712,6 +712,7 @@ def _run_route_probe(
     probe: RouteProbe,
     *,
     cleanup_token: str,
+    request_origin: str,
 ) -> dict[str, Any]:
     headers = dict(base_headers)
     if probe.auth_kind == "retired_bearer":
@@ -721,8 +722,7 @@ def _run_route_probe(
     elif probe.auth_kind == "cleanup":
         headers["Authorization"] = f"Bearer {cleanup_token}"
     if probe.include_origin:
-        parsed = urlsplit(str(client.base_url))
-        headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
+        headers["Origin"] = request_origin
     kwargs: dict[str, Any] = {"headers": headers}
     if probe.params is not None:
         kwargs["params"] = probe.params
@@ -803,10 +803,12 @@ def _verify_http(
     *,
     protected_headers: dict[str, str],
     cleanup_token: str,
+    request_origin: str,
     expected_source_sha: str,
     expected_runtime_bundle_id: str,
     expected_deployment_id: str,
 ) -> dict[str, Any]:
+    normalized_request_origin = f"https://{_formal_domain_host(request_origin)}"
     headers = {"User-Agent": "vowpic-safe-baseline-verifier/1", **protected_headers}
     with httpx.Client(base_url=base_url.rstrip("/"), timeout=20.0, follow_redirects=False) as client:
         expected_coordinates = _verify_runtime_identity(
@@ -823,6 +825,7 @@ def _verify_http(
                 headers,
                 probe,
                 cleanup_token=cleanup_token,
+                request_origin=normalized_request_origin,
             )
             for probe in GUARDED_ROUTE_PROBES
         ]
@@ -832,6 +835,7 @@ def _verify_http(
                 headers,
                 probe,
                 cleanup_token=cleanup_token,
+                request_origin=normalized_request_origin,
             )
             for probe in RETIRED_ROUTE_PROBES
         ]
@@ -1054,6 +1058,7 @@ def _write_create_once(path: Path, report: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
+    parser.add_argument("--request-origin", required=True)
     header_group = parser.add_mutually_exclusive_group()
     header_group.add_argument("--deployment-bypass-header-env")
     header_group.add_argument("--edge-bypass-header-env")
@@ -1154,6 +1159,7 @@ def main() -> int:
             args.base_url,
             protected_headers=protected_headers,
             cleanup_token=cleanup_token,
+            request_origin=args.request_origin,
             expected_source_sha=source_sha,
             expected_runtime_bundle_id=runtime_bundle_id,
             expected_deployment_id=expected_deployment_id,

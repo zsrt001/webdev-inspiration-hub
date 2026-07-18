@@ -63,6 +63,7 @@ def _database_audit_counts(database_url: str) -> tuple[int, int]:
 def collect_runtime_ddl_audit(
     *,
     base_url: str,
+    request_origin: str,
     protected_headers: dict[str, str],
     cleanup_token: str,
     database_url: str,
@@ -82,6 +83,7 @@ def collect_runtime_ddl_audit(
         base_url,
         protected_headers=protected_headers,
         cleanup_token=cleanup_token,
+        request_origin=request_origin,
         expected_source_sha=source_sha,
         expected_runtime_bundle_id=runtime_bundle_id,
         expected_deployment_id=deployment_id,
@@ -141,6 +143,7 @@ def _write_create_once(path: Path, payload: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
+    parser.add_argument("--request-origin", required=True)
     parser.add_argument("--deployment-bypass-header-env")
     parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
     parser.add_argument("--cleanup-token-env", default="CLEANUP_CRON_TOKEN")
@@ -161,6 +164,7 @@ def main() -> int:
     try:
         report = collect_runtime_ddl_audit(
             base_url=args.base_url,
+            request_origin=args.request_origin,
             protected_headers=_parse_protected_header(args.deployment_bypass_header_env),
             cleanup_token=cleanup_token,
             database_url=database_url,

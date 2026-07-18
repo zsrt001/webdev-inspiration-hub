@@ -51,11 +51,16 @@ class RuntimeDdlAuditCollectorTest(unittest.TestCase):
                 "_database_audit_counts",
                 side_effect=[(12, 0), (19, 0)],
             ),
-            mock.patch.object(collector, "_verify_http", return_value=http_evidence),
+            mock.patch.object(
+                collector,
+                "_verify_http",
+                return_value=http_evidence,
+            ) as verify_http,
             mock.patch.object(collector.httpx, "Client", _Client),
         ):
             report = collector.collect_runtime_ddl_audit(
                 base_url="https://deployment.example",
+                request_origin="https://www.vowpic.com",
                 protected_headers={"x-bypass": "redacted"},
                 cleanup_token="cleanup-token",
                 database_url="postgresql://migration:redacted@db.example/postgres",
@@ -73,12 +78,22 @@ class RuntimeDdlAuditCollectorTest(unittest.TestCase):
         self.assertEqual(report["readiness_status"], 503)
         self.assertEqual(set(report["coverage"]), collector.DDL_AUDIT_COVERAGE)
         self.assertEqual(len(report["signature_hmac_sha256"]), 64)
+        verify_http.assert_called_once_with(
+            "https://deployment.example",
+            protected_headers={"x-bypass": "redacted"},
+            cleanup_token="cleanup-token",
+            request_origin="https://www.vowpic.com",
+            expected_source_sha="a" * 40,
+            expected_runtime_bundle_id="rtb_" + "b" * 64,
+            expected_deployment_id="dpl_example",
+        )
 
     def test_collector_rejects_any_prior_or_new_runtime_ddl(self) -> None:
         with mock.patch.object(collector, "_database_audit_counts", return_value=(1, 1)):
             with self.assertRaisesRegex(ValueError, "already has recorded DDL"):
                 collector.collect_runtime_ddl_audit(
                     base_url="https://deployment.example",
+                    request_origin="https://www.vowpic.com",
                     protected_headers={},
                     cleanup_token="cleanup",
                     database_url="postgresql://migration:redacted@db.example/postgres",

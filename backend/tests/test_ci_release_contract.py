@@ -890,6 +890,10 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertLess(staged_collect, staged_verify)
         self.assertLess(formal_collect, formal_verify)
         self.assertEqual(workflow.count("collect_runtime_ddl_audit.py"), 2)
+        self.assertEqual(
+            workflow.count('--request-origin "$PRODUCTION_BASE_URL"'),
+            4,
+        )
         self.assertIn("runtime-ddl-audit-staged.json", workflow)
         self.assertIn("runtime-ddl-audit-formal.json", workflow)
         self.assertNotIn("RUNTIME_DDL_AUDIT_REPORT_B64", workflow)
@@ -2421,8 +2425,12 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "scripts/release/production_database_login_proof.py",
             "scripts/release/provision_production_database_logins.py",
         }
+        runtime_audit_control_paths = {
+            "backend/tests/test_runtime_ddl_audit_collector.py",
+            "scripts/release/collect_runtime_ddl_audit.py",
+        }
         self.assertTrue(
-            database_control_paths
+            database_control_paths | runtime_audit_control_paths
             <= register.STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS
         )
         allowed_diff = "\n".join(
@@ -2431,6 +2439,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 {
                     *register.STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS,
                     *database_control_paths,
+                    *runtime_audit_control_paths,
                     "backend/tests/test_ci_release_contract.py",
                     "docs/ai-worklog.md",
                 }
@@ -4808,9 +4817,46 @@ class BaselineToolContractTest(unittest.TestCase):
         self.assertNotIn("SAFE_BASELINE_PROBE_USER_BEARER", source)
         self.assertNotIn("--user-bearer-env", source)
         self.assertNotIn("--admin-token-env", source)
+        self.assertIn('parser.add_argument("--request-origin", required=True)', source)
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         self.assertIn('--env "RELEASE_ROLE=SAFE_BASELINE"', workflow)
         self.assertNotIn("SAFE_BASELINE_PROBE_USER_BEARER", workflow)
+
+    def test_safe_verifier_uses_the_formal_origin_for_staged_browser_probes(self) -> None:
+        verify = _load_script(
+            "scripts/release/verify_safe_baseline.py",
+            "verify_safe_baseline_formal_origin_contract",
+        )
+        probe = next(
+            item for item in verify.GUARDED_ROUTE_PROBES
+            if item.name == "google_oauth_intent"
+        )
+
+        class ProbeClient:
+            base_url = "https://temporary-deployment.vercel.app"
+
+            def __init__(self) -> None:
+                self.request_headers: dict[str, str] = {}
+
+            def request(self, method, path, **kwargs):
+                self.request_headers = dict(kwargs["headers"])
+                return httpx.Response(
+                    503,
+                    json={"detail": {"code": "capability_disabled"}},
+                )
+
+        client = ProbeClient()
+        result = verify._run_route_probe(
+            client,
+            {"x-vercel-protection-bypass": "redacted"},
+            probe,
+            cleanup_token="cleanup-token",
+            request_origin="https://www.vowpic.com",
+        )
+
+        self.assertEqual(result["status"], 503)
+        self.assertEqual(client.request_headers["Origin"], "https://www.vowpic.com")
+        self.assertNotEqual(client.request_headers["Origin"], client.base_url)
 
     def test_external_runtime_and_edge_evidence_requires_authentication(self) -> None:
         verify = _load_script(
