@@ -347,6 +347,13 @@ def _revoke_direct_login_privileges(
         *IDENTITY_TABLE_PRIVILEGES,
     ):
         cursor.execute(
+            "SELECT to_regclass(%s) AS relation",
+            (f"public.{table}",),
+        )
+        relation = cursor.fetchone()
+        if relation is None or relation["relation"] is None:
+            continue
+        cursor.execute(
             sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(
                 sql.Identifier("public", table),
                 sql.Identifier(login),
