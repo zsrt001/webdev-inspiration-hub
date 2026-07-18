@@ -21,6 +21,15 @@ from app.services.retention_service import cleanup_expired_orders, cleanup_expir
 router = APIRouter(prefix="/ops", tags=["ops"])
 settings = get_settings()
 
+_CLEANUP_EXECUTION_RELEASE_ROLES = frozenset(
+    {
+        "PREVIEW_IDENTITY",
+        "PREVIEW_COMMERCIAL",
+        "COMMERCIAL_7A",
+        "CONTRACT_7B",
+    }
+)
+
 
 def _require_cron_auth(authorization: str | None) -> None:
     token = settings.effective_cleanup_cron_token
@@ -28,6 +37,24 @@ def _require_cron_auth(authorization: str | None) -> None:
         raise HTTPException(status_code=503, detail="cron token is not configured")
     if (authorization or "").strip() != f"Bearer {token}":
         raise HTTPException(status_code=401, detail="invalid cron token")
+
+
+def _require_cleanup_execution_role() -> None:
+    """Keep deletion paused for the safe baseline and invalid hosted runtimes."""
+    environment = settings.runtime_environment.strip().lower()
+    release_role = settings.release_role.strip()
+    if (
+        environment in {"preview", "production"}
+        and release_role not in _CLEANUP_EXECUTION_RELEASE_ROLES
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "cleanup_paused",
+                "message": "Deletion is paused for this release role.",
+                "retryable": True,
+            },
+        )
 
 
 @router.get("/readiness")
@@ -69,6 +96,7 @@ async def cleanup_expired_assets(
 ):
     """Cron-safe durable cleanup endpoint. Requires a bearer cleanup token."""
     _require_cron_auth(authorization)
+    _require_cleanup_execution_role()
     now = datetime.now(timezone.utc)
     source_summary = await cleanup_expired_source_images(db, now=now)
     order_summary = await cleanup_expired_orders(db, now=now)

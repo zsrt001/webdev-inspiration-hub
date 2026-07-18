@@ -582,6 +582,34 @@ class DisabledOrderReadTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CleanupLockdownTest(unittest.IsolatedAsyncioTestCase):
+    async def test_cleanup_remains_paused_for_safe_baseline_role(self) -> None:
+        ops = importlib.import_module("app.routers.ops")
+        db = AsyncMock()
+        source_cleanup = AsyncMock()
+        order_cleanup = AsyncMock()
+        deletion_cleanup = AsyncMock()
+
+        with (
+            patch.object(ops.settings, "runtime_environment", "production"),
+            patch.object(ops.settings, "release_role", "SAFE_BASELINE"),
+            patch.object(ops.settings, "cleanup_cron_token", "cleanup-secret"),
+            patch.object(ops, "cleanup_expired_source_images", source_cleanup),
+            patch.object(ops, "cleanup_expired_orders", order_cleanup),
+            patch.object(ops, "run_deletion_cleanup", deletion_cleanup),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await ops.cleanup_expired_assets(
+                    authorization="Bearer cleanup-secret",
+                    db=db,
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(raised.exception.detail["code"], "cleanup_paused")
+        source_cleanup.assert_not_awaited()
+        order_cleanup.assert_not_awaited()
+        deletion_cleanup.assert_not_awaited()
+        db.commit.assert_not_awaited()
+
     async def test_cleanup_is_post_only_authenticated_and_runs_durable_state_machine(self) -> None:
         ops = importlib.import_module("app.routers.ops")
         cleanup_routes = [route for route in ops.router.routes if route.path == "/ops/cleanup_expired_assets"]
@@ -593,6 +621,8 @@ class CleanupLockdownTest(unittest.IsolatedAsyncioTestCase):
         order_cleanup = AsyncMock(return_value={"orders": 0, "pending_assets": 0})
         deletion_cleanup = AsyncMock(return_value={"claimed": 1, "deleted": 1})
         with (
+            patch.object(ops.settings, "runtime_environment", "production"),
+            patch.object(ops.settings, "release_role", "COMMERCIAL_7A"),
             patch.object(ops.settings, "cleanup_cron_token", "cleanup-secret"),
             patch.object(ops, "cleanup_expired_source_images", source_cleanup),
             patch.object(ops, "cleanup_expired_orders", order_cleanup),
@@ -624,6 +654,50 @@ class HttpLockdownContractTest(unittest.IsolatedAsyncioTestCase):
             app.state.runtime_config_blocked = self._runtime_blocker
         elif hasattr(app.state, "runtime_config_blocked"):
             delattr(app.state, "runtime_config_blocked")
+
+    async def test_safe_baseline_cleanup_http_contract_pauses_before_mutation(self) -> None:
+        from app.core.database import get_db
+        from app.main import app
+
+        ops = importlib.import_module("app.routers.ops")
+        db = AsyncMock()
+        source_cleanup = AsyncMock()
+        order_cleanup = AsyncMock()
+        deletion_cleanup = AsyncMock()
+
+        async def database_override():
+            yield db
+
+        original_overrides = dict(app.dependency_overrides)
+        app.dependency_overrides[get_db] = database_override
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        try:
+            with (
+                patch.object(ops.settings, "runtime_environment", "production"),
+                patch.object(ops.settings, "release_role", "SAFE_BASELINE"),
+                patch.object(ops.settings, "cleanup_cron_token", "cleanup-secret"),
+                patch.object(ops, "cleanup_expired_source_images", source_cleanup),
+                patch.object(ops, "cleanup_expired_orders", order_cleanup),
+                patch.object(ops, "run_deletion_cleanup", deletion_cleanup),
+            ):
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                ) as client:
+                    response = await client.post(
+                        "/api/v1/ops/cleanup_expired_assets",
+                        headers={"Authorization": "Bearer cleanup-secret"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(original_overrides)
+
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()["code"], "cleanup_paused")
+        source_cleanup.assert_not_awaited()
+        order_cleanup.assert_not_awaited()
+        deletion_cleanup.assert_not_awaited()
+        db.commit.assert_not_awaited()
 
     async def test_retired_identity_headers_cannot_touch_users_before_lockdown_guards(self) -> None:
         from app.core.database import get_db
