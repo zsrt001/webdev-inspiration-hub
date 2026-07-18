@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 RETIRED_ROUTES = (
     ("POST", "/api/v1/auth/login", "/api/v1/auth/login", "auth_method_retired", {"code": "retired"}),
+    ("POST", "/api/v1/users", "/api/v1/users", "legacy_user_route_retired", {"openid": "retired"}),
     ("POST", "/api/v1/users/", "/api/v1/users/", "legacy_user_route_retired", {"openid": "retired"}),
     (
         "GET",

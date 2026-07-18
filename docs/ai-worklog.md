@@ -1872,3 +1872,23 @@
 
 - Direct-login privilege cleanup now resolves every reviewed table through `to_regclass` and skips only relations that do not exist. Existing business, control-plane, readiness, and later identity tables still receive the same exact direct-privilege revocation.
 - A focused regression proves that an existing business table is revoked while the absent pre-migration `user_identities` table is not referenced by `REVOKE`. The focused database/release suite passed 116 cases with one Windows-only skip and 241 subtests; the full backend suite passed 795 cases with 37 explicit environment/platform skips and 1,078 subtests. Python compilation and `git diff --check` passed. Production retry, build, deployment, Promote, and formal-domain verification remain required. No Subagent was used.
+
+## 2026-07-18 — Preserve the retired legacy-user contract across Vercel slash normalization
+
+- Added a side-effect-free `POST /api/v1/users` tombstone alongside the existing
+  `POST /api/v1/users/` tombstone. Production release run `29644189529` proved
+  that the staged Vercel path could reach the no-slash form and return `405`,
+  while the release contract requires a stable `410 legacy_user_route_retired`.
+- Extended the web-only route contract so both legacy URL forms must be owned by
+  the centralized retired router and return the same unauthenticated `410`
+  response without resolving database dependencies.
+- Verified both URL forms in-process as `410 legacy_user_route_retired`.
+  After the exact rewrite was added, the directly affected release,
+  risk-lockdown, feature-flag, runtime-DDL, and Vercel rewrite suites passed 70
+  tests. The unchanged main baseline had already passed the full 795 backend
+  tests; the clean GitHub CI suite remains the merge gate for this patch.
+- The first PR Preview proved the backend alias alone was insufficient:
+  `/api/v1/users` reached FastAPI while `/api/v1/users/` still fell through to
+  the frontend rewrite and returned `405`. Added an exact Vercel rewrite for the
+  trailing-slash legacy path before the generic API and SPA fallbacks, plus a
+  regression contract for the destination and ordering.
