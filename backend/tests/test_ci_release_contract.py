@@ -2213,7 +2213,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             workflow.count(
                 "steps.preflight.outputs.staged_rearm_retry_allowed != 'true'"
             ),
-            3,
+            4,
         )
         self.assertIn(
             "--runtime-tls-repair is valid only with --action rearm-staged",
@@ -2388,6 +2388,206 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         rearm = workflow.index(
             "Atomically rearm the invalid STAGED runtime after the "
             "schema-compatibility repair",
+            guard,
+        )
+        config_rearm = workflow.index(
+            "Atomically rearm the invalid unpromoted STAGED binding",
+            rearm,
+        )
+        self.assertLess(guard, rearm)
+        self.assertLess(rearm, config_rearm)
+        step = workflow[rearm:config_rearm]
+        self.assertIn("--expected-source-sha", step)
+        self.assertIn("--expected-workflow-run-id", step)
+        self.assertIn("--expected-version", step)
+        self.assertIn("exit 75", step)
+
+    def test_staged_route_compatibility_repair_diff_is_exact_and_pinned(
+        self,
+    ) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_route_compatibility_diff_contract",
+        )
+        previous_source_sha = (
+            register.STAGED_ROUTE_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA
+        )
+        source_sha = "b" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(
+                register.STAGED_ROUTE_COMPATIBILITY_REPAIR_REQUIRED_PATHS
+            )
+        ) + "\n"
+
+        def results(diff: str) -> list[subprocess.CompletedProcess[str]]:
+            return [
+                subprocess.CompletedProcess([], 0, stdout=source_sha + "\n"),
+                subprocess.CompletedProcess([], 0),
+                subprocess.CompletedProcess([], 0, stdout=diff),
+            ]
+
+        with mock.patch.object(
+            register.subprocess,
+            "run",
+            side_effect=results(allowed_diff),
+        ):
+            register.validate_staged_route_compatibility_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+
+        with (
+            mock.patch.object(
+                register.subprocess,
+                "run",
+                side_effect=results(allowed_diff + "M\tbackend/app/main.py\n"),
+            ),
+            self.assertRaisesRegex(
+                register.SafeBaselineRegistrationError,
+                "unauthorized path",
+            ),
+        ):
+            register.validate_staged_route_compatibility_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+
+    def test_staged_route_compatibility_preflight_and_rearm_are_source_fenced(
+        self,
+    ) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_route_compatibility_rearm_contract",
+        )
+        previous_source_sha = (
+            register.STAGED_ROUTE_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA
+        )
+        source_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": previous_source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "STAGED",
+            "version": 4,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": (
+                "https://github.com/o/r/actions/runs/123/artifacts/1"
+            ),
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_invalid_route",
+            "api_deployment_url": "https://invalid-route.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        read_connection = mock.MagicMock()
+        read_connection.execute.return_value.scalar_one.return_value = "on"
+        read_engine = mock.MagicMock()
+        read_engine.connect.return_value.__enter__.return_value = read_connection
+        with (
+            mock.patch.object(register, "create_engine", return_value=read_engine),
+            mock.patch.object(
+                register,
+                "_current_revision",
+                return_value=register.TARGET_SCHEMA,
+            ),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+            mock.patch.object(
+                register,
+                "validate_staged_route_compatibility_repair_descendant",
+            ) as repair_diff,
+        ):
+            report = register._preflight(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                runner_sha=source_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+            )
+        self.assertEqual(
+            report["state"],
+            "TAKEOVER_STAGED_ROUTE_COMPATIBILITY",
+        )
+        repair_diff.assert_called_once_with(previous_source_sha, source_sha)
+
+        write_connection = mock.MagicMock()
+        write_connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
+            "id": activation["id"],
+            "version": 5,
+        }
+        write_engine = mock.MagicMock()
+        write_engine.begin.return_value.__enter__.return_value = write_connection
+        with (
+            mock.patch.object(register, "create_engine", return_value=write_engine),
+            mock.patch.object(register, "_configure_migration_timeouts"),
+            mock.patch.object(register, "_advisory_lock"),
+            mock.patch.object(
+                register,
+                "_current_revision",
+                return_value=register.TARGET_SCHEMA,
+            ),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+            mock.patch.object(
+                register,
+                "validate_staged_route_compatibility_repair_descendant",
+            ) as repair_diff,
+        ):
+            result = register._rearm_invalid_staged(
+                "postgresql://migration",
+                source_sha=source_sha,
+                runner_sha=source_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+                expected_source_sha=previous_source_sha,
+                expected_workflow_run_id="123",
+                expected_version=4,
+                approval="protected-approval",
+                evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
+                runtime_secret_evidence=None,
+                project_id="",
+                team_id="",
+                runtime_route_compatibility_repair=True,
+            )
+        repair_diff.assert_called_once_with(previous_source_sha, source_sha)
+        self.assertEqual(result["state"], "STAGED_REARMED")
+        self.assertEqual(result["previous_source_sha"], previous_source_sha)
+        self.assertEqual(result["source_sha"], source_sha)
+
+    def test_staged_route_compatibility_repair_is_explicit_and_rerun_fenced(
+        self,
+    ) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        register_source = _read("scripts/release/register_safe_baseline.py")
+        self.assertIn(
+            "rearm_staged_after_route_compatibility_repair",
+            workflow,
+        )
+        self.assertIn('"TAKEOVER_STAGED_ROUTE_COMPATIBILITY"', workflow)
+        self.assertIn("--runtime-route-compatibility-repair", workflow)
+        self.assertIn(
+            "Fail closed unless the exact STAGED route-compatibility repair "
+            "was explicitly selected",
+            workflow,
+        )
+        self.assertIn(
+            "--runtime-route-compatibility-repair is valid only with ",
+            register_source,
+        )
+        self.assertIn(
+            "55eaeeea0748a96c7d040d9465bd64dd9bfbfd2e",
+            register_source,
+        )
+        guard = workflow.index(
+            "Fail closed unless the exact STAGED route-compatibility repair "
+            "was explicitly selected"
+        )
+        rearm = workflow.index(
+            "Atomically rearm the invalid STAGED runtime after the "
+            "route-compatibility repair",
             guard,
         )
         config_rearm = workflow.index(

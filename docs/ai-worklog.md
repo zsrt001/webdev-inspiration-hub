@@ -1892,3 +1892,18 @@
   the frontend rewrite and returned `405`. Added an exact Vercel rewrite for the
   trailing-slash legacy path before the generic API and SPA fallbacks, plus a
   regression contract for the destination and ordering.
+
+## 2026-07-18 — Fence the one-time STAGED route-compatibility rearm
+
+- Added a source-changing STAGED repair mode pinned to failed Production source
+  `55eaeeea0748a96c7d040d9465bd64dd9bfbfd2e`. It accepts only the reviewed
+  Vercel/FastAPI tombstone repair path set and verifies the two backend route
+  aliases plus the exact Vercel rewrite ordering.
+- The protected workflow requires an explicit route-repair input, persists
+  evidence before the CAS, clears only a fully bound unpromoted STAGED record,
+  advances it to the reviewed descendant in `RESERVED`, and exits `75` so only
+  the next attempt can build and deploy the repaired source.
+- Verified the pinned seven-path diff exactly matches the failed source through
+  the reviewed repair, the workflow YAML and Python AST parse successfully, and
+  the four directly affected takeover/diff/CAS/workflow tests pass. The clean
+  GitHub CI suite remains the merge gate.
