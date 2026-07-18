@@ -2113,6 +2113,10 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         deploy_step = workflow[deploy_start:deploy_end]
         self.assertEqual(deploy_step.count('--env "SOURCE_SHA=$SOURCE_SHA"'), 1)
         self.assertEqual(
+            deploy_step.count('--env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA"'),
+            1,
+        )
+        self.assertEqual(
             deploy_step.count(
                 "--deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER"
             ),
