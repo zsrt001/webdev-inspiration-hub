@@ -191,6 +191,22 @@ STAGED_ROUTE_COMPATIBILITY_REPAIR_REQUIRED_PATHS = frozenset(
 STAGED_ROUTE_COMPATIBILITY_REPAIR_ALLOWED_PATHS = (
     STAGED_ROUTE_COMPATIBILITY_REPAIR_REQUIRED_PATHS
 )
+STAGED_CLEANUP_PAUSE_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "630dc1e1089ac7939fdfcb30a914bd2cb04d1771"
+)
+STAGED_CLEANUP_PAUSE_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        ".github/workflows/safe-baseline-release.yml",
+        "backend/app/routers/ops.py",
+        "backend/tests/test_ci_release_contract.py",
+        "backend/tests/test_risk_lockdown.py",
+        "docs/ai-worklog.md",
+        "scripts/release/register_safe_baseline.py",
+    }
+)
+STAGED_CLEANUP_PAUSE_REPAIR_ALLOWED_PATHS = (
+    STAGED_CLEANUP_PAUSE_REPAIR_REQUIRED_PATHS
+)
 RESERVED_BUILD_REPAIR_REQUIRED_PATHS = frozenset(
     {
         ".github/workflows/safe-baseline-release.yml",
@@ -936,6 +952,184 @@ def validate_staged_route_compatibility_repair_descendant(
     ):
         raise SafeBaselineRegistrationError(
             "legacy user slash route is not fenced ahead of Vercel fallbacks"
+        )
+
+
+def validate_staged_cleanup_pause_repair_descendant(
+    previous_source_sha: str,
+    source_sha: str,
+) -> None:
+    """Prove the exact cleanup-pause repair for the failed STAGED source."""
+    if previous_source_sha != STAGED_CLEANUP_PAUSE_REPAIR_PREVIOUS_SOURCE_SHA:
+        raise SafeBaselineRegistrationError(
+            "staged cleanup-pause repair is not pinned to the failed source"
+        )
+    if (
+        re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is None
+        or previous_source_sha == source_sha
+    ):
+        raise SafeBaselineRegistrationError(
+            "staged cleanup-pause repair requires a reviewed descendant"
+        )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or head.stdout.strip() != source_sha:
+        raise SafeBaselineRegistrationError(
+            "staged cleanup-pause source is not the reviewed checkout"
+        )
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", previous_source_sha, source_sha],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged cleanup-pause source is not a descendant"
+        )
+    diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--no-renames",
+            f"{previous_source_sha}..{source_sha}",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged cleanup-pause diff could not be proven"
+        )
+    changed_paths: set[str] = set()
+    for line in diff.stdout.splitlines():
+        try:
+            status_code, path = line.split("\t", 1)
+        except ValueError as exc:
+            raise SafeBaselineRegistrationError(
+                "staged cleanup-pause diff is malformed"
+            ) from exc
+        normalized = path.replace("\\", "/")
+        if (
+            status_code != "M"
+            or normalized not in STAGED_CLEANUP_PAUSE_REPAIR_ALLOWED_PATHS
+        ):
+            raise SafeBaselineRegistrationError(
+                "staged cleanup-pause repair changed an unauthorized path: "
+                f"{normalized}"
+            )
+        changed_paths.add(normalized)
+    missing = STAGED_CLEANUP_PAUSE_REPAIR_REQUIRED_PATHS - changed_paths
+    if missing:
+        raise SafeBaselineRegistrationError(
+            "staged cleanup-pause repair is missing required changes: "
+            + ", ".join(sorted(missing))
+        )
+    _validate_staged_cleanup_router_contract()
+
+
+def _validate_staged_cleanup_router_contract() -> None:
+    """Inspect the fail-closed cleanup role fence before allowing a rebuild."""
+    try:
+        ops_tree = ast.parse(
+            (ROOT / "backend" / "app" / "routers" / "ops.py").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, SyntaxError) as exc:
+        raise SafeBaselineRegistrationError(
+            "staged cleanup-pause router cannot be inspected"
+        ) from exc
+
+    expected_roles = {
+        "PREVIEW_IDENTITY",
+        "PREVIEW_COMMERCIAL",
+        "COMMERCIAL_7A",
+        "CONTRACT_7B",
+    }
+    configured_roles: set[str] | None = None
+    cleanup_endpoint: ast.AsyncFunctionDef | None = None
+    cleanup_guard: ast.FunctionDef | None = None
+    for node in ops_tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "_CLEANUP_EXECUTION_RELEASE_ROLES"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "frozenset"
+            and len(node.value.args) == 1
+            and isinstance(node.value.args[0], ast.Set)
+        ):
+            configured_roles = {
+                element.value
+                for element in node.value.args[0].elts
+                if isinstance(element, ast.Constant)
+                and isinstance(element.value, str)
+            }
+        elif isinstance(node, ast.FunctionDef) and node.name == "_require_cleanup_execution_role":
+            cleanup_guard = node
+        elif (
+            isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "cleanup_expired_assets"
+        ):
+            cleanup_endpoint = node
+    if configured_roles != expected_roles:
+        raise SafeBaselineRegistrationError(
+            "cleanup execution roles are not the reviewed post-baseline allowlist"
+        )
+    if cleanup_guard is None or "cleanup_paused" not in {
+        node.value
+        for node in ast.walk(cleanup_guard)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }:
+        raise SafeBaselineRegistrationError(
+            "cleanup release-role guard does not fail closed with cleanup_paused"
+        )
+    if cleanup_endpoint is None:
+        raise SafeBaselineRegistrationError("cleanup endpoint is missing")
+
+    call_lines: dict[str, int] = {}
+    for node in ast.walk(cleanup_endpoint):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        else:
+            continue
+        call_lines.setdefault(name, node.lineno)
+    auth_line = call_lines.get("_require_cron_auth")
+    role_line = call_lines.get("_require_cleanup_execution_role")
+    mutation_lines = [
+        call_lines.get("cleanup_expired_source_images"),
+        call_lines.get("cleanup_expired_orders"),
+        call_lines.get("commit"),
+        call_lines.get("run_deletion_cleanup"),
+    ]
+    if (
+        auth_line is None
+        or role_line is None
+        or any(line is None for line in mutation_lines)
+        or not auth_line < role_line < min(
+            line for line in mutation_lines if line is not None
+        )
+    ):
+        raise SafeBaselineRegistrationError(
+            "cleanup release-role guard is not before every durable mutation"
         )
 
 
@@ -1734,6 +1928,15 @@ def _preflight(
                     source_sha,
                 )
                 state = "TAKEOVER_STAGED_ROUTE_COMPATIBILITY"
+            elif (
+                previous_source_sha
+                == STAGED_CLEANUP_PAUSE_REPAIR_PREVIOUS_SOURCE_SHA
+            ):
+                validate_staged_cleanup_pause_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
+                state = "TAKEOVER_STAGED_CLEANUP_PAUSE"
             else:
                 raise SafeBaselineRegistrationError(
                     "staged runtime repair is not pinned to a reviewed failed source"
@@ -1767,6 +1970,7 @@ def _preflight(
             "TAKEOVER_STAGED_RUNTIME_TLS",
             "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY",
             "TAKEOVER_STAGED_ROUTE_COMPATIBILITY",
+            "TAKEOVER_STAGED_CLEANUP_PAUSE",
             *RETRIABLE_STATES,
         }:
             raise SafeBaselineRegistrationError(f"safe-baseline preflight rejected state: {state}")
@@ -2601,6 +2805,7 @@ def _rearm_invalid_staged(
     runtime_tls_repair: bool = False,
     runtime_schema_compatibility_repair: bool = False,
     runtime_route_compatibility_repair: bool = False,
+    runtime_cleanup_pause_repair: bool = False,
 ) -> dict[str, Any]:
     """Atomically clear one invalid, unpromoted STAGED binding for a fenced rebuild."""
     source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
@@ -2615,10 +2820,20 @@ def _rearm_invalid_staged(
             runtime_tls_repair,
             runtime_schema_compatibility_repair,
             runtime_route_compatibility_repair,
+            runtime_cleanup_pause_repair,
         )
     ) > 1:
         raise ValueError("select exactly one staged runtime repair mode")
-    if runtime_route_compatibility_repair:
+    if runtime_cleanup_pause_repair:
+        if runner_sha != source_sha:
+            raise SafeBaselineRegistrationError(
+                "staged cleanup-pause rearm must build the reviewed source"
+            )
+        validate_staged_cleanup_pause_repair_descendant(
+            expected_source_sha,
+            source_sha,
+        )
+    elif runtime_route_compatibility_repair:
         if runner_sha != source_sha:
             raise SafeBaselineRegistrationError(
                 "staged route-compatibility rearm must build the reviewed source"
@@ -3630,6 +3845,10 @@ def main() -> int:
         action="store_true",
     )
     parser.add_argument(
+        "--runtime-cleanup-pause-repair",
+        action="store_true",
+    )
+    parser.add_argument(
         "--inject-failure",
         choices=("BEFORE_MIGRATION", "AFTER_MIGRATION_BEFORE_RESERVATION", "AFTER_RESERVATION_BEFORE_COMMIT"),
     )
@@ -3664,11 +3883,20 @@ def main() -> int:
                 "--runtime-route-compatibility-repair is valid only with "
                 "--action rearm-staged"
             )
+        if (
+            args.runtime_cleanup_pause_repair
+            and args.action != "rearm-staged"
+        ):
+            raise ValueError(
+                "--runtime-cleanup-pause-repair is valid only with "
+                "--action rearm-staged"
+            )
         if sum(
             (
                 args.runtime_tls_repair,
                 args.runtime_schema_compatibility_repair,
                 args.runtime_route_compatibility_repair,
+                args.runtime_cleanup_pause_repair,
             )
         ) > 1:
             raise ValueError("select exactly one staged runtime repair mode")
@@ -3676,6 +3904,7 @@ def main() -> int:
             args.runtime_tls_repair
             or args.runtime_schema_compatibility_repair
             or args.runtime_route_compatibility_repair
+            or args.runtime_cleanup_pause_repair
         ) and args.runtime_secret_evidence:
             raise ValueError(
                 "source-changing runtime repair must not reuse runtime-secret evidence"
@@ -3844,6 +4073,7 @@ def main() -> int:
                 args.runtime_tls_repair
                 or args.runtime_schema_compatibility_repair
                 or args.runtime_route_compatibility_repair
+                or args.runtime_cleanup_pause_repair
             )
             project_id = (
                 _required_env(args.vercel_project_id_env)
@@ -3888,6 +4118,9 @@ def main() -> int:
                 ),
                 runtime_route_compatibility_repair=(
                     args.runtime_route_compatibility_repair
+                ),
+                runtime_cleanup_pause_repair=(
+                    args.runtime_cleanup_pause_repair
                 ),
             )
         elif args.action == "bind-build":

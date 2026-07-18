@@ -31,6 +31,11 @@ on:
         required: false
         default: false
         type: boolean
+      rearm_staged_after_cleanup_pause_repair:
+        description: Rearm the invalid STAGED runtime after the reviewed cleanup-pause repair
+        required: false
+        default: false
+        type: boolean
       rearm_reserved_after_prebuilt_output_repair:
         description: Rearm one bound but undeployed RESERVED prebuild after output materialization repair
         required: false
@@ -105,10 +110,29 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Reject conflicting STAGED repair modes
-        if: ${{ (inputs.rearm_staged_after_config_repair == true && inputs.rearm_staged_after_runtime_tls_repair == true) || (inputs.rearm_staged_after_config_repair == true && inputs.rearm_staged_after_schema_compatibility_repair == true) || (inputs.rearm_staged_after_config_repair == true && inputs.rearm_staged_after_route_compatibility_repair == true) || (inputs.rearm_staged_after_runtime_tls_repair == true && inputs.rearm_staged_after_schema_compatibility_repair == true) || (inputs.rearm_staged_after_runtime_tls_repair == true && inputs.rearm_staged_after_route_compatibility_repair == true) || (inputs.rearm_staged_after_schema_compatibility_repair == true && inputs.rearm_staged_after_route_compatibility_repair == true) }}
+        env:
+          CONFIG_REPAIR: ${{ inputs.rearm_staged_after_config_repair }}
+          RUNTIME_TLS_REPAIR: ${{ inputs.rearm_staged_after_runtime_tls_repair }}
+          SCHEMA_COMPATIBILITY_REPAIR: ${{ inputs.rearm_staged_after_schema_compatibility_repair }}
+          ROUTE_COMPATIBILITY_REPAIR: ${{ inputs.rearm_staged_after_route_compatibility_repair }}
+          CLEANUP_PAUSE_REPAIR: ${{ inputs.rearm_staged_after_cleanup_pause_repair }}
         run: |
-          echo "select exactly one STAGED repair mode" >&2
-          exit 1
+          selected=0
+          for mode in \
+            "$CONFIG_REPAIR" \
+            "$RUNTIME_TLS_REPAIR" \
+            "$SCHEMA_COMPATIBILITY_REPAIR" \
+            "$ROUTE_COMPATIBILITY_REPAIR" \
+            "$CLEANUP_PAUSE_REPAIR"
+          do
+            if [[ "$mode" == "true" ]]; then
+              selected=$((selected + 1))
+            fi
+          done
+          if (( selected > 1 )); then
+            echo "select exactly one STAGED repair mode" >&2
+            exit 1
+          fi
 
       - name: Install the hash-locked release tooling
         run: |
@@ -301,6 +325,7 @@ jobs:
               "TAKEOVER_STAGED_RUNTIME_TLS",
               "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY",
               "TAKEOVER_STAGED_ROUTE_COMPATIBILITY",
+              "TAKEOVER_STAGED_CLEANUP_PAUSE",
               "RETRY_RESERVED",
               "RETRY_STAGED",
               "RETRY_PROMOTION_ARMED",
@@ -343,6 +368,9 @@ jobs:
           staged_route_compatibility_rearm_required = (
               state == "TAKEOVER_STAGED_ROUTE_COMPATIBILITY"
           )
+          staged_cleanup_pause_rearm_required = (
+              state == "TAKEOVER_STAGED_CLEANUP_PAUSE"
+          )
           staged_rearm_retry_allowed = (
               state == "RETRY_RESERVED"
               and activation_attempt == os.environ["GITHUB_RUN_ATTEMPT"]
@@ -374,6 +402,7 @@ jobs:
               or staged_runtime_tls_rearm_required
               or staged_schema_compatibility_rearm_required
               or staged_route_compatibility_rearm_required
+              or staged_cleanup_pause_rearm_required
           )
           if takeover_required:
               if not re.fullmatch(r"[0-9a-f]{40,64}", activation_source_sha):
@@ -399,6 +428,7 @@ jobs:
               else "RETRY_RESERVED" if staged_runtime_tls_rearm_required
               else "RETRY_RESERVED" if staged_schema_compatibility_rearm_required
               else "RETRY_RESERVED" if staged_route_compatibility_rearm_required
+              else "RETRY_RESERVED" if staged_cleanup_pause_rearm_required
               else "RETRY_STAGED" if staged_verifier_takeover_required
               else state
           )
@@ -435,6 +465,10 @@ jobs:
               handle.write(
                   "staged_route_compatibility_rearm_required="
                   f"{str(staged_route_compatibility_rearm_required).lower()}\n"
+              )
+              handle.write(
+                  "staged_cleanup_pause_rearm_required="
+                  f"{str(staged_cleanup_pause_rearm_required).lower()}\n"
               )
               handle.write(
                   "staged_rearm_retry_allowed="
@@ -489,6 +523,12 @@ jobs:
         if: ${{ inputs.rearm_staged_after_route_compatibility_repair == true && steps.preflight.outputs.staged_route_compatibility_rearm_required != 'true' && steps.preflight.outputs.staged_rearm_retry_allowed != 'true' }}
         run: |
           echo "the route-compatibility repair input is not valid for the recorded activation state" >&2
+          exit 1
+
+      - name: Reject a cleanup-pause repair input outside its exact STAGED takeover
+        if: ${{ inputs.rearm_staged_after_cleanup_pause_repair == true && steps.preflight.outputs.staged_cleanup_pause_rearm_required != 'true' && steps.preflight.outputs.staged_rearm_retry_allowed != 'true' }}
+        run: |
+          echo "the cleanup-pause repair input is not valid for the recorded activation state" >&2
           exit 1
 
       - name: Inventory Production through the read-only role
@@ -805,6 +845,35 @@ jobs:
           echo "STAGED runtime was safely rearmed; rerun this exact workflow run so attempt $((GITHUB_RUN_ATTEMPT + 1)) builds the reviewed route-compatible source" >&2
           exit 75
 
+      - name: Fail closed unless the exact STAGED cleanup-pause repair was explicitly selected
+        if: ${{ steps.preflight.outputs.staged_cleanup_pause_rearm_required == 'true' && inputs.rearm_staged_after_cleanup_pause_repair != true }}
+        run: |
+          echo "the invalid STAGED runtime requires the reviewed cleanup-pause repair input" >&2
+          exit 1
+
+      - name: Atomically rearm the invalid STAGED runtime after the cleanup-pause repair
+        if: ${{ steps.preflight.outputs.staged_cleanup_pause_rearm_required == 'true' && inputs.rearm_staged_after_cleanup_pause_repair == true }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
+          RESERVATION_EVIDENCE_URL: ${{ steps.reservation_evidence.outputs.artifact-url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action rearm-staged \
+            --runtime-cleanup-pause-repair \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-source-sha "${{ steps.preflight.outputs.expected_source_sha }}" \
+            --expected-workflow-run-id "${{ steps.preflight.outputs.expected_workflow_run_id }}" \
+            --expected-version "${{ steps.preflight.outputs.expected_version }}" \
+            --approval-id-env SAFE_BASELINE_APPROVAL_ID \
+            --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
+            --output "$EVIDENCE_DIR/staged-cleanup-pause-rearm.json"
+          echo "STAGED runtime was safely rearmed; rerun this exact workflow run so attempt $((GITHUB_RUN_ATTEMPT + 1)) builds the reviewed cleanup-pause source" >&2
+          exit 75
+
       - name: Atomically rearm the invalid unpromoted STAGED binding
         if: ${{ inputs.rearm_staged_after_config_repair == true && steps.preflight.outputs.staged_verifier_takeover_required == 'true' }}
         env:
@@ -831,7 +900,7 @@ jobs:
           exit 75
 
       - name: Atomically adopt the immutable STAGED deployment into the reviewed verifier run
-        if: ${{ steps.preflight.outputs.staged_verifier_takeover_required == 'true' && inputs.rearm_staged_after_config_repair != true && inputs.rearm_staged_after_runtime_tls_repair != true && inputs.rearm_staged_after_schema_compatibility_repair != true && inputs.rearm_staged_after_route_compatibility_repair != true }}
+        if: ${{ steps.preflight.outputs.staged_verifier_takeover_required == 'true' && inputs.rearm_staged_after_config_repair != true && inputs.rearm_staged_after_runtime_tls_repair != true && inputs.rearm_staged_after_schema_compatibility_repair != true && inputs.rearm_staged_after_route_compatibility_repair != true && inputs.rearm_staged_after_cleanup_pause_repair != true }}
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}

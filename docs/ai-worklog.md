@@ -1933,3 +1933,26 @@
   risk-lockdown suite passed 33/33; the affected baseline-verifier and
   feature-flag route suites passed 13/13. GitHub CI and the protected
   Production rearm/rebuild remain required before this repair is complete.
+
+## 2026-07-18 - Fence the one-time STAGED cleanup-pause rearm
+
+- PR #57 merged the cleanup release-role fence as
+  `75c2df8d371d205013edf5ab190fbf04a58ef920`. The immutable failed STAGED
+  activation still records source `630dc1e1089ac7939fdfcb30a914bd2cb04d1771`,
+  so the repaired application cannot replace that deployment without an
+  explicit source-changing CAS.
+- Added a dedicated cleanup-pause repair mode pinned to that exact previous
+  source. Its cumulative diff allowlist contains only the cleanup router,
+  cleanup behavior tests, this release-control script and workflow, their
+  contract tests, and this worklog.
+- The source validator also parses the reviewed cleanup router. It requires the
+  exact post-baseline execution-role allowlist, excludes `SAFE_BASELINE`,
+  requires the `cleanup_paused` failure code, and proves cron authentication and
+  the release-role guard both run before retention, commit, or deletion calls.
+- The protected workflow accepts one explicit cleanup-pause input, rejects
+  conflicting repair modes, persists the existing durable reservation
+  evidence, performs the same exact version/source/run CAS, and exits `75` so
+  only the next attempt of the same run can build the reviewed source. Three
+  focused tests were red before implementation and passed after it. Full
+  release-control regression, GitHub CI, protected rearm/rebuild, promotion,
+  and formal-domain verification remain required.
