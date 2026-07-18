@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
@@ -126,6 +126,23 @@ RESERVED_BUILD_REPAIR_ALLOWED_PATHS = frozenset(
     {
         *RESERVED_BUILD_REPAIR_REQUIRED_PATHS,
         "backend/tests/test_ci_release_contract.py",
+        "docs/ai-worklog.md",
+        "docs/operations/risk-lockdown-runbook.md",
+    }
+)
+RESERVED_DEPLOY_ROOT_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "9aadae87ceae13d5dd65b324d8460bec88c2fb21"
+)
+RESERVED_DEPLOY_ROOT_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        ".github/workflows/safe-baseline-release.yml",
+        "scripts/release/register_safe_baseline.py",
+        "backend/tests/test_ci_release_contract.py",
+    }
+)
+RESERVED_DEPLOY_ROOT_REPAIR_ALLOWED_PATHS = frozenset(
+    {
+        *RESERVED_DEPLOY_ROOT_REPAIR_REQUIRED_PATHS,
         "docs/ai-worklog.md",
         "docs/operations/risk-lockdown-runbook.md",
     }
@@ -472,6 +489,15 @@ def validate_reserved_build_repair_descendant(
     )
     if diff.returncode != 0:
         raise SafeBaselineRegistrationError("reserved build repair diff could not be proven")
+    if previous_source_sha == RESERVED_DEPLOY_ROOT_REPAIR_PREVIOUS_SOURCE_SHA:
+        required_paths = RESERVED_DEPLOY_ROOT_REPAIR_REQUIRED_PATHS
+        allowed_paths = RESERVED_DEPLOY_ROOT_REPAIR_ALLOWED_PATHS
+        validate_dependency_repair = False
+    else:
+        required_paths = RESERVED_BUILD_REPAIR_REQUIRED_PATHS
+        allowed_paths = RESERVED_BUILD_REPAIR_ALLOWED_PATHS
+        validate_dependency_repair = True
+
     changed_paths: set[str] = set()
     for line in diff.stdout.splitlines():
         try:
@@ -481,18 +507,19 @@ def validate_reserved_build_repair_descendant(
                 "reserved build repair diff is malformed"
             ) from exc
         normalized = path.replace("\\", "/")
-        if status_code != "M" or normalized not in RESERVED_BUILD_REPAIR_ALLOWED_PATHS:
+        if status_code != "M" or normalized not in allowed_paths:
             raise SafeBaselineRegistrationError(
                 f"reserved build repair changed an unauthorized path: {normalized}"
             )
         changed_paths.add(normalized)
-    missing = RESERVED_BUILD_REPAIR_REQUIRED_PATHS - changed_paths
+    missing = required_paths - changed_paths
     if missing:
         raise SafeBaselineRegistrationError(
             "reserved build repair is missing required reviewed changes: "
             + ", ".join(sorted(missing))
         )
-    validate_reserved_build_dependency_repair(previous_source_sha, source_sha)
+    if validate_dependency_repair:
+        validate_reserved_build_dependency_repair(previous_source_sha, source_sha)
 
 
 def _read_git_json(revision: str, path: str) -> dict[str, Any]:
@@ -724,21 +751,24 @@ def _directory_sha256(path: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def materialize_vercel_build_output(
+def materialize_vercel_deploy_root(
     source_output: Path,
     *,
     source_root: Path,
-    destination_output: Path,
+    destination_root: Path,
     source_sha: str,
     runner_sha: str,
     workflow_run_id: str,
     workflow_attempt: int,
+    expected_project_id: str,
+    expected_org_id: str,
 ) -> dict[str, Any]:
-    """Create a self-contained Vercel Build Output API directory.
+    """Create one self-contained Vercel prebuilt deployment root.
 
     `vercel build` may represent static assets as symlinks into the source tree.
-    A durable prebuilt artifact must contain those bytes instead of preserving
-    references that become dangling when the artifact is recovered elsewhere.
+    Function `.vc-config.json` files may also retain repository-relative
+    `filePathMap` references that the CLI adds to the prebuilt upload. A durable
+    artifact must contain both forms of referenced bytes at their exact paths.
     """
     source_sha = _validate_sha(source_sha, name="source SHA", lengths=(40, 64))
     runner_sha = _validate_sha(runner_sha, name="runner SHA", lengths=(40, 64))
@@ -746,25 +776,35 @@ def materialize_vercel_build_output(
         raise ValueError("workflow run ID must be a positive decimal ID")
     if workflow_attempt < 1:
         raise ValueError("workflow attempt must be positive")
+    if not re.fullmatch(r"prj_[A-Za-z0-9]+", expected_project_id or ""):
+        raise ValueError("expected Vercel project ID is invalid")
+    if not re.fullmatch(r"(?:team|user)_[A-Za-z0-9]+", expected_org_id or ""):
+        raise ValueError("expected Vercel organization ID is invalid")
     if source_output.is_symlink() or not source_output.is_dir():
         raise ValueError("Vercel build output directory does not exist")
     if source_root.is_symlink() or not source_root.is_dir():
         raise ValueError("immutable source root does not exist")
-    if destination_output.exists() or destination_output.is_symlink():
-        raise ValueError("materialized build output destination already exists")
+    if destination_root.exists() or destination_root.is_symlink():
+        raise ValueError("materialized deploy root destination already exists")
 
     resolved_root = source_root.resolve(strict=True)
     resolved_output = source_output.resolve(strict=True)
     if not resolved_output.is_relative_to(resolved_root):
         raise ValueError("Vercel build output is outside the immutable source root")
-    destination_parent = destination_output.parent.resolve(strict=True)
+    destination_parent = destination_root.parent.resolve(strict=True)
     if destination_parent == resolved_root or destination_parent.is_relative_to(resolved_root):
-        raise ValueError("materialized build output must be outside the immutable source root")
+        raise ValueError("materialized deploy root must be outside the immutable source root")
 
-    staging = destination_output.with_name(
-        f".{destination_output.name}.materializing-{uuid.uuid4().hex}"
+    staging = destination_root.with_name(
+        f".{destination_root.name}.materializing-{uuid.uuid4().hex}"
     )
-    counts = {"directories": 0, "files": 0, "materialized_symlinks": 0}
+    counts = {
+        "directories": 0,
+        "files": 0,
+        "materialized_symlinks": 0,
+        "reference_declarations": 0,
+        "referenced_files": 0,
+    }
 
     def checked_effective_path(path: Path) -> tuple[Path, bool]:
         is_link = path.is_symlink()
@@ -806,24 +846,130 @@ def materialize_vercel_build_output(
             copy_entry(child, destination / child.name, next_ancestors)
         shutil.copystat(effective, destination, follow_symlinks=True)
 
+    def validated_reference(value: Any) -> tuple[str, Path]:
+        if (
+            not isinstance(value, str)
+            or not value
+            or "\\" in value
+            or ":" in value
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise ValueError("Vercel filePathMap contains a non-canonical reference")
+        relative = PurePosixPath(value)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or relative.as_posix() != value
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ValueError("Vercel filePathMap contains a non-canonical reference")
+        if (
+            relative.parts[0] in {".git", ".vercel"}
+            or any(part.startswith(".env") for part in relative.parts)
+        ):
+            raise ValueError("Vercel filePathMap references protected source metadata")
+        source = resolved_root.joinpath(*relative.parts)
+        try:
+            resolved = source.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("Vercel filePathMap contains a missing reference") from exc
+        if not resolved.is_relative_to(resolved_root):
+            raise ValueError("Vercel filePathMap reference escapes the immutable source root")
+        resolved_relative = resolved.relative_to(resolved_root)
+        if (
+            (
+                resolved_relative.parts
+                and resolved_relative.parts[0] in {".git", ".vercel"}
+            )
+            or any(part.startswith(".env") for part in resolved_relative.parts)
+        ):
+            raise ValueError("Vercel filePathMap references protected source metadata")
+        if not resolved.is_file():
+            raise ValueError("Vercel filePathMap reference is not a regular file")
+        return value, resolved
+
     try:
-        copy_entry(resolved_output, staging, frozenset())
+        (staging / ".vercel").mkdir(parents=True)
+        materialized_output = staging / ".vercel" / "output"
+        copy_entry(resolved_output, materialized_output, frozenset())
+        if not (materialized_output / "config.json").is_file():
+            raise ValueError("materialized Vercel build output has no config.json")
+
+        project_file = resolved_root / ".vercel" / "project.json"
+        if project_file.is_symlink() or not project_file.is_file():
+            raise ValueError("Vercel project binding does not exist")
+        try:
+            project = json.loads(project_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Vercel project binding is invalid") from exc
+        if (
+            not isinstance(project, dict)
+            or set(project) - {"projectId", "orgId", "projectName", "settings"}
+            or not re.fullmatch(r"prj_[A-Za-z0-9]+", str(project.get("projectId") or ""))
+            or not re.fullmatch(
+                r"(?:team|user)_[A-Za-z0-9]+",
+                str(project.get("orgId") or ""),
+            )
+            or project.get("projectId") != expected_project_id
+            or project.get("orgId") != expected_org_id
+            or not isinstance(project.get("projectName"), str)
+            or not project["projectName"]
+            or (
+                "settings" in project
+                and not isinstance(project.get("settings"), dict)
+            )
+        ):
+            raise ValueError("Vercel project binding has an unexpected shape")
+        shutil.copy2(project_file, staging / ".vercel" / "project.json")
+        counts["files"] += 1
+
+        references: dict[str, Path] = {}
+        for config_file in sorted(materialized_output.rglob(".vc-config.json")):
+            try:
+                config = json.loads(config_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("Vercel function config is invalid") from exc
+            if not isinstance(config, dict):
+                raise ValueError("Vercel function config must be an object")
+            file_path_map = config.get("filePathMap")
+            if file_path_map is None:
+                continue
+            if not isinstance(file_path_map, dict):
+                raise ValueError("Vercel function filePathMap must be an object")
+            for logical_path, reference in file_path_map.items():
+                if not isinstance(logical_path, str) or not logical_path:
+                    raise ValueError("Vercel function filePathMap has an invalid key")
+                counts["reference_declarations"] += 1
+                relative, resolved = validated_reference(reference)
+                existing = references.get(relative)
+                if existing is not None and existing != resolved:
+                    raise ValueError("Vercel filePathMap reference changed during materialization")
+                references[relative] = resolved
+
+        for relative, source in sorted(references.items()):
+            destination = staging.joinpath(*PurePosixPath(relative).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination, follow_symlinks=True)
+            counts["files"] += 1
+            counts["referenced_files"] += 1
+
         if any(entry.is_symlink() for entry in staging.rglob("*")):
-            raise ValueError("materialized Vercel build output still contains a symlink")
+            raise ValueError("materialized Vercel deploy root still contains a symlink")
         manifest_sha256 = _directory_sha256(staging)
-        staging.replace(destination_output)
+        staging.replace(destination_root)
     except Exception:
         if staging.exists() and staging.is_dir() and not staging.is_symlink():
             shutil.rmtree(staging)
         raise
 
     return {
-        "schema_version": "vowpic.vercel-build-output-materialization.v1",
+        "schema_version": "vowpic.vercel-deploy-root-materialization.v2",
         "passed": True,
         "source_sha": source_sha,
         "runner_sha": runner_sha,
         "workflow_run_id": str(workflow_run_id),
         "workflow_attempt": workflow_attempt,
+        "manifest_scope": "deploy-root",
         "manifest_sha256": manifest_sha256,
         **counts,
     }
@@ -2546,7 +2692,7 @@ def main() -> int:
         choices=(
             "preflight",
             "verify-runtime-secret",
-            "materialize-build-output",
+            "materialize-deploy-root",
             "adopt-reserved",
             "adopt-staged-verifier",
             "rearm-reserved-build",
@@ -2583,7 +2729,7 @@ def main() -> int:
     parser.add_argument("--build-artifact-digest")
     parser.add_argument("--source-output")
     parser.add_argument("--source-root")
-    parser.add_argument("--destination-output")
+    parser.add_argument("--destination-root")
     parser.add_argument("--formal-report")
     parser.add_argument("--vercel-token-env", default="VERCEL_TOKEN")
     parser.add_argument("--vercel-project-id-env", default="VERCEL_PROJECT_ID")
@@ -2652,19 +2798,29 @@ def main() -> int:
                 _write_create_once(Path(args.output), result)
             print(json.dumps(result, sort_keys=True))
             return 0
-        if args.action == "materialize-build-output":
-            if not all((args.source_output, args.source_root, args.destination_output)):
+        if args.action == "materialize-deploy-root":
+            if not all((args.source_output, args.source_root, args.destination_root)):
                 raise ValueError(
-                    "source output, source root, and destination output are required"
+                    "source output, source root, and destination root are required"
                 )
-            result = materialize_vercel_build_output(
+            project_id = _required_env(args.vercel_project_id_env)
+            org_id = _required_env(args.vercel_team_id_env)
+            if not project_id or not org_id:
+                print(
+                    "NOT_RUN: protected Vercel project coordinates are required",
+                    file=sys.stderr,
+                )
+                return NOT_RUN_EXIT
+            result = materialize_vercel_deploy_root(
                 Path(args.source_output),
                 source_root=Path(args.source_root),
-                destination_output=Path(args.destination_output),
+                destination_root=Path(args.destination_root),
                 source_sha=args.source_sha,
                 runner_sha=args.runner_sha,
                 workflow_run_id=args.workflow_run_id,
                 workflow_attempt=args.workflow_attempt,
+                expected_project_id=project_id,
+                expected_org_id=org_id,
             )
             if args.output:
                 _write_create_once(Path(args.output), result)
