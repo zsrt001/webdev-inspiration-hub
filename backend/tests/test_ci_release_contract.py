@@ -1917,6 +1917,32 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             'test "$BUILD_ARTIFACT_DIGEST" = "$EXPECTED_BUILD_ARTIFACT_DIGEST"',
             workflow,
         )
+        self.assertIn("bound_reserved_control_retry_allowed = (", workflow)
+        self.assertIn(
+            'activation_workflow_run_id == os.environ["GITHUB_RUN_ID"]',
+            workflow,
+        )
+        self.assertIn(
+            '0 < int(activation_attempt or "0")',
+            workflow,
+        )
+        self.assertIn(
+            '< int(os.environ["GITHUB_RUN_ATTEMPT"])',
+            workflow,
+        )
+        self.assertIn(
+            "steps.preflight.outputs.bound_reserved_control_retry_allowed != 'true'",
+            workflow,
+        )
+        self.assertIn(
+            're.fullmatch(r"[1-9][0-9]{0,19}", activation_build_artifact_id)',
+            workflow,
+        )
+        self.assertIn(
+            'r"sha256:[0-9a-f]{64}"',
+            workflow,
+        )
+        self.assertIn('and not activation.get("api_deployment_id")', workflow)
 
     def test_staged_runtime_tls_repair_diff_is_exact_and_pinned(self) -> None:
         register = _load_script(
@@ -2323,6 +2349,12 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertEqual(deploy_step.count('--env "SOURCE_SHA=$SOURCE_SHA"'), 1)
         self.assertEqual(
             deploy_step.count('--env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA"'),
+            1,
+        )
+        self.assertEqual(
+            deploy_step.count(
+                '--meta "vowpicRuntimeIdentityContract=vowpic-runtime-identity-v1"'
+            ),
             1,
         )
         self.assertEqual(
@@ -3087,6 +3119,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     "vowpicRuntimeBundleId": runtime_bundle_id,
                     "vowpicBuildSha256": manifest,
                     "vowpicReleaseRole": "SAFE_BASELINE",
+                    "vowpicRuntimeIdentityContract": register.RUNTIME_IDENTITY_CONTRACT,
                 },
             }
 
@@ -3213,6 +3246,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                         "vowpicRuntimeBundleId": runtime_bundle_id,
                         "vowpicBuildSha256": manifest_sha256,
                         "vowpicReleaseRole": "SAFE_BASELINE",
+                        "vowpicRuntimeIdentityContract": register.RUNTIME_IDENTITY_CONTRACT,
                     },
                 }
             ],
@@ -3263,6 +3297,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                         "vowpicRuntimeBundleId": runtime_bundle_id,
                         "vowpicBuildSha256": manifest_sha256,
                         "vowpicReleaseRole": "SAFE_BASELINE",
+                        "vowpicRuntimeIdentityContract": register.RUNTIME_IDENTITY_CONTRACT,
                     },
                 }
             ],
@@ -3303,6 +3338,97 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertEqual(recovered["candidate_count"], 0)
         self.assertEqual(recovered["runtime_mismatch_count"], 1)
 
+    def test_recovery_ignores_a_legacy_deployment_without_runtime_identity_contract(
+        self,
+    ) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_legacy_runtime_identity_contract",
+        )
+        source_sha = "a" * 40
+        runtime_bundle_id = "rtb_" + "b" * 64
+        manifest_sha256 = "c" * 64
+        page = mock.MagicMock()
+        page.json.return_value = {
+            "deployments": [
+                {
+                    "uid": "dpl_legacy",
+                    "url": "dpl_legacy.vercel.app",
+                    "state": "READY",
+                    "meta": {
+                        "vowpicSourceSha": source_sha,
+                        "vowpicRuntimeBundleId": runtime_bundle_id,
+                        "vowpicBuildSha256": manifest_sha256,
+                        "vowpicReleaseRole": "SAFE_BASELINE",
+                    },
+                }
+            ],
+            "pagination": {"next": None},
+        }
+        with (
+            mock.patch.object(
+                register,
+                "_preflight",
+                return_value={"state": "RETRY_RESERVED"},
+            ),
+            mock.patch.object(register.httpx, "get", return_value=page) as get,
+        ):
+            recovered = register._recover_deployment(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                workflow_run_id="12345",
+                workflow_attempt=2,
+                runtime_bundle_id=runtime_bundle_id,
+                manifest_sha256=manifest_sha256,
+                token="token",
+                project_id="prj_vowpic",
+                team_id="team_vowpic",
+                bypass_secret="z" * 32,
+            )
+
+        self.assertEqual(recovered["decision"], "DEPLOY_ONCE")
+        self.assertEqual(recovered["candidate_count"], 0)
+        self.assertEqual(recovered["runtime_mismatch_count"], 0)
+        get.assert_called_once()
+
+    def test_runtime_attestation_retries_then_accepts_the_exact_identity(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_runtime_attestation_retry_contract",
+        )
+        request = httpx.Request(
+            "GET",
+            "https://dpl_exact.vercel.app/version",
+        )
+        unavailable = httpx.Response(503, request=request)
+        exact = mock.MagicMock(status_code=200)
+        exact.json.return_value = {
+            "source_sha": "a" * 40,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "deployment_id": "dpl_exact",
+        }
+        with (
+            mock.patch.object(
+                register.httpx,
+                "get",
+                side_effect=[unavailable, exact],
+            ) as get,
+            mock.patch.object(register.time, "sleep") as sleep,
+        ):
+            matched = register._runtime_deployment_identity_matches(
+                deployment_url="https://dpl_exact.vercel.app",
+                deployment_id="dpl_exact",
+                source_sha="a" * 40,
+                runtime_bundle_id="rtb_" + "b" * 64,
+                bypass_secret="z" * 32,
+            )
+
+        self.assertTrue(matched)
+        self.assertEqual(get.call_count, 2)
+        sleep.assert_called_once_with(
+            register.RUNTIME_ATTESTATION_RETRY_DELAYS[0]
+        )
+
     def test_recovery_fails_closed_when_runtime_attestation_is_unreadable(self) -> None:
         register = _load_script(
             "scripts/release/register_safe_baseline.py",
@@ -3314,10 +3440,16 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         unavailable = httpx.Response(503, request=request)
         with (
-            mock.patch.object(register.httpx, "get", return_value=unavailable),
+            mock.patch.object(
+                register.httpx,
+                "get",
+                return_value=unavailable,
+            ) as get,
+            mock.patch.object(register.time, "sleep") as sleep,
             self.assertRaisesRegex(
                 register.SafeBaselineRegistrationError,
-                "runtime attestation could not be read",
+                r"runtime attestation could not be read for dpl_exact "
+                r"after 3 attempts \(HTTP 503\)",
             ),
         ):
             register._runtime_deployment_identity_matches(
@@ -3327,6 +3459,11 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 runtime_bundle_id="rtb_" + "b" * 64,
                 bypass_secret="z" * 32,
             )
+        self.assertEqual(get.call_count, register.RUNTIME_ATTESTATION_ATTEMPTS)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            list(register.RUNTIME_ATTESTATION_RETRY_DELAYS),
+        )
 
     def test_reserved_build_is_durable_and_manifest_fenced_before_deploy(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
