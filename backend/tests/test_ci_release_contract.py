@@ -1893,8 +1893,47 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("activation_build_artifact_digest", step)
         self.assertIn("staged-rearm-runtime-secret.json", step)
         self.assertNotIn("exit 75", step)
-        self.assertIn("activation_artifact_workflow_run_id", workflow)
-        self.assertIn("activation_artifact_workflow_attempt", workflow)
+        self.assertNotIn("activation_artifact_workflow_run_id", workflow)
+        self.assertNotIn("activation_artifact_workflow_attempt", workflow)
+        self.assertIn("id: bound_build_lookup", workflow)
+        self.assertIn("github_artifact_evidence.py lookup-bound-build", workflow)
+        self.assertIn(
+            '"backend/tests/test_release_coordinate_resolver.py"',
+            register_source,
+        )
+        self.assertIn(
+            '"scripts/release/github_artifact_evidence.py"',
+            register_source,
+        )
+        self.assertIn(
+            "--artifact-id \"$BOUND_BUILD_ARTIFACT_ID\"",
+            workflow,
+        )
+        self.assertIn(
+            "--artifact-digest \"$BOUND_BUILD_ARTIFACT_DIGEST\"",
+            workflow,
+        )
+        self.assertIn(
+            "BOUND_BUILD_WORKFLOW_RUN_ID: "
+            "${{ steps.bound_build_lookup.outputs.workflow_run_id }}",
+            workflow,
+        )
+        self.assertIn(
+            "BOUND_BUILD_WORKFLOW_ATTEMPT: "
+            "${{ steps.bound_build_lookup.outputs.workflow_attempt }}",
+            workflow,
+        )
+        bound_lookup = workflow.index("id: bound_build_lookup")
+        build_attempt = workflow.index("id: build_attempt", bound_lookup)
+        build_lookup = workflow.index("id: build_lookup", build_attempt)
+        build_download = workflow.index("id: build_download", build_lookup)
+        self.assertLess(bound_lookup, build_attempt)
+        self.assertLess(build_attempt, build_lookup)
+        self.assertLess(build_lookup, build_download)
+        self.assertIn(
+            'test "$BOUND_BUILD_STATE" = "FOUND"',
+            workflow[build_attempt:build_lookup],
+        )
         self.assertIn(
             "--run-id \"${{ steps.build_attempt.outputs.workflow_run_id }}\"",
             workflow,

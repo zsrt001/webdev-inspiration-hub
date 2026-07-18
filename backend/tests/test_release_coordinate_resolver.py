@@ -354,6 +354,130 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
                     client=client,
                 )
 
+    def test_bound_build_lookup_recovers_the_original_owner_from_exact_id(self) -> None:
+        module = _artifact_module()
+        digest = "sha256:" + "a" * 64
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(
+                request.url.path,
+                "/repos/owner/repo/actions/artifacts/8428394104",
+            )
+            self.assertEqual(request.headers.get("Authorization"), "Bearer github-token")
+            return httpx.Response(
+                200,
+                json={
+                    "id": 8428394104,
+                    "name": "vowpic-safe-baseline-29640135684-2-build",
+                    "expired": False,
+                    "digest": digest,
+                    "workflow_run": {"id": 29640135684},
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            result = module.lookup_bound_build_artifact(
+                repository="owner/repo",
+                artifact_id="8428394104",
+                artifact_digest=digest,
+                token="github-token",
+                client=client,
+            )
+
+        self.assertEqual(
+            result,
+            {
+                "state": "FOUND",
+                "artifact_id": "8428394104",
+                "artifact_digest": digest,
+                "artifact_name": "vowpic-safe-baseline-29640135684-2-build",
+                "workflow_run_id": "29640135684",
+                "workflow_attempt": "2",
+            },
+        )
+
+    def test_bound_build_lookup_fails_closed_on_coordinate_conflicts(self) -> None:
+        module = _artifact_module()
+        digest = "sha256:" + "a" * 64
+
+        def response(payload: dict[str, object]) -> httpx.Client:
+            return httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda _request: httpx.Response(200, json=payload)
+                )
+            )
+
+        conflicting = (
+            {
+                "id": 999,
+                "name": "vowpic-safe-baseline-456-2-build",
+                "expired": False,
+                "digest": digest,
+                "workflow_run": {"id": 456},
+            },
+            {
+                "id": 123,
+                "name": "vowpic-safe-baseline-456-2-build",
+                "expired": False,
+                "digest": "sha256:" + "b" * 64,
+                "workflow_run": {"id": 456},
+            },
+            {
+                "id": 123,
+                "name": "untrusted-build",
+                "expired": False,
+                "digest": digest,
+                "workflow_run": {"id": 456},
+            },
+            {
+                "id": 123,
+                "name": "vowpic-safe-baseline-456-2-build",
+                "expired": False,
+                "digest": digest,
+                "workflow_run": {"id": 789},
+            },
+        )
+        for payload in conflicting:
+            with self.subTest(payload=payload), response(payload) as client:
+                with self.assertRaises(module.GitHubArtifactError):
+                    module.lookup_bound_build_artifact(
+                        repository="owner/repo",
+                        artifact_id="123",
+                        artifact_digest=digest,
+                        token="github-token",
+                        client=client,
+                    )
+
+        for status, payload in (
+            (404, {}),
+            (
+                200,
+                {
+                    "id": 123,
+                    "name": "vowpic-safe-baseline-456-2-build",
+                    "expired": True,
+                    "digest": digest,
+                    "workflow_run": {"id": 456},
+                },
+            ),
+        ):
+            with self.subTest(status=status), httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda _request, status=status, payload=payload: httpx.Response(
+                        status,
+                        json=payload,
+                    )
+                )
+            ) as client:
+                result = module.lookup_bound_build_artifact(
+                    repository="owner/repo",
+                    artifact_id="123",
+                    artifact_digest=digest,
+                    token="github-token",
+                    client=client,
+                )
+                self.assertEqual(result, {"state": "NOT_FOUND"})
+
     def test_stored_formal_reference_must_remain_downloadable_and_hash_bound(self) -> None:
         module = _artifact_module()
         report_raw = json.dumps({"passed": True}, sort_keys=True).encode("utf-8")

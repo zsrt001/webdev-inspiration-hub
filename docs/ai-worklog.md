@@ -1817,3 +1817,17 @@
 - Runtime attestation performs three bounded attempts with 1- and 3-second delays. Exhaustion remains fail-closed and reports only the deployment ID, attempt count, and sanitized failure category.
 - A same-run retry may retain the historical config-repair input only when the activation is still RESERVED, its recorded run matches `GITHUB_RUN_ID`, its attempt is positive and older than the current attempt, the exact canonical manifest/artifact coordinates remain bound, and all runtime/deployment coordinates remain empty. The input causes no repair mutation in this state.
 - The pre-change focused release contract passed 99 cases with one Windows symlink-capability skip. Post-change, the focused contract passed 101 cases with one Windows symlink-capability skip, and the full backend suite passed 823 cases with 37 explicit environment/platform skips. Python/YAML parsing, `pip check`, `git diff --check`, and the credential-shaped diff scan passed; GitHub CI and the protected Production recovery remain required before this entry is final.
+
+## 2026-07-18 - Recover the original owner of a database-bound build Artifact
+
+### Goal and evidence
+
+- Protected run `29641566605` passed 27 control steps, including the bound RESERVED takeover, least-privilege database login proof, Vercel automation bypass, and runtime-bundle computation. It then stopped before download, deploy, Promote, or domain handoff because the workflow searched for `vowpic-safe-baseline-29640956210-1-build`.
+- The database-bound Artifact ID `8428394104` still exists, is unexpired until `2026-10-16`, has the exact stored digest, and is named `vowpic-safe-baseline-29640135684-2-build`. The prior control takeover changed the activation's controller run to `29640956210/1`; the workflow incorrectly reused those mutable control coordinates as the immutable Artifact owner.
+
+### Changes and verification
+
+- A bound build is now resolved directly through GitHub's exact Artifact-ID endpoint using the database-bound ID and digest. Its immutable name must match the safe-baseline build grammar, and the owner run encoded in that name must equal the API's `workflow_run.id`; the validated name supplies the original run and attempt needed for download and encryption associated data.
+- HTTP 404 or an expired Artifact remains confirmed absence. API failures, malformed metadata, ID/digest mismatch, an invalid name, or an owner mismatch still fail closed and cannot trigger a rebuild of a manifest-bound activation.
+- The old preflight outputs that aliased controller run/attempt as Artifact-owner coordinates were removed. Unbound recovery retains the existing name/run lookup; bound recovery cannot use it.
+- The pre-change focused resolver and release contract passed 109 cases with one Windows symlink-capability skip. Post-change, the focused pair passed 111 cases with one Windows symlink-capability skip, and the full backend suite passed 825 cases with 37 explicit environment/platform skips. Python/YAML parsing, `pip check`, `git diff --check`, and the real GitHub metadata read for Artifact `8428394104` passed; GitHub CI and protected Production recovery remain required before this entry is final.

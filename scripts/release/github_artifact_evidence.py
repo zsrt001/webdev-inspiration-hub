@@ -22,6 +22,9 @@ import httpx
 API_BASE = "https://api.github.com"
 API_VERSION = "2022-11-28"
 REFERENCE_PREFIX = "gha:v1:"
+SAFE_BASELINE_BUILD_NAME = re.compile(
+    r"vowpic-safe-baseline-([1-9][0-9]{0,19})-([1-9][0-9]{0,9})-build"
+)
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_REPORT_BYTES = 4 * 1024 * 1024
 
@@ -129,6 +132,66 @@ def lookup_artifact(
         "state": "FOUND",
         "artifact_id": _positive_id(artifact.get("id"), label="artifact ID"),
         "artifact_digest": _artifact_digest(str(artifact.get("digest") or "")),
+    }
+
+
+def lookup_bound_build_artifact(
+    *,
+    repository: str,
+    artifact_id: str | int,
+    artifact_digest: str,
+    token: str,
+    client: httpx.Client,
+) -> dict[str, str]:
+    """Recover the immutable build owner from a database-bound artifact ID."""
+    owner, repo = _repository(repository)
+    expected_id = _positive_id(artifact_id, label="artifact ID")
+    expected_digest = _artifact_digest(artifact_digest)
+    response = client.get(
+        f"{API_BASE}/repos/{owner}/{repo}/actions/artifacts/{expected_id}",
+        headers=_headers(token),
+    )
+    if response.status_code == 404:
+        return {"state": "NOT_FOUND"}
+    if response.status_code != 200:
+        raise GitHubArtifactError(
+            f"GitHub bound artifact lookup failed with HTTP {response.status_code}"
+        )
+    try:
+        artifact = response.json()
+    except ValueError as exc:
+        raise GitHubArtifactError(
+            "GitHub bound artifact lookup returned invalid JSON"
+        ) from exc
+    if not isinstance(artifact, dict):
+        raise GitHubArtifactError("GitHub bound artifact lookup returned an invalid object")
+    if str(artifact.get("id")) != expected_id:
+        raise GitHubArtifactError("GitHub bound artifact ID does not match")
+    if bool(artifact.get("expired")):
+        return {"state": "NOT_FOUND"}
+    actual_digest = _artifact_digest(str(artifact.get("digest") or ""))
+    if actual_digest != expected_digest:
+        raise GitHubArtifactError("GitHub bound artifact digest does not match")
+    name = str(artifact.get("name") or "").strip()
+    name_match = SAFE_BASELINE_BUILD_NAME.fullmatch(name)
+    if name_match is None:
+        raise GitHubArtifactError("GitHub bound artifact name is not a safe-baseline build")
+    workflow_run = artifact.get("workflow_run")
+    workflow_run_id = name_match.group(1)
+    if (
+        not isinstance(workflow_run, dict)
+        or str(workflow_run.get("id")) != workflow_run_id
+    ):
+        raise GitHubArtifactError(
+            "GitHub bound artifact owner does not match its immutable name"
+        )
+    return {
+        "state": "FOUND",
+        "artifact_id": expected_id,
+        "artifact_digest": expected_digest,
+        "artifact_name": name,
+        "workflow_run_id": workflow_run_id,
+        "workflow_attempt": name_match.group(2),
     }
 
 
@@ -297,6 +360,12 @@ def main() -> int:
     lookup.add_argument("--name", required=True)
     lookup.add_argument("--token-env", required=True)
     lookup.add_argument("--job-output", required=True)
+    lookup_bound = subparsers.add_parser("lookup-bound-build")
+    lookup_bound.add_argument("--repository", required=True)
+    lookup_bound.add_argument("--artifact-id", required=True)
+    lookup_bound.add_argument("--artifact-digest", required=True)
+    lookup_bound.add_argument("--token-env", required=True)
+    lookup_bound.add_argument("--job-output", required=True)
     reference = subparsers.add_parser("build-reference")
     reference.add_argument("--repository", required=True)
     reference.add_argument("--run-id", required=True)
@@ -318,6 +387,19 @@ def main() -> int:
                     repository=args.repository,
                     run_id=args.run_id,
                     name=args.name,
+                    token=token,
+                    client=client,
+                )
+            _write_job_output(Path(args.job_output), result)
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        if args.action == "lookup-bound-build":
+            token = os.environ.get(args.token_env, "").strip()
+            with httpx.Client(timeout=20.0) as client:
+                result = lookup_bound_build_artifact(
+                    repository=args.repository,
+                    artifact_id=args.artifact_id,
+                    artifact_digest=args.artifact_digest,
                     token=token,
                     client=client,
                 )
