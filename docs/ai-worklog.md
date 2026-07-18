@@ -1907,3 +1907,29 @@
   the reviewed repair, the workflow YAML and Python AST parse successfully, and
   the four directly affected takeover/diff/CAS/workflow tests pass. The clean
   GitHub CI suite remains the merge gate.
+
+## 2026-07-18 — Keep cleanup paused for the SAFE_BASELINE runtime role
+
+- PR #56 merged as `630dc1e1089ac7939fdfcb30a914bd2cb04d1771`.
+  Protected run `29647174291` attempt 1 then completed the reviewed one-time
+  route-compatibility CAS: it replaced the failed source `55eaeeea...` with the
+  merge commit, recorded `STAGED_REARMED`, and intentionally exited `75`.
+  Attempt 2 built and bound the new STAGED deployment and passed runtime
+  identity membership before failing closed in the runtime DDL audit with
+  `cleanup is not explicitly paused`.
+- The authoritative safe-baseline contract requires the cleanup endpoint to
+  remain an authenticated `503 cleanup_paused` surface even though Task 11 has
+  installed the durable deletion state machine for later Preview and commercial
+  release roles. The runtime route previously authenticated the cron token and
+  immediately executed that later state machine without checking
+  `RELEASE_ROLE`.
+- Added an explicit hosted-runtime release-role fence. `SAFE_BASELINE` and any
+  invalid hosted role now return `503 cleanup_paused` before retention,
+  database commit, or object deletion. `PREVIEW_IDENTITY`,
+  `PREVIEW_COMMERCIAL`, `COMMERCIAL_7A`, and `CONTRACT_7B` retain the durable
+  cleanup path; local development behavior is unchanged.
+- The new red proof failed with `HTTPException not raised`. After the fix, the
+  direct role-bound checks and real ASGI HTTP contract passed 3/3; the complete
+  risk-lockdown suite passed 33/33; the affected baseline-verifier and
+  feature-flag route suites passed 13/13. GitHub CI and the protected
+  Production rearm/rebuild remain required before this repair is complete.
