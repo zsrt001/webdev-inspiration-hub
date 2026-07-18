@@ -174,6 +174,23 @@ STAGED_SCHEMA_COMPATIBILITY_REPAIR_REQUIRED_PATHS = frozenset(
 STAGED_SCHEMA_COMPATIBILITY_REPAIR_ALLOWED_PATHS = (
     STAGED_SCHEMA_COMPATIBILITY_REPAIR_REQUIRED_PATHS
 )
+STAGED_ROUTE_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "55eaeeea0748a96c7d040d9465bd64dd9bfbfd2e"
+)
+STAGED_ROUTE_COMPATIBILITY_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        ".github/workflows/safe-baseline-release.yml",
+        "backend/app/routers/retired.py",
+        "backend/tests/test_ci_release_contract.py",
+        "backend/tests/test_web_only_contract.py",
+        "docs/ai-worklog.md",
+        "scripts/release/register_safe_baseline.py",
+        "vercel.json",
+    }
+)
+STAGED_ROUTE_COMPATIBILITY_REPAIR_ALLOWED_PATHS = (
+    STAGED_ROUTE_COMPATIBILITY_REPAIR_REQUIRED_PATHS
+)
 RESERVED_BUILD_REPAIR_REQUIRED_PATHS = frozenset(
     {
         ".github/workflows/safe-baseline-release.yml",
@@ -796,6 +813,129 @@ def validate_staged_schema_compatibility_repair_descendant(
     ):
         raise SafeBaselineRegistrationError(
             "safe-baseline Google exchange probe is not exact fail-closed 503"
+        )
+
+
+def validate_staged_route_compatibility_repair_descendant(
+    previous_source_sha: str,
+    source_sha: str,
+) -> None:
+    """Prove the exact Vercel/FastAPI tombstone repair for the failed STAGED source."""
+    if previous_source_sha != STAGED_ROUTE_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA:
+        raise SafeBaselineRegistrationError(
+            "staged route-compatibility repair is not pinned to the failed source"
+        )
+    if (
+        re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is None
+        or previous_source_sha == source_sha
+    ):
+        raise SafeBaselineRegistrationError(
+            "staged route-compatibility repair requires a reviewed descendant"
+        )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or head.stdout.strip() != source_sha:
+        raise SafeBaselineRegistrationError(
+            "staged route-compatibility source is not the reviewed checkout"
+        )
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", previous_source_sha, source_sha],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged route-compatibility source is not a descendant"
+        )
+    diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--no-renames",
+            f"{previous_source_sha}..{source_sha}",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged route-compatibility diff could not be proven"
+        )
+    changed_paths: set[str] = set()
+    for line in diff.stdout.splitlines():
+        try:
+            status_code, path = line.split("\t", 1)
+        except ValueError as exc:
+            raise SafeBaselineRegistrationError(
+                "staged route-compatibility diff is malformed"
+            ) from exc
+        normalized = path.replace("\\", "/")
+        if (
+            status_code != "M"
+            or normalized not in STAGED_ROUTE_COMPATIBILITY_REPAIR_ALLOWED_PATHS
+        ):
+            raise SafeBaselineRegistrationError(
+                "staged route-compatibility repair changed an unauthorized path: "
+                f"{normalized}"
+            )
+        changed_paths.add(normalized)
+    missing = STAGED_ROUTE_COMPATIBILITY_REPAIR_REQUIRED_PATHS - changed_paths
+    if missing:
+        raise SafeBaselineRegistrationError(
+            "staged route-compatibility repair is missing required changes: "
+            + ", ".join(sorted(missing))
+        )
+
+    retired_source = (
+        ROOT / "backend" / "app" / "routers" / "retired.py"
+    ).read_text(encoding="utf-8")
+    if (
+        '@router.post("/users")' not in retired_source
+        or '@router.post("/users/")' not in retired_source
+    ):
+        raise SafeBaselineRegistrationError(
+            "legacy user tombstone does not cover both slash forms"
+        )
+    try:
+        vercel_config = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
+        rewrites = vercel_config["rewrites"]
+        sources = [item["source"] for item in rewrites]
+        destination = next(
+            item["destination"]
+            for item in rewrites
+            if item["source"] == "/api/v1/users/"
+        )
+        user_rewrite_index = sources.index("/api/v1/users/")
+        api_fallback_index = sources.index("/api/:path*")
+        spa_fallback_index = sources.index("/(.*)")
+    except (
+        OSError,
+        json.JSONDecodeError,
+        KeyError,
+        StopIteration,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise SafeBaselineRegistrationError(
+            "staged route-compatibility Vercel rewrite is invalid"
+        ) from exc
+    if (
+        destination != "/api/index.py"
+        or user_rewrite_index >= api_fallback_index
+        or user_rewrite_index >= spa_fallback_index
+    ):
+        raise SafeBaselineRegistrationError(
+            "legacy user slash route is not fenced ahead of Vercel fallbacks"
         )
 
 
@@ -1585,6 +1725,15 @@ def _preflight(
                     source_sha,
                 )
                 state = "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY"
+            elif (
+                previous_source_sha
+                == STAGED_ROUTE_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA
+            ):
+                validate_staged_route_compatibility_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
+                state = "TAKEOVER_STAGED_ROUTE_COMPATIBILITY"
             else:
                 raise SafeBaselineRegistrationError(
                     "staged runtime repair is not pinned to a reviewed failed source"
@@ -1617,6 +1766,7 @@ def _preflight(
             "TAKEOVER_STAGED",
             "TAKEOVER_STAGED_RUNTIME_TLS",
             "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY",
+            "TAKEOVER_STAGED_ROUTE_COMPATIBILITY",
             *RETRIABLE_STATES,
         }:
             raise SafeBaselineRegistrationError(f"safe-baseline preflight rejected state: {state}")
@@ -2450,6 +2600,7 @@ def _rearm_invalid_staged(
     team_id: str,
     runtime_tls_repair: bool = False,
     runtime_schema_compatibility_repair: bool = False,
+    runtime_route_compatibility_repair: bool = False,
 ) -> dict[str, Any]:
     """Atomically clear one invalid, unpromoted STAGED binding for a fenced rebuild."""
     source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
@@ -2459,9 +2610,24 @@ def _rearm_invalid_staged(
         name="recorded deployed source SHA",
         lengths=(40, 64),
     )
-    if runtime_tls_repair and runtime_schema_compatibility_repair:
+    if sum(
+        (
+            runtime_tls_repair,
+            runtime_schema_compatibility_repair,
+            runtime_route_compatibility_repair,
+        )
+    ) > 1:
         raise ValueError("select exactly one staged runtime repair mode")
-    if runtime_schema_compatibility_repair:
+    if runtime_route_compatibility_repair:
+        if runner_sha != source_sha:
+            raise SafeBaselineRegistrationError(
+                "staged route-compatibility rearm must build the reviewed source"
+            )
+        validate_staged_route_compatibility_repair_descendant(
+            expected_source_sha,
+            source_sha,
+        )
+    elif runtime_schema_compatibility_repair:
         if runner_sha != source_sha:
             raise SafeBaselineRegistrationError(
                 "staged schema-compatibility rearm must build the reviewed source"
@@ -3460,6 +3626,10 @@ def main() -> int:
         action="store_true",
     )
     parser.add_argument(
+        "--runtime-route-compatibility-repair",
+        action="store_true",
+    )
+    parser.add_argument(
         "--inject-failure",
         choices=("BEFORE_MIGRATION", "AFTER_MIGRATION_BEFORE_RESERVATION", "AFTER_RESERVATION_BEFORE_COMMIT"),
     )
@@ -3486,11 +3656,26 @@ def main() -> int:
                 "--runtime-schema-compatibility-repair is valid only with "
                 "--action rearm-staged"
             )
-        if args.runtime_tls_repair and args.runtime_schema_compatibility_repair:
+        if (
+            args.runtime_route_compatibility_repair
+            and args.action != "rearm-staged"
+        ):
+            raise ValueError(
+                "--runtime-route-compatibility-repair is valid only with "
+                "--action rearm-staged"
+            )
+        if sum(
+            (
+                args.runtime_tls_repair,
+                args.runtime_schema_compatibility_repair,
+                args.runtime_route_compatibility_repair,
+            )
+        ) > 1:
             raise ValueError("select exactly one staged runtime repair mode")
         if (
             args.runtime_tls_repair
             or args.runtime_schema_compatibility_repair
+            or args.runtime_route_compatibility_repair
         ) and args.runtime_secret_evidence:
             raise ValueError(
                 "source-changing runtime repair must not reuse runtime-secret evidence"
@@ -3658,6 +3843,7 @@ def main() -> int:
             source_changing_repair = (
                 args.runtime_tls_repair
                 or args.runtime_schema_compatibility_repair
+                or args.runtime_route_compatibility_repair
             )
             project_id = (
                 _required_env(args.vercel_project_id_env)
@@ -3699,6 +3885,9 @@ def main() -> int:
                 runtime_tls_repair=args.runtime_tls_repair,
                 runtime_schema_compatibility_repair=(
                     args.runtime_schema_compatibility_repair
+                ),
+                runtime_route_compatibility_repair=(
+                    args.runtime_route_compatibility_repair
                 ),
             )
         elif args.action == "bind-build":
