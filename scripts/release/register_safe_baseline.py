@@ -33,6 +33,7 @@ from alembic.config import Config  # noqa: E402
 import httpx  # noqa: E402
 from dotenv import dotenv_values  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
+from scripts.release.ensure_vercel_automation_bypass import parse_bypass_header  # noqa: E402
 from scripts.release.github_artifact_evidence import parse_reference  # noqa: E402
 from scripts.release.production_inventory_rls import reconcile_inventory_rls_policies  # noqa: E402
 
@@ -109,8 +110,12 @@ STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS = frozenset(
     {
         *STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS,
         "backend/tests/test_ci_release_contract.py",
+        "backend/tests/test_production_database_logins.py",
         "docs/ai-worklog.md",
         "docs/operations/risk-lockdown-runbook.md",
+        "release/safe-baseline-contract.json",
+        "scripts/release/production_database_login_proof.py",
+        "scripts/release/provision_production_database_logins.py",
     }
 )
 STAGED_RUNTIME_TLS_REPAIR_PREVIOUS_SOURCE_SHA = (
@@ -2515,6 +2520,48 @@ def _vercel_deployment_url(value: Any) -> str | None:
     return f"https://{parsed.hostname}"
 
 
+def _runtime_deployment_identity_matches(
+    *,
+    deployment_url: str,
+    deployment_id: str,
+    source_sha: str,
+    runtime_bundle_id: str,
+    bypass_secret: str,
+) -> bool:
+    if re.fullmatch(r"[A-Za-z0-9]{32}", bypass_secret) is None:
+        raise ValueError("Vercel deployment bypass secret is invalid")
+    try:
+        response = httpx.get(
+            f"{deployment_url}/version",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "vowpic-safe-baseline-recovery/1",
+                "x-vercel-protection-bypass": bypass_secret,
+            },
+            timeout=30.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise SafeBaselineRegistrationError(
+            "Vercel deployment runtime attestation could not be read"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise SafeBaselineRegistrationError(
+            "Vercel deployment runtime attestation returned an invalid payload"
+        )
+    return {
+        "source_sha": str(payload.get("source_sha") or ""),
+        "runtime_bundle_id": str(payload.get("runtime_bundle_id") or ""),
+        "deployment_id": str(payload.get("deployment_id") or ""),
+    } == {
+        "source_sha": source_sha,
+        "runtime_bundle_id": runtime_bundle_id,
+        "deployment_id": deployment_id,
+    }
+
+
 def _bind_build_manifest(
     database_url: str,
     *,
@@ -2650,11 +2697,14 @@ def _recover_deployment(
     token: str,
     project_id: str,
     team_id: str,
+    bypass_secret: str,
 ) -> dict[str, Any]:
     manifest_sha256 = _validate_sha(
         manifest_sha256,
         name="build manifest SHA-256",
     )
+    if re.fullmatch(r"[A-Za-z0-9]{32}", bypass_secret) is None:
+        raise ValueError("Vercel deployment bypass secret is invalid")
     preflight = _preflight(
         database_url,
         source_sha=source_sha,
@@ -2736,15 +2786,28 @@ def _recover_deployment(
             f"Vercel deployment recovery exceeded {MAX_DEPLOYMENT_PAGES} pages"
         )
     exact_matches = list(exact_matches_by_id.values())
-    if len(exact_matches) > 1:
-        raise SafeBaselineRegistrationError("ambiguous exact deployment recovery candidates")
-    if exact_matches and exact_matches[0]["state"] != "READY":
+    if any(match["state"] != "READY" for match in exact_matches):
         raise SafeBaselineRegistrationError(
             "the exact staged deployment is not READY; refusing a duplicate deploy"
         )
+    runtime_matches: list[dict[str, str]] = []
+    runtime_mismatch_count = 0
+    for match in exact_matches:
+        if _runtime_deployment_identity_matches(
+            deployment_url=match["deployment_url"],
+            deployment_id=match["deployment_id"],
+            source_sha=source_sha,
+            runtime_bundle_id=runtime_bundle_id,
+            bypass_secret=bypass_secret,
+        ):
+            runtime_matches.append(match)
+        else:
+            runtime_mismatch_count += 1
+    if len(runtime_matches) > 1:
+        raise SafeBaselineRegistrationError("ambiguous exact deployment recovery candidates")
     candidates = [
         {key: value for key, value in match.items() if key != "state"}
-        for match in exact_matches
+        for match in runtime_matches
     ]
     decision = recovery_decision("RESERVED", candidate_count=len(candidates))
     return {
@@ -2752,6 +2815,7 @@ def _recover_deployment(
         "decision": decision,
         "candidate_count": len(candidates),
         "candidate": candidates[0] if candidates else None,
+        "runtime_mismatch_count": runtime_mismatch_count,
         "manifest_sha256": manifest_sha256,
         "runtime_bundle_id": runtime_bundle_id,
     }
@@ -2965,6 +3029,10 @@ def main() -> int:
     parser.add_argument("--vercel-token-env", default="VERCEL_TOKEN")
     parser.add_argument("--vercel-project-id-env", default="VERCEL_PROJECT_ID")
     parser.add_argument("--vercel-team-id-env", default="VERCEL_ORG_ID")
+    parser.add_argument(
+        "--deployment-bypass-header-env",
+        default="VERCEL_AUTOMATION_BYPASS_HEADER",
+    )
     parser.add_argument("--formal-domain")
     parser.add_argument("--vercel-env-file")
     parser.add_argument(
@@ -3176,12 +3244,19 @@ def main() -> int:
             token = _required_env(args.vercel_token_env)
             project_id = _required_env(args.vercel_project_id_env)
             team_id = _required_env(args.vercel_team_id_env)
+            bypass_header = _required_env(args.deployment_bypass_header_env)
             runtime_bundle_id = str(args.runtime_bundle_id or "").strip()
             manifest_sha256 = _validate_sha(
                 args.manifest_sha256 or "",
                 name="build manifest SHA-256",
             )
-            if not token or not project_id or not team_id or not re.fullmatch(r"rtb_[0-9a-f]{64}", runtime_bundle_id):
+            if (
+                not token
+                or not project_id
+                or not team_id
+                or not bypass_header
+                or not re.fullmatch(r"rtb_[0-9a-f]{64}", runtime_bundle_id)
+            ):
                 print("NOT_RUN: Vercel recovery coordinates are incomplete", file=sys.stderr)
                 return NOT_RUN_EXIT
             result = _recover_deployment(
@@ -3194,6 +3269,7 @@ def main() -> int:
                 token=token,
                 project_id=project_id,
                 team_id=team_id,
+                bypass_secret=parse_bypass_header(bypass_header),
             )
         elif args.action == "recover-promotion":
             token = _required_env(args.vercel_token_env)

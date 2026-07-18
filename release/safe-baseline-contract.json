@@ -47,6 +47,9 @@
       "email_delivery_logs": ["SELECT", "INSERT", "UPDATE"],
       "account_risk_events": ["SELECT", "INSERT", "UPDATE"]
     },
+    "runtime_schema_readiness_privileges": {
+      "alembic_version": ["SELECT"]
+    },
     "runtime_forbidden_business_privileges": [
       "DELETE",
       "TRUNCATE",

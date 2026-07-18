@@ -961,6 +961,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
           RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
           MANIFEST_SHA256: ${{ steps.build.outputs.manifest_sha256 }}
         run: |
@@ -975,6 +976,7 @@ jobs:
             --vercel-token-env VERCEL_TOKEN \
             --vercel-project-id-env VERCEL_PROJECT_ID \
             --vercel-team-id-env VERCEL_ORG_ID \
+            --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
             --output "$RUNNER_TEMP/deployment-recovery-before.json"
           CANDIDATE_COUNT="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["candidate_count"])' "$RUNNER_TEMP/deployment-recovery-before.json")"
           RECOVERY_REPORT="$RUNNER_TEMP/deployment-recovery-before.json"
@@ -984,6 +986,7 @@ jobs:
             test -d "$DEPLOY_ROOT/.vercel/output"
             DEPLOYMENT_URL="$(cd "$DEPLOY_ROOT" && "$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
                 --env "RELEASE_ROLE=SAFE_BASELINE" \
+                --env "SOURCE_SHA=$SOURCE_SHA" \
                 --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
                 --meta "vowpicSourceSha=$SOURCE_SHA" \
                 --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
@@ -1001,6 +1004,7 @@ jobs:
               --vercel-token-env VERCEL_TOKEN \
               --vercel-project-id-env VERCEL_PROJECT_ID \
               --vercel-team-id-env VERCEL_ORG_ID \
+              --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
               --output "$RUNNER_TEMP/deployment-recovery-after.json"
             RECOVERY_REPORT="$RUNNER_TEMP/deployment-recovery-after.json"
           elif [[ "$CANDIDATE_COUNT" != "1" ]]; then

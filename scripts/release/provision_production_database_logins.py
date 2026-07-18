@@ -31,6 +31,7 @@ from production_database_login_proof import (  # noqa: E402
     CONTROL_PLANE_TABLES,
     RUNTIME_GROUP,
     RUNTIME_LOGIN,
+    RUNTIME_SCHEMA_READINESS_PRIVILEGES,
     WRITER_GROUP,
     WRITER_LOGIN,
     prove_database_logins,
@@ -73,6 +74,13 @@ def load_database_role_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, tupl
     forbidden = roles.get("runtime_forbidden_business_privileges")
     if forbidden != ["DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]:
         raise ValueError("runtime forbidden business privilege contract is not exact")
+    raw_schema_privileges = roles.get("runtime_schema_readiness_privileges")
+    expected_schema_privileges = {
+        table: list(privileges)
+        for table, privileges in RUNTIME_SCHEMA_READINESS_PRIVILEGES.items()
+    }
+    if raw_schema_privileges != expected_schema_privileges:
+        raise ValueError("runtime schema-readiness privilege contract is not exact")
     return normalized
 
 
@@ -88,6 +96,17 @@ def configure_safe_baseline_database_roles(
     missing = set(privileges) - existing
     if missing:
         raise ValueError(f"safe-baseline business tables are missing: {', '.join(sorted(missing))}")
+    cursor.execute(
+        "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY(%s)",
+        (list(RUNTIME_SCHEMA_READINESS_PRIVILEGES),),
+    )
+    schema_tables = {str(row["tablename"]) for row in cursor.fetchall()}
+    missing_schema_tables = set(RUNTIME_SCHEMA_READINESS_PRIVILEGES) - schema_tables
+    if missing_schema_tables:
+        raise ValueError(
+            "safe-baseline schema-readiness tables are missing: "
+            + ", ".join(sorted(missing_schema_tables))
+        )
     cursor.execute(
         "SELECT rolname FROM pg_roles WHERE rolname IN ('anon', 'authenticated')"
     )
@@ -143,6 +162,23 @@ def configure_safe_baseline_database_roles(
                     sql.Identifier(RUNTIME_GROUP),
                 )
             )
+    for table, verbs in RUNTIME_SCHEMA_READINESS_PRIVILEGES.items():
+        relation = sql.Identifier("public", table)
+        cursor.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM PUBLIC").format(relation))
+        for role in (RUNTIME_GROUP, WRITER_GROUP, *direct_supabase_roles):
+            cursor.execute(
+                sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(
+                    relation,
+                    sql.Identifier(role),
+                )
+            )
+        cursor.execute(
+            sql.SQL("GRANT {} ON TABLE {} TO {}").format(
+                sql.SQL(", ").join(sql.SQL(verb) for verb in verbs),
+                relation,
+                sql.Identifier(RUNTIME_GROUP),
+            )
+        )
 
 
 def _sync_database_url(value: str) -> str:
@@ -301,7 +337,11 @@ def _revoke_direct_login_privileges(
     cursor.execute(
         sql.SQL("REVOKE ALL ON SCHEMA public FROM {}").format(sql.Identifier(login))
     )
-    for table in (*business_tables, *CONTROL_PLANE_TABLES):
+    for table in (
+        *business_tables,
+        *CONTROL_PLANE_TABLES,
+        *RUNTIME_SCHEMA_READINESS_PRIVILEGES,
+    ):
         cursor.execute(
             sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(
                 sql.Identifier("public", table),
