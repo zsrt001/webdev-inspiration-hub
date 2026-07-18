@@ -846,6 +846,22 @@ def materialize_vercel_deploy_root(
             copy_entry(child, destination / child.name, next_ancestors)
         shutil.copystat(effective, destination, follow_symlinks=True)
 
+    def is_allowed_vercel_python_build_file(parts: tuple[str, ...]) -> bool:
+        if len(parts) >= 4 and parts[:3] == (".vercel", "python", ".venv"):
+            return True
+        return (
+            len(parts) >= 6
+            and parts[:3] == (".vercel", "python", "services")
+            and parts[4] == ".venv"
+        )
+
+    def references_protected_metadata(parts: tuple[str, ...]) -> bool:
+        if not parts:
+            return True
+        if parts[0] == ".git" or any(part.startswith(".env") for part in parts):
+            return True
+        return parts[0] == ".vercel" and not is_allowed_vercel_python_build_file(parts)
+
     def validated_reference(value: Any) -> tuple[str, Path]:
         if (
             not isinstance(value, str)
@@ -863,10 +879,7 @@ def materialize_vercel_deploy_root(
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise ValueError("Vercel filePathMap contains a non-canonical reference")
-        if (
-            relative.parts[0] in {".git", ".vercel"}
-            or any(part.startswith(".env") for part in relative.parts)
-        ):
+        if references_protected_metadata(relative.parts):
             raise ValueError("Vercel filePathMap references protected source metadata")
         source = resolved_root.joinpath(*relative.parts)
         try:
@@ -876,13 +889,7 @@ def materialize_vercel_deploy_root(
         if not resolved.is_relative_to(resolved_root):
             raise ValueError("Vercel filePathMap reference escapes the immutable source root")
         resolved_relative = resolved.relative_to(resolved_root)
-        if (
-            (
-                resolved_relative.parts
-                and resolved_relative.parts[0] in {".git", ".vercel"}
-            )
-            or any(part.startswith(".env") for part in resolved_relative.parts)
-        ):
+        if references_protected_metadata(resolved_relative.parts):
             raise ValueError("Vercel filePathMap references protected source metadata")
         if not resolved.is_file():
             raise ValueError("Vercel filePathMap reference is not a regular file")

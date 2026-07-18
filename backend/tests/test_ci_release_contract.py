@@ -2783,6 +2783,21 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             )
             referenced_asset.parent.mkdir(parents=True)
             referenced_asset.write_text(".admin { display: block; }\n", encoding="utf-8")
+            generated_python_file = (
+                source_root
+                / ".vercel"
+                / "python"
+                / ".venv"
+                / "lib"
+                / "python3.12"
+                / "site-packages"
+                / "vowpic_runtime.py"
+            )
+            generated_python_file.parent.mkdir(parents=True)
+            generated_python_file.write_text(
+                "RUNTIME_READY = True\n",
+                encoding="utf-8",
+            )
             function_config = source_output / "functions" / "api.func" / ".vc-config.json"
             function_config.parent.mkdir(parents=True)
             function_config.write_text(
@@ -2791,7 +2806,11 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                         "filePathMap": {
                             "assets/admin.css": (
                                 "frontend/dist/build/h5/assets/admin.css"
-                            )
+                            ),
+                            "site-packages/vowpic_runtime.py": (
+                                ".vercel/python/.venv/lib/python3.12/"
+                                "site-packages/vowpic_runtime.py"
+                            ),
                         }
                     }
                 ),
@@ -2830,8 +2849,8 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             )
             self.assertTrue((destination / ".vercel" / "project.json").is_file())
             self.assertEqual(report["materialized_symlinks"], 0)
-            self.assertEqual(report["reference_declarations"], 1)
-            self.assertEqual(report["referenced_files"], 1)
+            self.assertEqual(report["reference_declarations"], 2)
+            self.assertEqual(report["referenced_files"], 2)
             self.assertEqual(
                 (
                     destination
@@ -2843,6 +2862,19 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     / "admin.css"
                 ).read_bytes(),
                 referenced_asset.read_bytes(),
+            )
+            self.assertEqual(
+                (
+                    destination
+                    / ".vercel"
+                    / "python"
+                    / ".venv"
+                    / "lib"
+                    / "python3.12"
+                    / "site-packages"
+                    / "vowpic_runtime.py"
+                ).read_bytes(),
+                generated_python_file.read_bytes(),
             )
             self.assertEqual(report["manifest_sha256"], register._directory_sha256(destination))
             with self.assertRaisesRegex(ValueError, "destination already exists"):
@@ -3030,6 +3062,33 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     fourth_output,
                     source_root=source_root,
                     destination_root=destination_parent / "fourth-deploy-root",
+                    source_sha="a" * 40,
+                    runner_sha="b" * 40,
+                    workflow_run_id="123",
+                    workflow_attempt=2,
+                    expected_project_id="prj_vowpic",
+                    expected_org_id="team_vowpic",
+                )
+
+            fifth_output = source_root / ".vercel" / "fifth-output"
+            fifth_config = fifth_output / "functions" / "api.func" / ".vc-config.json"
+            fifth_config.parent.mkdir(parents=True)
+            (fifth_output / "config.json").write_text("{}", encoding="utf-8")
+            fifth_config.write_text(
+                json.dumps(
+                    {
+                        "filePathMap": {
+                            "project-binding.json": ".vercel/project.json",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "protected source metadata"):
+                register.materialize_vercel_deploy_root(
+                    fifth_output,
+                    source_root=source_root,
+                    destination_root=destination_parent / "fifth-deploy-root",
                     source_sha="a" * 40,
                     runner_sha="b" * 40,
                     workflow_run_id="123",
