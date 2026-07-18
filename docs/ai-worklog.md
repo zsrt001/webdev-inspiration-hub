@@ -1803,3 +1803,17 @@
 - A new narrow `TAKEOVER_RESERVED_CONTROL` path accepts only the already-reviewed bound/undeployed RESERVED shape. It re-proves the control-only descendant and Production Sensitive runtime-secret evidence, then uses an exact version/source/run/manifest/Artifact ID/digest/approval CAS to update only run ownership, attempt, evidence reference, timestamp, and version. It cannot change or clear the source, build, runtime, deployment, promotion, or customer-data coordinates.
 - Cross-run artifact recovery remains bound to the original artifact owner run, attempt, name, ID, digest, encryption associated data, and manifest. The transfer path skips the normal same-run bind operation only after all six coordinates match the preserved activation; it cannot rebuild or silently substitute an artifact.
 - The focused release contract passed 99 cases with one Windows symlink-capability skip, and the expanded full backend suite passed 821 cases with 37 explicit environment/platform skips. Python/YAML parsing, `pip check`, `git diff --check`, and the credential-shaped diff scan passed.
+
+## 2026-07-18 - Close legacy deployment recovery and same-run retry gaps
+
+### Goal and evidence
+
+- Protected run `29640956210` attempt 1 transferred the exact bound RESERVED build to the reviewed controller and recovered the encrypted artifact, then stopped before deployment because the prior metadata-matching deployment's `/version` attestation became unreadable. That deployment had already returned a live identity mismatch when run `29640135684` created it, but the existing metadata did not distinguish deployments created before and after the Vercel Git-source override.
+- Attempt 2 remained on the same source, workflow run, manifest, and artifact, but failed before any external mutation because the historical config-repair input guard accepted only an activation attempt equal to the current GitHub attempt. The bound control takeover intentionally recorded attempt 1, while a GitHub rerun advanced to attempt 2.
+
+### Changes and verification
+
+- New deployments now carry `vowpicRuntimeIdentityContract=vowpic-runtime-identity-v1`, and recovery requires that marker in addition to exact source, runtime bundle, manifest, role, READY state, and live `/version` coordinates. The known pre-contract deployment is therefore excluded without trusting or deleting it; post-contract candidates still require live attestation.
+- Runtime attestation performs three bounded attempts with 1- and 3-second delays. Exhaustion remains fail-closed and reports only the deployment ID, attempt count, and sanitized failure category.
+- A same-run retry may retain the historical config-repair input only when the activation is still RESERVED, its recorded run matches `GITHUB_RUN_ID`, its attempt is positive and older than the current attempt, the exact canonical manifest/artifact coordinates remain bound, and all runtime/deployment coordinates remain empty. The input causes no repair mutation in this state.
+- The pre-change focused release contract passed 99 cases with one Windows symlink-capability skip. Post-change, the focused contract passed 101 cases with one Windows symlink-capability skip, and the full backend suite passed 823 cases with 37 explicit environment/platform skips. Python/YAML parsing, `pip check`, `git diff --check`, and the credential-shaped diff scan passed; GitHub CI and the protected Production recovery remain required before this entry is final.

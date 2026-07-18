@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from typing import Any
 from urllib.parse import quote, urlsplit
 import uuid
@@ -250,6 +251,9 @@ PHASE_RANK = {
 PHASE_SEQUENCE = tuple(PHASE_RANK)
 RETRIABLE_STATES = {f"RETRY_{phase}" for phase in PHASE_SEQUENCE if phase != "COMPLETED"}
 MAX_DEPLOYMENT_PAGES = 100
+RUNTIME_IDENTITY_CONTRACT = "vowpic-runtime-identity-v1"
+RUNTIME_ATTESTATION_ATTEMPTS = 3
+RUNTIME_ATTESTATION_RETRY_DELAYS = (1.0, 3.0)
 MIGRATION_LOCK_TIMEOUT = "15s"
 MIGRATION_STATEMENT_TIMEOUT = "5min"
 
@@ -2721,23 +2725,38 @@ def _runtime_deployment_identity_matches(
 ) -> bool:
     if re.fullmatch(r"[A-Za-z0-9]{32}", bypass_secret) is None:
         raise ValueError("Vercel deployment bypass secret is invalid")
-    try:
-        response = httpx.get(
-            f"{deployment_url}/version",
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "vowpic-safe-baseline-recovery/1",
-                "x-vercel-protection-bypass": bypass_secret,
-            },
-            timeout=30.0,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
+    last_error: Exception | None = None
+    for attempt in range(1, RUNTIME_ATTESTATION_ATTEMPTS + 1):
+        try:
+            response = httpx.get(
+                f"{deployment_url}/version",
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "vowpic-safe-baseline-recovery/1",
+                    "x-vercel-protection-bypass": bypass_secret,
+                },
+                timeout=20.0,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            break
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            if attempt < RUNTIME_ATTESTATION_ATTEMPTS:
+                time.sleep(RUNTIME_ATTESTATION_RETRY_DELAYS[attempt - 1])
+    else:
+        if isinstance(last_error, httpx.HTTPStatusError):
+            failure_kind = f"HTTP {last_error.response.status_code}"
+        elif isinstance(last_error, httpx.RequestError):
+            failure_kind = type(last_error).__name__
+        else:
+            failure_kind = "invalid JSON"
         raise SafeBaselineRegistrationError(
-            "Vercel deployment runtime attestation could not be read"
-        ) from exc
+            "Vercel deployment runtime attestation could not be read "
+            f"for {deployment_id} after {RUNTIME_ATTESTATION_ATTEMPTS} attempts "
+            f"({failure_kind})"
+        ) from last_error
     if not isinstance(payload, dict):
         raise SafeBaselineRegistrationError(
             "Vercel deployment runtime attestation returned an invalid payload"
@@ -2933,6 +2952,8 @@ def _recover_deployment(
                 and meta.get("vowpicRuntimeBundleId") == runtime_bundle_id
                 and meta.get("vowpicBuildSha256") == manifest_sha256
                 and meta.get("vowpicReleaseRole") == "SAFE_BASELINE"
+                and meta.get("vowpicRuntimeIdentityContract")
+                == RUNTIME_IDENTITY_CONTRACT
             ):
                 deployment_id = str(item.get("uid") or item.get("id") or "").strip()
                 deployment_url = _vercel_deployment_url(item.get("url"))
