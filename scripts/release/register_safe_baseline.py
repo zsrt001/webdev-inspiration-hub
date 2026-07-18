@@ -112,9 +112,11 @@ STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS = frozenset(
         *STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS,
         "backend/tests/test_ci_release_contract.py",
         "backend/tests/test_production_database_logins.py",
+        "backend/tests/test_release_coordinate_resolver.py",
         "docs/ai-worklog.md",
         "docs/operations/risk-lockdown-runbook.md",
         "release/safe-baseline-contract.json",
+        "scripts/release/github_artifact_evidence.py",
         "scripts/release/production_database_login_proof.py",
         "scripts/release/provision_production_database_logins.py",
     }
