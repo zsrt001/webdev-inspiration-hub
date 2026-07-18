@@ -1842,9 +1842,13 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         build_step = workflow[build_start:build_end]
         self.assertIn('git worktree add --detach "$RUNTIME_SOURCE_DIR" "$SOURCE_SHA"', build_step)
         self.assertIn('git -C "$RUNTIME_SOURCE_DIR" rev-parse HEAD', build_step)
-        self.assertIn('--directory "$MATERIALIZED_ROOT" output', build_step)
-        self.assertIn("--action materialize-build-output", build_step)
+        self.assertIn(
+            '--directory "$RUNNER_TEMP" safe-baseline-deploy-root',
+            build_step,
+        )
+        self.assertIn("--action materialize-deploy-root", build_step)
         self.assertIn('--source-output "$RUNTIME_OUTPUT"', build_step)
+        self.assertIn('--destination-root "$DEPLOY_ROOT"', build_step)
         self.assertIn("--action verify-runtime-secret", build_step)
         self.assertIn("--runtime-secret-fingerprint ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256", build_step)
         self.assertNotIn('"$VERCEL_CLI" build --prod', build_step.split("cd \"$RUNTIME_SOURCE_DIR\"", 1)[0])
@@ -2015,6 +2019,69 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "package-lock.json beyond adm-zip",
         ):
             validate(package, unsafe_lock)
+
+    def test_reserved_deploy_root_repair_is_exactly_the_second_forward_fix(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_deploy_root_repair_contract",
+        )
+        previous_source_sha = register.RESERVED_DEPLOY_ROOT_REPAIR_PREVIOUS_SOURCE_SHA
+        source_sha = "b" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(register.RESERVED_DEPLOY_ROOT_REPAIR_REQUIRED_PATHS)
+        ) + "\nM\tdocs/ai-worklog.md\n"
+
+        def calls_for(diff: str) -> list[subprocess.CompletedProcess[str]]:
+            return [
+                subprocess.CompletedProcess([], 0, stdout=source_sha + "\n", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout=diff, stderr=""),
+            ]
+
+        with (
+            mock.patch.object(
+                register.subprocess,
+                "run",
+                side_effect=calls_for(allowed_diff),
+            ),
+            mock.patch.object(
+                register,
+                "validate_reserved_build_dependency_repair",
+            ) as dependency_repair,
+        ):
+            register.validate_reserved_build_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+            dependency_repair.assert_not_called()
+
+        for unsafe_diff, error in (
+            (
+                allowed_diff + "M\tfrontend/package.json\n",
+                "unauthorized path: frontend/package.json",
+            ),
+            (
+                allowed_diff.replace(
+                    "M\tbackend/tests/test_ci_release_contract.py\n",
+                    "",
+                ),
+                "missing required reviewed changes",
+            ),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(
+                    register.subprocess,
+                    "run",
+                    side_effect=calls_for(unsafe_diff),
+                ),
+                self.assertRaisesRegex(register.SafeBaselineRegistrationError, error),
+            ):
+                register.validate_reserved_build_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
 
     def test_reserved_retry_rejects_a_decreasing_workflow_attempt(self) -> None:
         register = _load_script(
@@ -2461,7 +2528,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "preflight",
             "adopt-reserved",
             "rearm-reserved-build",
-            "materialize-build-output",
+            "materialize-deploy-root",
             "bind-build",
             "recover-deployment",
             "recover-promotion",
@@ -2540,9 +2607,13 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("build_artifact_id", migration)
         self.assertIn("build_artifact_digest", migration)
         self.assertIn(".vercel/output", workflow)
-        self.assertIn("build-output-materialization.json", workflow)
-        self.assertIn('test ! -e "$MATERIALIZED_ROOT"', workflow)
-        self.assertIn('--directory "$MATERIALIZED_ROOT" output', workflow)
+        self.assertIn("deploy-root-materialization.json", workflow)
+        self.assertIn('test ! -e "$DEPLOY_ROOT"', workflow)
+        self.assertIn(
+            '--directory "$RUNNER_TEMP" safe-baseline-deploy-root',
+            workflow,
+        )
+        self.assertIn('cd "$DEPLOY_ROOT" && "$VERCEL_CLI" deploy --prebuilt', workflow)
 
         new_build_condition = workflow[
             workflow.index("- name: Build the predeploy output") :
@@ -2686,32 +2757,139 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             root = Path(directory)
             source_root = root / "source"
             source_output = source_root / ".vercel" / "output"
-            destination = root / "artifact" / "output"
+            destination = root / "artifact" / "deploy-root"
             source_output.mkdir(parents=True)
+            (source_root / ".vercel" / "project.json").write_text(
+                json.dumps(
+                    {
+                        "projectId": "prj_vowpic",
+                        "orgId": "team_vowpic",
+                        "projectName": "vowpic",
+                        "settings": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
             destination.parent.mkdir()
             (source_output / "config.json").write_text("{}", encoding="utf-8")
-            report = register.materialize_vercel_build_output(
-                source_output,
-                source_root=source_root,
-                destination_output=destination,
-                source_sha="a" * 40,
-                runner_sha="b" * 40,
-                workflow_run_id="123",
-                workflow_attempt=2,
+            referenced_asset = (
+                source_root
+                / "frontend"
+                / "dist"
+                / "build"
+                / "h5"
+                / "assets"
+                / "admin.css"
             )
-            self.assertEqual((destination / "config.json").read_text(encoding="utf-8"), "{}")
-            self.assertEqual(report["materialized_symlinks"], 0)
-            self.assertEqual(report["manifest_sha256"], register._directory_sha256(destination))
-            with self.assertRaisesRegex(ValueError, "destination already exists"):
-                register.materialize_vercel_build_output(
+            referenced_asset.parent.mkdir(parents=True)
+            referenced_asset.write_text(".admin { display: block; }\n", encoding="utf-8")
+            function_config = source_output / "functions" / "api.func" / ".vc-config.json"
+            function_config.parent.mkdir(parents=True)
+            function_config.write_text(
+                json.dumps(
+                    {
+                        "filePathMap": {
+                            "assets/admin.css": (
+                                "frontend/dist/build/h5/assets/admin.css"
+                            )
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            mismatched_destination = root / "artifact" / "mismatched-deploy-root"
+            with self.assertRaisesRegex(ValueError, "unexpected shape"):
+                register.materialize_vercel_deploy_root(
                     source_output,
                     source_root=source_root,
-                    destination_output=destination,
+                    destination_root=mismatched_destination,
                     source_sha="a" * 40,
                     runner_sha="b" * 40,
                     workflow_run_id="123",
                     workflow_attempt=2,
+                    expected_project_id="prj_other",
+                    expected_org_id="team_vowpic",
                 )
+            self.assertFalse(mismatched_destination.exists())
+            report = register.materialize_vercel_deploy_root(
+                source_output,
+                source_root=source_root,
+                destination_root=destination,
+                source_sha="a" * 40,
+                runner_sha="b" * 40,
+                workflow_run_id="123",
+                workflow_attempt=2,
+                expected_project_id="prj_vowpic",
+                expected_org_id="team_vowpic",
+            )
+            self.assertEqual(
+                (destination / ".vercel" / "output" / "config.json").read_text(
+                    encoding="utf-8"
+                ),
+                "{}",
+            )
+            self.assertTrue((destination / ".vercel" / "project.json").is_file())
+            self.assertEqual(report["materialized_symlinks"], 0)
+            self.assertEqual(report["reference_declarations"], 1)
+            self.assertEqual(report["referenced_files"], 1)
+            self.assertEqual(
+                (
+                    destination
+                    / "frontend"
+                    / "dist"
+                    / "build"
+                    / "h5"
+                    / "assets"
+                    / "admin.css"
+                ).read_bytes(),
+                referenced_asset.read_bytes(),
+            )
+            self.assertEqual(report["manifest_sha256"], register._directory_sha256(destination))
+            with self.assertRaisesRegex(ValueError, "destination already exists"):
+                register.materialize_vercel_deploy_root(
+                    source_output,
+                    source_root=source_root,
+                    destination_root=destination,
+                    source_sha="a" * 40,
+                    runner_sha="b" * 40,
+                    workflow_run_id="123",
+                    workflow_attempt=2,
+                    expected_project_id="prj_vowpic",
+                    expected_org_id="team_vowpic",
+                )
+
+            missing_output = source_root / ".vercel" / "missing-output"
+            missing_config = (
+                missing_output / "functions" / "api.func" / ".vc-config.json"
+            )
+            missing_config.parent.mkdir(parents=True)
+            (missing_output / "config.json").write_text("{}", encoding="utf-8")
+            missing_config.write_text(
+                json.dumps(
+                    {
+                        "filePathMap": {
+                            "assets/missing.css": (
+                                "frontend/dist/build/h5/assets/missing.css"
+                            )
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            missing_destination = root / "artifact" / "missing-deploy-root"
+            with self.assertRaisesRegex(ValueError, "missing reference"):
+                register.materialize_vercel_deploy_root(
+                    missing_output,
+                    source_root=source_root,
+                    destination_root=missing_destination,
+                    source_sha="a" * 40,
+                    runner_sha="b" * 40,
+                    workflow_run_id="123",
+                    workflow_attempt=2,
+                    expected_project_id="prj_vowpic",
+                    expected_org_id="team_vowpic",
+                )
+            self.assertFalse(missing_destination.exists())
 
     def test_vercel_build_output_materialization_is_self_contained_and_rejects_escape(self) -> None:
         register = _load_script(
@@ -2724,11 +2902,22 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             source_output = source_root / ".vercel" / "output"
             assets = source_root / "frontend" / "dist" / "build" / "h5" / "assets"
             destination_parent = root / "artifact"
-            destination = destination_parent / "output"
+            destination = destination_parent / "deploy-root"
             source_output.mkdir(parents=True)
             assets.mkdir(parents=True)
             destination_parent.mkdir()
             (source_output / "config.json").write_text("{}", encoding="utf-8")
+            (source_root / ".vercel" / "project.json").write_text(
+                json.dumps(
+                    {
+                        "projectId": "prj_vowpic",
+                        "orgId": "team_vowpic",
+                        "projectName": "vowpic",
+                        "settings": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
             asset = assets / "helper.js"
             asset.write_text("export const helper = true;\n", encoding="utf-8")
             static_assets = source_output / "static" / "assets"
@@ -2738,40 +2927,69 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 link.symlink_to(asset)
             except OSError as exc:
                 self.skipTest(f"symlinks unavailable on this platform: {exc}")
+            function_config = source_output / "functions" / "api.func" / ".vc-config.json"
+            function_config.parent.mkdir(parents=True)
+            function_config.write_text(
+                json.dumps(
+                    {
+                        "runtime": "nodejs24.x",
+                        "filePathMap": {
+                            "assets/helper.js": "frontend/dist/build/h5/assets/helper.js",
+                            "assets/helper-copy.js": (
+                                "frontend/dist/build/h5/assets/helper.js"
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
 
-            report = register.materialize_vercel_build_output(
+            report = register.materialize_vercel_deploy_root(
                 source_output,
                 source_root=source_root,
-                destination_output=destination,
+                destination_root=destination,
                 source_sha="a" * 40,
                 runner_sha="b" * 40,
                 workflow_run_id="123",
                 workflow_attempt=2,
+                expected_project_id="prj_vowpic",
+                expected_org_id="team_vowpic",
             )
-            materialized = destination / "static" / "assets" / "helper.js"
+            materialized = (
+                destination / ".vercel" / "output" / "static" / "assets" / "helper.js"
+            )
+            referenced = (
+                destination / "frontend" / "dist" / "build" / "h5" / "assets" / "helper.js"
+            )
             self.assertTrue(materialized.is_file())
             self.assertFalse(materialized.is_symlink())
             self.assertEqual(materialized.read_bytes(), asset.read_bytes())
+            self.assertEqual(referenced.read_bytes(), asset.read_bytes())
             self.assertEqual(report["materialized_symlinks"], 1)
+            self.assertEqual(report["reference_declarations"], 2)
+            self.assertEqual(report["referenced_files"], 1)
             self.assertEqual(report["manifest_sha256"], register._directory_sha256(destination))
             asset.write_text("changed after materialization\n", encoding="utf-8")
             self.assertNotEqual(materialized.read_bytes(), asset.read_bytes())
+            self.assertNotEqual(referenced.read_bytes(), asset.read_bytes())
 
             second_output = source_root / ".vercel" / "second-output"
             second_output.mkdir()
             external = root / "outside.txt"
             external.write_text("outside", encoding="utf-8")
             (second_output / "escape.txt").symlink_to(external)
-            second_destination = destination_parent / "second-output"
+            second_destination = destination_parent / "second-deploy-root"
             with self.assertRaisesRegex(ValueError, "escapes the immutable source root"):
-                register.materialize_vercel_build_output(
+                register.materialize_vercel_deploy_root(
                     second_output,
                     source_root=source_root,
-                    destination_output=second_destination,
+                    destination_root=second_destination,
                     source_sha="a" * 40,
                     runner_sha="b" * 40,
                     workflow_run_id="123",
                     workflow_attempt=2,
+                    expected_project_id="prj_vowpic",
+                    expected_org_id="team_vowpic",
                 )
             self.assertFalse(second_destination.exists())
 
@@ -2781,14 +2999,43 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             sensitive.write_text("SECRET=not-for-output", encoding="utf-8")
             (third_output / "secret.txt").symlink_to(sensitive)
             with self.assertRaisesRegex(ValueError, "protected source metadata"):
-                register.materialize_vercel_build_output(
+                register.materialize_vercel_deploy_root(
                     third_output,
                     source_root=source_root,
-                    destination_output=destination_parent / "third-output",
+                    destination_root=destination_parent / "third-deploy-root",
                     source_sha="a" * 40,
                     runner_sha="b" * 40,
                     workflow_run_id="123",
                     workflow_attempt=2,
+                    expected_project_id="prj_vowpic",
+                    expected_org_id="team_vowpic",
+                )
+
+            fourth_output = source_root / ".vercel" / "fourth-output"
+            fourth_config = fourth_output / "functions" / "api.func" / ".vc-config.json"
+            fourth_config.parent.mkdir(parents=True)
+            (fourth_output / "config.json").write_text("{}", encoding="utf-8")
+            fourth_config.write_text(
+                json.dumps(
+                    {
+                        "filePathMap": {
+                            "escape": "../outside.txt",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "non-canonical reference"):
+                register.materialize_vercel_deploy_root(
+                    fourth_output,
+                    source_root=source_root,
+                    destination_root=destination_parent / "fourth-deploy-root",
+                    source_sha="a" * 40,
+                    runner_sha="b" * 40,
+                    workflow_run_id="123",
+                    workflow_attempt=2,
+                    expected_project_id="prj_vowpic",
+                    expected_org_id="team_vowpic",
                 )
 
     def test_formal_verified_reference_cannot_be_silently_replaced_on_retry(self) -> None:

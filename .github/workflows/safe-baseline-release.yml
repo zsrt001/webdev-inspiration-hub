@@ -739,32 +739,26 @@ jobs:
             "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
           )
           RUNTIME_OUTPUT="$RUNTIME_SOURCE_DIR/.vercel/output"
-          MATERIALIZED_ROOT="$RUNNER_TEMP/safe-baseline-materialized"
-          MATERIALIZED_OUTPUT="$MATERIALIZED_ROOT/output"
-          test ! -e "$MATERIALIZED_ROOT"
-          mkdir -p "$MATERIALIZED_ROOT"
+          DEPLOY_ROOT="$RUNNER_TEMP/safe-baseline-deploy-root"
+          test ! -e "$DEPLOY_ROOT"
           python "$GITHUB_WORKSPACE/scripts/release/register_safe_baseline.py" \
-            --action materialize-build-output \
+            --action materialize-deploy-root \
             --source-sha "$SOURCE_SHA" \
             --runner-sha "$RUNNER_SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
             --source-output "$RUNTIME_OUTPUT" \
             --source-root "$RUNTIME_SOURCE_DIR" \
-            --destination-output "$MATERIALIZED_OUTPUT" \
-            --output "$GITHUB_WORKSPACE/$EVIDENCE_DIR/build-output-materialization.json"
-          MANIFEST_SHA256="$(MATERIALIZATION_REPORT="$GITHUB_WORKSPACE/$EVIDENCE_DIR/build-output-materialization.json" python -c 'import json,os; print(json.load(open(os.environ["MATERIALIZATION_REPORT"], encoding="utf-8"))["manifest_sha256"])')"
+            --destination-root "$DEPLOY_ROOT" \
+            --output "$GITHUB_WORKSPACE/$EVIDENCE_DIR/deploy-root-materialization.json"
+          MANIFEST_SHA256="$(MATERIALIZATION_REPORT="$GITHUB_WORKSPACE/$EVIDENCE_DIR/deploy-root-materialization.json" python -c 'import json,os; print(json.load(open(os.environ["MATERIALIZATION_REPORT"], encoding="utf-8"))["manifest_sha256"])')"
           [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
           tar --create --file "$RUNNER_TEMP/safe-baseline-build.tar" \
-            --directory "$MATERIALIZED_ROOT" output
+            --directory "$RUNNER_TEMP" safe-baseline-deploy-root
           test -s "$RUNNER_TEMP/safe-baseline-build.tar"
-          test -s "$RUNTIME_SOURCE_DIR/.vercel/project.json"
-          test ! -e .vercel/output
-          mkdir -p .vercel
-          cp "$RUNTIME_SOURCE_DIR/.vercel/project.json" .vercel/project.json
-          tar --extract --file "$RUNNER_TEMP/safe-baseline-build.tar" --directory .vercel
-          test -d .vercel/output
-          test "$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')" = "$MANIFEST_SHA256"
+          test -s "$DEPLOY_ROOT/.vercel/project.json"
+          test -d "$DEPLOY_ROOT/.vercel/output"
+          test "$(DEPLOY_ROOT="$DEPLOY_ROOT" python -c 'import os; from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(os.environ["DEPLOY_ROOT"])))')" = "$MANIFEST_SHA256"
           printf '%s\n' "$MANIFEST_SHA256" > "$RUNNER_TEMP/safe-baseline-build.manifest.sha256"
           echo "manifest_sha256=$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
 
@@ -772,7 +766,7 @@ jobs:
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || (steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 == '' && steps.build_lookup.outputs.state == 'NOT_FOUND' && steps.preflight.outputs.build_artifact_recovery_expired == 'false') }}
         env:
           SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64: ${{ secrets.SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 }}
-          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v1:${{ inputs.source_sha }}:${{ github.run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
+          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v2:${{ inputs.source_sha }}:${{ github.run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
         run: |
           test -n "$SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64"
           python scripts/release/build_artifact_crypto.py encrypt \
@@ -813,9 +807,10 @@ jobs:
         env:
           EXPECTED_MANIFEST_SHA256: ${{ steps.preflight.outputs.activation_manifest_sha256 }}
           SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64: ${{ secrets.SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 }}
-          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v1:${{ inputs.source_sha }}:${{ github.run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
+          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v2:${{ inputs.source_sha }}:${{ github.run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
         run: |
-          test ! -e .vercel/output
+          DEPLOY_ROOT="$RUNNER_TEMP/safe-baseline-deploy-root"
+          test ! -e "$DEPLOY_ROOT"
           test -n "$SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64"
           test -s "$RUNNER_TEMP/build-artifact/safe-baseline-build.tar.enc"
           test -s "$RUNNER_TEMP/build-artifact/safe-baseline-build.manifest.sha256.enc"
@@ -830,10 +825,10 @@ jobs:
             --key-env SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 \
             --associated-data "$BUILD_ARTIFACT_AAD_PREFIX:manifest"
           ARTIFACT_MANIFEST_SHA256="$(BUILD_MANIFEST_SIDECAR="$RUNNER_TEMP/build-artifact/safe-baseline-build.manifest.sha256" python -c 'import os; from pathlib import Path; from scripts.release.register_safe_baseline import _read_manifest_sidecar; print(_read_manifest_sidecar(Path(os.environ["BUILD_MANIFEST_SIDECAR"])))')"
-          mkdir -p .vercel
-          tar --extract --file "$RUNNER_TEMP/build-artifact/safe-baseline-build.tar" --directory .vercel
-          test -d .vercel/output
-          MANIFEST_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
+          tar --extract --file "$RUNNER_TEMP/build-artifact/safe-baseline-build.tar" --directory "$RUNNER_TEMP"
+          test -s "$DEPLOY_ROOT/.vercel/project.json"
+          test -d "$DEPLOY_ROOT/.vercel/output"
+          MANIFEST_SHA256="$(DEPLOY_ROOT="$DEPLOY_ROOT" python -c 'import os; from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(os.environ["DEPLOY_ROOT"])))')"
           test "$MANIFEST_SHA256" = "$ARTIFACT_MANIFEST_SHA256"
           if [[ -n "$EXPECTED_MANIFEST_SHA256" ]]; then
             test "$MANIFEST_SHA256" = "$EXPECTED_MANIFEST_SHA256"
@@ -915,14 +910,17 @@ jobs:
           CANDIDATE_COUNT="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["candidate_count"])' "$RUNNER_TEMP/deployment-recovery-before.json")"
           RECOVERY_REPORT="$RUNNER_TEMP/deployment-recovery-before.json"
           if [[ "$CANDIDATE_COUNT" = "0" ]]; then
-            DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
-              --env "RELEASE_ROLE=SAFE_BASELINE" \
-              --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
-              --meta "vowpicSourceSha=$SOURCE_SHA" \
-              --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
-              --meta "vowpicBuildSha256=$MANIFEST_SHA256" \
-              --meta "vowpicReleaseRole=SAFE_BASELINE" \
-              --token="$VERCEL_TOKEN")"
+            DEPLOY_ROOT="$RUNNER_TEMP/safe-baseline-deploy-root"
+            test -s "$DEPLOY_ROOT/.vercel/project.json"
+            test -d "$DEPLOY_ROOT/.vercel/output"
+            DEPLOYMENT_URL="$(cd "$DEPLOY_ROOT" && "$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
+                --env "RELEASE_ROLE=SAFE_BASELINE" \
+                --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
+                --meta "vowpicSourceSha=$SOURCE_SHA" \
+                --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
+                --meta "vowpicBuildSha256=$MANIFEST_SHA256" \
+                --meta "vowpicReleaseRole=SAFE_BASELINE" \
+                --token="$VERCEL_TOKEN")"
             [[ "$DEPLOYMENT_URL" =~ ^https://[^[:space:]]+$ ]]
             python scripts/release/register_safe_baseline.py --action recover-deployment \
               --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
