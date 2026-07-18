@@ -68,6 +68,7 @@ async def retired_partner_session_bind_order(session_id: str) -> None:
     _raise_retired("partner_session_retired", "The former anonymous partner session is no longer available.")
 
 
+@router.post("/users")
 @router.post("/users/")
 async def retired_user_create() -> None:
     _raise_retired("legacy_user_route_retired", "This user endpoint is no longer available.")
