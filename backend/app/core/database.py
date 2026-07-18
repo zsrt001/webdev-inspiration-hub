@@ -34,6 +34,9 @@ _SUPABASE_POOLER_REGIONS = (
     "sa-east-1",
 )
 _SUPABASE_POOLER_PREFIXES = ("aws-0", "aws-1")
+_BUNDLED_SUPABASE_ROOT_CERT = (
+    Path(__file__).resolve().parent / "certs" / "prod-ca-2021.crt"
+)
 _detected_supabase_pooler_host: str | None = None
 
 
@@ -73,6 +76,10 @@ def _is_supabase_direct_host(host: str) -> bool:
     return host.startswith("db.") and host.endswith(".supabase.co")
 
 
+def _is_supabase_host(host: str) -> bool:
+    return host.endswith(".supabase.co") or "pooler.supabase." in host
+
+
 def _route_supabase_direct_to_pooler(raw: str) -> str:
     """Use Supabase's IPv4 pooler on Vercel when DATABASE_URL is the direct host."""
     if not settings.is_vercel_runtime:
@@ -96,9 +103,13 @@ def _route_supabase_direct_to_pooler(raw: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path or "/postgres", parts.query, parts.fragment))
 
 
-def _ssl_context() -> ssl.SSLContext:
+def _ssl_context(*, host: str) -> ssl.SSLContext:
     root_cert_raw = os.environ.get("PGSSLROOTCERT", "").strip()
-    root_cert = Path(root_cert_raw) if root_cert_raw else None
+    root_cert = (
+        Path(root_cert_raw)
+        if root_cert_raw
+        else _BUNDLED_SUPABASE_ROOT_CERT if _is_supabase_host(host) else None
+    )
     if root_cert is not None and not root_cert.is_file():
         raise RuntimeError("PGSSLROOTCERT must reference an existing certificate file")
 
@@ -150,7 +161,7 @@ def _build_supabase_pooler_async_creator(database_url: str):
         username = f"{username}.{project_ref}"
     password = parts.password or ""
     database = (parts.path or "/postgres").lstrip("/") or "postgres"
-    ssl_arg = _ssl_context()
+    ssl_arg = _ssl_context(host=host)
 
     async def creator():
         global _detected_supabase_pooler_host
@@ -198,7 +209,7 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
     connect_args: dict = {}
     kept_pairs: list[tuple[str, str]] = []
     host = (parts.hostname or "").lower()
-    is_supabase_host = host.endswith(".supabase.co") or "pooler.supabase." in host
+    is_supabase_host = _is_supabase_host(host)
     is_pooler_host = "pooler.supabase." in host
 
     for key, value in query_pairs:
@@ -206,7 +217,7 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
         if lowered == "sslmode":
             sslmode = value.strip().lower()
             if sslmode in {"require", "prefer", "verify-ca", "verify-full"}:
-                connect_args["ssl"] = _ssl_context()
+                connect_args["ssl"] = _ssl_context(host=host)
             elif sslmode == "disable" and (
                 settings.runtime_environment != "development"
                 or host not in {"localhost", "127.0.0.1", "::1"}
@@ -216,7 +227,7 @@ def normalize_database_url(database_url: str) -> tuple[str, dict]:
         kept_pairs.append((key, value))
 
     if is_supabase_host and "ssl" not in connect_args:
-        connect_args["ssl"] = _ssl_context()
+        connect_args["ssl"] = _ssl_context(host=host)
 
     if is_pooler_host:
         connect_args.setdefault("statement_cache_size", 0)

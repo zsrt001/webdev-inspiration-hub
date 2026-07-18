@@ -1,5 +1,6 @@
 """Database URL compatibility tests."""
 
+import hashlib
 import os
 from pathlib import Path
 import ssl
@@ -63,6 +64,41 @@ class DatabaseConfigTest(unittest.TestCase):
 
         self.assertIs(connect_args["ssl"], context)
         context.load_verify_locations.assert_called_once_with(cafile=str(root_cert))
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_supabase_context_loads_the_bundled_root_when_runtime_path_is_unset(self) -> None:
+        root_cert = database_config._BUNDLED_SUPABASE_ROOT_CERT
+        context = Mock()
+        with (
+            patch.dict(os.environ, {"PGSSLROOTCERT": ""}),
+            patch.object(database_config.ssl, "create_default_context", return_value=context),
+        ):
+            _url, connect_args = normalize_database_url(
+                "postgresql://postgres.example:secret@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+            )
+
+        self.assertIs(connect_args["ssl"], context)
+        context.load_verify_locations.assert_called_once_with(cafile=str(root_cert))
+        self.assertEqual(
+            hashlib.sha256(root_cert.read_bytes()).hexdigest(),
+            "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7",
+        )
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_non_supabase_context_does_not_trust_the_bundled_supabase_root(self) -> None:
+        context = Mock()
+        with (
+            patch.dict(os.environ, {"PGSSLROOTCERT": ""}),
+            patch.object(database_config.ssl, "create_default_context", return_value=context),
+        ):
+            _url, connect_args = normalize_database_url(
+                "postgresql://app:secret@postgres.example.com:5432/app?sslmode=require"
+            )
+
+        self.assertIs(connect_args["ssl"], context)
+        context.load_verify_locations.assert_not_called()
         self.assertTrue(context.check_hostname)
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
 

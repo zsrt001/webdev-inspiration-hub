@@ -356,6 +356,20 @@ class CiReleaseContractTest(unittest.TestCase):
 
         self.assertNotIn("RUNTIME_ENVIRONMENT", config.get("env", {}))
 
+    def test_vercel_function_bundles_the_pinned_supabase_root_certificate(self) -> None:
+        config = json.loads(_read("vercel.json"))
+        certificate = ROOT / "backend" / "app" / "core" / "certs" / "prod-ca-2021.crt"
+
+        self.assertEqual(
+            config["functions"]["api/index.py"]["includeFiles"],
+            "backend/app/core/certs/prod-ca-2021.crt",
+        )
+        self.assertTrue(certificate.is_file())
+        self.assertEqual(
+            hashlib.sha256(certificate.read_bytes()).hexdigest(),
+            "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7",
+        )
+
     def test_vercel_upload_context_keeps_required_frontend_build_script(self) -> None:
         ignore_lines = {
             line.strip()
@@ -1693,6 +1707,225 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         step = workflow[rearm:provisioning]
         self.assertIn("steps.preflight.outputs.activation_build_artifact_id", step)
         self.assertIn("steps.preflight.outputs.activation_build_artifact_digest", step)
+        self.assertIn("exit 75", step)
+
+    def test_staged_runtime_tls_repair_diff_is_exact_and_pinned(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_runtime_tls_diff_contract",
+        )
+        previous_source_sha = register.STAGED_RUNTIME_TLS_REPAIR_PREVIOUS_SOURCE_SHA
+        source_sha = "b" * 40
+        diff_lines = []
+        for path in sorted(register.STAGED_RUNTIME_TLS_REPAIR_REQUIRED_PATHS):
+            status = "A" if path == "backend/app/core/certs/prod-ca-2021.crt" else "M"
+            diff_lines.append(f"{status}\t{path}")
+        subprocess_results = [
+            subprocess.CompletedProcess([], 0, stdout=source_sha + "\n"),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0, stdout="\n".join(diff_lines) + "\n"),
+        ]
+        with mock.patch.object(register.subprocess, "run", side_effect=subprocess_results):
+            register.validate_staged_runtime_tls_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+
+        unauthorized_results = [
+            subprocess.CompletedProcess([], 0, stdout=source_sha + "\n"),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout="\n".join([*diff_lines, "M\tbackend/app/main.py"]) + "\n",
+            ),
+        ]
+        with (
+            mock.patch.object(
+                register.subprocess,
+                "run",
+                side_effect=unauthorized_results,
+            ),
+            self.assertRaisesRegex(
+                register.SafeBaselineRegistrationError,
+                "unauthorized path",
+            ),
+        ):
+            register.validate_staged_runtime_tls_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+
+    def test_staged_runtime_tls_repair_preflight_is_fenced_to_one_descendant(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_runtime_tls_preflight_contract",
+        )
+        previous_source_sha = register.STAGED_RUNTIME_TLS_REPAIR_PREVIOUS_SOURCE_SHA
+        source_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": previous_source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "STAGED",
+            "version": 4,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_invalid_tls",
+            "api_deployment_url": "https://invalid-tls.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.scalar_one.return_value = "on"
+        engine = mock.MagicMock()
+        engine.connect.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+            mock.patch.object(
+                register,
+                "validate_staged_runtime_tls_repair_descendant",
+            ) as repair_diff,
+        ):
+            report = register._preflight(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                runner_sha=source_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+            )
+
+        self.assertEqual(report["state"], "TAKEOVER_STAGED_RUNTIME_TLS")
+        repair_diff.assert_called_once_with(previous_source_sha, source_sha)
+
+    def test_invalid_staged_runtime_tls_rearm_advances_source_and_clears_binding(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_runtime_tls_rearm_contract",
+        )
+        previous_source_sha = register.STAGED_RUNTIME_TLS_REPAIR_PREVIOUS_SOURCE_SHA
+        source_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": previous_source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "STAGED",
+            "version": 4,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_invalid_tls",
+            "api_deployment_url": "https://invalid-tls.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
+            "id": activation["id"],
+            "version": 5,
+        }
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(
+                register,
+                "validate_staged_runtime_tls_repair_descendant",
+            ) as repair_diff,
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_configure_migration_timeouts"),
+            mock.patch.object(register, "_advisory_lock"),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+        ):
+            result = register._rearm_invalid_staged(
+                "postgresql://migration",
+                source_sha=source_sha,
+                runner_sha=source_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+                expected_source_sha=previous_source_sha,
+                expected_workflow_run_id="123",
+                expected_version=4,
+                approval="protected-approval",
+                evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
+                runtime_secret_evidence=None,
+                project_id="",
+                team_id="",
+                runtime_tls_repair=True,
+            )
+
+        repair_diff.assert_called_once_with(previous_source_sha, source_sha)
+        self.assertEqual(result["state"], "STAGED_REARMED")
+        self.assertEqual(result["previous_source_sha"], previous_source_sha)
+        self.assertEqual(result["source_sha"], source_sha)
+        statements = [str(call.args[0]) for call in connection.execute.call_args_list]
+        update_index = next(
+            index for index, statement in enumerate(statements)
+            if "UPDATE release_activations" in statement
+        )
+        update = statements[update_index]
+        update_params = connection.execute.call_args_list[update_index].args[1]
+        self.assertIn("SET source_sha = :source_sha", update)
+        self.assertIn("source_sha = :expected_source_sha", update)
+        self.assertEqual(update_params["source_sha"], source_sha)
+        self.assertEqual(update_params["expected_source_sha"], previous_source_sha)
+        self.assertIn("phase = 'RESERVED'", update)
+        self.assertIn("api_deployment_id = NULL", update)
+
+    def test_staged_runtime_tls_repair_is_explicit_evidence_first_and_rerun_fenced(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        register_source = _read("scripts/release/register_safe_baseline.py")
+        self.assertIn("rearm_staged_after_runtime_tls_repair", workflow)
+        self.assertIn('"TAKEOVER_STAGED_RUNTIME_TLS"', workflow)
+        self.assertIn("--runtime-tls-repair", workflow)
+        self.assertIn(
+            "Reject a runtime TLS repair input outside its exact STAGED takeover",
+            workflow,
+        )
+        self.assertIn(
+            "--runtime-tls-repair is valid only with --action rearm-staged",
+            register_source,
+        )
+        self.assertIn(
+            "9868401e52024fc347bb23ad0bca98858a2901f1",
+            register_source,
+        )
+        durable_evidence = workflow.index("id: reservation_evidence")
+        main_recheck = workflow.index(
+            "Recheck current main before migration, reservation, or staged verifier takeover",
+            durable_evidence,
+        )
+        guard = workflow.index(
+            "Fail closed unless the exact STAGED runtime TLS repair was explicitly selected",
+            main_recheck,
+        )
+        rearm = workflow.index(
+            "Atomically rearm the invalid STAGED runtime after the reviewed TLS repair",
+            guard,
+        )
+        config_rearm = workflow.index(
+            "Atomically rearm the invalid unpromoted STAGED binding",
+            rearm,
+        )
+        self.assertLess(durable_evidence, main_recheck)
+        self.assertLess(main_recheck, guard)
+        self.assertLess(guard, rearm)
+        self.assertLess(rearm, config_rearm)
+        step = workflow[rearm:config_rearm]
+        self.assertIn("--expected-source-sha", step)
+        self.assertIn("--expected-workflow-run-id", step)
+        self.assertIn("--expected-version", step)
         self.assertIn("exit 75", step)
 
     def test_invalid_staged_rearm_is_exact_cas_and_restores_the_regression_trigger(self) -> None:

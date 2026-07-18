@@ -113,6 +113,27 @@ STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS = frozenset(
         "docs/operations/risk-lockdown-runbook.md",
     }
 )
+STAGED_RUNTIME_TLS_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "9868401e52024fc347bb23ad0bca98858a2901f1"
+)
+STAGED_RUNTIME_TLS_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        ".github/workflows/safe-baseline-release.yml",
+        "backend/app/core/certs/prod-ca-2021.crt",
+        "backend/app/core/database.py",
+        "backend/tests/test_ci_release_contract.py",
+        "backend/tests/test_database_config.py",
+        "docs/ai-worklog.md",
+        "scripts/release/register_safe_baseline.py",
+        "vercel.json",
+    }
+)
+STAGED_RUNTIME_TLS_REPAIR_ALLOWED_PATHS = (
+    STAGED_RUNTIME_TLS_REPAIR_REQUIRED_PATHS
+)
+STAGED_RUNTIME_TLS_REPAIR_CERT_SHA256 = (
+    "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
+)
 RESERVED_BUILD_REPAIR_REQUIRED_PATHS = frozenset(
     {
         ".github/workflows/safe-baseline-release.yml",
@@ -491,6 +512,112 @@ def validate_staged_control_descendant(runtime_source_sha: str, runner_sha: str)
         raise SafeBaselineRegistrationError(
             "staged verifier takeover is missing required reviewed control changes: "
             + ", ".join(sorted(missing))
+        )
+
+
+def validate_staged_runtime_tls_repair_descendant(
+    previous_source_sha: str,
+    source_sha: str,
+) -> None:
+    """Prove the invalid STAGED deployment advances through one exact TLS repair."""
+    if previous_source_sha != STAGED_RUNTIME_TLS_REPAIR_PREVIOUS_SOURCE_SHA:
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair is not pinned to the recorded failed source"
+        )
+    if (
+        re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is None
+        or previous_source_sha == source_sha
+    ):
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair requires a distinct reviewed descendant source"
+        )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or head.stdout.strip() != source_sha:
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair source is not the reviewed checkout"
+        )
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", previous_source_sha, source_sha],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair source is not a descendant of the failed source"
+        )
+    diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--no-renames",
+            f"{previous_source_sha}..{source_sha}",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair diff could not be proven"
+        )
+    changed_paths: set[str] = set()
+    for line in diff.stdout.splitlines():
+        try:
+            status_code, path = line.split("\t", 1)
+        except ValueError as exc:
+            raise SafeBaselineRegistrationError(
+                "staged runtime TLS repair diff is malformed"
+            ) from exc
+        normalized = path.replace("\\", "/")
+        expected_status = (
+            "A"
+            if normalized == "backend/app/core/certs/prod-ca-2021.crt"
+            else "M"
+        )
+        if (
+            status_code != expected_status
+            or normalized not in STAGED_RUNTIME_TLS_REPAIR_ALLOWED_PATHS
+        ):
+            raise SafeBaselineRegistrationError(
+                f"staged runtime TLS repair changed an unauthorized path: {normalized}"
+            )
+        changed_paths.add(normalized)
+    missing = STAGED_RUNTIME_TLS_REPAIR_REQUIRED_PATHS - changed_paths
+    if missing:
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair is missing required reviewed changes: "
+            + ", ".join(sorted(missing))
+        )
+
+    certificate = ROOT / "backend" / "app" / "core" / "certs" / "prod-ca-2021.crt"
+    if (
+        certificate.is_symlink()
+        or not certificate.is_file()
+        or _file_sha256(certificate) != STAGED_RUNTIME_TLS_REPAIR_CERT_SHA256
+    ):
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair certificate does not match the pinned Supabase CA"
+        )
+    try:
+        vercel_config = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
+        include_files = vercel_config["functions"]["api/index.py"]["includeFiles"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair Vercel function configuration is invalid"
+        ) from exc
+    if include_files != "backend/app/core/certs/prod-ca-2021.crt":
+        raise SafeBaselineRegistrationError(
+            "staged runtime TLS repair does not bundle the pinned Supabase CA"
         )
 
 
@@ -1252,6 +1379,21 @@ def _preflight(
             source_sha=source_sha,
             workflow_run_id=workflow_run_id,
         )
+        if (
+            state == "CONFLICTING_INSTALL"
+            and activation is not None
+            and str(activation.get("source_sha") or "") != source_sha
+            and staged_verifier_takeover_is_adoptable(activation)
+        ):
+            if effective_runner_sha != source_sha:
+                raise SafeBaselineRegistrationError(
+                    "staged runtime TLS repair must run and build the same reviewed source"
+                )
+            validate_staged_runtime_tls_repair_descendant(
+                str(activation.get("source_sha") or ""),
+                source_sha,
+            )
+            state = "TAKEOVER_STAGED_RUNTIME_TLS"
         if activation is not None and state in RETRIABLE_STATES:
             validate_resume_coordinates(
                 activation,
@@ -1275,6 +1417,7 @@ def _preflight(
             "TAKEOVER_RESERVED",
             "TAKEOVER_RESERVED_BUILD",
             "TAKEOVER_STAGED",
+            "TAKEOVER_STAGED_RUNTIME_TLS",
             *RETRIABLE_STATES,
         }:
             raise SafeBaselineRegistrationError(f"safe-baseline preflight rejected state: {state}")
@@ -1917,11 +2060,12 @@ def _rearm_invalid_staged(
     expected_version: int,
     approval: str,
     evidence_prefix: str,
-    runtime_secret_evidence: Path,
+    runtime_secret_evidence: Path | None,
     project_id: str,
     team_id: str,
+    runtime_tls_repair: bool = False,
 ) -> dict[str, Any]:
-    """Atomically clear one invalid, unpromoted STAGED binding for an exact-source rebuild."""
+    """Atomically clear one invalid, unpromoted STAGED binding for a fenced rebuild."""
     source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
     runner_sha = _validate_sha(runner_sha, name="reviewed runner SHA", lengths=(40, 64))
     expected_source_sha = _validate_sha(
@@ -1929,8 +2073,30 @@ def _rearm_invalid_staged(
         name="recorded deployed source SHA",
         lengths=(40, 64),
     )
-    if source_sha != expected_source_sha:
-        raise SafeBaselineRegistrationError("staged rearm cannot change the deployed source")
+    if runtime_tls_repair:
+        if runner_sha != source_sha:
+            raise SafeBaselineRegistrationError(
+                "staged runtime TLS rearm must run and build the same reviewed source"
+            )
+        validate_staged_runtime_tls_repair_descendant(
+            expected_source_sha,
+            source_sha,
+        )
+    else:
+        if source_sha != expected_source_sha:
+            raise SafeBaselineRegistrationError("staged rearm cannot change the deployed source")
+        validate_staged_control_descendant(source_sha, runner_sha)
+        if runtime_secret_evidence is None:
+            raise ValueError("staged config rearm requires runtime secret control evidence")
+        _validate_runtime_secret_evidence(
+            runtime_secret_evidence,
+            source_sha=source_sha,
+            runner_sha=runner_sha,
+            workflow_run_id=workflow_run_id,
+            workflow_attempt=workflow_attempt,
+            project_id=project_id,
+            team_id=team_id,
+        )
     if (
         not re.fullmatch(r"[1-9][0-9]*", expected_workflow_run_id)
         or not re.fullmatch(r"[1-9][0-9]*", workflow_run_id)
@@ -1946,17 +2112,6 @@ def _rearm_invalid_staged(
         evidence_prefix,
     ):
         raise ValueError("staged rearm requires one durable GitHub artifact URL")
-    validate_staged_control_descendant(source_sha, runner_sha)
-    _validate_runtime_secret_evidence(
-        runtime_secret_evidence,
-        source_sha=source_sha,
-        runner_sha=runner_sha,
-        workflow_run_id=workflow_run_id,
-        workflow_attempt=workflow_attempt,
-        project_id=project_id,
-        team_id=team_id,
-    )
-
     engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
     try:
         with engine.begin() as connection:
@@ -1968,7 +2123,7 @@ def _rearm_invalid_staged(
             if activation is None:
                 raise SafeBaselineRegistrationError("safe-baseline activation row is missing")
             if (
-                str(activation.get("source_sha") or "") != source_sha
+                str(activation.get("source_sha") or "") != expected_source_sha
                 or str(activation.get("workflow_run_id") or "") != expected_workflow_run_id
                 or int(activation.get("version") or 0) != expected_version
             ):
@@ -2019,7 +2174,8 @@ def _rearm_invalid_staged(
                     text(
                         """
                         UPDATE release_activations
-                        SET workflow_run_id = :workflow_run_id,
+                        SET source_sha = :source_sha,
+                            workflow_run_id = :workflow_run_id,
                             workflow_attempt = :next_workflow_attempt,
                             phase = 'RESERVED',
                             phase_rank = 0,
@@ -2041,7 +2197,7 @@ def _rearm_invalid_staged(
                         WHERE id = CAST(:activation_id AS uuid)
                           AND version = :expected_version
                           AND phase = 'STAGED'
-                          AND source_sha = :source_sha
+                          AND source_sha = :expected_source_sha
                           AND workflow_run_id = :expected_workflow_run_id
                           AND approval = :approval
                           AND runtime_bundle_id IS NOT NULL
@@ -2072,6 +2228,7 @@ def _rearm_invalid_staged(
                         "activation_id": activation["id"],
                         "expected_version": expected_version,
                         "source_sha": source_sha,
+                        "expected_source_sha": expected_source_sha,
                         "expected_workflow_run_id": expected_workflow_run_id,
                         "approval": approval,
                     },
@@ -2091,6 +2248,7 @@ def _rearm_invalid_staged(
             "activation_id": result["id"],
             "version": result["version"],
             "source_sha": source_sha,
+            "previous_source_sha": expected_source_sha,
             "runner_sha": runner_sha,
             "workflow_run_id": workflow_run_id,
             "workflow_attempt": workflow_attempt,
@@ -2818,6 +2976,7 @@ def main() -> int:
         default="ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256",
     )
     parser.add_argument("--runtime-secret-evidence")
+    parser.add_argument("--runtime-tls-repair", action="store_true")
     parser.add_argument(
         "--inject-failure",
         choices=("BEFORE_MIGRATION", "AFTER_MIGRATION_BEFORE_RESERVATION", "AFTER_RESERVATION_BEFORE_COMMIT"),
@@ -2835,6 +2994,12 @@ def main() -> int:
             raise ValueError("workflow run ID and positive attempt are required")
         if bool(args.action) == bool(args.phase):
             raise ValueError("choose exactly one of --action or --phase")
+        if args.runtime_tls_repair and args.action != "rearm-staged":
+            raise ValueError("--runtime-tls-repair is valid only with --action rearm-staged")
+        if args.runtime_tls_repair and args.runtime_secret_evidence:
+            raise ValueError(
+                "runtime TLS repair must not reuse runtime-secret repair evidence"
+            )
         if args.action == "verify-runtime-secret":
             expected_secret = _required_env(args.runtime_secret_env)
             vercel_token = _required_env(args.vercel_token_env)
@@ -2965,9 +3130,12 @@ def main() -> int:
             )
         elif args.action == "rearm-staged":
             approval = _required_env(args.approval_id_env)
-            project_id = _required_env(args.vercel_project_id_env)
-            team_id = _required_env(args.vercel_team_id_env)
-            if not all((approval, args.runtime_secret_evidence, project_id, team_id)):
+            project_id = _required_env(args.vercel_project_id_env) if not args.runtime_tls_repair else ""
+            team_id = _required_env(args.vercel_team_id_env) if not args.runtime_tls_repair else ""
+            if not approval or (
+                not args.runtime_tls_repair
+                and not all((args.runtime_secret_evidence, project_id, team_id))
+            ):
                 print(
                     "NOT_RUN: protected staged-rearm approval and Vercel proof are required",
                     file=sys.stderr,
@@ -2984,9 +3152,14 @@ def main() -> int:
                 expected_version=args.expected_version or 0,
                 approval=approval,
                 evidence_prefix=args.evidence_prefix,
-                runtime_secret_evidence=Path(args.runtime_secret_evidence),
+                runtime_secret_evidence=(
+                    Path(args.runtime_secret_evidence)
+                    if args.runtime_secret_evidence
+                    else None
+                ),
                 project_id=project_id,
                 team_id=team_id,
+                runtime_tls_repair=args.runtime_tls_repair,
             )
         elif args.action == "bind-build":
             result = _bind_build_manifest(

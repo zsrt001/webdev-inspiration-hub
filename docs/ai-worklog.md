@@ -1758,3 +1758,17 @@
 - The materializer now permits only those three exact public-example paths. `.env`, `.env.local`, `.env.production.local`, any other or nested `.env*` path, protected Vercel metadata, missing/non-file paths, and declared or resolved escapes remain rejected. Tests prove all three examples are copied byte-for-byte and an unreviewed `secrets/.env.example` still fails closed.
 - A separate exact forward-repair profile is pinned to previous source `0cf0296e90b46b5be43c91253a1f7c4e9b96f1a5`; only the materializer, its contract test, and release documentation are allowed to differ.
 - The focused release contract passed all 89 cases with one explicit Windows symlink skip, and the full backend suite passed all 808 cases with 37 explicit environment/platform skips. Python compilation and `git diff --check` passed.
+
+## 2026-07-18 - Bundle the pinned Supabase CA for the Vercel runtime
+
+### Goal and evidence
+
+- Protected run `29633220611` built, persisted, deployed, and bound source `9868401e52024fc347bb23ad0bca98858a2901f1` as STAGED deployment `dpl_8ihCdkWzz7SsrcFhN4DFPYSWnraW`, then stopped before Promote or formal-domain handoff when its `/health` probe returned 500.
+- The deployment's Vercel runtime traceback proves application startup failed in the schema-readiness query because `asyncpg` rejected the Supabase TLS chain with `SSLCertVerificationError: self-signed certificate in certificate chain`. The GitHub runner already used the checksum-pinned Supabase CA through `PGSSLROOTCERT`; the Vercel function did not contain that runner-local file.
+
+### Changes and verification
+
+- Added the official Supabase Root 2021 CA as a public, versioned runtime asset with SHA-256 `700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7`. The database-only TLS context uses it only for Supabase hosts when `PGSSLROOTCERT` is unset; explicit PostgreSQL CA paths still take precedence, non-Supabase TLS retains the system trust store, and CA plus hostname verification remain mandatory.
+- The Vercel function explicitly includes the certificate. Focused tests prove its exact hash, Supabase-only trust scope, unchanged explicit-CA behavior, and Vercel bundle declaration.
+- Added a one-use STAGED runtime-TLS recovery fence pinned to the exact failed source above. It accepts only the reviewed eight-path diff, requires the new runtime and release controller to be the same descendant main commit, records durable evidence before the database CAS, clears the invalid deployment/build binding atomically back to RESERVED, advances the source, and exits before the next attempt rebuilds. Config-repair and runtime-TLS repair modes are mutually exclusive and state-bound.
+- Ten focused database, security, Vercel-bundle, diff-allowlist, preflight, CAS, and workflow tests passed. Python syntax compilation without bytecode, YAML/JSON parsing, certificate hashing, and `git diff --check` passed. The local managed read-only sandbox could not create temporary test directories, so the complete writable-runner suite remains a required CI gate before merge. No Production alias, formal domain, Proxifier setting, or customer data was changed, and no Subagent was used.
