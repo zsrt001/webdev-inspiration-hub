@@ -179,6 +179,29 @@ RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_ALLOWED_PATHS = frozenset(
         "docs/operations/risk-lockdown-runbook.md",
     }
 )
+RESERVED_TRACKED_ENV_EXAMPLE_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "0cf0296e90b46b5be43c91253a1f7c4e9b96f1a5"
+)
+RESERVED_TRACKED_ENV_EXAMPLE_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        "scripts/release/register_safe_baseline.py",
+        "backend/tests/test_ci_release_contract.py",
+    }
+)
+RESERVED_TRACKED_ENV_EXAMPLE_REPAIR_ALLOWED_PATHS = frozenset(
+    {
+        *RESERVED_TRACKED_ENV_EXAMPLE_REPAIR_REQUIRED_PATHS,
+        "docs/ai-worklog.md",
+        "docs/operations/risk-lockdown-runbook.md",
+    }
+)
+VERCEL_PUBLIC_ENV_EXAMPLE_REFERENCES = frozenset(
+    {
+        ".env.example",
+        "backend/.env.example",
+        "frontend/.env.example",
+    }
+)
 ADM_ZIP_REPAIR_VERSION = "0.6.0"
 ADM_ZIP_REPAIR_LOCK_ENTRY = {
     "version": ADM_ZIP_REPAIR_VERSION,
@@ -535,6 +558,10 @@ def validate_reserved_build_repair_descendant(
     ):
         required_paths = RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_REQUIRED_PATHS
         allowed_paths = RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_ALLOWED_PATHS
+        validate_dependency_repair = False
+    elif previous_source_sha == RESERVED_TRACKED_ENV_EXAMPLE_REPAIR_PREVIOUS_SOURCE_SHA:
+        required_paths = RESERVED_TRACKED_ENV_EXAMPLE_REPAIR_REQUIRED_PATHS
+        allowed_paths = RESERVED_TRACKED_ENV_EXAMPLE_REPAIR_ALLOWED_PATHS
         validate_dependency_repair = False
     else:
         required_paths = RESERVED_BUILD_REPAIR_REQUIRED_PATHS
@@ -895,8 +922,10 @@ def materialize_vercel_deploy_root(
     def references_protected_metadata(parts: tuple[str, ...]) -> bool:
         if not parts:
             return True
-        if parts[0] == ".git" or any(part.startswith(".env") for part in parts):
+        if parts[0] == ".git":
             return True
+        if any(part.startswith(".env") for part in parts):
+            return "/".join(parts) not in VERCEL_PUBLIC_ENV_EXAMPLE_REFERENCES
         return parts[0] == ".vercel" and not is_allowed_vercel_python_build_file(parts)
 
     def validated_reference(value: Any) -> tuple[str, Path]:
