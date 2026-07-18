@@ -1186,7 +1186,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 source_sha=sha,
                 workflow_run_id="789",
             ),
-            "CONFLICTING_INSTALL",
+            "TAKEOVER_RESERVED_CONTROL",
         )
         staged = {
             "source_sha": sha,
@@ -1355,6 +1355,103 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("manifest_sha256 IS NULL", statement)
         self.assertIn("api_deployment_id IS NULL", statement)
         self.assertIn("acceptance_fault_state IS NULL", statement)
+
+    def test_bound_reserved_control_takeover_preserves_the_exact_build(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_bound_reserved_control_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 2,
+            "phase": "RESERVED",
+            "version": 26,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "manifest_sha256": "d" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "e" * 64,
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
+            "id": activation["id"],
+            "version": 27,
+        }
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+        runtime_secret_evidence = Path("runtime-secret-proof.json")
+
+        with (
+            mock.patch.object(
+                register,
+                "validate_staged_control_descendant",
+            ) as control_diff,
+            mock.patch.object(
+                register,
+                "_validate_runtime_secret_evidence",
+            ) as runtime_secret_proof,
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_configure_migration_timeouts") as timeouts,
+            mock.patch.object(register, "_advisory_lock"),
+            mock.patch.object(
+                register,
+                "_current_revision",
+                return_value=register.TARGET_SCHEMA,
+            ),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+        ):
+            result = register._adopt_bound_reserved_control(
+                "postgresql://migration",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+                expected_source_sha=source_sha,
+                expected_workflow_run_id="123",
+                expected_version=26,
+                expected_manifest_sha256="d" * 64,
+                expected_build_artifact_id="456",
+                expected_build_artifact_digest="sha256:" + "e" * 64,
+                approval="protected-approval",
+                evidence_prefix="https://github.com/o/r/actions/runs/789/artifacts/2",
+                runtime_secret_evidence=runtime_secret_evidence,
+                project_id="prj_project",
+                team_id="team_owner",
+            )
+
+        control_diff.assert_called_once_with(source_sha, runner_sha)
+        runtime_secret_proof.assert_called_once_with(
+            runtime_secret_evidence,
+            source_sha=source_sha,
+            runner_sha=runner_sha,
+            workflow_run_id="789",
+            workflow_attempt=1,
+            project_id="prj_project",
+            team_id="team_owner",
+        )
+        timeouts.assert_called_once_with(connection)
+        self.assertEqual(result["state"], "BOUND_RESERVED_CONTROL_ADOPTED")
+        self.assertEqual(result["manifest_sha256"], "d" * 64)
+        self.assertEqual(result["build_artifact_id"], "456")
+        statement = str(connection.execute.call_args.args[0])
+        self.assertNotIn("SET source_sha", statement)
+        self.assertNotIn("manifest_sha256 = NULL", statement)
+        self.assertNotIn("build_artifact_id = NULL", statement)
+        self.assertIn("workflow_run_id = :workflow_run_id", statement)
+        self.assertIn(
+            "manifest_sha256 = :expected_manifest_sha256",
+            statement,
+        )
+        self.assertIn(
+            "build_artifact_id = :expected_build_artifact_id",
+            statement,
+        )
+        self.assertIn("api_deployment_id IS NULL", statement)
 
     def test_staged_verifier_takeover_updates_only_run_ownership_and_evidence(self) -> None:
         register = _load_script(
@@ -1683,6 +1780,56 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertEqual(report["state"], "TAKEOVER_RESERVED_BUILD")
         repair_diff.assert_called_once_with(previous_source_sha, source_sha)
 
+    def test_bound_reserved_control_preflight_requires_the_control_allowlist(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_bound_reserved_control_preflight_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 2,
+            "phase": "RESERVED",
+            "version": 26,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "manifest_sha256": "d" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "e" * 64,
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.scalar_one.return_value = "on"
+        engine = mock.MagicMock()
+        engine.connect.return_value.__enter__.return_value = connection
+
+        with (
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(
+                register,
+                "_current_revision",
+                return_value=register.TARGET_SCHEMA,
+            ),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+            mock.patch.object(
+                register,
+                "validate_staged_control_descendant",
+            ) as control_diff,
+        ):
+            report = register._preflight(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+            )
+
+        self.assertEqual(report["state"], "TAKEOVER_RESERVED_CONTROL")
+        control_diff.assert_called_once_with(source_sha, runner_sha)
+
     def test_bound_reserved_prebuild_repair_is_explicit_evidence_first_and_rerun_fenced(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         register_source = _read("scripts/release/register_safe_baseline.py")
@@ -1708,6 +1855,68 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("steps.preflight.outputs.activation_build_artifact_id", step)
         self.assertIn("steps.preflight.outputs.activation_build_artifact_digest", step)
         self.assertIn("exit 75", step)
+
+    def test_bound_reserved_control_takeover_is_evidence_first_and_preserves_build(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        register_source = _read("scripts/release/register_safe_baseline.py")
+        self.assertIn('"TAKEOVER_RESERVED_CONTROL"', workflow)
+        self.assertIn('"adopt-reserved-control"', register_source)
+        durable_evidence = workflow.index("id: reservation_evidence")
+        main_recheck = workflow.index(
+            "Recheck current main before migration, reservation, or staged verifier takeover",
+            durable_evidence,
+        )
+        guard = workflow.index(
+            "Fail closed unless the bound RESERVED control takeover was explicitly selected",
+            main_recheck,
+        )
+        adoption = workflow.index(
+            "Atomically transfer the exact bound RESERVED build to the reviewed controller",
+            guard,
+        )
+        adoption_end = workflow.index(
+            "Fail closed unless the bound RESERVED prebuild repair was explicitly selected",
+            adoption,
+        )
+        provisioning = workflow.index(
+            "Provision and publish the two least-privilege",
+            adoption_end,
+        )
+        self.assertLess(durable_evidence, main_recheck)
+        self.assertLess(main_recheck, guard)
+        self.assertLess(guard, adoption)
+        self.assertLess(adoption, provisioning)
+        step = workflow[adoption:adoption_end]
+        self.assertIn("--action adopt-reserved-control", step)
+        self.assertIn("activation_manifest_sha256", step)
+        self.assertIn("activation_build_artifact_id", step)
+        self.assertIn("activation_build_artifact_digest", step)
+        self.assertIn("staged-rearm-runtime-secret.json", step)
+        self.assertNotIn("exit 75", step)
+        self.assertIn("activation_artifact_workflow_run_id", workflow)
+        self.assertIn("activation_artifact_workflow_attempt", workflow)
+        self.assertIn(
+            "--run-id \"${{ steps.build_attempt.outputs.workflow_run_id }}\"",
+            workflow,
+        )
+        self.assertIn(
+            "run-id: ${{ steps.build_attempt.outputs.workflow_run_id }}",
+            workflow,
+        )
+        self.assertIn(
+            "vowpic-safe-baseline-build:v2:${{ inputs.source_sha }}:"
+            "${{ steps.build_attempt.outputs.workflow_run_id }}:"
+            "${{ steps.build_attempt.outputs.workflow_attempt }}",
+            workflow,
+        )
+        self.assertIn(
+            'test "$BUILD_ARTIFACT_ID" = "$EXPECTED_BUILD_ARTIFACT_ID"',
+            workflow,
+        )
+        self.assertIn(
+            'test "$BUILD_ARTIFACT_DIGEST" = "$EXPECTED_BUILD_ARTIFACT_DIGEST"',
+            workflow,
+        )
 
     def test_staged_runtime_tls_repair_diff_is_exact_and_pinned(self) -> None:
         register = _load_script(

@@ -286,6 +286,7 @@ jobs:
               "FRESH_INSTALL",
               "TAKEOVER_RESERVED",
               "TAKEOVER_RESERVED_BUILD",
+              "TAKEOVER_RESERVED_CONTROL",
               "TAKEOVER_STAGED",
               "TAKEOVER_STAGED_RUNTIME_TLS",
               "RETRY_RESERVED",
@@ -317,6 +318,7 @@ jobs:
               raise SystemExit("activation workflow attempt is invalid")
           reservation_takeover_required = state == "TAKEOVER_RESERVED"
           reserved_build_rearm_required = state == "TAKEOVER_RESERVED_BUILD"
+          reserved_control_takeover_required = state == "TAKEOVER_RESERVED_CONTROL"
           staged_verifier_takeover_required = state == "TAKEOVER_STAGED"
           staged_runtime_tls_rearm_required = state == "TAKEOVER_STAGED_RUNTIME_TLS"
           staged_rearm_retry_allowed = (
@@ -327,6 +329,7 @@ jobs:
           takeover_required = (
               reservation_takeover_required
               or reserved_build_rearm_required
+              or reserved_control_takeover_required
               or staged_verifier_takeover_required
               or staged_runtime_tls_rearm_required
           )
@@ -350,6 +353,7 @@ jobs:
                   raise SystemExit("FORMAL_VERIFIED is missing its report SHA-256")
           effective_state = (
               "RETRY_RESERVED" if reservation_takeover_required
+              else "RETRY_RESERVED" if reserved_control_takeover_required
               else "RETRY_RESERVED" if staged_runtime_tls_rearm_required
               else "RETRY_STAGED" if staged_verifier_takeover_required
               else state
@@ -369,6 +373,10 @@ jobs:
                   f"{str(reserved_build_rearm_required).lower()}\n"
               )
               handle.write(
+                  "reserved_control_takeover_required="
+                  f"{str(reserved_control_takeover_required).lower()}\n"
+              )
+              handle.write(
                   "staged_verifier_takeover_required="
                   f"{str(staged_verifier_takeover_required).lower()}\n"
               )
@@ -384,6 +392,14 @@ jobs:
               handle.write(f"expected_workflow_run_id={activation_workflow_run_id}\n")
               handle.write(f"expected_version={activation_version}\n")
               handle.write(f"activation_manifest_sha256={manifest}\n")
+              handle.write(
+                  "activation_artifact_workflow_run_id="
+                  f"{activation_workflow_run_id}\n"
+              )
+              handle.write(
+                  "activation_artifact_workflow_attempt="
+                  f"{activation_attempt}\n"
+              )
               handle.write(
                   "activation_build_artifact_id="
                   f"{str(activation.get('build_artifact_id') or '')}\n"
@@ -404,7 +420,7 @@ jobs:
           PY
 
       - name: Reject a config repair input outside its exact STAGED takeover
-        if: ${{ inputs.rearm_staged_after_config_repair == true && steps.preflight.outputs.staged_verifier_takeover_required != 'true' && steps.preflight.outputs.staged_rearm_retry_allowed != 'true' }}
+        if: ${{ inputs.rearm_staged_after_config_repair == true && steps.preflight.outputs.staged_verifier_takeover_required != 'true' && steps.preflight.outputs.reserved_control_takeover_required != 'true' && steps.preflight.outputs.staged_rearm_retry_allowed != 'true' }}
         run: |
           echo "the config repair input is not valid for the recorded activation state" >&2
           exit 1
@@ -475,7 +491,7 @@ jobs:
           PY
 
       - name: Prove the repaired Production Sensitive secret control
-        if: ${{ inputs.rearm_staged_after_config_repair == true && steps.preflight.outputs.staged_verifier_takeover_required == 'true' }}
+        if: ${{ inputs.rearm_staged_after_config_repair == true && (steps.preflight.outputs.staged_verifier_takeover_required == 'true' || steps.preflight.outputs.reserved_control_takeover_required == 'true') }}
         env:
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -577,6 +593,40 @@ jobs:
             --approval-id-env SAFE_BASELINE_APPROVAL_ID \
             --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
             --output "$EVIDENCE_DIR/reservation-adoption.json"
+
+      - name: Fail closed unless the bound RESERVED control takeover was explicitly selected
+        if: ${{ steps.preflight.outputs.reserved_control_takeover_required == 'true' && inputs.rearm_staged_after_config_repair != true }}
+        run: |
+          echo "the bound undeployed RESERVED build requires the reviewed config-repair input" >&2
+          exit 1
+
+      - name: Atomically transfer the exact bound RESERVED build to the reviewed controller
+        if: ${{ steps.preflight.outputs.reserved_control_takeover_required == 'true' && inputs.rearm_staged_after_config_repair == true }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
+          RESERVATION_EVIDENCE_URL: ${{ steps.reservation_evidence.outputs.artifact-url }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action adopt-reserved-control \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-source-sha "${{ steps.preflight.outputs.expected_source_sha }}" \
+            --expected-workflow-run-id "${{ steps.preflight.outputs.expected_workflow_run_id }}" \
+            --expected-version "${{ steps.preflight.outputs.expected_version }}" \
+            --manifest-sha256 "${{ steps.preflight.outputs.activation_manifest_sha256 }}" \
+            --build-artifact-id "${{ steps.preflight.outputs.activation_build_artifact_id }}" \
+            --build-artifact-digest "${{ steps.preflight.outputs.activation_build_artifact_digest }}" \
+            --approval-id-env SAFE_BASELINE_APPROVAL_ID \
+            --runtime-secret-evidence "$EVIDENCE_DIR/staged-rearm-runtime-secret.json" \
+            --vercel-project-id-env VERCEL_PROJECT_ID \
+            --vercel-team-id-env VERCEL_ORG_ID \
+            --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
+            --output "$EVIDENCE_DIR/reserved-control-adoption.json"
 
       - name: Fail closed unless the bound RESERVED prebuild repair was explicitly selected
         if: ${{ steps.preflight.outputs.reserved_build_rearm_required == 'true' && inputs.rearm_reserved_after_prebuilt_output_repair != true }}
@@ -728,14 +778,24 @@ jobs:
         env:
           PREFLIGHT_STATE: ${{ steps.preflight.outputs.state }}
           ACTIVATION_WORKFLOW_ATTEMPT: ${{ steps.preflight.outputs.activation_workflow_attempt }}
+          ARTIFACT_WORKFLOW_RUN_ID: ${{ steps.preflight.outputs.activation_artifact_workflow_run_id }}
+          ARTIFACT_WORKFLOW_ATTEMPT: ${{ steps.preflight.outputs.activation_artifact_workflow_attempt }}
+          RESERVED_CONTROL_TAKEOVER: ${{ steps.preflight.outputs.reserved_control_takeover_required }}
         run: |
           if [[ "$PREFLIGHT_STATE" = "RETRY_RESERVED" && -z "$ACTIVATION_WORKFLOW_ATTEMPT" ]]; then
             echo "RETRY_RESERVED is missing its build-artifact attempt fence" >&2
             exit 1
           fi
-          BUILD_ARTIFACT_ATTEMPT="${ACTIVATION_WORKFLOW_ATTEMPT:-$GITHUB_RUN_ATTEMPT}"
+          BUILD_ARTIFACT_RUN_ID="${ARTIFACT_WORKFLOW_RUN_ID:-$GITHUB_RUN_ID}"
+          BUILD_ARTIFACT_ATTEMPT="${ARTIFACT_WORKFLOW_ATTEMPT:-${ACTIVATION_WORKFLOW_ATTEMPT:-$GITHUB_RUN_ATTEMPT}}"
+          [[ "$BUILD_ARTIFACT_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$BUILD_ARTIFACT_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          test "$BUILD_ARTIFACT_ATTEMPT" -le "$GITHUB_RUN_ATTEMPT"
+          if [[ "$BUILD_ARTIFACT_RUN_ID" != "$GITHUB_RUN_ID" ]]; then
+            test "$RESERVED_CONTROL_TAKEOVER" = "true"
+          else
+            test "$BUILD_ARTIFACT_ATTEMPT" -le "$GITHUB_RUN_ATTEMPT"
+          fi
+          echo "workflow_run_id=$BUILD_ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "workflow_attempt=$BUILD_ARTIFACT_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: Resolve the exact RESERVED build artifact through the GitHub API
@@ -743,11 +803,11 @@ jobs:
         if: ${{ steps.preflight.outputs.state == 'RETRY_RESERVED' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          BUILD_ARTIFACT_NAME: vowpic-safe-baseline-${{ github.run_id }}-${{ steps.build_attempt.outputs.workflow_attempt }}-build
+          BUILD_ARTIFACT_NAME: vowpic-safe-baseline-${{ steps.build_attempt.outputs.workflow_run_id }}-${{ steps.build_attempt.outputs.workflow_attempt }}-build
         run: |
           python scripts/release/github_artifact_evidence.py lookup \
             --repository "$GITHUB_REPOSITORY" \
-            --run-id "$GITHUB_RUN_ID" \
+            --run-id "${{ steps.build_attempt.outputs.workflow_run_id }}" \
             --name "$BUILD_ARTIFACT_NAME" \
             --token-env GITHUB_TOKEN \
             --job-output "$GITHUB_OUTPUT"
@@ -761,7 +821,7 @@ jobs:
           path: ${{ runner.temp }}/build-artifact
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: ${{ github.run_id }}
+          run-id: ${{ steps.build_attempt.outputs.workflow_run_id }}
 
       - name: Fail closed when an already bound build artifact is unavailable
         if: ${{ steps.preflight.outputs.state == 'RETRY_RESERVED' && steps.preflight.outputs.activation_manifest_sha256 != '' && steps.build_lookup.outputs.state == 'NOT_FOUND' }}
@@ -876,7 +936,7 @@ jobs:
         env:
           EXPECTED_MANIFEST_SHA256: ${{ steps.preflight.outputs.activation_manifest_sha256 }}
           SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64: ${{ secrets.SAFE_BASELINE_BUILD_ARTIFACT_KEY_B64 }}
-          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v2:${{ inputs.source_sha }}:${{ github.run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
+          BUILD_ARTIFACT_AAD_PREFIX: vowpic-safe-baseline-build:v2:${{ inputs.source_sha }}:${{ steps.build_attempt.outputs.workflow_run_id }}:${{ steps.build_attempt.outputs.workflow_attempt }}
         run: |
           DEPLOY_ROOT="$RUNNER_TEMP/safe-baseline-deploy-root"
           test ! -e "$DEPLOY_ROOT"
@@ -916,6 +976,9 @@ jobs:
           NEW_BUILD_ARTIFACT_DIGEST: ${{ steps.build_evidence.outputs.artifact-digest }}
           RECOVERED_BUILD_ARTIFACT_ID: ${{ steps.build_lookup.outputs.artifact_id }}
           RECOVERED_BUILD_ARTIFACT_DIGEST: ${{ steps.build_lookup.outputs.artifact_digest }}
+          RESERVED_CONTROL_TAKEOVER: ${{ steps.preflight.outputs.reserved_control_takeover_required }}
+          EXPECTED_BUILD_ARTIFACT_ID: ${{ steps.preflight.outputs.activation_build_artifact_id }}
+          EXPECTED_BUILD_ARTIFACT_DIGEST: ${{ steps.preflight.outputs.activation_build_artifact_digest }}
         run: |
           MANIFEST_SHA256="${RECOVERED_MANIFEST_SHA256:-$NEW_MANIFEST_SHA256}"
           BUILD_ARTIFACT_ID="${RECOVERED_BUILD_ARTIFACT_ID:-$NEW_BUILD_ARTIFACT_ID}"
@@ -929,6 +992,13 @@ jobs:
           [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$BUILD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$BUILD_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          if [[ "$RESERVED_CONTROL_TAKEOVER" = "true" ]]; then
+            test "$MANIFEST_SHA256" = "${{ steps.preflight.outputs.activation_manifest_sha256 }}"
+            test "$BUILD_ARTIFACT_ID" = "$EXPECTED_BUILD_ARTIFACT_ID"
+            test "$BUILD_ARTIFACT_DIGEST" = "$EXPECTED_BUILD_ARTIFACT_DIGEST"
+            echo "manifest_sha256=$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           python scripts/release/register_safe_baseline.py --action bind-build \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --source-sha "$SOURCE_SHA" \

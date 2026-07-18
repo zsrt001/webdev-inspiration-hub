@@ -838,6 +838,8 @@ def classify_install_state(
     if activation_workflow_run_id != workflow_run_id:
         if reserved_install_is_adoptable(activation):
             return "TAKEOVER_RESERVED"
+        if reserved_build_rearm_is_adoptable(activation):
+            return "TAKEOVER_RESERVED_CONTROL"
         if staged_verifier_takeover_is_adoptable(activation):
             return "TAKEOVER_STAGED"
         return "CONFLICTING_INSTALL"
@@ -1415,12 +1417,15 @@ def _preflight(
                 str(activation.get("source_sha") or ""),
                 source_sha,
             )
+        if state == "TAKEOVER_RESERVED_CONTROL":
+            validate_staged_control_descendant(source_sha, effective_runner_sha)
         if state == "TAKEOVER_STAGED":
             validate_staged_control_descendant(source_sha, effective_runner_sha)
         if state not in {
             "FRESH_INSTALL",
             "TAKEOVER_RESERVED",
             "TAKEOVER_RESERVED_BUILD",
+            "TAKEOVER_RESERVED_CONTROL",
             "TAKEOVER_STAGED",
             "TAKEOVER_STAGED_RUNTIME_TLS",
             *RETRIABLE_STATES,
@@ -1583,6 +1588,192 @@ def _adopt_reserved(
             "source_sha": source_sha,
             "workflow_run_id": workflow_run_id,
             "workflow_attempt": workflow_attempt,
+            "evidence_prefix": evidence_prefix,
+        }
+    finally:
+        engine.dispose()
+
+
+def _adopt_bound_reserved_control(
+    database_url: str,
+    *,
+    source_sha: str,
+    runner_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: int,
+    expected_source_sha: str,
+    expected_workflow_run_id: str,
+    expected_version: int,
+    expected_manifest_sha256: str,
+    expected_build_artifact_id: str,
+    expected_build_artifact_digest: str,
+    approval: str,
+    evidence_prefix: str,
+    runtime_secret_evidence: Path,
+    project_id: str,
+    team_id: str,
+) -> dict[str, Any]:
+    """Transfer one exact bound, undeployed build to a reviewed control-only run."""
+    source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
+    runner_sha = _validate_sha(runner_sha, name="reviewed runner SHA", lengths=(40, 64))
+    expected_source_sha = _validate_sha(
+        expected_source_sha,
+        name="recorded deployed source SHA",
+        lengths=(40, 64),
+    )
+    expected_manifest_sha256 = _validate_sha(
+        expected_manifest_sha256,
+        name="recorded build manifest SHA-256",
+    )
+    expected_build_artifact_id = str(expected_build_artifact_id or "").strip()
+    expected_build_artifact_digest = str(
+        expected_build_artifact_digest or ""
+    ).strip().lower()
+    if source_sha != expected_source_sha:
+        raise SafeBaselineRegistrationError(
+            "bound RESERVED control takeover cannot change the deployed source"
+        )
+    if (
+        not re.fullmatch(r"[1-9][0-9]*", expected_workflow_run_id)
+        or not re.fullmatch(r"[1-9][0-9]*", workflow_run_id)
+        or not re.fullmatch(r"[1-9][0-9]{0,19}", expected_build_artifact_id)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_build_artifact_digest)
+        is None
+        or workflow_attempt < 1
+        or expected_version < 1
+    ):
+        raise ValueError(
+            "current/recorded workflow, artifact, and positive version coordinates are required"
+        )
+    if not approval or len(approval) > 160:
+        raise ValueError("protected bound RESERVED control approval is required")
+    if not re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/"
+        r"[1-9][0-9]*/artifacts/[1-9][0-9]*",
+        evidence_prefix,
+    ):
+        raise ValueError(
+            "bound RESERVED control takeover requires one durable GitHub artifact URL"
+        )
+    validate_staged_control_descendant(source_sha, runner_sha)
+    _validate_runtime_secret_evidence(
+        runtime_secret_evidence,
+        source_sha=source_sha,
+        runner_sha=runner_sha,
+        workflow_run_id=workflow_run_id,
+        workflow_attempt=workflow_attempt,
+        project_id=project_id,
+        team_id=team_id,
+    )
+
+    engine = create_engine(_sync_database_url(database_url), pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            _configure_migration_timeouts(connection)
+            _advisory_lock(connection)
+            if _current_revision(connection) != TARGET_SCHEMA:
+                raise SafeBaselineRegistrationError(
+                    "bound RESERVED control takeover requires schema 0014"
+                )
+            activation = _read_activation(connection, for_update=True)
+            if activation is None:
+                raise SafeBaselineRegistrationError(
+                    "safe-baseline activation row is missing"
+                )
+            if (
+                str(activation.get("source_sha") or "") != source_sha
+                or str(activation.get("workflow_run_id") or "")
+                != expected_workflow_run_id
+                or int(activation.get("version") or 0) != expected_version
+                or str(activation.get("manifest_sha256") or "").lower()
+                != expected_manifest_sha256
+                or str(activation.get("build_artifact_id") or "")
+                != expected_build_artifact_id
+                or str(activation.get("build_artifact_digest") or "").lower()
+                != expected_build_artifact_digest
+            ):
+                raise SafeBaselineRegistrationError(
+                    "bound RESERVED control takeover coordinates changed"
+                )
+            if str(activation.get("approval") or "") != approval:
+                raise SafeBaselineRegistrationError(
+                    "bound RESERVED control takeover approval does not match"
+                )
+            if not reserved_build_rearm_is_adoptable(activation):
+                raise SafeBaselineRegistrationError(
+                    "only an exact bound, undeployed RESERVED build can transfer control"
+                )
+            previous_evidence_prefix = str(
+                activation.get("private_evidence_prefix") or ""
+            )
+            result = connection.execute(
+                text(
+                    """
+                    UPDATE release_activations
+                    SET workflow_run_id = :workflow_run_id,
+                        workflow_attempt = :workflow_attempt,
+                        private_evidence_prefix = :evidence_prefix,
+                        updated_at = CURRENT_TIMESTAMP,
+                        version = version + 1
+                    WHERE id = CAST(:activation_id AS uuid)
+                      AND version = :expected_version
+                      AND phase = 'RESERVED'
+                      AND source_sha = :source_sha
+                      AND workflow_run_id = :expected_workflow_run_id
+                      AND approval = :approval
+                      AND runtime_bundle_id IS NULL
+                      AND manifest_sha256 = :expected_manifest_sha256
+                      AND build_artifact_id = :expected_build_artifact_id
+                      AND build_artifact_digest = :expected_build_artifact_digest
+                      AND report_sha256 IS NULL
+                      AND api_deployment_id IS NULL
+                      AND api_deployment_url IS NULL
+                      AND api_role IS NULL
+                      AND worker_deployment_id IS NULL
+                      AND worker_role IS NULL
+                      AND worker_image_digest IS NULL
+                      AND target_snapshot_hash IS NULL
+                      AND acceptance_fault_intent_id IS NULL
+                      AND acceptance_fault_intent_sha256 IS NULL
+                      AND acceptance_fault_state IS NULL
+                      AND acceptance_fault_expires_at IS NULL
+                      AND acceptance_fault_cleanup_claim_id IS NULL
+                      AND acceptance_fault_cleanup_fencing_token IS NULL
+                    RETURNING id::text, version
+                    """
+                ),
+                {
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_attempt": workflow_attempt,
+                    "evidence_prefix": evidence_prefix,
+                    "activation_id": activation["id"],
+                    "expected_version": expected_version,
+                    "source_sha": source_sha,
+                    "expected_workflow_run_id": expected_workflow_run_id,
+                    "approval": approval,
+                    "expected_manifest_sha256": expected_manifest_sha256,
+                    "expected_build_artifact_id": expected_build_artifact_id,
+                    "expected_build_artifact_digest": expected_build_artifact_digest,
+                },
+            ).mappings().one_or_none()
+            if result is None:
+                raise SafeBaselineRegistrationError(
+                    "bound RESERVED control takeover CAS lost"
+                )
+        return {
+            "action": "adopt-reserved-control",
+            "state": "BOUND_RESERVED_CONTROL_ADOPTED",
+            "activation_id": result["id"],
+            "version": result["version"],
+            "previous_workflow_run_id": expected_workflow_run_id,
+            "previous_evidence_prefix": previous_evidence_prefix,
+            "source_sha": source_sha,
+            "runner_sha": runner_sha,
+            "workflow_run_id": workflow_run_id,
+            "workflow_attempt": workflow_attempt,
+            "manifest_sha256": expected_manifest_sha256,
+            "build_artifact_id": expected_build_artifact_id,
+            "build_artifact_digest": expected_build_artifact_digest,
             "evidence_prefix": evidence_prefix,
         }
     finally:
@@ -2989,6 +3180,7 @@ def main() -> int:
             "verify-runtime-secret",
             "materialize-deploy-root",
             "adopt-reserved",
+            "adopt-reserved-control",
             "adopt-staged-verifier",
             "rearm-reserved-build",
             "rearm-staged",
@@ -3159,6 +3351,36 @@ def main() -> int:
                 expected_version=args.expected_version or 0,
                 approval=approval,
                 evidence_prefix=args.evidence_prefix,
+            )
+        elif args.action == "adopt-reserved-control":
+            approval = _required_env(args.approval_id_env)
+            project_id = _required_env(args.vercel_project_id_env)
+            team_id = _required_env(args.vercel_team_id_env)
+            if not approval or not all(
+                (args.runtime_secret_evidence, project_id, team_id)
+            ):
+                print(
+                    "NOT_RUN: bound RESERVED control approval and Vercel proof are required",
+                    file=sys.stderr,
+                )
+                return NOT_RUN_EXIT
+            result = _adopt_bound_reserved_control(
+                database_url,
+                source_sha=args.source_sha,
+                runner_sha=args.runner_sha,
+                workflow_run_id=args.workflow_run_id,
+                workflow_attempt=args.workflow_attempt,
+                expected_source_sha=args.expected_source_sha or "",
+                expected_workflow_run_id=args.expected_workflow_run_id or "",
+                expected_version=args.expected_version or 0,
+                expected_manifest_sha256=args.manifest_sha256 or "",
+                expected_build_artifact_id=args.build_artifact_id or "",
+                expected_build_artifact_digest=args.build_artifact_digest or "",
+                approval=approval,
+                evidence_prefix=args.evidence_prefix,
+                runtime_secret_evidence=Path(args.runtime_secret_evidence),
+                project_id=project_id,
+                team_id=team_id,
             )
         elif args.action == "rearm-reserved-build":
             approval = _required_env(args.approval_id_env)
