@@ -872,11 +872,12 @@ def _preflight(
                 workflow_run_id=workflow_run_id,
                 workflow_attempt=workflow_attempt,
             )
-        if state == "TAKEOVER_STAGED":
+        if state in {"TAKEOVER_RESERVED_BUILD", "TAKEOVER_STAGED"}:
             validate_staged_control_descendant(source_sha, effective_runner_sha)
         if state not in {
             "FRESH_INSTALL",
             "TAKEOVER_RESERVED",
+            "TAKEOVER_RESERVED_BUILD",
             "TAKEOVER_STAGED",
             *RETRIABLE_STATES,
         }:

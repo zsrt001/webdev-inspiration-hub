@@ -1604,6 +1604,48 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             with self.subTest(changed=changed):
                 self.assertFalse(register.reserved_build_rearm_is_adoptable({**activation, **changed}))
 
+    def test_bound_reserved_build_preflight_accepts_only_a_control_descendant(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_build_preflight_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 2,
+            "phase": "RESERVED",
+            "version": 12,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": "https://github.com/o/r/actions/runs/123/artifacts/1",
+            "manifest_sha256": "d" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "e" * 64,
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.scalar_one.return_value = "on"
+        engine = mock.MagicMock()
+        engine.connect.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_current_revision", return_value=register.TARGET_SCHEMA),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+            mock.patch.object(register, "validate_staged_control_descendant") as control_diff,
+        ):
+            report = register._preflight(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+            )
+
+        self.assertEqual(report["state"], "TAKEOVER_RESERVED_BUILD")
+        control_diff.assert_called_once_with(source_sha, runner_sha)
+
     def test_bound_reserved_prebuild_repair_is_explicit_evidence_first_and_rerun_fenced(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         register_source = _read("scripts/release/register_safe_baseline.py")
