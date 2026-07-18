@@ -1894,6 +1894,24 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             workflow,
         )
         self.assertIn(
+            'state == "RETRY_RESERVED"',
+            workflow,
+        )
+        self.assertIn(
+            'activation_attempt == os.environ["GITHUB_RUN_ATTEMPT"]',
+            workflow,
+        )
+        self.assertIn(
+            'int(activation_attempt or "0") > 1',
+            workflow,
+        )
+        self.assertEqual(
+            workflow.count(
+                "steps.preflight.outputs.staged_rearm_retry_allowed != 'true'"
+            ),
+            2,
+        )
+        self.assertIn(
             "--runtime-tls-repair is valid only with --action rearm-staged",
             register_source,
         )
