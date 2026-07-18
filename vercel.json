@@ -23,6 +23,7 @@
     "outputDirectory": "frontend/dist/build/h5",
     "functions": {
         "api/index.py": {
+            "includeFiles": "backend/app/core/certs/prod-ca-2021.crt",
             "maxDuration": 300
         }
     },
