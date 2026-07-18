@@ -1831,3 +1831,16 @@
 - HTTP 404 or an expired Artifact remains confirmed absence. API failures, malformed metadata, ID/digest mismatch, an invalid name, or an owner mismatch still fail closed and cannot trigger a rebuild of a manifest-bound activation.
 - The old preflight outputs that aliased controller run/attempt as Artifact-owner coordinates were removed. Unbound recovery retains the existing name/run lookup; bound recovery cannot use it.
 - The pre-change focused resolver and release contract passed 109 cases with one Windows symlink-capability skip. Post-change, the focused pair passed 111 cases with one Windows symlink-capability skip, and the full backend suite passed 825 cases with 37 explicit environment/platform skips. Python/YAML parsing, `pip check`, `git diff --check`, and the real GitHub metadata read for Artifact `8428394104` passed; GitHub CI and protected Production recovery remain required before this entry is final.
+
+## 2026-07-18 - Bind staged state-changing probes to the formal Web origin
+
+### Goal and evidence
+
+- Protected run `29642011835` successfully recovered Artifact `8428394104`, created and attested deployment `dpl_FVkPCACPJMJPYeUCe54S7ZUfBJj8`, and recorded it as STAGED. The runtime DDL audit then stopped before Promote because `google_oauth_intent` expected the all-OFF `503` response but received `403`.
+- The OAuth intent route requires an exact allowed browser Origin before evaluating the capability flag. The verifier derived that header from the temporary Vercel deployment URL, while the Production runtime permits only its configured formal Web origin. The route's rate-limit response is `429`, so the observed `403` is the fail-closed Origin boundary rather than rate limiting.
+
+### Changes and verification
+
+- Both audit and verification CLIs now require an explicit HTTPS request origin. Staged probes continue to target the exact deployment URL through the protected Vercel bypass but send `PRODUCTION_BASE_URL` as their Origin; formal-domain probes use the same formal URL for both coordinates. The application Origin policy and its exact-match validation were not relaxed.
+- The DDL collector threads the explicit origin into the shared guarded-route verifier. The STAGED control-descendant fence now requires the collector change and permits its focused contract test, so a newer controller cannot fail after CI merely because the reviewed control-only diff contains these files.
+- The pre-change focused baseline passed 5/5. Post-change, the focused request-origin and collector baseline passed 4/4, the complete release-control pair passed 105 cases with one Windows-only skip, and the full backend suite passed 826 cases with 37 explicit environment/platform skips. Python compilation, YAML parsing, CLI contract inspection, `pip check`, `git diff --check`, and a credential-shaped added-line scan passed. GitHub CI and the protected STAGED takeover remain required before promotion; the formal domain was not switched during this code repair.

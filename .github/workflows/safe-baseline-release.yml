@@ -1220,12 +1220,14 @@ jobs:
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
           RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
           DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
           DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
         run: |
           python scripts/release/collect_runtime_ddl_audit.py \
             --base-url "$DEPLOYMENT_URL" \
+            --request-origin "$PRODUCTION_BASE_URL" \
             --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
             --source-sha "$SOURCE_SHA" \
             --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
@@ -1241,12 +1243,14 @@ jobs:
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
           RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
           DEPLOYMENT_ID: ${{ steps.coordinates.outputs.deployment_id }}
           DEPLOYMENT_URL: ${{ steps.coordinates.outputs.deployment_url }}
         run: |
           python scripts/release/verify_safe_baseline.py \
             --base-url "$DEPLOYMENT_URL" \
+            --request-origin "$PRODUCTION_BASE_URL" \
             --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --runtime-ddl-audit-report "$EVIDENCE_DIR/runtime-ddl-audit-staged.json" \
@@ -1406,6 +1410,7 @@ jobs:
         run: |
           python scripts/release/collect_runtime_ddl_audit.py \
             --base-url "$PRODUCTION_BASE_URL" \
+            --request-origin "$PRODUCTION_BASE_URL" \
             --source-sha "$SOURCE_SHA" \
             --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
             --deployment-id "$DEPLOYMENT_ID" \
@@ -1443,6 +1448,7 @@ jobs:
             --output "$RUNNER_TEMP/edge-handoff.json"
           python scripts/release/verify_safe_baseline.py \
             --base-url "$PRODUCTION_BASE_URL" \
+            --request-origin "$PRODUCTION_BASE_URL" \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --runtime-ddl-audit-report "$EVIDENCE_DIR/runtime-ddl-audit-formal.json" \
             --edge-handoff-report "$RUNNER_TEMP/edge-handoff.json" \

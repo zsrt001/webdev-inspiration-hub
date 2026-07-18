@@ -103,6 +103,7 @@ RESERVED_BUILD_REARM_EMPTY_FIELDS = (
 STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS = frozenset(
     {
         ".github/workflows/safe-baseline-release.yml",
+        "scripts/release/collect_runtime_ddl_audit.py",
         "scripts/release/register_safe_baseline.py",
         "scripts/release/verify_safe_baseline.py",
     }
@@ -113,6 +114,7 @@ STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS = frozenset(
         "backend/tests/test_ci_release_contract.py",
         "backend/tests/test_production_database_logins.py",
         "backend/tests/test_release_coordinate_resolver.py",
+        "backend/tests/test_runtime_ddl_audit_collector.py",
         "docs/ai-worklog.md",
         "docs/operations/risk-lockdown-runbook.md",
         "release/safe-baseline-contract.json",
