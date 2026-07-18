@@ -915,6 +915,22 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertLess(identity_grant, staged_collect)
         self.assertLess(staged_collect, staged_verify)
         self.assertLess(formal_collect, formal_verify)
+        formal_collect_step = workflow[formal_collect:formal_verify]
+        self.assertIn(
+            "VERCEL_AUTOMATION_BYPASS_HEADER: "
+            "${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}",
+            formal_collect_step,
+        )
+        self.assertIn(
+            "--deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER",
+            formal_collect_step,
+        )
+        formal_handoff_end = workflow.index(
+            "Persist formal handoff evidence before its phase CAS", formal_verify
+        )
+        formal_handoff_step = workflow[formal_verify:formal_handoff_end]
+        self.assertNotIn("VERCEL_AUTOMATION_BYPASS_HEADER", formal_handoff_step)
+        self.assertNotIn("--deployment-bypass-header-env", formal_handoff_step)
         self.assertEqual(workflow.count("collect_runtime_ddl_audit.py"), 2)
         self.assertEqual(
             workflow.count('--request-origin "$PRODUCTION_BASE_URL"'),
@@ -1544,9 +1560,160 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertNotIn("SET source_sha", statement)
         self.assertIn("workflow_run_id = :workflow_run_id", statement)
         self.assertIn("private_evidence_prefix = :evidence_prefix", statement)
-        self.assertIn("phase = 'STAGED'", statement)
+        self.assertIn("phase = :expected_phase", statement)
+        self.assertEqual(connection.execute.call_args.args[1]["expected_phase"], "STAGED")
         self.assertIn("runtime_bundle_id IS NOT NULL", statement)
         self.assertIn("report_sha256 IS NULL", statement)
+
+    def test_promoted_formal_audit_takeover_reuses_the_exact_deployment(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        self.assertIn("resume_promoted_after_formal_audit_repair", workflow)
+        promoted_state = workflow.index('"TAKEOVER_PROMOTED"')
+        durable_evidence = workflow.index("id: reservation_evidence", promoted_state)
+        adoption = workflow.index("--action adopt-promoted-verifier", durable_evidence)
+        reconfirm = workflow.index("Reconfirm an already recorded promotion", adoption)
+        formal_collect = workflow.index(
+            "Collect the formal-domain runtime DDL audit from PostgreSQL statistics",
+            reconfirm,
+        )
+        self.assertLess(durable_evidence, adoption)
+        self.assertLess(adoption, reconfirm)
+        self.assertLess(reconfirm, formal_collect)
+        self.assertIn(
+            'else "RETRY_PROMOTED" if promoted_verifier_takeover_required',
+            workflow,
+        )
+        adoption_end = workflow.index(
+            "Provision and publish the two least-privilege application logins",
+            adoption,
+        )
+        adoption_step = workflow[adoption:adoption_end]
+        self.assertIn('--source-sha "$SOURCE_SHA"', adoption_step)
+        self.assertIn('--runner-sha "$RUNNER_SHA"', adoption_step)
+        self.assertNotIn("rearm-staged", adoption_step)
+        self.assertNotIn('"$VERCEL_CLI" deploy', adoption_step)
+        self.assertNotIn('"$VERCEL_CLI" promote', adoption_step)
+
+    def test_promoted_verifier_takeover_is_pinned_and_updates_only_ownership(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_promoted_takeover_contract",
+        )
+        source_sha = register.PROMOTED_FORMAL_AUDIT_REPAIR_SOURCE_SHA
+        runner_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": source_sha,
+            "workflow_run_id": "29649808124",
+            "workflow_attempt": 2,
+            "phase": "PROMOTED",
+            "version": 41,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": (
+                "https://github.com/zsrt001/webdev-inspiration-hub/"
+                "actions/runs/29649808124/artifacts/8431162000"
+            ),
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "8431163000",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_exact",
+            "api_deployment_url": "https://exact.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation=activation,
+                source_sha=source_sha,
+                workflow_run_id="29660000000",
+            ),
+            "TAKEOVER_PROMOTED",
+        )
+        connection = mock.MagicMock()
+        connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
+            "id": activation["id"],
+            "version": 42,
+        }
+        engine = mock.MagicMock()
+        engine.begin.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(
+                register, "validate_promoted_control_descendant"
+            ) as control_diff,
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(register, "_advisory_lock"),
+            mock.patch.object(
+                register, "_current_revision", return_value=register.TARGET_SCHEMA
+            ),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+        ):
+            result = register._adopt_promoted_verifier(
+                "postgresql://migration",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="29660000000",
+                workflow_attempt=1,
+                expected_source_sha=source_sha,
+                expected_workflow_run_id="29649808124",
+                expected_version=41,
+                approval="protected-approval",
+                evidence_prefix=(
+                    "https://github.com/zsrt001/webdev-inspiration-hub/"
+                    "actions/runs/29660000000/artifacts/9000000000"
+                ),
+            )
+        control_diff.assert_called_once_with(source_sha, runner_sha)
+        self.assertEqual(result["state"], "PROMOTED_VERIFIER_ADOPTED")
+        statement = str(connection.execute.call_args.args[0])
+        parameters = connection.execute.call_args.args[1]
+        self.assertNotIn("SET source_sha", statement)
+        self.assertIn("workflow_run_id = :workflow_run_id", statement)
+        self.assertIn("private_evidence_prefix = :evidence_prefix", statement)
+        self.assertIn("phase = :expected_phase", statement)
+        self.assertEqual(parameters["expected_phase"], "PROMOTED")
+
+    def test_promoted_formal_audit_takeover_diff_is_exactly_control_only(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_promoted_diff_contract",
+        )
+        source_sha = register.PROMOTED_FORMAL_AUDIT_REPAIR_SOURCE_SHA
+        runner_sha = "b" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(register.PROMOTED_TAKEOVER_REQUIRED_CONTROL_PATHS)
+        ) + "\n"
+        successful_calls = [
+            subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=allowed_diff, stderr=""),
+        ]
+        with mock.patch.object(
+            register.subprocess, "run", side_effect=successful_calls
+        ):
+            register.validate_promoted_control_descendant(source_sha, runner_sha)
+        unsafe_calls = [
+            subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                [], 0, stdout=allowed_diff + "M\tbackend/app/main.py\n", stderr=""
+            ),
+        ]
+        with (
+            mock.patch.object(register.subprocess, "run", side_effect=unsafe_calls),
+            self.assertRaisesRegex(
+                register.SafeBaselineRegistrationError,
+                "non-control path: backend/app/main.py",
+            ),
+        ):
+            register.validate_promoted_control_descendant(source_sha, runner_sha)
+        with self.assertRaisesRegex(
+            register.SafeBaselineRegistrationError,
+            "not pinned to the failed source",
+        ):
+            register.validate_promoted_control_descendant("a" * 40, runner_sha)
 
     def test_sensitive_runtime_secret_proof_never_contains_secret_or_fingerprint(self) -> None:
         register = _load_script(
