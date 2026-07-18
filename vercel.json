@@ -53,6 +53,10 @@
             "destination": "/api/index.py"
         },
         {
+            "source": "/api/v1/users/",
+            "destination": "/api/index.py"
+        },
+        {
             "source": "/api/:path*",
             "destination": "/api/index.py"
         },

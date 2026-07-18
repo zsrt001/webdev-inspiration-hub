@@ -1882,7 +1882,13 @@
 - Extended the web-only route contract so both legacy URL forms must be owned by
   the centralized retired router and return the same unauthenticated `410`
   response without resolving database dependencies.
-- Verified both URL forms in-process as `410 legacy_user_route_retired`. The
-  directly affected release, risk-lockdown, feature-flag, and runtime-DDL suites
-  passed 69 tests. The unchanged main baseline had already passed the full 795
-  backend tests; the clean GitHub CI suite remains the merge gate for this patch.
+- Verified both URL forms in-process as `410 legacy_user_route_retired`.
+  After the exact rewrite was added, the directly affected release,
+  risk-lockdown, feature-flag, runtime-DDL, and Vercel rewrite suites passed 70
+  tests. The unchanged main baseline had already passed the full 795 backend
+  tests; the clean GitHub CI suite remains the merge gate for this patch.
+- The first PR Preview proved the backend alias alone was insufficient:
+  `/api/v1/users` reached FastAPI while `/api/v1/users/` still fell through to
+  the frontend rewrite and returned `405`. Added an exact Vercel rewrite for the
+  trailing-slash legacy path before the generic API and SPA fallbacks, plus a
+  regression contract for the destination and ordering.

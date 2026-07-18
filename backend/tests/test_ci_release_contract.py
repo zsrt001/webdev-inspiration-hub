@@ -351,6 +351,28 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIs(deployment_enabled["main"], False)
         self.assertEqual(set(deployment_enabled), {"main"})
 
+    def test_vercel_routes_the_legacy_user_slash_form_to_the_api_function(self) -> None:
+        config = json.loads(_read("vercel.json"))
+        rewrites = config["rewrites"]
+        rewrite_by_source = {
+            item["source"]: item["destination"]
+            for item in rewrites
+        }
+        sources = [item["source"] for item in rewrites]
+
+        self.assertEqual(
+            rewrite_by_source["/api/v1/users/"],
+            "/api/index.py",
+        )
+        self.assertLess(
+            sources.index("/api/v1/users/"),
+            sources.index("/api/:path*"),
+        )
+        self.assertLess(
+            sources.index("/api/v1/users/"),
+            sources.index("/(.*)"),
+        )
+
     def test_vercel_runtime_environment_comes_from_platform_system_environment(self) -> None:
         config = json.loads(_read("vercel.json"))
 
