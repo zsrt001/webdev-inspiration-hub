@@ -147,6 +147,22 @@ RESERVED_DEPLOY_ROOT_REPAIR_ALLOWED_PATHS = frozenset(
         "docs/operations/risk-lockdown-runbook.md",
     }
 )
+RESERVED_VERCEL_PYTHON_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "6f5ef3936a527051c8cd7d242e0d3bed581ae011"
+)
+RESERVED_VERCEL_PYTHON_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        "scripts/release/register_safe_baseline.py",
+        "backend/tests/test_ci_release_contract.py",
+    }
+)
+RESERVED_VERCEL_PYTHON_REPAIR_ALLOWED_PATHS = frozenset(
+    {
+        *RESERVED_VERCEL_PYTHON_REPAIR_REQUIRED_PATHS,
+        "docs/ai-worklog.md",
+        "docs/operations/risk-lockdown-runbook.md",
+    }
+)
 ADM_ZIP_REPAIR_VERSION = "0.6.0"
 ADM_ZIP_REPAIR_LOCK_ENTRY = {
     "version": ADM_ZIP_REPAIR_VERSION,
@@ -492,6 +508,10 @@ def validate_reserved_build_repair_descendant(
     if previous_source_sha == RESERVED_DEPLOY_ROOT_REPAIR_PREVIOUS_SOURCE_SHA:
         required_paths = RESERVED_DEPLOY_ROOT_REPAIR_REQUIRED_PATHS
         allowed_paths = RESERVED_DEPLOY_ROOT_REPAIR_ALLOWED_PATHS
+        validate_dependency_repair = False
+    elif previous_source_sha == RESERVED_VERCEL_PYTHON_REPAIR_PREVIOUS_SOURCE_SHA:
+        required_paths = RESERVED_VERCEL_PYTHON_REPAIR_REQUIRED_PATHS
+        allowed_paths = RESERVED_VERCEL_PYTHON_REPAIR_ALLOWED_PATHS
         validate_dependency_repair = False
     else:
         required_paths = RESERVED_BUILD_REPAIR_REQUIRED_PATHS
