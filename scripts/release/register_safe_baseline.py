@@ -163,6 +163,22 @@ RESERVED_VERCEL_PYTHON_REPAIR_ALLOWED_PATHS = frozenset(
         "docs/operations/risk-lockdown-runbook.md",
     }
 )
+RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "744ee54a62343cc83c36d7903fc32a719c82dbe1"
+)
+RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        "scripts/release/register_safe_baseline.py",
+        "backend/tests/test_ci_release_contract.py",
+    }
+)
+RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_ALLOWED_PATHS = frozenset(
+    {
+        *RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_REQUIRED_PATHS,
+        "docs/ai-worklog.md",
+        "docs/operations/risk-lockdown-runbook.md",
+    }
+)
 ADM_ZIP_REPAIR_VERSION = "0.6.0"
 ADM_ZIP_REPAIR_LOCK_ENTRY = {
     "version": ADM_ZIP_REPAIR_VERSION,
@@ -512,6 +528,13 @@ def validate_reserved_build_repair_descendant(
     elif previous_source_sha == RESERVED_VERCEL_PYTHON_REPAIR_PREVIOUS_SOURCE_SHA:
         required_paths = RESERVED_VERCEL_PYTHON_REPAIR_REQUIRED_PATHS
         allowed_paths = RESERVED_VERCEL_PYTHON_REPAIR_ALLOWED_PATHS
+        validate_dependency_repair = False
+    elif (
+        previous_source_sha
+        == RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_PREVIOUS_SOURCE_SHA
+    ):
+        required_paths = RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_REQUIRED_PATHS
+        allowed_paths = RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_ALLOWED_PATHS
         validate_dependency_repair = False
     else:
         required_paths = RESERVED_BUILD_REPAIR_REQUIRED_PATHS
@@ -867,13 +890,7 @@ def materialize_vercel_deploy_root(
         shutil.copystat(effective, destination, follow_symlinks=True)
 
     def is_allowed_vercel_python_build_file(parts: tuple[str, ...]) -> bool:
-        if len(parts) >= 4 and parts[:3] == (".vercel", "python", ".venv"):
-            return True
-        return (
-            len(parts) >= 6
-            and parts[:3] == (".vercel", "python", "services")
-            and parts[4] == ".venv"
-        )
+        return len(parts) >= 3 and parts[:2] == (".vercel", "python")
 
     def references_protected_metadata(parts: tuple[str, ...]) -> bool:
         if not parts:

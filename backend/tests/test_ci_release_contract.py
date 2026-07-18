@@ -2148,6 +2148,73 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     source_sha,
                 )
 
+    def test_reserved_vercel_python_pycache_repair_is_exactly_forward_only(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_vercel_python_pycache_repair_contract",
+        )
+        previous_source_sha = (
+            register.RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_PREVIOUS_SOURCE_SHA
+        )
+        source_sha = "d" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(
+                register.RESERVED_VERCEL_PYTHON_PYCACHE_REPAIR_REQUIRED_PATHS
+            )
+        ) + "\nM\tdocs/ai-worklog.md\n"
+
+        def calls_for(diff: str) -> list[subprocess.CompletedProcess[str]]:
+            return [
+                subprocess.CompletedProcess([], 0, stdout=source_sha + "\n", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout=diff, stderr=""),
+            ]
+
+        with (
+            mock.patch.object(
+                register.subprocess,
+                "run",
+                side_effect=calls_for(allowed_diff),
+            ),
+            mock.patch.object(
+                register,
+                "validate_reserved_build_dependency_repair",
+            ) as dependency_repair,
+        ):
+            register.validate_reserved_build_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+            dependency_repair.assert_not_called()
+
+        for unsafe_diff, error in (
+            (
+                allowed_diff + "M\tfrontend/package-lock.json\n",
+                "unauthorized path: frontend/package-lock.json",
+            ),
+            (
+                allowed_diff.replace(
+                    "M\tscripts/release/register_safe_baseline.py\n",
+                    "",
+                ),
+                "missing required reviewed changes",
+            ),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(
+                    register.subprocess,
+                    "run",
+                    side_effect=calls_for(unsafe_diff),
+                ),
+                self.assertRaisesRegex(register.SafeBaselineRegistrationError, error),
+            ):
+                register.validate_reserved_build_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
+
     def test_reserved_retry_rejects_a_decreasing_workflow_attempt(self) -> None:
         register = _load_script(
             "scripts/release/register_safe_baseline.py",
@@ -2863,6 +2930,19 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 "RUNTIME_READY = True\n",
                 encoding="utf-8",
             )
+            generated_python_bytecode = (
+                source_root
+                / ".vercel"
+                / "python"
+                / "pycache"
+                / "home"
+                / "runner"
+                / "work"
+                / "vowpic"
+                / "api.cpython-312.pyc"
+            )
+            generated_python_bytecode.parent.mkdir(parents=True)
+            generated_python_bytecode.write_bytes(b"VOWPIC-PYC")
             function_config = source_output / "functions" / "api.func" / ".vc-config.json"
             function_config.parent.mkdir(parents=True)
             function_config.write_text(
@@ -2875,6 +2955,10 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                             "site-packages/vowpic_runtime.py": (
                                 ".vercel/python/.venv/lib/python3.12/"
                                 "site-packages/vowpic_runtime.py"
+                            ),
+                            "_vc_pycache/api.cpython-312.pyc": (
+                                ".vercel/python/pycache/home/runner/work/"
+                                "vowpic/api.cpython-312.pyc"
                             ),
                         }
                     }
@@ -2914,8 +2998,8 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             )
             self.assertTrue((destination / ".vercel" / "project.json").is_file())
             self.assertEqual(report["materialized_symlinks"], 0)
-            self.assertEqual(report["reference_declarations"], 2)
-            self.assertEqual(report["referenced_files"], 2)
+            self.assertEqual(report["reference_declarations"], 3)
+            self.assertEqual(report["referenced_files"], 3)
             self.assertEqual(
                 (
                     destination
@@ -2940,6 +3024,20 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     / "vowpic_runtime.py"
                 ).read_bytes(),
                 generated_python_file.read_bytes(),
+            )
+            self.assertEqual(
+                (
+                    destination
+                    / ".vercel"
+                    / "python"
+                    / "pycache"
+                    / "home"
+                    / "runner"
+                    / "work"
+                    / "vowpic"
+                    / "api.cpython-312.pyc"
+                ).read_bytes(),
+                generated_python_bytecode.read_bytes(),
             )
             self.assertEqual(report["manifest_sha256"], register._directory_sha256(destination))
             with self.assertRaisesRegex(ValueError, "destination already exists"):
