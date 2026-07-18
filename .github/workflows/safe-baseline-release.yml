@@ -36,6 +36,11 @@ on:
         required: false
         default: false
         type: boolean
+      resume_promoted_after_formal_audit_repair:
+        description: Transfer the exact PROMOTED activation to the reviewed formal-audit repair runner without redeploy or Promote
+        required: false
+        default: false
+        type: boolean
       rearm_reserved_after_prebuilt_output_repair:
         description: Rearm one bound but undeployed RESERVED prebuild after output materialization repair
         required: false
@@ -109,13 +114,14 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_SHA" "$RUNNER_SHA"
           test -z "$(git status --porcelain)"
 
-      - name: Reject conflicting STAGED repair modes
+      - name: Reject conflicting safe-baseline recovery modes
         env:
           CONFIG_REPAIR: ${{ inputs.rearm_staged_after_config_repair }}
           RUNTIME_TLS_REPAIR: ${{ inputs.rearm_staged_after_runtime_tls_repair }}
           SCHEMA_COMPATIBILITY_REPAIR: ${{ inputs.rearm_staged_after_schema_compatibility_repair }}
           ROUTE_COMPATIBILITY_REPAIR: ${{ inputs.rearm_staged_after_route_compatibility_repair }}
           CLEANUP_PAUSE_REPAIR: ${{ inputs.rearm_staged_after_cleanup_pause_repair }}
+          PROMOTED_FORMAL_AUDIT_REPAIR: ${{ inputs.resume_promoted_after_formal_audit_repair }}
         run: |
           selected=0
           for mode in \
@@ -123,14 +129,15 @@ jobs:
             "$RUNTIME_TLS_REPAIR" \
             "$SCHEMA_COMPATIBILITY_REPAIR" \
             "$ROUTE_COMPATIBILITY_REPAIR" \
-            "$CLEANUP_PAUSE_REPAIR"
+            "$CLEANUP_PAUSE_REPAIR" \
+            "$PROMOTED_FORMAL_AUDIT_REPAIR"
           do
             if [[ "$mode" == "true" ]]; then
               selected=$((selected + 1))
             fi
           done
           if (( selected > 1 )); then
-            echo "select exactly one STAGED repair mode" >&2
+            echo "select exactly one safe-baseline recovery mode" >&2
             exit 1
           fi
 
@@ -322,6 +329,7 @@ jobs:
               "TAKEOVER_RESERVED_BUILD",
               "TAKEOVER_RESERVED_CONTROL",
               "TAKEOVER_STAGED",
+              "TAKEOVER_PROMOTED",
               "TAKEOVER_STAGED_RUNTIME_TLS",
               "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY",
               "TAKEOVER_STAGED_ROUTE_COMPATIBILITY",
@@ -361,6 +369,7 @@ jobs:
           reserved_build_rearm_required = state == "TAKEOVER_RESERVED_BUILD"
           reserved_control_takeover_required = state == "TAKEOVER_RESERVED_CONTROL"
           staged_verifier_takeover_required = state == "TAKEOVER_STAGED"
+          promoted_verifier_takeover_required = state == "TAKEOVER_PROMOTED"
           staged_runtime_tls_rearm_required = state == "TAKEOVER_STAGED_RUNTIME_TLS"
           staged_schema_compatibility_rearm_required = (
               state == "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY"
@@ -399,6 +408,7 @@ jobs:
               or reserved_build_rearm_required
               or reserved_control_takeover_required
               or staged_verifier_takeover_required
+              or promoted_verifier_takeover_required
               or staged_runtime_tls_rearm_required
               or staged_schema_compatibility_rearm_required
               or staged_route_compatibility_rearm_required
@@ -430,6 +440,7 @@ jobs:
               else "RETRY_RESERVED" if staged_route_compatibility_rearm_required
               else "RETRY_RESERVED" if staged_cleanup_pause_rearm_required
               else "RETRY_STAGED" if staged_verifier_takeover_required
+              else "RETRY_PROMOTED" if promoted_verifier_takeover_required
               else state
           )
           effective_attempt = (
@@ -453,6 +464,10 @@ jobs:
               handle.write(
                   "staged_verifier_takeover_required="
                   f"{str(staged_verifier_takeover_required).lower()}\n"
+              )
+              handle.write(
+                  "promoted_verifier_takeover_required="
+                  f"{str(promoted_verifier_takeover_required).lower()}\n"
               )
               handle.write(
                   "staged_runtime_tls_rearm_required="
@@ -529,6 +544,18 @@ jobs:
         if: ${{ inputs.rearm_staged_after_cleanup_pause_repair == true && steps.preflight.outputs.staged_cleanup_pause_rearm_required != 'true' && steps.preflight.outputs.staged_rearm_retry_allowed != 'true' }}
         run: |
           echo "the cleanup-pause repair input is not valid for the recorded activation state" >&2
+          exit 1
+
+      - name: Reject a formal-audit repair input outside its exact PROMOTED takeover
+        if: ${{ inputs.resume_promoted_after_formal_audit_repair == true && steps.preflight.outputs.promoted_verifier_takeover_required != 'true' }}
+        run: |
+          echo "the formal-audit repair input is not valid for the recorded activation state" >&2
+          exit 1
+
+      - name: Fail closed unless the exact PROMOTED formal-audit repair was selected
+        if: ${{ steps.preflight.outputs.promoted_verifier_takeover_required == 'true' && inputs.resume_promoted_after_formal_audit_repair != true }}
+        run: |
+          echo "the PROMOTED activation requires the reviewed formal-audit repair input" >&2
           exit 1
 
       - name: Inventory Production through the read-only role
@@ -918,6 +945,26 @@ jobs:
             --approval-id-env SAFE_BASELINE_APPROVAL_ID \
             --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
             --output "$EVIDENCE_DIR/staged-verifier-adoption.json"
+
+      - name: Atomically adopt the exact PROMOTED deployment into the reviewed formal verifier run
+        if: ${{ steps.preflight.outputs.promoted_verifier_takeover_required == 'true' && inputs.resume_promoted_after_formal_audit_repair == true }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
+          RESERVATION_EVIDENCE_URL: ${{ steps.reservation_evidence.outputs.artifact-url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action adopt-promoted-verifier \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-source-sha "${{ steps.preflight.outputs.expected_source_sha }}" \
+            --expected-workflow-run-id "${{ steps.preflight.outputs.expected_workflow_run_id }}" \
+            --expected-version "${{ steps.preflight.outputs.expected_version }}" \
+            --approval-id-env SAFE_BASELINE_APPROVAL_ID \
+            --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
+            --output "$EVIDENCE_DIR/promoted-verifier-adoption.json"
 
       - name: Provision and publish the two least-privilege application logins
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' }}
@@ -1582,6 +1629,7 @@ jobs:
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
           RUNTIME_AUDIT_HMAC_KEY: ${{ secrets.RUNTIME_AUDIT_HMAC_KEY }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           RUNTIME_BUNDLE_ID: ${{ steps.runtime.outputs.runtime_bundle_id }}
@@ -1590,6 +1638,7 @@ jobs:
           python scripts/release/collect_runtime_ddl_audit.py \
             --base-url "$PRODUCTION_BASE_URL" \
             --request-origin "$PRODUCTION_BASE_URL" \
+            --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
             --source-sha "$SOURCE_SHA" \
             --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
             --deployment-id "$DEPLOYMENT_ID" \
