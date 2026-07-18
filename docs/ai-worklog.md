@@ -1860,3 +1860,15 @@
 - A protected release proof verifies the exact runtime memberships and requires the identity schema to remain absent at revision `20260712_0014`. Later revisions must instead prove exact table privileges and forced RLS.
 - Because the staged deployment is immutable and the application source changed, a narrowly fenced schema-compatibility rearm accepts only the exact reviewed old source and cumulative file set, atomically returns the activation from STAGED to RESERVED, and requires the same workflow run to rebuild before any promotion.
 - Focused release-control regression passed 140 cases with one Windows-only skip and 253 subtests. The full backend suite passed 794 cases with 37 explicit environment/platform skips and 1,078 subtests. Python compilation, YAML parsing, dependency consistency, `git diff --check`, and a credential-shape scan passed. GitHub CI, protected rearm/rebuild, Production promotion, and formal-domain verification remain required before this repair is complete. No Subagent was used.
+
+## 2026-07-18 - Keep login cleanup compatible with the pre-identity schema
+
+### Goal and evidence
+
+- Protected run `29643797578` attempt 1 atomically returned the invalid STAGED activation to an unbound RESERVED state and intentionally stopped before rebuild. Attempt 2 then stopped at login provisioning before Vercel environment publication, build, deploy, Promote, or domain mutation because PostgreSQL reported `relation "public.user_identities" does not exist`.
+- The login-rotation transaction correctly preserves the safe-baseline revision `20260712_0014`, where identity tables are intentionally absent. Direct-privilege cleanup had nevertheless issued `REVOKE ALL ON TABLE` for every future identity table without first checking whether the relation existed; the exception rolled the transaction back.
+
+### Changes and verification
+
+- Direct-login privilege cleanup now resolves every reviewed table through `to_regclass` and skips only relations that do not exist. Existing business, control-plane, readiness, and later identity tables still receive the same exact direct-privilege revocation.
+- A focused regression proves that an existing business table is revoked while the absent pre-migration `user_identities` table is not referenced by `REVOKE`. The focused database/release suite passed 116 cases with one Windows-only skip and 241 subtests; the full backend suite passed 795 cases with 37 explicit environment/platform skips and 1,078 subtests. Python compilation and `git diff --check` passed. Production retry, build, deployment, Promote, and formal-domain verification remain required. No Subagent was used.

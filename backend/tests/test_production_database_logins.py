@@ -389,6 +389,47 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
         prove.assert_called_once()
         sleep.assert_not_called()
 
+    def test_direct_privilege_cleanup_skips_tables_absent_before_identity_migration(
+        self,
+    ) -> None:
+        cursor = mock.MagicMock()
+        cursor.fetchone.side_effect = (
+            {"relation": "users"},
+            {"relation": None},
+        )
+        with (
+            mock.patch.object(provision, "CONTROL_PLANE_TABLES", ()),
+            mock.patch.object(provision, "RUNTIME_SCHEMA_READINESS_PRIVILEGES", {}),
+            mock.patch.object(
+                provision,
+                "IDENTITY_TABLE_PRIVILEGES",
+                {"user_identities": ("SELECT", "INSERT", "UPDATE")},
+            ),
+        ):
+            provision._revoke_direct_login_privileges(
+                cursor,
+                login=provision.RUNTIME_LOGIN,
+                business_tables=("users",),
+            )
+
+        lookups = [
+            call
+            for call in cursor.execute.call_args_list
+            if call.args[0] == "SELECT to_regclass(%s) AS relation"
+        ]
+        self.assertEqual(
+            [call.args[1] for call in lookups],
+            [("public.users",), ("public.user_identities",)],
+        )
+        table_revokes = [
+            str(call.args[0])
+            for call in cursor.execute.call_args_list
+            if "REVOKE ALL ON TABLE" in str(call.args[0])
+        ]
+        self.assertEqual(len(table_revokes), 1)
+        self.assertIn("Identifier('public', 'users')", table_revokes[0])
+        self.assertNotIn("user_identities", table_revokes[0])
+
 
 class ProductionDatabaseLoginVercelTest(unittest.TestCase):
     def test_urls_are_sent_only_over_stdin_and_read_back_as_sensitive(self) -> None:
