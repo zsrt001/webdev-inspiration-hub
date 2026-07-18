@@ -2083,6 +2083,71 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     source_sha,
                 )
 
+    def test_reserved_vercel_python_repair_is_exactly_the_third_forward_fix(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_reserved_vercel_python_repair_contract",
+        )
+        previous_source_sha = (
+            register.RESERVED_VERCEL_PYTHON_REPAIR_PREVIOUS_SOURCE_SHA
+        )
+        source_sha = "c" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(register.RESERVED_VERCEL_PYTHON_REPAIR_REQUIRED_PATHS)
+        ) + "\nM\tdocs/ai-worklog.md\n"
+
+        def calls_for(diff: str) -> list[subprocess.CompletedProcess[str]]:
+            return [
+                subprocess.CompletedProcess([], 0, stdout=source_sha + "\n", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout=diff, stderr=""),
+            ]
+
+        with (
+            mock.patch.object(
+                register.subprocess,
+                "run",
+                side_effect=calls_for(allowed_diff),
+            ),
+            mock.patch.object(
+                register,
+                "validate_reserved_build_dependency_repair",
+            ) as dependency_repair,
+        ):
+            register.validate_reserved_build_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+            dependency_repair.assert_not_called()
+
+        for unsafe_diff, error in (
+            (
+                allowed_diff + "M\t.github/workflows/safe-baseline-release.yml\n",
+                "unauthorized path: .github/workflows/safe-baseline-release.yml",
+            ),
+            (
+                allowed_diff.replace(
+                    "M\tbackend/tests/test_ci_release_contract.py\n",
+                    "",
+                ),
+                "missing required reviewed changes",
+            ),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(
+                    register.subprocess,
+                    "run",
+                    side_effect=calls_for(unsafe_diff),
+                ),
+                self.assertRaisesRegex(register.SafeBaselineRegistrationError, error),
+            ):
+                register.validate_reserved_build_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
+
     def test_reserved_retry_rejects_a_decreasing_workflow_attempt(self) -> None:
         register = _load_script(
             "scripts/release/register_safe_baseline.py",
