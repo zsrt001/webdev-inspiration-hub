@@ -2103,6 +2103,26 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         self.assertIn("--action verify-runtime-secret", build_step)
         self.assertIn("--runtime-secret-fingerprint ACCEPTANCE_IDENTITY_HMAC_KEY_SHA256", build_step)
         self.assertNotIn('"$VERCEL_CLI" build --prod', build_step.split("cd \"$RUNTIME_SOURCE_DIR\"", 1)[0])
+        deploy_start = workflow.index(
+            "- name: Recover or create the one allowed staged deployment"
+        )
+        deploy_end = workflow.index(
+            "- name: Resolve one immutable deployment coordinate set",
+            deploy_start,
+        )
+        deploy_step = workflow[deploy_start:deploy_end]
+        self.assertEqual(deploy_step.count('--env "SOURCE_SHA=$SOURCE_SHA"'), 1)
+        self.assertEqual(
+            deploy_step.count(
+                "--deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER"
+            ),
+            2,
+        )
+        self.assertIn(
+            "VERCEL_AUTOMATION_BYPASS_HEADER: "
+            "${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}",
+            deploy_step,
+        )
 
     def test_staged_verifier_takeover_diff_is_exactly_release_control_only(self) -> None:
         register = _load_script(
@@ -2111,10 +2131,27 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         source_sha = "a" * 40
         runner_sha = "b" * 40
+        database_control_paths = {
+            "backend/tests/test_production_database_logins.py",
+            "release/safe-baseline-contract.json",
+            "scripts/release/production_database_login_proof.py",
+            "scripts/release/provision_production_database_logins.py",
+        }
+        self.assertTrue(
+            database_control_paths
+            <= register.STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS
+        )
         allowed_diff = "\n".join(
             f"M\t{path}"
-            for path in sorted(register.STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS)
-        ) + "\nM\tbackend/tests/test_ci_release_contract.py\n"
+            for path in sorted(
+                {
+                    *register.STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS,
+                    *database_control_paths,
+                    "backend/tests/test_ci_release_contract.py",
+                    "docs/ai-worklog.md",
+                }
+            )
+        ) + "\n"
         successful_calls = [
             subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
@@ -2850,13 +2887,23 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "deployments": [deployment("dpl_exact", manifest_sha256)],
             "pagination": {"next": None},
         }
+        runtime = mock.MagicMock(status_code=200)
+        runtime.json.return_value = {
+            "source_sha": source_sha,
+            "runtime_bundle_id": runtime_bundle_id,
+            "deployment_id": "dpl_exact",
+        }
         with (
             mock.patch.object(
                 register,
                 "_preflight",
                 return_value={"state": "RETRY_RESERVED"},
             ) as preflight,
-            mock.patch.object(register.httpx, "get", side_effect=[first, second]) as get,
+            mock.patch.object(
+                register.httpx,
+                "get",
+                side_effect=[first, second, runtime],
+            ) as get,
         ):
             recovered = register._recover_deployment(
                 "postgresql://read-only",
@@ -2868,12 +2915,23 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 token="token",
                 project_id="prj_vowpic",
                 team_id="team_vowpic",
+                bypass_secret="z" * 32,
             )
 
         self.assertEqual(recovered["candidate_count"], 1)
         self.assertEqual(recovered["candidate"]["deployment_id"], "dpl_exact")
-        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_count, 3)
         self.assertEqual(get.call_args_list[1].kwargs["params"]["until"], "1700000000000")
+        self.assertEqual(
+            get.call_args_list[2].args[0],
+            "https://dpl_exact.vercel.app/version",
+        )
+        self.assertEqual(
+            get.call_args_list[2].kwargs["headers"][
+                "x-vercel-protection-bypass"
+            ],
+            "z" * 32,
+        )
         preflight.assert_called_once_with(
             "postgresql://read-only",
             source_sha=source_sha,
@@ -2894,6 +2952,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "token": "token",
             "project_id": "prj_vowpic",
             "team_id": "",
+            "bypass_secret": "z" * 32,
         }
         with mock.patch.object(register.httpx, "get") as get:
             with self.assertRaises(ValueError):
@@ -2968,7 +3027,93 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                     token="token",
                     project_id="prj_vowpic",
                     team_id="team_vowpic",
+                    bypass_secret="z" * 32,
                 )
+
+    def test_recovery_rejects_metadata_only_runtime_mismatch_before_redeploy(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_runtime_attestation_recovery_contract",
+        )
+        source_sha = "a" * 40
+        runtime_bundle_id = "rtb_" + "b" * 64
+        manifest_sha256 = "c" * 64
+        page = mock.MagicMock()
+        page.json.return_value = {
+            "deployments": [
+                {
+                    "uid": "dpl_metadata_only",
+                    "url": "dpl_metadata_only.vercel.app",
+                    "state": "READY",
+                    "meta": {
+                        "vowpicSourceSha": source_sha,
+                        "vowpicRuntimeBundleId": runtime_bundle_id,
+                        "vowpicBuildSha256": manifest_sha256,
+                        "vowpicReleaseRole": "SAFE_BASELINE",
+                    },
+                }
+            ],
+            "pagination": {"next": None},
+        }
+        runtime = mock.MagicMock(status_code=200)
+        runtime.json.return_value = {
+            "source_sha": "",
+            "runtime_bundle_id": runtime_bundle_id,
+            "deployment_id": "dpl_metadata_only",
+        }
+        with (
+            mock.patch.object(
+                register,
+                "_preflight",
+                return_value={"state": "RETRY_RESERVED"},
+            ),
+            mock.patch.object(
+                register.httpx,
+                "get",
+                side_effect=[page, runtime],
+            ),
+        ):
+            recovered = register._recover_deployment(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                workflow_run_id="12345",
+                workflow_attempt=2,
+                runtime_bundle_id=runtime_bundle_id,
+                manifest_sha256=manifest_sha256,
+                token="token",
+                project_id="prj_vowpic",
+                team_id="team_vowpic",
+                bypass_secret="z" * 32,
+            )
+
+        self.assertEqual(recovered["decision"], "DEPLOY_ONCE")
+        self.assertEqual(recovered["candidate_count"], 0)
+        self.assertEqual(recovered["runtime_mismatch_count"], 1)
+
+    def test_recovery_fails_closed_when_runtime_attestation_is_unreadable(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_unreadable_runtime_attestation_contract",
+        )
+        request = httpx.Request(
+            "GET",
+            "https://dpl_exact.vercel.app/version",
+        )
+        unavailable = httpx.Response(503, request=request)
+        with (
+            mock.patch.object(register.httpx, "get", return_value=unavailable),
+            self.assertRaisesRegex(
+                register.SafeBaselineRegistrationError,
+                "runtime attestation could not be read",
+            ),
+        ):
+            register._runtime_deployment_identity_matches(
+                deployment_url="https://dpl_exact.vercel.app",
+                deployment_id="dpl_exact",
+                source_sha="a" * 40,
+                runtime_bundle_id="rtb_" + "b" * 64,
+                bypass_secret="z" * 32,
+            )
 
     def test_reserved_build_is_durable_and_manifest_fenced_before_deploy(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
@@ -2985,10 +3130,10 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         ):
             with self.subTest(action=action):
                 self.assertIn(f'"{action}"', register_source)
-        self.assertGreaterEqual(
-            register_source.count("if not token or not project_id or not team_id"),
-            2,
-        )
+        self.assertGreaterEqual(register_source.count("not token"), 2)
+        self.assertGreaterEqual(register_source.count("not project_id"), 2)
+        self.assertGreaterEqual(register_source.count("not team_id"), 2)
+        self.assertIn("or not bypass_header", register_source)
         self.assertIn("manifest is immutable once assigned", migration)
         self.assertRegex(
             workflow,
@@ -4026,6 +4171,39 @@ class BaselineToolContractTest(unittest.TestCase):
         wrong_version.json.return_value = {**version.json.return_value, "source_sha": "c" * 40}
         client.get.side_effect = [health, wrong_version]
         with self.assertRaisesRegex(verify.SafeBaselineVerificationError, "runtime source_sha mismatch"):
+            verify._verify_runtime_identity(
+                client,
+                {},
+                expected_source_sha=source_sha,
+                expected_runtime_bundle_id=runtime_bundle_id,
+                expected_deployment_id=deployment_id,
+            )
+
+        missing_source = mock.MagicMock(status_code=200)
+        missing_source.json.return_value = {
+            **version.json.return_value,
+            "source_sha": "",
+        }
+        client.get.side_effect = [health, missing_source]
+        with self.assertRaisesRegex(
+            verify.SafeBaselineVerificationError,
+            "runtime source_sha is missing or invalid",
+        ):
+            verify._verify_runtime_identity(
+                client,
+                {},
+                expected_source_sha=source_sha,
+                expected_runtime_bundle_id=runtime_bundle_id,
+                expected_deployment_id=deployment_id,
+            )
+
+        invalid_version = mock.MagicMock(status_code=200)
+        invalid_version.json.side_effect = ValueError("invalid JSON")
+        client.get.side_effect = [health, invalid_version]
+        with self.assertRaisesRegex(
+            verify.SafeBaselineVerificationError,
+            "runtime version attestation returned an invalid payload",
+        ):
             verify._verify_runtime_identity(
                 client,
                 {},

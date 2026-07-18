@@ -26,6 +26,10 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
         self.assertEqual(len(privileges), 16)
         self.assertEqual(privileges["subscription_plans"], ("SELECT",))
         self.assertEqual(privileges["users"], ("SELECT", "INSERT", "UPDATE"))
+        self.assertEqual(
+            provision.RUNTIME_SCHEMA_READINESS_PRIVILEGES,
+            {"alembic_version": ("SELECT",)},
+        )
         self.assertFalse(
             {"DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
             & {verb for verbs in privileges.values() for verb in verbs}
@@ -41,6 +45,40 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
                 "ops_feature_flags",
                 "acceptance_identity_bindings",
                 "release_activations",
+            ),
+        )
+        contract = json.loads(
+            provision.DEFAULT_CONTRACT.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            contract["database_roles"]["runtime_schema_readiness_privileges"],
+            {"alembic_version": ["SELECT"]},
+        )
+
+    def test_schema_readiness_grant_is_select_only_and_group_scoped(self) -> None:
+        cursor = mock.MagicMock()
+        cursor.fetchall.side_effect = (
+            [{"tablename": "users"}],
+            [{"tablename": "alembic_version"}],
+            [{"rolname": "anon"}, {"rolname": "authenticated"}],
+        )
+
+        provision.configure_safe_baseline_database_roles(
+            cursor,
+            {"users": ("SELECT",)},
+        )
+
+        statements = [str(call.args[0]) for call in cursor.execute.call_args_list]
+        joined = "\n".join(statements)
+        self.assertIn("Identifier('public', 'alembic_version')", joined)
+        self.assertIn("GRANT", joined)
+        self.assertIn("REVOKE ALL ON TABLE", joined)
+        self.assertNotIn(
+            "ENABLE ROW LEVEL SECURITY",
+            "\n".join(
+                statement
+                for statement in statements
+                if "alembic_version" in statement
             ),
         )
 

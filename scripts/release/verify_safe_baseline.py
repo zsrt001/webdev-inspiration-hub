@@ -772,7 +772,21 @@ def _verify_runtime_identity(
         raise SafeBaselineVerificationError(
             f"runtime version attestation returned {version.status_code}"
         )
-    version_payload = version.json()
+    try:
+        version_payload = version.json()
+    except ValueError as exc:
+        raise SafeBaselineVerificationError(
+            "runtime version attestation returned an invalid payload"
+        ) from exc
+    if not isinstance(version_payload, dict):
+        raise SafeBaselineVerificationError(
+            "runtime version attestation returned an invalid payload"
+        )
+    observed_source_sha = str(version_payload.get("source_sha") or "")
+    if re.fullmatch(r"[0-9a-f]{40,64}", observed_source_sha) is None:
+        raise SafeBaselineVerificationError(
+            "runtime source_sha is missing or invalid"
+        )
     expected_coordinates = {
         "source_sha": expected_source_sha,
         "runtime_bundle_id": expected_runtime_bundle_id,

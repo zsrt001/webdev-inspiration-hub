@@ -12,6 +12,9 @@ RUNTIME_LOGIN = "vowpic_app_runtime"
 WRITER_LOGIN = "vowpic_control_writer_login"
 RUNTIME_GROUP = "vowpic_runtime"
 WRITER_GROUP = "vowpic_control_writer"
+RUNTIME_SCHEMA_READINESS_PRIVILEGES = {
+    "alembic_version": ("SELECT",),
+}
 CONTROL_PLANE_TABLES = (
     "release_observation_samples",
     "release_observation_runs",
@@ -135,14 +138,24 @@ def _prove_login(
                        has_table_privilege(current_user, 'public.users', 'UPDATE') AS users_update,
                        has_table_privilege(current_user, 'public.users', 'DELETE') AS users_delete,
                        has_table_privilege(current_user, 'public.ops_feature_flags', 'SELECT') AS flags_select,
-                       has_table_privilege(current_user, 'public.ops_feature_flags', 'UPDATE') AS flags_update
+                       has_table_privilege(current_user, 'public.ops_feature_flags', 'UPDATE') AS flags_update,
+                       has_table_privilege(current_user, 'public.alembic_version', 'SELECT') AS schema_revision_select,
+                       has_table_privilege(current_user, 'public.alembic_version', 'INSERT') AS schema_revision_insert,
+                       has_table_privilege(current_user, 'public.alembic_version', 'UPDATE') AS schema_revision_update,
+                       has_table_privilege(current_user, 'public.alembic_version', 'DELETE') AS schema_revision_delete
                 FROM pg_roles role
                 JOIN pg_class control ON control.oid = 'public.ops_feature_flags'::regclass
                 WHERE role.rolname = current_user
                 """,
                 (required_group, forbidden_group),
             )
+            schema_revisions: tuple[str, ...] = ()
             row = cursor.fetchone()
+            if row is not None and role_name == RUNTIME_LOGIN:
+                cursor.execute("SELECT version_num FROM public.alembic_version")
+                schema_revisions = tuple(
+                    sorted(str(result["version_num"]) for result in cursor.fetchall())
+                )
     if row is None:
         raise ValueError(f"database role proof is missing {role_name}")
     facts = dict(row)
@@ -167,12 +180,28 @@ def _prove_login(
     if role_name == RUNTIME_LOGIN:
         if not (facts["users_select"] and facts["users_update"] and facts["flags_select"]):
             raise ValueError("runtime login is missing its reviewed SQL surface")
-        if facts["flags_update"]:
-            raise ValueError("runtime login can mutate control-plane flags")
-    elif facts["users_select"] or facts["users_update"] or not facts["flags_update"]:
+        if (
+            facts["flags_update"]
+            or not facts["schema_revision_select"]
+            or facts["schema_revision_insert"]
+            or facts["schema_revision_update"]
+            or facts["schema_revision_delete"]
+            or not schema_revisions
+        ):
+            raise ValueError("runtime login has an invalid schema/control SQL surface")
+    elif (
+        facts["users_select"]
+        or facts["users_update"]
+        or not facts["flags_update"]
+        or facts["schema_revision_select"]
+        or facts["schema_revision_insert"]
+        or facts["schema_revision_update"]
+        or facts["schema_revision_delete"]
+    ):
         raise ValueError("control-writer login has an invalid business/control privilege split")
     return {
         **facts,
+        "schema_revisions": schema_revisions,
         "business_tables": _prove_business_tables(
             role_url,
             role_name,
