@@ -469,6 +469,26 @@ later staged/formal/completion artifacts. The adopted run must reuse the
 recorded STAGED deployment and can only move forward through the ordinary
 verification and Promote gates.
 
+A separate one-time verifier-repair exception exists for the exact PROMOTED
+safe-baseline source `12d5b0f7de5a7c85adb12662790badab5b541006` after run
+`29649808124` proved the staged application, completed the only Promote, and
+then exposed a release-workflow defect: the pre-handoff formal-domain runtime
+DDL collector omitted the already protected Vercel automation-bypass header and
+therefore observed edge `403` before the application-level `503` contract.
+A newly approved run may transfer only workflow run/attempt ownership, durable
+evidence URL, and row version while the activation remains `PROMOTED`. The
+source, runtime bundle, manifest, build artifact, deployment ID/URL, role,
+snapshot, and phase remain immutable. The deployed source must be the pinned
+source above, the current-main runner must be its descendant, and their complete
+diff must contain exactly modified release workflow/registration control, its
+contract test, this runbook, and the worklog. The repair passes the protected
+bypass only to the formal runtime-DDL collection that must reach the
+application. The subsequent edge handoff still removes and reads back every
+deny/bypass rule and verifies the public formal domain without any bypass. A
+recovery run starts from effective state `RETRY_PROMOTED`, must reconfirm the
+exact READY formal deployment and successful `lastAliasRequest`, and cannot
+build, deploy, arm, or send Promote again.
+
 A second, distinct exception exists only when an unpromoted STAGED deployment
 is proven fail-closed because `ACCEPTANCE_IDENTITY_HMAC_KEY` was missing or
 invalid in the Vercel Production environment. Vercel Sensitive values are
@@ -533,8 +553,9 @@ workflow run ID after all protected-environment and edge checks are fresh; its
 workflow attempt must increase monotonically. `FORMAL_VERIFIED` additionally
 requires its already bound artifact reference to remain downloadable and
 byte-hash valid; retention expiry does not authorize replacement. Except for
-the exact STAGED verifier takeover, invalid-runtime-config rearm, and bound
-undeployed prebuild rearm above, a
+the exact STAGED verifier takeover, the pinned PROMOTED formal-audit verifier
+takeover, invalid-runtime-config rearm, and bound undeployed prebuild rearm
+above, a
 different run or source remains a conflict and requires audited manual forward
 disposition. None of these recovery paths changes the deployed source.
 The bound-prebuild exception may change only a source that has never produced a
