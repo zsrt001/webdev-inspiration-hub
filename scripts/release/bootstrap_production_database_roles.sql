@@ -183,7 +183,7 @@ BEGIN
     JOIN pg_roles member ON member.oid = membership.member
     JOIN pg_roles parent ON parent.oid = membership.roleid
     WHERE member.rolname = 'vowpic_app_runtime'
-      AND parent.rolname <> 'vowpic_runtime';
+      AND parent.rolname NOT IN ('vowpic_runtime', 'vowpic_identity_service');
     IF coalesce(unexpected_memberships, ARRAY[]::text[]) <> ARRAY[]::text[] THEN
         RAISE EXCEPTION 'existing runtime login has unexpected role memberships';
     END IF;
@@ -396,7 +396,9 @@ BEGIN
         );
         REVOKE vowpic_control_writer FROM vowpic_app_runtime;
         REVOKE vowpic_runtime FROM vowpic_control_writer_login;
+        REVOKE vowpic_identity_service FROM vowpic_control_writer_login;
         GRANT vowpic_runtime TO vowpic_app_runtime;
+        GRANT vowpic_identity_service TO vowpic_app_runtime;
         GRANT vowpic_control_writer TO vowpic_control_writer_login;
     END
     $rotate$;

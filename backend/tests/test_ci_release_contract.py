@@ -878,6 +878,9 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         staged_collect = workflow.index(
             "Collect the staged runtime DDL audit from PostgreSQL statistics"
         )
+        identity_grant = workflow.index(
+            "Prove the staged runtime identity membership before application probes"
+        )
         staged_verify = workflow.index(
             "Verify the staged application and authenticated runtime DDL audit"
         )
@@ -887,6 +890,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         formal_verify = workflow.index(
             "Hand off every edge group and verify the formal domain without a bypass"
         )
+        self.assertLess(identity_grant, staged_collect)
         self.assertLess(staged_collect, staged_verify)
         self.assertLess(formal_collect, formal_verify)
         self.assertEqual(workflow.count("collect_runtime_ddl_audit.py"), 2)
@@ -2187,7 +2191,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             workflow.count(
                 "steps.preflight.outputs.staged_rearm_retry_allowed != 'true'"
             ),
-            2,
+            3,
         )
         self.assertIn(
             "--runtime-tls-repair is valid only with --action rearm-staged",
@@ -2216,6 +2220,158 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         )
         self.assertLess(durable_evidence, main_recheck)
         self.assertLess(main_recheck, guard)
+        self.assertLess(guard, rearm)
+        self.assertLess(rearm, config_rearm)
+
+    def test_staged_schema_compatibility_repair_diff_is_exact_and_pinned(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_schema_compatibility_diff_contract",
+        )
+        previous_source_sha = (
+            register.STAGED_SCHEMA_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA
+        )
+        source_sha = "b" * 40
+        allowed_diff = "\n".join(
+            f"M\t{path}"
+            for path in sorted(
+                register.STAGED_SCHEMA_COMPATIBILITY_REPAIR_REQUIRED_PATHS
+            )
+        ) + "\n"
+
+        def results(diff: str) -> list[subprocess.CompletedProcess[str]]:
+            return [
+                subprocess.CompletedProcess([], 0, stdout=source_sha + "\n"),
+                subprocess.CompletedProcess([], 0),
+                subprocess.CompletedProcess([], 0, stdout=diff),
+            ]
+
+        with mock.patch.object(
+            register.subprocess,
+            "run",
+            side_effect=results(allowed_diff),
+        ):
+            register.validate_staged_schema_compatibility_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+
+        with (
+            mock.patch.object(
+                register.subprocess,
+                "run",
+                side_effect=results(allowed_diff + "M\tbackend/app/main.py\n"),
+            ),
+            self.assertRaisesRegex(
+                register.SafeBaselineRegistrationError,
+                "unauthorized path",
+            ),
+        ):
+            register.validate_staged_schema_compatibility_repair_descendant(
+                previous_source_sha,
+                source_sha,
+            )
+
+    def test_staged_schema_compatibility_preflight_is_one_source_changing_takeover(
+        self,
+    ) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_staged_schema_compatibility_preflight_contract",
+        )
+        previous_source_sha = (
+            register.STAGED_SCHEMA_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA
+        )
+        source_sha = "b" * 40
+        activation = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "source_sha": previous_source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "STAGED",
+            "version": 4,
+            "approval": "protected-approval",
+            "current_snapshot_hash": "c" * 64,
+            "private_evidence_prefix": (
+                "https://github.com/o/r/actions/runs/123/artifacts/1"
+            ),
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "api_deployment_id": "dpl_pre_identity_failure",
+            "api_deployment_url": "https://pre-identity-failure.vercel.app",
+            "api_role": "SAFE_BASELINE",
+        }
+        connection = mock.MagicMock()
+        connection.execute.return_value.scalar_one.return_value = "on"
+        engine = mock.MagicMock()
+        engine.connect.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(
+                register,
+                "_current_revision",
+                return_value=register.TARGET_SCHEMA,
+            ),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+            mock.patch.object(
+                register,
+                "validate_staged_schema_compatibility_repair_descendant",
+            ) as repair_diff,
+        ):
+            report = register._preflight(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                runner_sha=source_sha,
+                workflow_run_id="789",
+                workflow_attempt=1,
+            )
+
+        self.assertEqual(
+            report["state"],
+            "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY",
+        )
+        repair_diff.assert_called_once_with(previous_source_sha, source_sha)
+
+    def test_staged_schema_compatibility_repair_is_explicit_and_rerun_fenced(
+        self,
+    ) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        register_source = _read("scripts/release/register_safe_baseline.py")
+        self.assertIn(
+            "rearm_staged_after_schema_compatibility_repair",
+            workflow,
+        )
+        self.assertIn('"TAKEOVER_STAGED_SCHEMA_COMPATIBILITY"', workflow)
+        self.assertIn("--runtime-schema-compatibility-repair", workflow)
+        self.assertIn(
+            "Fail closed unless the exact STAGED schema-compatibility repair "
+            "was explicitly selected",
+            workflow,
+        )
+        self.assertIn(
+            "--runtime-schema-compatibility-repair is valid only with ",
+            register_source,
+        )
+        self.assertIn('"--action rearm-staged"', register_source)
+        self.assertIn(
+            "2d7ba47935a87ce4b2749554494c6abae92f07f3",
+            register_source,
+        )
+        guard = workflow.index(
+            "Fail closed unless the exact STAGED schema-compatibility repair "
+            "was explicitly selected"
+        )
+        rearm = workflow.index(
+            "Atomically rearm the invalid STAGED runtime after the "
+            "schema-compatibility repair",
+            guard,
+        )
+        config_rearm = workflow.index(
+            "Atomically rearm the invalid unpromoted STAGED binding",
+            rearm,
+        )
         self.assertLess(guard, rearm)
         self.assertLess(rearm, config_rearm)
         step = workflow[rearm:config_rearm]
@@ -2422,6 +2578,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         database_control_paths = {
             "backend/tests/test_production_database_logins.py",
             "release/safe-baseline-contract.json",
+            "scripts/release/bootstrap_production_database_roles.sql",
             "scripts/release/production_database_login_proof.py",
             "scripts/release/provision_production_database_logins.py",
         }
@@ -4763,7 +4920,11 @@ class BaselineToolContractTest(unittest.TestCase):
         self.assertEqual(len(verify.RETIRED_ROUTE_PROBES), 33)
         guarded = {probe.name: probe for probe in verify.GUARDED_ROUTE_PROBES}
         self.assertEqual(guarded["google_oauth_intent"].expected_status, 503)
-        self.assertEqual(guarded["google_exchange"].expected_status, 401)
+        self.assertEqual(guarded["google_exchange"].expected_status, 503)
+        self.assertEqual(
+            guarded["google_exchange"].expected_code,
+            "capability_disabled",
+        )
         for name in (
             "private_media_upload",
             "gatekeeper",

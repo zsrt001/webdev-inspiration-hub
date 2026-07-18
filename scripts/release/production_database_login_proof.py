@@ -1,7 +1,12 @@
-"""Reconnect through each application login and prove its exact SQL surface."""
+"""Prove the exact Production application-login and identity SQL surfaces."""
 
 from __future__ import annotations
 
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
 from typing import Any
 
 import psycopg2
@@ -12,6 +17,20 @@ RUNTIME_LOGIN = "vowpic_app_runtime"
 WRITER_LOGIN = "vowpic_control_writer_login"
 RUNTIME_GROUP = "vowpic_runtime"
 WRITER_GROUP = "vowpic_control_writer"
+IDENTITY_SERVICE_GROUP = "vowpic_identity_service"
+MIGRATION_LOGIN = "vowpic_migration_login"
+MIGRATION_OWNER = "vowpic_migration_owner"
+SAFE_BASELINE_SCHEMA = "20260712_0014"
+IDENTITY_TABLE_PRIVILEGES = {
+    "user_identities": ("SELECT", "INSERT", "UPDATE"),
+    "oauth_login_intents": ("SELECT", "INSERT", "UPDATE"),
+    "auth_sessions": ("SELECT", "INSERT", "UPDATE"),
+    "auth_refresh_tokens": ("SELECT", "INSERT", "UPDATE"),
+    "account_claim_proofs": ("SELECT", "INSERT", "UPDATE"),
+    "identity_email_conflicts": ("SELECT", "INSERT", "UPDATE"),
+    "user_account_merges": ("SELECT", "INSERT"),
+    "account_tombstones": ("SELECT", "INSERT", "UPDATE"),
+}
 RUNTIME_SCHEMA_READINESS_PRIVILEGES = {
     "alembic_version": ("SELECT",),
 }
@@ -117,6 +136,7 @@ def _prove_login(
     role_url: str,
     required_group: str,
     forbidden_group: str,
+    additional_required_groups: tuple[str, ...],
     business_privileges: dict[str, tuple[str, ...]],
 ) -> dict[str, Any]:
     with psycopg2.connect(role_url, cursor_factory=RealDictCursor) as connection:
@@ -133,6 +153,19 @@ def _prove_login(
                        role.rolbypassrls AS bypass_rls,
                        pg_has_role(current_user, %s, 'MEMBER') AS required_group_member,
                        pg_has_role(current_user, %s, 'MEMBER') AS forbidden_group_member,
+                       (
+                           SELECT COALESCE(
+                               bool_and(pg_has_role(current_user, required.name, 'MEMBER')),
+                               true
+                           )
+                           FROM unnest(%s::text[]) AS required(name)
+                       ) AS additional_required_groups_member,
+                       COALESCE((
+                           SELECT array_agg(parent.rolname ORDER BY parent.rolname)
+                           FROM pg_auth_members membership
+                           JOIN pg_roles parent ON parent.oid = membership.roleid
+                           WHERE membership.member = role.oid
+                       ), ARRAY[]::name[]) AS direct_memberships,
                        pg_get_userbyid(control.relowner) = current_user AS owns_control_table,
                        has_table_privilege(current_user, 'public.users', 'SELECT') AS users_select,
                        has_table_privilege(current_user, 'public.users', 'UPDATE') AS users_update,
@@ -147,7 +180,7 @@ def _prove_login(
                 JOIN pg_class control ON control.oid = 'public.ops_feature_flags'::regclass
                 WHERE role.rolname = current_user
                 """,
-                (required_group, forbidden_group),
+                (required_group, forbidden_group, list(additional_required_groups)),
             )
             schema_revisions: tuple[str, ...] = ()
             row = cursor.fetchone()
@@ -175,6 +208,9 @@ def _prove_login(
         any(facts[key] for key in forbidden)
         or not facts["inherit_privileges"]
         or not facts["required_group_member"]
+        or not facts["additional_required_groups_member"]
+        or set(facts["direct_memberships"] or [])
+        != {required_group, *additional_required_groups}
     ):
         raise ValueError(f"database login {role_name} violates the least-privilege contract")
     if role_name == RUNTIME_LOGIN:
@@ -221,10 +257,299 @@ def prove_database_logins(
             role_url=role_url,
             required_group=required_group,
             forbidden_group=forbidden_group,
+            additional_required_groups=additional_required_groups,
             business_privileges=business_privileges,
         )
-        for role_name, role_url, required_group, forbidden_group in (
-            (RUNTIME_LOGIN, runtime_url, RUNTIME_GROUP, WRITER_GROUP),
-            (WRITER_LOGIN, writer_url, WRITER_GROUP, RUNTIME_GROUP),
+        for (
+            role_name,
+            role_url,
+            required_group,
+            forbidden_group,
+            additional_required_groups,
+        ) in (
+            (
+                RUNTIME_LOGIN,
+                runtime_url,
+                RUNTIME_GROUP,
+                WRITER_GROUP,
+                (IDENTITY_SERVICE_GROUP,),
+            ),
+            (WRITER_LOGIN, writer_url, WRITER_GROUP, RUNTIME_GROUP, ()),
         )
     }
+
+
+def _validate_runtime_identity_grant(
+    authority: dict[str, Any],
+    runtime_role: dict[str, Any],
+    identity_tables: dict[str, dict[str, Any]],
+    *,
+    identity_schema_required: bool = True,
+) -> None:
+    if (
+        authority.get("session_user") != MIGRATION_LOGIN
+        or authority.get("current_user") != MIGRATION_OWNER
+        or not authority.get("migration_owner_member")
+    ):
+        raise ValueError("identity grant proof requires the scoped migration authority")
+    forbidden_role_flags = (
+        "superuser",
+        "create_db",
+        "create_role",
+        "replication",
+        "bypass_rls",
+        "owns_objects",
+    )
+    if (
+        runtime_role.get("role_name") != RUNTIME_LOGIN
+        or not runtime_role.get("can_login")
+        or not runtime_role.get("inherit_privileges")
+        or any(runtime_role.get(key) for key in forbidden_role_flags)
+        or set(runtime_role.get("memberships") or [])
+        != {RUNTIME_GROUP, IDENTITY_SERVICE_GROUP}
+    ):
+        raise ValueError("runtime identity membership violates the least-privilege contract")
+    if not identity_schema_required:
+        if identity_tables:
+            raise ValueError(
+                "safe-baseline identity membership proof found out-of-order identity tables"
+            )
+        return
+    if set(identity_tables) != set(IDENTITY_TABLE_PRIVILEGES):
+        raise ValueError("runtime identity grant proof is missing reviewed tables")
+    for table, expected_privileges in IDENTITY_TABLE_PRIVILEGES.items():
+        facts = identity_tables[table]
+        actual_privileges = {
+            privilege
+            for privilege, key in (
+                ("SELECT", "can_select"),
+                ("INSERT", "can_insert"),
+                ("UPDATE", "can_update"),
+                ("DELETE", "can_delete"),
+                ("TRUNCATE", "can_truncate"),
+                ("REFERENCES", "can_references"),
+                ("TRIGGER", "can_trigger"),
+            )
+            if facts.get(key)
+        }
+        if (
+            actual_privileges != set(expected_privileges)
+            or facts.get("direct_privileges")
+            or not facts.get("row_security_enabled")
+            or not facts.get("row_security_forced")
+            or set(facts.get("identity_policy_names") or [])
+            != {f"{table}_identity_service_all"}
+            or set(facts.get("identity_policy_commands") or []) != {"ALL"}
+        ):
+            raise ValueError(
+                f"runtime identity grant has an invalid {table} privilege or RLS surface"
+            )
+
+
+def prove_runtime_identity_grant(
+    database_url: str,
+    *,
+    expected_schema: str,
+) -> dict[str, Any]:
+    normalized = database_url.strip().replace(
+        "postgresql+asyncpg://",
+        "postgresql://",
+        1,
+    )
+    identity_tables: dict[str, dict[str, Any]] = {}
+    with psycopg2.connect(normalized, cursor_factory=RealDictCursor) as connection:
+        connection.set_session(readonly=True, autocommit=False)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT session_user,
+                       current_user,
+                       current_database() AS database,
+                       pg_has_role(
+                           session_user,
+                           'vowpic_migration_owner',
+                           'MEMBER'
+                       ) AS migration_owner_member
+                """
+            )
+            authority = dict(cursor.fetchone() or {})
+            cursor.execute("SELECT version_num FROM public.alembic_version")
+            schema_revisions = tuple(
+                sorted(str(row["version_num"]) for row in cursor.fetchall())
+            )
+            if schema_revisions != (expected_schema,):
+                raise ValueError("runtime identity proof observed an unexpected schema")
+            cursor.execute(
+                """
+                SELECT role.rolname AS role_name,
+                       role.rolcanlogin AS can_login,
+                       role.rolinherit AS inherit_privileges,
+                       role.rolsuper AS superuser,
+                       role.rolcreatedb AS create_db,
+                       role.rolcreaterole AS create_role,
+                       role.rolreplication AS replication,
+                       role.rolbypassrls AS bypass_rls,
+                       COALESCE((
+                           SELECT array_agg(parent.rolname ORDER BY parent.rolname)
+                           FROM pg_auth_members membership
+                           JOIN pg_roles parent ON parent.oid = membership.roleid
+                           WHERE membership.member = role.oid
+                       ), ARRAY[]::name[]) AS memberships,
+                       EXISTS (
+                           SELECT 1 FROM pg_database database
+                           WHERE database.datdba = role.oid
+                       ) OR EXISTS (
+                           SELECT 1 FROM pg_namespace namespace
+                           WHERE namespace.nspowner = role.oid
+                       ) OR EXISTS (
+                           SELECT 1 FROM pg_class relation
+                           WHERE relation.relowner = role.oid
+                       ) OR EXISTS (
+                           SELECT 1 FROM pg_proc routine
+                           WHERE routine.proowner = role.oid
+                       ) AS owns_objects
+                FROM pg_roles role
+                WHERE role.rolname = %s
+                """,
+                (RUNTIME_LOGIN,),
+            )
+            runtime_role = dict(cursor.fetchone() or {})
+            cursor.execute(
+                """
+                SELECT relation.relname
+                FROM pg_class relation
+                JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = 'public'
+                  AND relation.relname = ANY(%s)
+                ORDER BY relation.relname
+                """,
+                (list(IDENTITY_TABLE_PRIVILEGES),),
+            )
+            existing_identity_tables = tuple(
+                str(row["relname"]) for row in cursor.fetchall()
+            )
+            identity_schema_required = expected_schema != SAFE_BASELINE_SCHEMA
+            if (
+                identity_schema_required
+                and set(existing_identity_tables) != set(IDENTITY_TABLE_PRIVILEGES)
+            ):
+                raise ValueError("runtime identity proof is missing reviewed identity tables")
+            if not identity_schema_required and existing_identity_tables:
+                raise ValueError(
+                    "safe-baseline identity membership proof found out-of-order identity tables"
+                )
+            for table in existing_identity_tables:
+                qualified = f"public.{table}"
+                cursor.execute(
+                    """
+                    SELECT relation.relrowsecurity AS row_security_enabled,
+                           relation.relforcerowsecurity AS row_security_forced,
+                           COALESCE((
+                               SELECT array_agg(policy.policyname ORDER BY policy.policyname)
+                               FROM pg_policies policy
+                               WHERE policy.schemaname = 'public'
+                                 AND policy.tablename = %s
+                                 AND %s = ANY(policy.roles)
+                           ), ARRAY[]::text[]) AS identity_policy_names,
+                           COALESCE((
+                               SELECT array_agg(policy.cmd ORDER BY policy.cmd)
+                               FROM pg_policies policy
+                               WHERE policy.schemaname = 'public'
+                                 AND policy.tablename = %s
+                                 AND %s = ANY(policy.roles)
+                           ), ARRAY[]::text[]) AS identity_policy_commands,
+                           COALESCE((
+                               SELECT array_agg(
+                                   privilege.privilege_type
+                                   ORDER BY privilege.privilege_type
+                               )
+                               FROM aclexplode(
+                                   COALESCE(relation.relacl, ARRAY[]::aclitem[])
+                               ) privilege
+                               WHERE privilege.grantee = %s::regrole
+                           ), ARRAY[]::text[]) AS direct_privileges,
+                           has_table_privilege(%s, %s, 'SELECT') AS can_select,
+                           has_table_privilege(%s, %s, 'INSERT') AS can_insert,
+                           has_table_privilege(%s, %s, 'UPDATE') AS can_update,
+                           has_table_privilege(%s, %s, 'DELETE') AS can_delete,
+                           has_table_privilege(%s, %s, 'TRUNCATE') AS can_truncate,
+                           has_table_privilege(%s, %s, 'REFERENCES') AS can_references,
+                           has_table_privilege(%s, %s, 'TRIGGER') AS can_trigger
+                    FROM pg_class relation
+                    WHERE relation.oid = to_regclass(%s)
+                    """,
+                    (
+                        table,
+                        IDENTITY_SERVICE_GROUP,
+                        table,
+                        IDENTITY_SERVICE_GROUP,
+                        RUNTIME_LOGIN,
+                        *([RUNTIME_LOGIN, qualified] * 7),
+                        qualified,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise ValueError(f"runtime identity grant proof is missing {table}")
+                identity_tables[table] = dict(row)
+    _validate_runtime_identity_grant(
+        authority,
+        runtime_role,
+        identity_tables,
+        identity_schema_required=identity_schema_required,
+    )
+    return {
+        "state": (
+            "RUNTIME_IDENTITY_GRANT_VERIFIED"
+            if identity_schema_required
+            else "RUNTIME_IDENTITY_MEMBERSHIP_VERIFIED"
+        ),
+        "database": authority["database"],
+        "schema_revision": expected_schema,
+        "identity_schema_state": (
+            "PRESENT_AND_VERIFIED"
+            if identity_schema_required
+            else "ABSENT_BY_SAFE_BASELINE_CONTRACT"
+        ),
+        "authority": {
+            "session_user": authority["session_user"],
+            "current_user": authority["current_user"],
+        },
+        "runtime_role": runtime_role,
+        "identity_tables": identity_tables,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--database-url-env",
+        default="PRODUCTION_MIGRATION_DATABASE_URL",
+    )
+    parser.add_argument("--expected-schema", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    database_url = os.environ.get(args.database_url_env, "").strip()
+    if not database_url:
+        print("ERROR: protected migration database URL is required", file=sys.stderr)
+        return 1
+    try:
+        proof = prove_runtime_identity_grant(
+            database_url,
+            expected_schema=args.expected_schema,
+        )
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(proof, handle, indent=2, sort_keys=True, default=str)
+            handle.write("\n")
+        print(json.dumps({"state": proof["state"], "database": proof["database"]}))
+        return 0
+    except (ValueError, OSError, psycopg2.Error, json.JSONDecodeError) as exc:
+        detail = str(exc).replace(database_url, "[REDACTED]")
+        print(f"ERROR: {detail}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -29,6 +29,8 @@ import vercel_production_database_env as vercel_env  # noqa: E402
 from production_database_login_proof import (  # noqa: E402
     ALLOWED_RUNTIME_PRIVILEGES,
     CONTROL_PLANE_TABLES,
+    IDENTITY_SERVICE_GROUP,
+    IDENTITY_TABLE_PRIVILEGES,
     RUNTIME_GROUP,
     RUNTIME_LOGIN,
     RUNTIME_SCHEMA_READINESS_PRIVILEGES,
@@ -297,12 +299,12 @@ def _provision_login(
     *,
     login: str,
     password: str,
-    required_group: str,
+    required_groups: tuple[str, ...],
 ) -> None:
     facts = _role_facts(cursor, login)
     if facts is not None:
         memberships = set(facts["memberships"] or [])
-        if memberships - {required_group}:
+        if memberships - set(required_groups):
             raise ValueError(f"existing login {login} has an unexpected direct membership")
         if facts["owns_objects"]:
             raise ValueError(f"existing login {login} owns database objects")
@@ -320,12 +322,13 @@ def _provision_login(
         ).format(sql.Identifier(login)),
         (password,),
     )
-    cursor.execute(
-        sql.SQL("GRANT {} TO {}").format(
-            sql.Identifier(required_group),
-            sql.Identifier(login),
+    for required_group in required_groups:
+        cursor.execute(
+            sql.SQL("GRANT {} TO {}").format(
+                sql.Identifier(required_group),
+                sql.Identifier(login),
+            )
         )
-    )
 
 
 def _revoke_direct_login_privileges(
@@ -341,6 +344,7 @@ def _revoke_direct_login_privileges(
         *business_tables,
         *CONTROL_PLANE_TABLES,
         *RUNTIME_SCHEMA_READINESS_PRIVILEGES,
+        *IDENTITY_TABLE_PRIVILEGES,
     ):
         cursor.execute(
             sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(
@@ -371,6 +375,7 @@ def provision_database_logins(
                 raise ValueError("migration connection is not an independent provisioning authority")
             _validate_group(cursor, RUNTIME_GROUP)
             _validate_group(cursor, WRITER_GROUP)
+            _validate_group(cursor, IDENTITY_SERVICE_GROUP)
             configure_safe_baseline_database_roles(cursor, business_privileges)
             cursor.execute(
                 "SELECT to_regprocedure("
@@ -391,13 +396,13 @@ def provision_database_logins(
                     cursor,
                     login=RUNTIME_LOGIN,
                     password=runtime_password,
-                    required_group=RUNTIME_GROUP,
+                    required_groups=(RUNTIME_GROUP, IDENTITY_SERVICE_GROUP),
                 )
                 _provision_login(
                     cursor,
                     login=WRITER_LOGIN,
                     password=writer_password,
-                    required_group=WRITER_GROUP,
+                    required_groups=(WRITER_GROUP,),
                 )
                 credential_rotation = "superuser_test_fallback"
             else:

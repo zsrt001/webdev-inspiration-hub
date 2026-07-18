@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      rearm_staged_after_schema_compatibility_repair:
+        description: Rearm the invalid STAGED runtime after the reviewed pre-identity fail-closed repair
+        required: false
+        default: false
+        type: boolean
       rearm_reserved_after_prebuilt_output_repair:
         description: Rearm one bound but undeployed RESERVED prebuild after output materialization repair
         required: false
@@ -95,7 +100,7 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Reject conflicting STAGED repair modes
-        if: ${{ inputs.rearm_staged_after_config_repair == true && inputs.rearm_staged_after_runtime_tls_repair == true }}
+        if: ${{ (inputs.rearm_staged_after_config_repair == true && inputs.rearm_staged_after_runtime_tls_repair == true) || (inputs.rearm_staged_after_config_repair == true && inputs.rearm_staged_after_schema_compatibility_repair == true) || (inputs.rearm_staged_after_runtime_tls_repair == true && inputs.rearm_staged_after_schema_compatibility_repair == true) }}
         run: |
           echo "select exactly one STAGED repair mode" >&2
           exit 1
@@ -289,6 +294,7 @@ jobs:
               "TAKEOVER_RESERVED_CONTROL",
               "TAKEOVER_STAGED",
               "TAKEOVER_STAGED_RUNTIME_TLS",
+              "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY",
               "RETRY_RESERVED",
               "RETRY_STAGED",
               "RETRY_PROMOTION_ARMED",
@@ -325,6 +331,9 @@ jobs:
           reserved_control_takeover_required = state == "TAKEOVER_RESERVED_CONTROL"
           staged_verifier_takeover_required = state == "TAKEOVER_STAGED"
           staged_runtime_tls_rearm_required = state == "TAKEOVER_STAGED_RUNTIME_TLS"
+          staged_schema_compatibility_rearm_required = (
+              state == "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY"
+          )
           staged_rearm_retry_allowed = (
               state == "RETRY_RESERVED"
               and activation_attempt == os.environ["GITHUB_RUN_ATTEMPT"]
@@ -354,6 +363,7 @@ jobs:
               or reserved_control_takeover_required
               or staged_verifier_takeover_required
               or staged_runtime_tls_rearm_required
+              or staged_schema_compatibility_rearm_required
           )
           if takeover_required:
               if not re.fullmatch(r"[0-9a-f]{40,64}", activation_source_sha):
@@ -377,6 +387,7 @@ jobs:
               "RETRY_RESERVED" if reservation_takeover_required
               else "RETRY_RESERVED" if reserved_control_takeover_required
               else "RETRY_RESERVED" if staged_runtime_tls_rearm_required
+              else "RETRY_RESERVED" if staged_schema_compatibility_rearm_required
               else "RETRY_STAGED" if staged_verifier_takeover_required
               else state
           )
@@ -405,6 +416,10 @@ jobs:
               handle.write(
                   "staged_runtime_tls_rearm_required="
                   f"{str(staged_runtime_tls_rearm_required).lower()}\n"
+              )
+              handle.write(
+                  "staged_schema_compatibility_rearm_required="
+                  f"{str(staged_schema_compatibility_rearm_required).lower()}\n"
               )
               handle.write(
                   "staged_rearm_retry_allowed="
@@ -447,6 +462,12 @@ jobs:
         if: ${{ inputs.rearm_staged_after_runtime_tls_repair == true && steps.preflight.outputs.staged_runtime_tls_rearm_required != 'true' && steps.preflight.outputs.staged_rearm_retry_allowed != 'true' }}
         run: |
           echo "the runtime TLS repair input is not valid for the recorded activation state" >&2
+          exit 1
+
+      - name: Reject a schema-compatibility repair input outside its exact STAGED takeover
+        if: ${{ inputs.rearm_staged_after_schema_compatibility_repair == true && steps.preflight.outputs.staged_schema_compatibility_rearm_required != 'true' && steps.preflight.outputs.staged_rearm_retry_allowed != 'true' }}
+        run: |
+          echo "the schema-compatibility repair input is not valid for the recorded activation state" >&2
           exit 1
 
       - name: Inventory Production through the read-only role
@@ -705,6 +726,35 @@ jobs:
           echo "STAGED runtime was safely rearmed; rerun this exact workflow run so attempt $((GITHUB_RUN_ATTEMPT + 1)) builds the reviewed TLS repair" >&2
           exit 75
 
+      - name: Fail closed unless the exact STAGED schema-compatibility repair was explicitly selected
+        if: ${{ steps.preflight.outputs.staged_schema_compatibility_rearm_required == 'true' && inputs.rearm_staged_after_schema_compatibility_repair != true }}
+        run: |
+          echo "the invalid STAGED runtime requires the reviewed pre-identity fail-closed repair input" >&2
+          exit 1
+
+      - name: Atomically rearm the invalid STAGED runtime after the schema-compatibility repair
+        if: ${{ steps.preflight.outputs.staged_schema_compatibility_rearm_required == 'true' && inputs.rearm_staged_after_schema_compatibility_repair == true }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
+          RESERVATION_EVIDENCE_URL: ${{ steps.reservation_evidence.outputs.artifact-url }}
+        run: |
+          python scripts/release/register_safe_baseline.py --action rearm-staged \
+            --runtime-schema-compatibility-repair \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --source-sha "$SOURCE_SHA" \
+            --runner-sha "$RUNNER_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-source-sha "${{ steps.preflight.outputs.expected_source_sha }}" \
+            --expected-workflow-run-id "${{ steps.preflight.outputs.expected_workflow_run_id }}" \
+            --expected-version "${{ steps.preflight.outputs.expected_version }}" \
+            --approval-id-env SAFE_BASELINE_APPROVAL_ID \
+            --evidence-prefix "$RESERVATION_EVIDENCE_URL" \
+            --output "$EVIDENCE_DIR/staged-schema-compatibility-rearm.json"
+          echo "STAGED runtime was safely rearmed; rerun this exact workflow run so attempt $((GITHUB_RUN_ATTEMPT + 1)) builds the reviewed schema-compatible source" >&2
+          exit 75
+
       - name: Atomically rearm the invalid unpromoted STAGED binding
         if: ${{ inputs.rearm_staged_after_config_repair == true && steps.preflight.outputs.staged_verifier_takeover_required == 'true' }}
         env:
@@ -731,7 +781,7 @@ jobs:
           exit 75
 
       - name: Atomically adopt the immutable STAGED deployment into the reviewed verifier run
-        if: ${{ steps.preflight.outputs.staged_verifier_takeover_required == 'true' && inputs.rearm_staged_after_config_repair != true && inputs.rearm_staged_after_runtime_tls_repair != true }}
+        if: ${{ steps.preflight.outputs.staged_verifier_takeover_required == 'true' && inputs.rearm_staged_after_config_repair != true && inputs.rearm_staged_after_runtime_tls_repair != true && inputs.rearm_staged_after_schema_compatibility_repair != true }}
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           SAFE_BASELINE_APPROVAL_ID: ${{ secrets.SAFE_BASELINE_APPROVAL_ID }}
@@ -1212,6 +1262,16 @@ jobs:
             --deployment-url "$DEPLOYMENT_URL" \
             --manifest-sha256 "$MANIFEST_SHA256" \
             --output "$EVIDENCE_DIR/phase-staged.json"
+
+      - name: Prove the staged runtime identity membership before application probes
+        if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+        run: |
+          python scripts/release/production_database_login_proof.py \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --expected-schema 20260712_0014 \
+            --output "$EVIDENCE_DIR/runtime-identity-grant-staged.json"
 
       - name: Collect the staged runtime DDL audit from PostgreSQL statistics
         if: ${{ steps.preflight.outputs.state == 'FRESH_INSTALL' || steps.preflight.outputs.state == 'RETRY_RESERVED' || steps.preflight.outputs.state == 'RETRY_STAGED' || steps.preflight.outputs.state == 'RETRY_PROMOTION_ARMED' }}

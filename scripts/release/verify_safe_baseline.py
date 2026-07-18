@@ -221,9 +221,8 @@ GUARDED_ROUTE_PROBES = (
         "google_exchange",
         "POST",
         "/api/v1/auth/supabase/session",
-        401,
+        503,
         json_body={"access_token": "x" * 16, "intent_token": "i" * 32},
-        expected_code="oauth_intent_invalid",
         include_origin=True,
     ),
     RouteProbe(
