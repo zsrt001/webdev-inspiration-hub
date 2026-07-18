@@ -163,6 +163,12 @@ async def exchange_supabase_session(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     await require_request_origin(request, db)
+    initial_decision = await resolve_request_capability(db, Capability.GOOGLE_AUTH)
+    if (
+        not initial_decision.allowed
+        and initial_decision.reason != "cohort_identity_missing"
+    ):
+        raise _capability_error(initial_decision.reason)
     browser_binding = request.cookies.get(OAUTH_BROWSER_COOKIE) or ""
     try:
         await consume_oauth_intent(

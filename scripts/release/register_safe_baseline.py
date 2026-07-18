@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -103,7 +104,10 @@ RESERVED_BUILD_REARM_EMPTY_FIELDS = (
 STAGED_TAKEOVER_REQUIRED_CONTROL_PATHS = frozenset(
     {
         ".github/workflows/safe-baseline-release.yml",
+        "scripts/release/bootstrap_production_database_roles.sql",
         "scripts/release/collect_runtime_ddl_audit.py",
+        "scripts/release/production_database_login_proof.py",
+        "scripts/release/provision_production_database_logins.py",
         "scripts/release/register_safe_baseline.py",
         "scripts/release/verify_safe_baseline.py",
     }
@@ -143,6 +147,32 @@ STAGED_RUNTIME_TLS_REPAIR_ALLOWED_PATHS = (
 )
 STAGED_RUNTIME_TLS_REPAIR_CERT_SHA256 = (
     "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
+)
+STAGED_SCHEMA_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA = (
+    "2d7ba47935a87ce4b2749554494c6abae92f07f3"
+)
+STAGED_SCHEMA_COMPATIBILITY_REPAIR_REQUIRED_PATHS = frozenset(
+    {
+        ".github/workflows/safe-baseline-release.yml",
+        "backend/app/routers/auth/google.py",
+        "backend/tests/test_ci_release_contract.py",
+        "backend/tests/test_feature_flag_route_guards.py",
+        "backend/tests/test_production_database_logins.py",
+        "backend/tests/test_release_coordinate_resolver.py",
+        "backend/tests/test_runtime_ddl_audit_collector.py",
+        "docs/ai-worklog.md",
+        "release/safe-baseline-contract.json",
+        "scripts/release/bootstrap_production_database_roles.sql",
+        "scripts/release/collect_runtime_ddl_audit.py",
+        "scripts/release/github_artifact_evidence.py",
+        "scripts/release/production_database_login_proof.py",
+        "scripts/release/provision_production_database_logins.py",
+        "scripts/release/register_safe_baseline.py",
+        "scripts/release/verify_safe_baseline.py",
+    }
+)
+STAGED_SCHEMA_COMPATIBILITY_REPAIR_ALLOWED_PATHS = (
+    STAGED_SCHEMA_COMPATIBILITY_REPAIR_REQUIRED_PATHS
 )
 RESERVED_BUILD_REPAIR_REQUIRED_PATHS = frozenset(
     {
@@ -631,6 +661,141 @@ def validate_staged_runtime_tls_repair_descendant(
     if include_files != "backend/app/core/certs/prod-ca-2021.crt":
         raise SafeBaselineRegistrationError(
             "staged runtime TLS repair does not bundle the pinned Supabase CA"
+        )
+
+
+def validate_staged_schema_compatibility_repair_descendant(
+    previous_source_sha: str,
+    source_sha: str,
+) -> None:
+    """Prove one exact fail-closed repair for the pre-identity safe baseline."""
+    if previous_source_sha != STAGED_SCHEMA_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA:
+        raise SafeBaselineRegistrationError(
+            "staged schema-compatibility repair is not pinned to the failed source"
+        )
+    if (
+        re.fullmatch(r"[0-9a-f]{40,64}", source_sha) is None
+        or previous_source_sha == source_sha
+    ):
+        raise SafeBaselineRegistrationError(
+            "staged schema-compatibility repair requires a reviewed descendant"
+        )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or head.stdout.strip() != source_sha:
+        raise SafeBaselineRegistrationError(
+            "staged schema-compatibility source is not the reviewed checkout"
+        )
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", previous_source_sha, source_sha],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged schema-compatibility source is not a descendant"
+        )
+    diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--no-renames",
+            f"{previous_source_sha}..{source_sha}",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "staged schema-compatibility diff could not be proven"
+        )
+    changed_paths: set[str] = set()
+    for line in diff.stdout.splitlines():
+        try:
+            status_code, path = line.split("\t", 1)
+        except ValueError as exc:
+            raise SafeBaselineRegistrationError(
+                "staged schema-compatibility diff is malformed"
+            ) from exc
+        normalized = path.replace("\\", "/")
+        if (
+            status_code != "M"
+            or normalized not in STAGED_SCHEMA_COMPATIBILITY_REPAIR_ALLOWED_PATHS
+        ):
+            raise SafeBaselineRegistrationError(
+                "staged schema-compatibility repair changed an unauthorized path: "
+                f"{normalized}"
+            )
+        changed_paths.add(normalized)
+    missing = STAGED_SCHEMA_COMPATIBILITY_REPAIR_REQUIRED_PATHS - changed_paths
+    if missing:
+        raise SafeBaselineRegistrationError(
+            "staged schema-compatibility repair is missing required changes: "
+            + ", ".join(sorted(missing))
+        )
+
+    google_path = ROOT / "backend" / "app" / "routers" / "auth" / "google.py"
+    google_source = google_path.read_text(encoding="utf-8")
+    google_tree = ast.parse(google_source, filename=str(google_path))
+    exchange = next(
+        (
+            node
+            for node in ast.walk(google_tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "exchange_supabase_session"
+        ),
+        None,
+    )
+    exchange_source = (
+        ast.get_source_segment(google_source, exchange) if exchange is not None else None
+    )
+    if (
+        not exchange_source
+        or "initial_decision = await resolve_request_capability" not in exchange_source
+        or 'initial_decision.reason != "cohort_identity_missing"' not in exchange_source
+        or exchange_source.index("initial_decision = await resolve_request_capability")
+        > exchange_source.index("consume_oauth_intent")
+    ):
+        raise SafeBaselineRegistrationError(
+            "Google exchange does not fail closed before identity-schema access"
+        )
+
+    verifier_path = ROOT / "scripts" / "release" / "verify_safe_baseline.py"
+    verifier_tree = ast.parse(
+        verifier_path.read_text(encoding="utf-8"),
+        filename=str(verifier_path),
+    )
+    google_exchange_probe = next(
+        (
+            node
+            for node in ast.walk(verifier_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "RouteProbe"
+            and len(node.args) >= 4
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "google_exchange"
+        ),
+        None,
+    )
+    if (
+        google_exchange_probe is None
+        or not isinstance(google_exchange_probe.args[3], ast.Constant)
+        or google_exchange_probe.args[3].value != 503
+        or any(keyword.arg == "expected_code" for keyword in google_exchange_probe.keywords)
+    ):
+        raise SafeBaselineRegistrationError(
+            "safe-baseline Google exchange probe is not exact fail-closed 503"
         )
 
 
@@ -1402,13 +1567,28 @@ def _preflight(
         ):
             if effective_runner_sha != source_sha:
                 raise SafeBaselineRegistrationError(
-                    "staged runtime TLS repair must run and build the same reviewed source"
+                    "staged runtime repair must run and build the same reviewed source"
                 )
-            validate_staged_runtime_tls_repair_descendant(
-                str(activation.get("source_sha") or ""),
-                source_sha,
-            )
-            state = "TAKEOVER_STAGED_RUNTIME_TLS"
+            previous_source_sha = str(activation.get("source_sha") or "")
+            if previous_source_sha == STAGED_RUNTIME_TLS_REPAIR_PREVIOUS_SOURCE_SHA:
+                validate_staged_runtime_tls_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
+                state = "TAKEOVER_STAGED_RUNTIME_TLS"
+            elif (
+                previous_source_sha
+                == STAGED_SCHEMA_COMPATIBILITY_REPAIR_PREVIOUS_SOURCE_SHA
+            ):
+                validate_staged_schema_compatibility_repair_descendant(
+                    previous_source_sha,
+                    source_sha,
+                )
+                state = "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY"
+            else:
+                raise SafeBaselineRegistrationError(
+                    "staged runtime repair is not pinned to a reviewed failed source"
+                )
         if activation is not None and state in RETRIABLE_STATES:
             validate_resume_coordinates(
                 activation,
@@ -1436,6 +1616,7 @@ def _preflight(
             "TAKEOVER_RESERVED_CONTROL",
             "TAKEOVER_STAGED",
             "TAKEOVER_STAGED_RUNTIME_TLS",
+            "TAKEOVER_STAGED_SCHEMA_COMPATIBILITY",
             *RETRIABLE_STATES,
         }:
             raise SafeBaselineRegistrationError(f"safe-baseline preflight rejected state: {state}")
@@ -2268,6 +2449,7 @@ def _rearm_invalid_staged(
     project_id: str,
     team_id: str,
     runtime_tls_repair: bool = False,
+    runtime_schema_compatibility_repair: bool = False,
 ) -> dict[str, Any]:
     """Atomically clear one invalid, unpromoted STAGED binding for a fenced rebuild."""
     source_sha = _validate_sha(source_sha, name="deployed source SHA", lengths=(40, 64))
@@ -2277,7 +2459,18 @@ def _rearm_invalid_staged(
         name="recorded deployed source SHA",
         lengths=(40, 64),
     )
-    if runtime_tls_repair:
+    if runtime_tls_repair and runtime_schema_compatibility_repair:
+        raise ValueError("select exactly one staged runtime repair mode")
+    if runtime_schema_compatibility_repair:
+        if runner_sha != source_sha:
+            raise SafeBaselineRegistrationError(
+                "staged schema-compatibility rearm must build the reviewed source"
+            )
+        validate_staged_schema_compatibility_repair_descendant(
+            expected_source_sha,
+            source_sha,
+        )
+    elif runtime_tls_repair:
         if runner_sha != source_sha:
             raise SafeBaselineRegistrationError(
                 "staged runtime TLS rearm must run and build the same reviewed source"
@@ -3263,6 +3456,10 @@ def main() -> int:
     parser.add_argument("--runtime-secret-evidence")
     parser.add_argument("--runtime-tls-repair", action="store_true")
     parser.add_argument(
+        "--runtime-schema-compatibility-repair",
+        action="store_true",
+    )
+    parser.add_argument(
         "--inject-failure",
         choices=("BEFORE_MIGRATION", "AFTER_MIGRATION_BEFORE_RESERVATION", "AFTER_RESERVATION_BEFORE_COMMIT"),
     )
@@ -3281,9 +3478,22 @@ def main() -> int:
             raise ValueError("choose exactly one of --action or --phase")
         if args.runtime_tls_repair and args.action != "rearm-staged":
             raise ValueError("--runtime-tls-repair is valid only with --action rearm-staged")
-        if args.runtime_tls_repair and args.runtime_secret_evidence:
+        if (
+            args.runtime_schema_compatibility_repair
+            and args.action != "rearm-staged"
+        ):
             raise ValueError(
-                "runtime TLS repair must not reuse runtime-secret repair evidence"
+                "--runtime-schema-compatibility-repair is valid only with "
+                "--action rearm-staged"
+            )
+        if args.runtime_tls_repair and args.runtime_schema_compatibility_repair:
+            raise ValueError("select exactly one staged runtime repair mode")
+        if (
+            args.runtime_tls_repair
+            or args.runtime_schema_compatibility_repair
+        ) and args.runtime_secret_evidence:
+            raise ValueError(
+                "source-changing runtime repair must not reuse runtime-secret evidence"
             )
         if args.action == "verify-runtime-secret":
             expected_secret = _required_env(args.runtime_secret_env)
@@ -3445,10 +3655,22 @@ def main() -> int:
             )
         elif args.action == "rearm-staged":
             approval = _required_env(args.approval_id_env)
-            project_id = _required_env(args.vercel_project_id_env) if not args.runtime_tls_repair else ""
-            team_id = _required_env(args.vercel_team_id_env) if not args.runtime_tls_repair else ""
+            source_changing_repair = (
+                args.runtime_tls_repair
+                or args.runtime_schema_compatibility_repair
+            )
+            project_id = (
+                _required_env(args.vercel_project_id_env)
+                if not source_changing_repair
+                else ""
+            )
+            team_id = (
+                _required_env(args.vercel_team_id_env)
+                if not source_changing_repair
+                else ""
+            )
             if not approval or (
-                not args.runtime_tls_repair
+                not source_changing_repair
                 and not all((args.runtime_secret_evidence, project_id, team_id))
             ):
                 print(
@@ -3475,6 +3697,9 @@ def main() -> int:
                 project_id=project_id,
                 team_id=team_id,
                 runtime_tls_repair=args.runtime_tls_repair,
+                runtime_schema_compatibility_repair=(
+                    args.runtime_schema_compatibility_repair
+                ),
             )
         elif args.action == "bind-build":
             result = _bind_build_manifest(

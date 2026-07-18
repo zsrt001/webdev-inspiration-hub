@@ -164,6 +164,42 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
 
 
 class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_google_exchange_fails_closed_before_identity_schema_access(self) -> None:
+        google = importlib.import_module("app.routers.auth.google")
+        payload = importlib.import_module("app.schemas.auth").SupabaseSessionRequest(
+            access_token="x" * 16,
+            intent_token="i" * 32,
+        )
+        request = SimpleNamespace(cookies={})
+        response = SimpleNamespace()
+        database = AsyncMock()
+        disabled = SimpleNamespace(allowed=False, reason="global_off")
+        with (
+            patch.object(google, "require_request_origin", new=AsyncMock()),
+            patch.object(
+                google,
+                "resolve_request_capability",
+                new=AsyncMock(return_value=disabled),
+            ) as resolve,
+            patch.object(
+                google,
+                "consume_oauth_intent",
+                new=AsyncMock(),
+            ) as consume,
+            self.assertRaises(HTTPException) as denied,
+        ):
+            await google.exchange_supabase_session(
+                payload,
+                request,
+                response,
+                database,
+            )
+
+        self.assertEqual(denied.exception.status_code, 503)
+        self.assertEqual(denied.exception.detail["code"], "capability_disabled")
+        resolve.assert_awaited_once_with(database, google.Capability.GOOGLE_AUTH)
+        consume.assert_not_awaited()
+
     async def test_browser_admin_requires_active_database_role_on_cookie_identity(self) -> None:
         admin_auth = importlib.import_module("app.core.admin_auth")
         request = SimpleNamespace(state=SimpleNamespace())

@@ -13,11 +13,19 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "release" / "provision_production_database_logins.py"
+PROOF_SCRIPT = ROOT / "scripts" / "release" / "production_database_login_proof.py"
 BOOTSTRAP_SQL = ROOT / "scripts" / "release" / "bootstrap_production_database_roles.sql"
 SPEC = importlib.util.spec_from_file_location("provision_production_database_logins", SCRIPT)
 assert SPEC and SPEC.loader
 provision = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(provision)
+PROOF_SPEC = importlib.util.spec_from_file_location(
+    "production_database_login_proof_test",
+    PROOF_SCRIPT,
+)
+assert PROOF_SPEC and PROOF_SPEC.loader
+proof = importlib.util.module_from_spec(PROOF_SPEC)
+PROOF_SPEC.loader.exec_module(proof)
 
 
 class ProductionDatabaseLoginUrlTest(unittest.TestCase):
@@ -110,6 +118,8 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "'runtime_password text, writer_password text'",
             "vowpic.database-bootstrap.secrets.v1",
             "vowpic_rotate_application_database_logins",
+            "GRANT vowpic_identity_service TO vowpic_app_runtime",
+            "REVOKE vowpic_identity_service FROM vowpic_control_writer_login",
             "application database login rotation requires the migration login",
             "an existing VowPic login violates the least-privilege contract",
             "an application database login violates the least-privilege contract",
@@ -194,6 +204,84 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             ),
             routine_transfer,
         )
+
+    def test_runtime_identity_grant_validator_requires_exact_inherited_surface(self) -> None:
+        authority = {
+            "session_user": proof.MIGRATION_LOGIN,
+            "current_user": proof.MIGRATION_OWNER,
+            "migration_owner_member": True,
+        }
+        runtime_role = {
+            "role_name": proof.RUNTIME_LOGIN,
+            "can_login": True,
+            "inherit_privileges": True,
+            "superuser": False,
+            "create_db": False,
+            "create_role": False,
+            "replication": False,
+            "bypass_rls": False,
+            "owns_objects": False,
+            "memberships": [
+                proof.IDENTITY_SERVICE_GROUP,
+                proof.RUNTIME_GROUP,
+            ],
+        }
+        identity_tables = {
+            table: {
+                "row_security_enabled": True,
+                "row_security_forced": True,
+                "identity_policy_names": [f"{table}_identity_service_all"],
+                "identity_policy_commands": ["ALL"],
+                "direct_privileges": [],
+                **{
+                    f"can_{privilege.lower()}": privilege in expected
+                    for privilege in (
+                        "SELECT",
+                        "INSERT",
+                        "UPDATE",
+                        "DELETE",
+                        "TRUNCATE",
+                        "REFERENCES",
+                        "TRIGGER",
+                    )
+                },
+            }
+            for table, expected in proof.IDENTITY_TABLE_PRIVILEGES.items()
+        }
+
+        proof._validate_runtime_identity_grant(
+            authority,
+            runtime_role,
+            identity_tables,
+        )
+        proof._validate_runtime_identity_grant(
+            authority,
+            runtime_role,
+            {},
+            identity_schema_required=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "runtime identity membership"):
+            proof._validate_runtime_identity_grant(
+                authority,
+                {
+                    **runtime_role,
+                    "memberships": [proof.RUNTIME_GROUP],
+                },
+                identity_tables,
+            )
+        with self.assertRaisesRegex(ValueError, "oauth_login_intents"):
+            proof._validate_runtime_identity_grant(
+                authority,
+                runtime_role,
+                {
+                    **identity_tables,
+                    "oauth_login_intents": {
+                        **identity_tables["oauth_login_intents"],
+                        "can_update": False,
+                    },
+                },
+            )
 
     def test_pooler_url_keeps_project_suffix_and_replaces_password(self) -> None:
         result = provision.database_url_for_login(
