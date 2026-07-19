@@ -84,6 +84,7 @@ class ProductionInventoryReportTest(unittest.TestCase):
         service = _service()
         report = service.ProductionInventoryReport(
             schema_revision="20260710_0013",
+            source_database_identity_hmac_sha256="f" * 64,
             users={
                 "total": 3,
                 "guest": 1,
@@ -125,7 +126,9 @@ class ProductionInventoryReportTest(unittest.TestCase):
     def test_report_rejects_extra_sensitive_fields_and_negative_counts(self) -> None:
         service = _service()
         base = {
+            "schema": "vowpic.production-inventory.v2",
             "schema_revision": "20260710_0013",
+            "source_database_identity_hmac_sha256": "f" * 64,
             "users": {"total": 1},
             "ledger": {},
             "orders": {},
@@ -142,7 +145,9 @@ class ProductionInventoryReportTest(unittest.TestCase):
         service = _service()
         with self.assertRaises(ValidationError):
             service.ProductionInventoryReport(
+                schema="vowpic.production-inventory.v2",
                 schema_revision="20260710_0013",
+                source_database_identity_hmac_sha256="f" * 64,
                 users={"total": 1},
                 ledger={},
                 orders={},
@@ -349,7 +354,7 @@ class ProductionInventoryCoverageTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 3)
             self.assertIn("NOT_RUN", completed.stderr)
             self.assertFalse(output.exists())
-            self.assertFalse((output.parent / "manifest.sha256").exists())
+            self.assertFalse(Path(f"{output}.sig").exists())
 
 
 if __name__ == "__main__":

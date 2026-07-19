@@ -3814,7 +3814,9 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "write_probe_sqlstate": "25006",
         }
         inventory = {
+            "schema": "vowpic.production-inventory.v2",
             "schema_revision": register.OLD_SCHEMA,
+            "source_database_identity_hmac_sha256": "e" * 64,
             "users": {"total": 1},
             "ledger": {},
             "orders": {},
