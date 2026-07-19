@@ -5310,9 +5310,13 @@ class BaselineToolContractTest(unittest.TestCase):
         }
         version = mock.MagicMock(status_code=200)
         version.json.return_value = {
+            "schema": "vowpic.runtime-bundle-report.v1",
             "source_sha": source_sha,
             "runtime_bundle_id": runtime_bundle_id,
             "deployment_id": deployment_id,
+            "release_role": "SAFE_BASELINE",
+            "runtime_environment": "production",
+            "schema_revision": "20260712_0014",
         }
         client = mock.MagicMock()
         client.get.side_effect = [health, version]
@@ -5323,6 +5327,7 @@ class BaselineToolContractTest(unittest.TestCase):
             expected_source_sha=source_sha,
             expected_runtime_bundle_id=runtime_bundle_id,
             expected_deployment_id=deployment_id,
+            expected_schema="20260712_0014",
         )
 
         self.assertEqual(result["source_sha"], source_sha)
@@ -5341,6 +5346,7 @@ class BaselineToolContractTest(unittest.TestCase):
                 expected_source_sha=source_sha,
                 expected_runtime_bundle_id=runtime_bundle_id,
                 expected_deployment_id=deployment_id,
+                expected_schema="20260712_0014",
             )
 
         wrong_version = mock.MagicMock(status_code=200)
@@ -5353,6 +5359,26 @@ class BaselineToolContractTest(unittest.TestCase):
                 expected_source_sha=source_sha,
                 expected_runtime_bundle_id=runtime_bundle_id,
                 expected_deployment_id=deployment_id,
+                expected_schema="20260712_0014",
+            )
+
+        wrong_schema = mock.MagicMock(status_code=200)
+        wrong_schema.json.return_value = {
+            **version.json.return_value,
+            "schema_revision": "20260710_0020",
+        }
+        client.get.side_effect = [health, wrong_schema]
+        with self.assertRaisesRegex(
+            verify.SafeBaselineVerificationError,
+            "runtime schema_revision mismatch",
+        ):
+            verify._verify_runtime_identity(
+                client,
+                {},
+                expected_source_sha=source_sha,
+                expected_runtime_bundle_id=runtime_bundle_id,
+                expected_deployment_id=deployment_id,
+                expected_schema="20260712_0014",
             )
 
         missing_source = mock.MagicMock(status_code=200)
@@ -5371,6 +5397,7 @@ class BaselineToolContractTest(unittest.TestCase):
                 expected_source_sha=source_sha,
                 expected_runtime_bundle_id=runtime_bundle_id,
                 expected_deployment_id=deployment_id,
+                expected_schema="20260712_0014",
             )
 
         invalid_version = mock.MagicMock(status_code=200)
@@ -5386,6 +5413,7 @@ class BaselineToolContractTest(unittest.TestCase):
                 expected_source_sha=source_sha,
                 expected_runtime_bundle_id=runtime_bundle_id,
                 expected_deployment_id=deployment_id,
+                expected_schema="20260712_0014",
             )
 
     def test_local_baseline_runs_the_real_frontend_unit_suite(self) -> None:

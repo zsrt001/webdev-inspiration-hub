@@ -1516,7 +1516,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
         self.assertIn('@app.get("/version")', main_source)
         self.assertIn('@router.get("/version")', router_source)
-        self.assertIn("release_role=active_settings.release_role.strip()", service_source)
+        self.assertIn("release_role = active_settings.release_role.strip()", service_source)
+        self.assertIn("release_role=release_role", service_source)
         self.assertNotIn('@app.post("/version")', main_source)
         self.assertNotIn('@router.post("/version")', router_source)
         for forbidden in (

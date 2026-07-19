@@ -14,6 +14,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app import main  # noqa: E402
+from app.core.config import Settings  # noqa: E402
+from app.services.runtime_bundle_service import public_runtime_bundle_json  # noqa: E402
 
 
 class VersionRouteTest(unittest.IsolatedAsyncioTestCase):
@@ -81,6 +83,26 @@ class VersionRouteTest(unittest.IsolatedAsyncioTestCase):
             "target_feature_snapshot",
         ):
             self.assertNotIn(forbidden, serialized)
+
+    async def test_version_schema_matches_the_release_role_contract(self) -> None:
+        common = {
+            "_env_file": None,
+            "runtime_environment": "production",
+            "vercel_deployment_id": "dpl_exact",
+            "vercel_git_commit_sha": "a" * 40,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "acceptance_identity_hmac_key": "k" * 32,
+        }
+
+        safe_baseline = public_runtime_bundle_json(
+            Settings(**common, release_role="SAFE_BASELINE")
+        )
+        commercial = public_runtime_bundle_json(
+            Settings(**common, release_role="COMMERCIAL_7A")
+        )
+
+        self.assertEqual(safe_baseline["schema_revision"], "20260712_0014")
+        self.assertEqual(commercial["schema_revision"], "20260710_0020")
 
 
 if __name__ == "__main__":
