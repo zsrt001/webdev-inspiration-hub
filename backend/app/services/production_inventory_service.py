@@ -27,10 +27,19 @@ MIN_IDENTIFIER_HMAC_KEY_BYTES = 32
 class ProductionInventoryReport(BaseModel):
     """Sanitized aggregates only; raw rows and storage references are forbidden."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
 
+    schema_name: str = Field(
+        default="vowpic.production-inventory.v2",
+        alias="schema",
+    )
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     schema_revision: str
+    source_database_identity_hmac_sha256: str
     users: dict[str, int]
     ledger: dict[str, int]
     orders: dict[str, int]
@@ -63,11 +72,14 @@ class ProductionInventoryReport(BaseModel):
                 raise ValueError("conflict identifiers must be lowercase SHA-256 HMACs")
         return value
 
-    @field_validator("url_inventory_hmac_sha256")
+    @field_validator(
+        "source_database_identity_hmac_sha256",
+        "url_inventory_hmac_sha256",
+    )
     @classmethod
-    def validate_url_checksum(cls, value: str) -> str:
+    def validate_sha256(cls, value: str) -> str:
         if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-            raise ValueError("URL inventory checksum must be lowercase SHA-256")
+            raise ValueError("inventory checksum must be lowercase SHA-256")
         return value
 
     @field_validator("read_only_proof")
@@ -575,6 +587,8 @@ async def _object_inventory(
 async def build_inventory_report(
     db: AsyncSession,
     identifier_hmac_key: bytes,
+    *,
+    source_database_identity: str = "database-identity-unavailable",
 ) -> ProductionInventoryReport:
     if len(identifier_hmac_key) < MIN_IDENTIFIER_HMAC_KEY_BYTES:
         raise ValueError("identifier HMAC key must contain at least 32 bytes")
@@ -588,6 +602,11 @@ async def build_inventory_report(
     objects, url_inventory_hmac_sha256 = await _object_inventory(db, identifier_hmac_key, schema)
     return ProductionInventoryReport(
         schema_revision=str(revision or "unknown"),
+        source_database_identity_hmac_sha256=hmac_identifier(
+            identifier_hmac_key,
+            "source_database",
+            source_database_identity,
+        ),
         users=users,
         ledger=ledger,
         orders=orders,

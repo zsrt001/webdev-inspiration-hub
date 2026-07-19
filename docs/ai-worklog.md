@@ -2016,3 +2016,42 @@
   passed 846/846 with 37 existing conditional integration skips. GitHub CI,
   protected recovery through `COMPLETED`, and final domain verification remain
   required. No Subagent was used.
+
+## 2026-07-18 - Build the audited COMMERCIAL_7A migration toolchain
+
+- Added canonical, detached-HMAC Production inventory contracts with freshness,
+  read-only proof, source-database identity, schema/revision, relationship, and
+  reconciliation checks. The verifier validates the complete inventory schema
+  before any migration child can use it.
+- Added durable Production parent/child migration fencing, immutable resume
+  contracts, per-batch evidence revalidation, lease/fence checks, deterministic
+  identity/commercial/generation/media classifications, and create-once
+  sanitized reports. Failed write batches roll back without advancing their
+  checkpoint.
+- Added exact additive revision `20260710_0020`, bounded PostgreSQL timeouts,
+  forward-fix-only failure evidence, and no automatic downgrade. Legacy
+  generation facts never invent runtime provenance; unresolved identities,
+  ownership, runnable jobs, or media references remain blocking.
+- Added allowlisted private-media copy/switch and old-public deletion tooling
+  with separate public-read/public-delete/private-write/private-read
+  credentials, deterministic object binding, read-back checksums, dry-run
+  binding to a caller-precommitted report digest, non-redirecting probes,
+  ephemeral mode-0600 raw URL manifests, and two-location invalidation
+  verification.
+- Added reusable `data-migration.yml` callable only by the exact committed
+  `production-release.yml` main source. It validates caller/run/source,
+  immutable inventory/manifest coordinates, operation bounds, and the
+  Production lease/fence before writes. Evidence upload is now gated on an
+  explicit successful sanitized-report validation output.
+- Focused migration tests passed 37/37 with 68 subtests; the final combined
+  migration and release-control suites passed 136/136 with one existing
+  conditional skip and 274 subtests; the plan's direct unittest command passed
+  26/26; all 12 release entrypoints expose a credential-free help path; Python
+  compilation, JavaScript syntax, workflow YAML parsing, and whitespace checks
+  passed. Final full backend discovery passed 836/836 with 37 existing
+  conditional integration skips and 1127 subtests.
+- This task created tooling, contracts, tests, and workflow code only. It did
+  not open Production credentials, execute inventory/schema/backfill/media
+  migration, delete any object, probe any legacy URL, deploy, or change the
+  formal domain. Those actions remain in Task 29 and require the exact final
+  reviewed source/evidence chain. No Subagent was used.
