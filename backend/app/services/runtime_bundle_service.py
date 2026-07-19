@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 
 ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_CONTRACT = ROOT / "release" / "runtime-contracts.json"
+SAFE_BASELINE_CONTRACT = ROOT / "release" / "safe-baseline-contract.json"
 ACTIVATION_CONTRACT = ROOT / "release" / "activation-plan.json"
 PROVIDER_CONTRACT = ROOT / "release" / "provider-contracts.json"
 
@@ -45,6 +46,19 @@ def _read_runtime_contract() -> dict[str, Any]:
     return payload
 
 
+def _read_safe_baseline_contract() -> dict[str, Any]:
+    try:
+        payload = json.loads(SAFE_BASELINE_CONTRACT.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("contract_version") != "safe-baseline.v2"
+    ):
+        return {}
+    return payload
+
+
 def _file_sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -56,15 +70,22 @@ def public_runtime_bundle(settings_obj: Settings | None = None) -> PublicRuntime
     """Return only immutable, non-secret coordinates safe for public attestation."""
     active_settings = settings_obj or get_settings()
     contract = _read_runtime_contract()
+    release_role = active_settings.release_role.strip()
+    if release_role == "SAFE_BASELINE":
+        schema_revision = str(
+            _read_safe_baseline_contract().get("schema_revision") or ""
+        )
+    else:
+        schema_revision = str(contract.get("schema_revision") or "")
     payload_version = str(contract.get("job_payload_version") or "")
     return PublicRuntimeBundle(
         schema="vowpic.runtime-bundle-report.v1",
         source_sha=active_settings.source_sha,
         runtime_bundle_id=active_settings.runtime_bundle_id.strip().lower(),
         deployment_id=active_settings.deployment_id,
-        release_role=active_settings.release_role.strip(),
+        release_role=release_role,
         runtime_environment=active_settings.runtime_environment,
-        schema_revision=str(contract.get("schema_revision") or ""),
+        schema_revision=schema_revision,
         api_compatibility_version=str(contract.get("api_compatibility_version") or ""),
         worker_compatibility_version=str(contract.get("worker_compatibility_version") or ""),
         job_payload_min=payload_version,

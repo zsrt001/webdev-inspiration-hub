@@ -753,6 +753,7 @@ def _verify_runtime_identity(
     expected_source_sha: str,
     expected_runtime_bundle_id: str,
     expected_deployment_id: str,
+    expected_schema: str,
 ) -> dict[str, str]:
     health = client.get("/health", headers=headers)
     if health.status_code != 200:
@@ -787,9 +788,13 @@ def _verify_runtime_identity(
             "runtime source_sha is missing or invalid"
         )
     expected_coordinates = {
+        "schema": "vowpic.runtime-bundle-report.v1",
         "source_sha": expected_source_sha,
         "runtime_bundle_id": expected_runtime_bundle_id,
         "deployment_id": expected_deployment_id,
+        "release_role": "SAFE_BASELINE",
+        "runtime_environment": "production",
+        "schema_revision": expected_schema,
     }
     for key, expected in expected_coordinates.items():
         if str(version_payload.get(key) or "") != expected:
@@ -806,6 +811,7 @@ def _verify_http(
     expected_source_sha: str,
     expected_runtime_bundle_id: str,
     expected_deployment_id: str,
+    expected_schema: str,
 ) -> dict[str, Any]:
     normalized_request_origin = f"https://{_formal_domain_host(request_origin)}"
     headers = {"User-Agent": "vowpic-safe-baseline-verifier/1", **protected_headers}
@@ -816,6 +822,7 @@ def _verify_http(
             expected_source_sha=expected_source_sha,
             expected_runtime_bundle_id=expected_runtime_bundle_id,
             expected_deployment_id=expected_deployment_id,
+            expected_schema=expected_schema,
         )
 
         guarded = [
@@ -1162,6 +1169,7 @@ def main() -> int:
             expected_source_sha=source_sha,
             expected_runtime_bundle_id=runtime_bundle_id,
             expected_deployment_id=expected_deployment_id,
+            expected_schema=args.expected_schema,
         )
         after = _snapshot_database(
             database_url,
