@@ -97,6 +97,19 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertTrue(settings.aws_s3_endpoint_is_loopback)
         self.assertEqual(settings.effective_storage_provider, "s3")
 
+    def test_private_blob_connection_token_wins_over_legacy_public_token(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "BLOB_READ_WRITE_TOKEN": "legacy-public-token",
+                "VOWPIC_PRIVATE_BLOB_READ_WRITE_TOKEN": "private-token",
+            },
+            clear=True,
+        ):
+            settings = Settings(_env_file=None)
+
+        self.assertEqual(settings.blob_token_effective, "private-token")
+
     def test_evolink_generation_provider_config(self) -> None:
         settings = Settings(
             _env_file=None,

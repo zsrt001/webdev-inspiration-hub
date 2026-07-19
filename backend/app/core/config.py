@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     vercel_url: str = ""
     vercel_project_production_url: str = ""
     blob_read_write_token: str = ""
+    private_blob_read_write_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "PRIVATE_BLOB_READ_WRITE_TOKEN",
+            "VOWPIC_PRIVATE_BLOB_READ_WRITE_TOKEN",
+        ),
+    )
     upload_max_bytes: int = 10_485_760
     upload_max_files: int = 5
     upload_max_pixels: int = 40_000_000
@@ -498,7 +505,11 @@ class Settings(BaseSettings):
 
     @property
     def blob_token_effective(self) -> str:
-        return (self.blob_read_write_token or "").strip()
+        return (
+            self.private_blob_read_write_token
+            or self.blob_read_write_token
+            or ""
+        ).strip()
 
     @property
     def generation_execution_mode(self) -> str:
