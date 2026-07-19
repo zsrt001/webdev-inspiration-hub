@@ -32,6 +32,10 @@ from scripts.release._migration_common import (
     safe_main,
     write_report_create_once,
 )
+from scripts.release.verify_commercial_database_roles import (
+    prove_commercial_database_roles,
+    verify_contract_matches_migration,
+)
 
 
 TARGET = "20260710_0020"
@@ -88,6 +92,14 @@ async def _run(args: argparse.Namespace) -> None:
     after = "unknown"
     elapsed = 0.0
     checksums = migration_checksums()
+    _, database_role_contract_sha256 = verify_contract_matches_migration()
+    database_role_proof: dict[str, object] = {
+        "schema": "vowpic.commercial-7a-database-role-proof.v1",
+        "passed": False,
+        "status": "NOT_RUN",
+        "reason": "dry_run",
+        "contract_sha256": database_role_contract_sha256,
+    }
     try:
         async with factory() as db:
             async with db.begin():
@@ -146,6 +158,8 @@ async def _run(args: argparse.Namespace) -> None:
                 after = await _revision(db)
                 if invocation.write and after != TARGET:
                     raise ValueError("Production revision did not reach 20260710_0020")
+                if invocation.write:
+                    database_role_proof = await prove_commercial_database_roles(db)
                 counts = {
                     "migration_file_count": len(checksums),
                     "applied": int(invocation.write and before != TARGET),
@@ -177,6 +191,7 @@ async def _run(args: argparse.Namespace) -> None:
                 "statement_timeout_seconds": 1800,
                 "automatic_downgrade": False,
                 "failure_disposition": "FORWARD_FIX_REQUIRED",
+                "database_role_proof": database_role_proof,
             },
         )
     except (
@@ -207,6 +222,7 @@ async def _run(args: argparse.Namespace) -> None:
                     "automatic_downgrade": False,
                     "failure_disposition": "FORWARD_FIX_REQUIRED",
                     "failure_type": type(exc).__name__,
+                    "database_role_proof": database_role_proof,
                 },
             )
         if isinstance(exc, subprocess.TimeoutExpired):

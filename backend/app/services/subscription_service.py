@@ -25,11 +25,16 @@ from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
 from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
 from app.models.subscription_cancel_intent import CancelIntentState, SubscriptionCancelIntent
+from app.models.subscription_checkout_intent import (
+    SubscriptionCheckoutIntent,
+    SubscriptionCheckoutIntentState,
+)
 from app.models.subscription_credit_grant import SubscriptionCreditGrant
 from app.models.subscription_invoice import (
     SubscriptionInvoice,
     SubscriptionInvoiceAdjustmentFact,
 )
+from app.models.subscription_plan import SubscriptionPlan
 from app.models.user_credit import UserCredit
 from app.models.user_subscription import (
     NormalizedSubscriptionStatus,
@@ -40,6 +45,7 @@ from app.services.billing_catalog_service import (
     BillingCatalogUnavailable,
     CheckoutCatalogSelection,
     load_active_catalog,
+    require_subscription_checkout_catalog_product,
     require_subscription_catalog_product,
 )
 from app.services.idempotency_service import (
@@ -78,6 +84,16 @@ class CancellationReconciliationPending(SubscriptionError):
         super().__init__(
             code="subscription_cancellation_reconciliation_pending",
             message="Cancellation status requires Provider reconciliation.",
+            status_code=409,
+        )
+
+
+class SubscriptionCheckoutReconciliationPending(SubscriptionError):
+    def __init__(self, intent_id: uuid.UUID | None = None):
+        self.intent_id = intent_id
+        super().__init__(
+            code="subscription_checkout_reconciliation_pending",
+            message="Subscription checkout status requires Provider reconciliation.",
             status_code=409,
         )
 
@@ -194,6 +210,41 @@ def cancel_replay_or_raise(intent: SubscriptionCancelIntent) -> dict:
     )
 
 
+def subscription_checkout_replay_or_raise(
+    intent: SubscriptionCheckoutIntent,
+) -> dict[str, str]:
+    state = _value(intent.state)
+    if state in {
+        SubscriptionCheckoutIntentState.READY.value,
+        SubscriptionCheckoutIntentState.CONFIRMED.value,
+    }:
+        stored = intent.stored_response
+        if not isinstance(stored, dict):
+            raise SubscriptionCheckoutReconciliationPending(intent.id)
+        try:
+            checkout_url = str(stored["checkout_url"]).strip()
+        except KeyError as exc:
+            raise SubscriptionCheckoutReconciliationPending(intent.id) from exc
+        if not checkout_url:
+            raise SubscriptionCheckoutReconciliationPending(intent.id)
+        return {
+            "provider": str(stored.get("provider") or "creem"),
+            "status": "READY",
+            "checkout_url": checkout_url,
+        }
+    if state in {
+        SubscriptionCheckoutIntentState.CALLING.value,
+        SubscriptionCheckoutIntentState.UNKNOWN.value,
+        SubscriptionCheckoutIntentState.FAILED_RETRYABLE.value,
+    }:
+        raise SubscriptionCheckoutReconciliationPending(intent.id)
+    raise SubscriptionError(
+        code="subscription_checkout_not_ready",
+        message="Subscription checkout intent is not ready.",
+        status_code=409,
+    )
+
+
 class SubscriptionService:
     def _api_base_url(self) -> str:
         return (settings.creem_api_base_url or "https://api.creem.io").rstrip("/")
@@ -278,6 +329,164 @@ class SubscriptionService:
             and bool(contract.test_evidence_sha256)
         )
 
+    @staticmethod
+    def _checkout_provider_request_id(
+        user_id: uuid.UUID,
+        idempotency_key: str,
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{user_id}:{idempotency_key}:subscription-checkout".encode("utf-8")
+        ).hexdigest()
+        return f"subco_{digest}"
+
+    @staticmethod
+    def _checkout_request_hash(
+        selection: CheckoutCatalogSelection,
+        *,
+        user_id: uuid.UUID,
+        return_url: str,
+    ) -> str:
+        return canonical_request_hash(
+            {
+                "user_id": str(user_id),
+                "product": selection.as_snapshot(),
+                "return_url": return_url,
+            }
+        )
+
+    @staticmethod
+    def _extract_checkout_payload(payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        for key in ("checkout", "result"):
+            child = payload.get(key)
+            if isinstance(child, dict):
+                return child
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return SubscriptionService._extract_checkout_payload(data)
+        return payload
+
+    @staticmethod
+    def _checkout_product_id(payload: dict[str, Any]) -> str | None:
+        value = payload.get("product_id") or payload.get("product")
+        if isinstance(value, dict):
+            value = value.get("id")
+        if value is None:
+            order = payload.get("order")
+            if isinstance(order, dict):
+                value = order.get("product")
+                if isinstance(value, dict):
+                    value = value.get("id")
+        clean = str(value or "").strip()
+        return clean or None
+
+    @staticmethod
+    def _checkout_url(payload: dict[str, Any]) -> str | None:
+        for key in ("checkout_url", "url", "hosted_checkout_url"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _validate_checkout_response(
+        self,
+        payload: dict[str, Any],
+        *,
+        intent: SubscriptionCheckoutIntent,
+    ) -> tuple[str, str]:
+        checkout_id = str(payload.get("id") or payload.get("checkout_id") or "").strip()
+        checkout_url = self._checkout_url(payload)
+        returned_request_id = str(payload.get("request_id") or "").strip()
+        returned_product_id = self._checkout_product_id(payload)
+        snapshot = dict(intent.catalog_snapshot or {})
+        expected_product_id = str(snapshot.get("provider_product_id") or "").strip()
+        if (
+            not checkout_id
+            or returned_request_id != intent.provider_request_id
+            or not expected_product_id
+            or returned_product_id != expected_product_id
+        ):
+            raise SubscriptionError(
+                code="subscription_checkout_identity_mismatch",
+                message="Subscription checkout identity did not match the local intent.",
+                status_code=503,
+            )
+        if not checkout_url:
+            raise SubscriptionError(
+                code="subscription_checkout_url_missing",
+                message="Subscription provider did not return a checkout URL.",
+                status_code=503,
+            )
+        parsed = urlparse(checkout_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+        ):
+            raise SubscriptionError(
+                code="subscription_checkout_url_invalid",
+                message="Subscription provider returned an unsafe checkout URL.",
+                status_code=503,
+            )
+        status = str(payload.get("status") or "").strip().lower()
+        if status and status not in {"pending", "processing", "completed"}:
+            raise SubscriptionError(
+                code="subscription_checkout_status_invalid",
+                message="Subscription provider returned an invalid checkout status.",
+                status_code=503,
+            )
+        product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
+        order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+        returned_amount = product.get("price")
+        if returned_amount is None:
+            returned_amount = order.get("sub_total")
+        returned_currency = product.get("currency") or order.get("currency")
+        if returned_amount is not None and (
+            isinstance(returned_amount, bool)
+            or not isinstance(returned_amount, int)
+            or returned_amount != int(snapshot.get("pre_tax_minor_units") or -1)
+        ):
+            raise SubscriptionError(
+                code="subscription_checkout_amount_mismatch",
+                message="Subscription checkout amount did not match the active catalog.",
+                status_code=503,
+            )
+        if returned_currency is not None and str(returned_currency).upper() != str(
+            snapshot.get("currency") or ""
+        ).upper():
+            raise SubscriptionError(
+                code="subscription_checkout_currency_mismatch",
+                message="Subscription checkout currency did not match the active catalog.",
+                status_code=503,
+            )
+        return checkout_id, checkout_url
+
+    async def _subscription_plan_for_checkout(
+        self,
+        db: AsyncSession,
+        *,
+        product_code: str,
+    ) -> SubscriptionPlan:
+        plans = list(
+            (
+                await db.scalars(
+                    select(SubscriptionPlan).where(
+                        SubscriptionPlan.catalog_product_code == product_code,
+                        SubscriptionPlan.is_active.is_(True),
+                    )
+                )
+            ).all()
+        )
+        if len(plans) != 1:
+            raise SubscriptionError(
+                code="subscription_plan_projection_unavailable",
+                message="Subscription plan projection requires reconciliation.",
+                status_code=503,
+            )
+        return plans[0]
+
     async def list_active_plans(self, db: AsyncSession):
         try:
             catalog = await load_active_catalog(
@@ -333,7 +542,13 @@ class SubscriptionService:
         return_url: str | None,
         idempotency_key: str | None = None,
     ) -> dict[str, str]:
-        del return_url, idempotency_key
+        clean_key = str(idempotency_key or "").strip()
+        if not clean_key or len(clean_key) > 128:
+            raise SubscriptionError(
+                code="idempotency_key_required",
+                message="A valid Idempotency-Key header is required.",
+                status_code=400,
+            )
         active = await self.get_current_subscription(db, user_id)
         if active is not None:
             raise SubscriptionError(
@@ -341,27 +556,201 @@ class SubscriptionService:
                 message="An active or pending subscription already exists.",
                 status_code=409,
             )
-        available = {product.product_code for product in await self.list_active_plans(db)}
-        if str(plan_code or "").strip() not in available:
-            raise SubscriptionError(
-                code="plan_not_found",
-                message="Subscription plan not found.",
-                status_code=404,
-            )
         if not self._provider_contract_ready(CREEM_SUBSCRIPTION_PAID_TRANSACTION):
             raise SubscriptionError(
                 code="subscription_paid_transaction_unverified",
                 message="Subscription checkout is disabled until Creem test-mode facts are verified.",
                 status_code=503,
             )
-        # Enabling the verified contract is a code/release change. The release
-        # that does so must also introduce a durable subscription checkout
-        # intent; this release intentionally has no unsafe external call path.
-        raise SubscriptionError(
-            code="subscription_checkout_release_not_activated",
-            message="Subscription checkout is not activated in this release.",
-            status_code=503,
+        self._headers()  # fail before creating an intent if Creem is not configured
+        safe_return_url = self._safe_return_url(return_url)
+        try:
+            selection = await require_subscription_checkout_catalog_product(
+                db,
+                product_code=str(plan_code or "").strip(),
+                provider="creem",
+            )
+        except BillingCatalogUnavailable as exc:
+            code = (
+                "plan_not_found"
+                if exc.code in {"product_not_active", "subscription_checkout_product_kind_invalid"}
+                else "billing_catalog_unavailable"
+            )
+            raise SubscriptionError(
+                code=code,
+                message=(
+                    "Subscription plan not found."
+                    if code == "plan_not_found"
+                    else "The active billing catalog is unavailable."
+                ),
+                status_code=404 if code == "plan_not_found" else 503,
+            ) from exc
+        plan = await self._subscription_plan_for_checkout(
+            db,
+            product_code=selection.product.product_code,
         )
+        request_hash = self._checkout_request_hash(
+            selection,
+            user_id=user_id,
+            return_url=safe_return_url,
+        )
+        await lock_idempotency_scope(
+            db,
+            user_id=user_id,
+            endpoint="subscriptions.checkout.single_flight",
+            key="user",
+        )
+        active = await self.get_current_subscription(db, user_id)
+        if active is not None:
+            raise SubscriptionError(
+                code="subscription_already_nonterminal",
+                message="An active or pending subscription already exists.",
+                status_code=409,
+            )
+        existing = await db.scalar(
+            select(SubscriptionCheckoutIntent)
+            .where(
+                SubscriptionCheckoutIntent.user_id == user_id,
+                SubscriptionCheckoutIntent.idempotency_key == clean_key,
+            )
+            .with_for_update()
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise SubscriptionError(
+                    code="idempotency_payload_mismatch",
+                    message="The Idempotency-Key was already used for another request.",
+                    status_code=409,
+                )
+            return subscription_checkout_replay_or_raise(existing)
+        pending = await db.scalar(
+            select(SubscriptionCheckoutIntent)
+            .where(
+                SubscriptionCheckoutIntent.user_id == user_id,
+                SubscriptionCheckoutIntent.state.in_(
+                    [
+                        SubscriptionCheckoutIntentState.NEW.value,
+                        SubscriptionCheckoutIntentState.CALLING.value,
+                        SubscriptionCheckoutIntentState.READY.value,
+                        SubscriptionCheckoutIntentState.UNKNOWN.value,
+                        SubscriptionCheckoutIntentState.FAILED_RETRYABLE.value,
+                    ]
+                ),
+            )
+            .with_for_update()
+        )
+        if pending is not None:
+            raise SubscriptionError(
+                code="subscription_checkout_already_pending",
+                message="A subscription checkout is already pending.",
+                status_code=409,
+            )
+        provider_request_id = self._checkout_provider_request_id(user_id, clean_key)
+        intent = SubscriptionCheckoutIntent(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            plan_id=plan.id,
+            catalog_version_id=selection.catalog_version_id,
+            product_code=selection.product.product_code,
+            idempotency_key=clean_key,
+            request_hash=request_hash,
+            provider_request_id=provider_request_id,
+            internal_metadata_id=uuid.uuid4(),
+            state=SubscriptionCheckoutIntentState.CALLING,
+            catalog_snapshot=selection.as_snapshot(),
+            attempt_count=1,
+            call_started_at=datetime.now(timezone.utc),
+        )
+        db.add(intent)
+        await db.flush()
+        await db.commit()  # durable CALLING boundary before Creem I/O
+
+        success_url = self._append_query(
+            safe_return_url,
+            subscription="return",
+            subscription_checkout_intent_id=str(intent.id),
+        )
+        provider_request = {
+            "product_id": selection.product.provider_product_id,
+            "request_id": provider_request_id,
+            "units": 1,
+            "success_url": success_url,
+            "metadata": {
+                "vowpic_subscription_checkout_ref": str(intent.internal_metadata_id)
+            },
+        }
+        try:
+            response_data = await self._request(
+                "POST",
+                "/v1/checkouts",
+                json_body=provider_request,
+            )
+        except httpx.RequestError as exc:
+            intent.state = SubscriptionCheckoutIntentState.UNKNOWN
+            intent.last_error = f"creem_subscription_checkout_ambiguous:{type(exc).__name__}"
+            await db.flush()
+            await db.commit()
+            raise SubscriptionCheckoutReconciliationPending(intent.id) from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                intent.state = SubscriptionCheckoutIntentState.UNKNOWN
+            else:
+                intent.state = SubscriptionCheckoutIntentState.FAILED_RETRYABLE
+            intent.last_error = (
+                f"creem_subscription_checkout_rejected:{exc.response.status_code}"
+            )
+            await db.flush()
+            await db.commit()
+            raise SubscriptionCheckoutReconciliationPending(intent.id) from exc
+        except SubscriptionError as exc:
+            intent.state = SubscriptionCheckoutIntentState.UNKNOWN
+            intent.last_error = "creem_subscription_checkout_response_invalid"
+            await db.flush()
+            await db.commit()
+            raise SubscriptionCheckoutReconciliationPending(intent.id) from exc
+
+        checkout_payload = self._extract_checkout_payload(response_data)
+        try:
+            checkout_id, checkout_url = self._validate_checkout_response(
+                checkout_payload,
+                intent=intent,
+            )
+        except SubscriptionError:
+            intent.state = SubscriptionCheckoutIntentState.UNKNOWN
+            intent.last_error = "creem_subscription_checkout_validation_failed"
+            await db.flush()
+            await db.commit()
+            raise
+        locked = await db.scalar(
+            select(SubscriptionCheckoutIntent)
+            .where(SubscriptionCheckoutIntent.id == intent.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked is None:
+            raise SubscriptionCheckoutReconciliationPending(intent.id)
+        if locked.provider_checkout_id not in {None, checkout_id}:
+            raise SubscriptionCheckoutReconciliationPending(intent.id)
+        stored_response = {
+            "provider": "creem",
+            "status": "READY",
+            "checkout_url": checkout_url,
+        }
+        locked.provider_checkout_id = checkout_id
+        locked.checkout_url = checkout_url
+        locked.stored_response = stored_response
+        locked.ready_at = datetime.now(timezone.utc)
+        locked.last_error = None
+        if _value(locked.state) in {
+            SubscriptionCheckoutIntentState.CALLING.value,
+            SubscriptionCheckoutIntentState.UNKNOWN.value,
+        }:
+            locked.state = SubscriptionCheckoutIntentState.READY
+        elif _value(locked.state) != SubscriptionCheckoutIntentState.CONFIRMED.value:
+            raise SubscriptionCheckoutReconciliationPending(locked.id)
+        await db.flush()
+        await db.commit()
+        return stored_response
 
     @staticmethod
     def _parse_provider_datetime(value: Any) -> datetime | None:
@@ -403,12 +792,184 @@ class SubscriptionService:
         event.processing_state = PaymentEventProcessingState.RECONCILIATION_REQUIRED
         event.error = reason_code
 
+    async def _checkout_intent_for_event(
+        self,
+        db: AsyncSession,
+        event: PaymentEvent,
+    ) -> SubscriptionCheckoutIntent | None:
+        metadata = dict(event.business_metadata or {})
+        internal_ref: uuid.UUID | None = None
+        try:
+            if metadata.get("vowpic_subscription_checkout_ref"):
+                internal_ref = uuid.UUID(
+                    str(metadata["vowpic_subscription_checkout_ref"])
+                )
+        except ValueError:
+            internal_ref = None
+        conditions = []
+        if event.request_id:
+            conditions.append(
+                SubscriptionCheckoutIntent.provider_request_id == event.request_id
+            )
+        if internal_ref is not None:
+            conditions.append(
+                SubscriptionCheckoutIntent.internal_metadata_id == internal_ref
+            )
+        provider_checkout_id = str(
+            metadata.get("provider_checkout_id") or ""
+        ).strip()
+        if provider_checkout_id:
+            conditions.append(
+                SubscriptionCheckoutIntent.provider_checkout_id
+                == provider_checkout_id
+            )
+        if not conditions:
+            return None
+        rows = list(
+            (
+                await db.scalars(
+                    select(SubscriptionCheckoutIntent)
+                    .where(or_(*conditions))
+                    .with_for_update()
+                )
+            ).all()
+        )
+        unique = {row.id: row for row in rows}
+        if len(unique) > 1:
+            raise SubscriptionFactInvalid(
+                "subscription_checkout_correlation_conflict"
+            )
+        return next(iter(unique.values())) if unique else None
+
+    @staticmethod
+    def _validate_event_checkout_identity(
+        event: PaymentEvent,
+        intent: SubscriptionCheckoutIntent,
+    ) -> None:
+        metadata = dict(event.business_metadata or {})
+        if event.request_id and event.request_id != intent.provider_request_id:
+            raise SubscriptionFactInvalid("subscription_checkout_request_mismatch")
+        internal_ref = str(
+            metadata.get("vowpic_subscription_checkout_ref") or ""
+        ).strip()
+        if internal_ref and internal_ref != str(intent.internal_metadata_id):
+            raise SubscriptionFactInvalid("subscription_checkout_metadata_mismatch")
+        provider_checkout_id = str(
+            metadata.get("provider_checkout_id") or ""
+        ).strip()
+        if (
+            provider_checkout_id
+            and intent.provider_checkout_id
+            and provider_checkout_id != intent.provider_checkout_id
+        ):
+            raise SubscriptionFactInvalid("subscription_checkout_id_mismatch")
+        snapshot = dict(intent.catalog_snapshot or {})
+        expected_product_id = str(
+            snapshot.get("provider_product_id") or ""
+        ).strip()
+        provider_product_id = str(
+            metadata.get("provider_product_id") or ""
+        ).strip()
+        if (
+            not expected_product_id
+            or not provider_product_id
+            or provider_product_id != expected_product_id
+        ):
+            raise SubscriptionFactInvalid("subscription_checkout_product_mismatch")
+        if event.pre_tax_minor_units is not None and int(
+            event.pre_tax_minor_units
+        ) != int(snapshot.get("pre_tax_minor_units") or -1):
+            raise SubscriptionFactInvalid("subscription_checkout_amount_mismatch")
+        if event.currency is not None and str(event.currency).upper() != str(
+            snapshot.get("currency") or ""
+        ).upper():
+            raise SubscriptionFactInvalid("subscription_checkout_currency_mismatch")
+
+    async def _create_subscription_projection_from_intent(
+        self,
+        db: AsyncSession,
+        *,
+        event: PaymentEvent,
+        intent: SubscriptionCheckoutIntent,
+        provider_subscription_id: str,
+    ) -> UserSubscription:
+        self._validate_event_checkout_identity(event, intent)
+        rows = list(
+            (
+                await db.scalars(
+                    select(UserSubscription)
+                    .where(
+                        UserSubscription.user_id == intent.user_id,
+                        UserSubscription.normalized_status.in_(
+                            [
+                                NormalizedSubscriptionStatus.PENDING.value,
+                                NormalizedSubscriptionStatus.ACTIVE.value,
+                                NormalizedSubscriptionStatus.PAST_DUE.value,
+                                NormalizedSubscriptionStatus.CANCEL_REQUESTED.value,
+                            ]
+                        ),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if len(rows) > 1:
+            raise SubscriptionFactInvalid("subscription_projection_conflict")
+        if rows:
+            subscription = rows[0]
+            if (
+                subscription.provider != "creem"
+                or subscription.provider_subscription_id
+                != provider_subscription_id
+                or subscription.user_id != intent.user_id
+            ):
+                raise SubscriptionFactInvalid(
+                    "subscription_projection_checkout_conflict"
+                )
+        else:
+            snapshot = dict(intent.catalog_snapshot or {})
+            subscription = UserSubscription(
+                id=uuid.uuid4(),
+                user_id=intent.user_id,
+                plan_id=intent.plan_id,
+                provider="creem",
+                provider_customer_id=event.customer_id,
+                provider_subscription_id=provider_subscription_id,
+                status=SubscriptionStatus.TRIALING,
+                normalized_status=NormalizedSubscriptionStatus.PENDING,
+                catalog_version_id=intent.catalog_version_id,
+                product_code=intent.product_code,
+                catalog_snapshot=snapshot,
+                cancel_at_period_end=False,
+                metadata_json={
+                    "subscription_checkout_intent_id": str(intent.id),
+                },
+            )
+            db.add(subscription)
+            await db.flush()
+        intent.provider_subscription_id = provider_subscription_id
+        provider_checkout_id = str(
+            (event.business_metadata or {}).get("provider_checkout_id") or ""
+        ).strip()
+        if provider_checkout_id:
+            intent.provider_checkout_id = provider_checkout_id
+        intent.provider_evidence = {
+            "payment_event_id": str(event.id),
+            "event_id": event.event_id,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+        intent.confirmed_at = event.occurred_at or datetime.now(timezone.utc)
+        intent.last_error = None
+        intent.state = SubscriptionCheckoutIntentState.CONFIRMED
+        await db.flush()
+        return subscription
+
     async def _find_subscription_for_event(
         self,
         db: AsyncSession,
         event: PaymentEvent,
     ) -> UserSubscription | None:
-        return await db.scalar(
+        subscription = await db.scalar(
             select(UserSubscription)
             .where(
                 UserSubscription.provider == "creem",
@@ -416,6 +977,96 @@ class SubscriptionService:
             )
             .with_for_update()
         )
+        if subscription is not None:
+            return subscription
+        if not str(event.event_type or "").lower().startswith("subscription."):
+            return None
+        intent = await self._checkout_intent_for_event(db, event)
+        provider_subscription_id = str(event.object_id or "").strip()
+        if intent is None or not provider_subscription_id:
+            return None
+        return await self._create_subscription_projection_from_intent(
+            db,
+            event=event,
+            intent=intent,
+            provider_subscription_id=provider_subscription_id,
+        )
+
+    async def apply_checkout_completed_event(
+        self,
+        db: AsyncSession,
+        *,
+        event: PaymentEvent,
+    ) -> bool:
+        """Claim a signed checkout event only when it matches a subscription intent."""
+
+        try:
+            intent = await self._checkout_intent_for_event(db, event)
+        except SubscriptionFactInvalid as exc:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                subscription=None,
+                reason_code=exc.code,
+            )
+            return True
+        if intent is None:
+            return False
+        try:
+            self._validate_event_checkout_identity(event, intent)
+            provider_checkout_id = str(
+                (event.business_metadata or {}).get("provider_checkout_id")
+                or event.object_id
+                or ""
+            ).strip()
+            if not provider_checkout_id:
+                raise SubscriptionFactInvalid(
+                    "subscription_checkout_id_missing"
+                )
+            if (
+                intent.provider_checkout_id
+                and intent.provider_checkout_id != provider_checkout_id
+            ):
+                raise SubscriptionFactInvalid(
+                    "subscription_checkout_id_mismatch"
+                )
+            intent.provider_checkout_id = provider_checkout_id
+            intent.provider_evidence = {
+                "payment_event_id": str(event.id),
+                "event_id": event.event_id,
+                "raw_payload_sha256": event.raw_payload_sha256,
+            }
+            provider_subscription_id = str(
+                (event.business_metadata or {}).get(
+                    "provider_subscription_id"
+                )
+                or ""
+            ).strip()
+            if provider_subscription_id:
+                await self._create_subscription_projection_from_intent(
+                    db,
+                    event=event,
+                    intent=intent,
+                    provider_subscription_id=provider_subscription_id,
+                )
+            elif _value(intent.state) == SubscriptionCheckoutIntentState.CALLING.value:
+                intent.state = SubscriptionCheckoutIntentState.UNKNOWN
+                intent.last_error = (
+                    "creem_checkout_completed_without_subscription_id"
+                )
+        except SubscriptionFactInvalid as exc:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                subscription=None,
+                reason_code=exc.code,
+            )
+            return True
+        event.processing_state = PaymentEventProcessingState.APPLIED
+        event.processed_at = datetime.now(timezone.utc)
+        event.error = None
+        await db.flush()
+        return True
 
     async def _find_invoice_candidate(
         self,
@@ -981,7 +1632,16 @@ class SubscriptionService:
         *,
         event: PaymentEvent,
     ) -> UserSubscription | None:
-        subscription = await self._find_subscription_for_event(db, event)
+        try:
+            subscription = await self._find_subscription_for_event(db, event)
+        except SubscriptionFactInvalid as exc:
+            await self._mark_event_reconciliation(
+                db,
+                event=event,
+                subscription=None,
+                reason_code=exc.code,
+            )
+            return None
         if subscription is None:
             await self._mark_event_reconciliation(
                 db,

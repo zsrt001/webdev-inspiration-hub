@@ -42,14 +42,14 @@ on:
         required: false
         default: false
         type: boolean
+    outputs:
+      report_sha256:
+        description: SHA-256 of the sanitized create-once child report
+        value: ${{ jobs.migrate.outputs.report_sha256 }}
 
 permissions:
   contents: read
   actions: read
-
-concurrency:
-  group: vowpic-production-release
-  cancel-in-progress: false
 
 jobs:
   authorize-caller:
@@ -97,6 +97,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: production
+    outputs:
+      report_sha256: ${{ steps.validated-report.outputs.report_sha256 }}
     steps:
       - name: Independently recheck caller, operation, and artifact coordinates
         env:
@@ -359,6 +361,7 @@ jobs:
           test -s artifacts/output/report.json
           python -c "import json; p=json.load(open('artifacts/output/report.json', encoding='utf-8')); assert p['parent_run_id'] == '${{ inputs.migration_parent_run_id }}'; assert p['manifest_sha256'] == '${{ inputs.expected_manifest_sha256 }}'; assert p['inventory_sha256'] == '${{ inputs.expected_inventory_sha256 }}'"
           echo "sanitized=true" >> "$GITHUB_OUTPUT"
+          echo "report_sha256=$(sha256sum artifacts/output/report.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Persist only sanitized migration evidence
         if: ${{ always() && steps.validated-report.outputs.sanitized == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

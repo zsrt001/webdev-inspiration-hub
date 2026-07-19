@@ -19,6 +19,7 @@ depends_on = None
 
 
 SUBSCRIPTION_FACT_TABLES = (
+    "subscription_checkout_intents",
     "subscription_invoices",
     "subscription_invoice_adjustment_facts",
     "subscription_cancel_intents",
@@ -164,6 +165,128 @@ def _create_invoices() -> None:
         "period_end",
     ):
         op.create_index(f"ix_subscription_invoices_{column}", "subscription_invoices", [column])
+
+
+def _create_checkout_intents() -> None:
+    op.create_table(
+        "subscription_checkout_intents",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("plan_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column(
+            "catalog_version_id",
+            postgresql.UUID(as_uuid=True),
+            nullable=False,
+        ),
+        sa.Column("product_code", sa.String(64), nullable=False),
+        sa.Column("idempotency_key", sa.String(128), nullable=False),
+        sa.Column("request_hash", sa.String(64), nullable=False),
+        sa.Column("provider_request_id", sa.String(128), nullable=False),
+        sa.Column("internal_metadata_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("state", sa.String(32), server_default="NEW", nullable=False),
+        sa.Column("catalog_snapshot", postgresql.JSONB(), nullable=False),
+        sa.Column("stored_response", postgresql.JSONB(), nullable=True),
+        sa.Column("provider_evidence", postgresql.JSONB(), nullable=True),
+        sa.Column("provider_checkout_id", sa.String(128), nullable=True),
+        sa.Column("provider_subscription_id", sa.String(128), nullable=True),
+        sa.Column("checkout_url", sa.Text(), nullable=True),
+        sa.Column("attempt_count", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("call_started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("ready_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("last_error", sa.Text(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(
+            ["plan_id"],
+            ["subscription_plans.id"],
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["catalog_version_id"],
+            ["billing_catalog_versions.id"],
+            ondelete="RESTRICT",
+        ),
+        sa.UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_subscription_checkout_user_idempotency",
+        ),
+        sa.UniqueConstraint(
+            "provider_request_id",
+            name="uq_subscription_checkout_provider_request",
+        ),
+        sa.UniqueConstraint(
+            "internal_metadata_id",
+            name="uq_subscription_checkout_internal_metadata",
+        ),
+        sa.UniqueConstraint(
+            "provider_checkout_id",
+            name="uq_subscription_checkout_provider_checkout",
+        ),
+        sa.UniqueConstraint(
+            "provider_subscription_id",
+            name="uq_subscription_checkout_provider_subscription",
+        ),
+        sa.CheckConstraint(
+            "state IN ('NEW','CALLING','READY','UNKNOWN','FAILED_RETRYABLE','CONFIRMED')",
+            name="ck_subscription_checkout_state",
+        ),
+        sa.CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_subscription_checkout_attempts",
+        ),
+    )
+    op.create_index(
+        "ix_subscription_checkout_intents_user_id",
+        "subscription_checkout_intents",
+        ["user_id"],
+    )
+    op.create_index(
+        "ix_subscription_checkout_intents_plan_id",
+        "subscription_checkout_intents",
+        ["plan_id"],
+    )
+    op.create_index(
+        "ix_subscription_checkout_intents_catalog_version_id",
+        "subscription_checkout_intents",
+        ["catalog_version_id"],
+    )
+    op.create_index(
+        "ix_subscription_checkout_intents_state",
+        "subscription_checkout_intents",
+        ["state"],
+    )
+    op.create_index(
+        "ix_subscription_checkout_intents_provider_checkout_id",
+        "subscription_checkout_intents",
+        ["provider_checkout_id"],
+    )
+    op.create_index(
+        "ix_subscription_checkout_intents_provider_subscription_id",
+        "subscription_checkout_intents",
+        ["provider_subscription_id"],
+    )
+    op.create_index(
+        "uq_subscription_checkout_one_nonterminal",
+        "subscription_checkout_intents",
+        ["user_id"],
+        unique=True,
+        postgresql_where=sa.text(
+            "state IN ('NEW','CALLING','READY','UNKNOWN','FAILED_RETRYABLE')"
+        ),
+    )
 
 
 def _expand_subscription_grants() -> None:
@@ -336,6 +459,85 @@ def _create_subscription_guards() -> None:
     op.execute(
         sa.text(
             """
+            CREATE OR REPLACE FUNCTION public.subscription_checkout_transition_guard()
+            RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+            SET search_path = pg_catalog, public
+            AS $subscription_checkout_transition_guard$
+            BEGIN
+                IF OLD.user_id <> NEW.user_id OR OLD.plan_id <> NEW.plan_id
+                   OR OLD.catalog_version_id <> NEW.catalog_version_id
+                   OR OLD.product_code <> NEW.product_code
+                   OR OLD.idempotency_key <> NEW.idempotency_key
+                   OR OLD.request_hash <> NEW.request_hash
+                   OR OLD.provider_request_id <> NEW.provider_request_id
+                   OR OLD.internal_metadata_id <> NEW.internal_metadata_id
+                   OR OLD.catalog_snapshot <> NEW.catalog_snapshot THEN
+                    RAISE EXCEPTION 'subscription checkout immutable field changed'
+                        USING ERRCODE = '23514';
+                END IF;
+                IF OLD.provider_checkout_id IS NOT NULL
+                   AND OLD.provider_checkout_id IS DISTINCT FROM NEW.provider_checkout_id THEN
+                    RAISE EXCEPTION 'subscription checkout Provider ID changed'
+                        USING ERRCODE = '23514';
+                END IF;
+                IF OLD.provider_subscription_id IS NOT NULL
+                   AND OLD.provider_subscription_id IS DISTINCT FROM NEW.provider_subscription_id THEN
+                    RAISE EXCEPTION 'subscription checkout subscription ID changed'
+                        USING ERRCODE = '23514';
+                END IF;
+                IF OLD.state <> NEW.state AND NOT (
+                    (OLD.state = 'NEW' AND NEW.state = 'CALLING') OR
+                    (OLD.state = 'CALLING' AND NEW.state IN (
+                        'READY','UNKNOWN','FAILED_RETRYABLE','CONFIRMED'
+                    )) OR
+                    (OLD.state = 'READY' AND NEW.state = 'CONFIRMED') OR
+                    (OLD.state = 'UNKNOWN' AND NEW.state IN (
+                        'READY','FAILED_RETRYABLE','CONFIRMED'
+                    )) OR
+                    (OLD.state = 'FAILED_RETRYABLE' AND NEW.state IN (
+                        'NEW','CONFIRMED'
+                    ))
+                ) THEN
+                    RAISE EXCEPTION 'invalid subscription checkout transition'
+                        USING ERRCODE = '23514';
+                END IF;
+                IF NEW.state = 'READY'
+                   AND (
+                       NEW.provider_checkout_id IS NULL
+                       OR NEW.checkout_url IS NULL
+                       OR NEW.stored_response IS NULL
+                       OR NEW.ready_at IS NULL
+                   ) THEN
+                    RAISE EXCEPTION 'ready subscription checkout evidence missing'
+                        USING ERRCODE = '23514';
+                END IF;
+                IF NEW.state = 'CONFIRMED'
+                   AND (
+                       NEW.provider_subscription_id IS NULL
+                       OR NEW.provider_evidence IS NULL
+                       OR NEW.confirmed_at IS NULL
+                   ) THEN
+                    RAISE EXCEPTION 'confirmed subscription checkout evidence missing'
+                        USING ERRCODE = '23514';
+                END IF;
+                RETURN NEW;
+            END;
+            $subscription_checkout_transition_guard$;
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            """
+            CREATE TRIGGER trg_subscription_checkout_intents_transition
+            BEFORE UPDATE ON public.subscription_checkout_intents
+            FOR EACH ROW EXECUTE FUNCTION public.subscription_checkout_transition_guard();
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            """
             CREATE OR REPLACE FUNCTION public.subscription_invoice_transition_guard()
             RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
             SET search_path = pg_catalog, public
@@ -467,6 +669,7 @@ def _secure_subscription_facts() -> None:
 def upgrade() -> None:
     _expand_subscription_projection()
     _create_invoices()
+    _create_checkout_intents()
     _expand_subscription_grants()
     _create_adjustments_and_cancellation()
     _create_subscription_guards()
@@ -485,12 +688,24 @@ def downgrade() -> None:
     )
     op.execute(sa.text("DROP FUNCTION IF EXISTS public.subscription_cancel_transition_guard()"))
     op.execute(
+        sa.text(
+            "DROP TRIGGER IF EXISTS trg_subscription_checkout_intents_transition "
+            "ON public.subscription_checkout_intents"
+        )
+    )
+    op.execute(
+        sa.text(
+            "DROP FUNCTION IF EXISTS public.subscription_checkout_transition_guard()"
+        )
+    )
+    op.execute(
         sa.text("DROP TRIGGER IF EXISTS trg_subscription_credit_grants_normalized ON public.subscription_credit_grants")
     )
     op.execute(sa.text("DROP FUNCTION IF EXISTS public.subscription_grant_normalized_guard()"))
     op.execute(sa.text("DROP TRIGGER IF EXISTS trg_subscription_invoices_transition ON public.subscription_invoices"))
     op.execute(sa.text("DROP FUNCTION IF EXISTS public.subscription_invoice_transition_guard()"))
     op.drop_table("subscription_cancel_intents")
+    op.drop_table("subscription_checkout_intents")
     op.drop_table("subscription_invoice_adjustment_facts")
     op.drop_constraint("fk_subscription_invoices_credit_grant", "subscription_invoices", type_="foreignkey")
     op.drop_index("ix_subscription_credit_grants_grant_lot_id", table_name="subscription_credit_grants")

@@ -37,6 +37,75 @@ class ReleaseActivationSchemaTest(unittest.TestCase):
         }
         self.assertTrue(required <= columns, sorted(required - columns))
 
+    def test_0020_adds_append_only_phase_evidence_without_mutating_activation_history(self) -> None:
+        module = importlib.import_module("app.models.release_phase_evidence")
+        columns = set(module.ReleasePhaseEvidence.__table__.columns.keys())
+        self.assertEqual(
+            columns,
+            {
+                "id",
+                "release_activation_id",
+                "phase",
+                "phase_rank",
+                "report_sha256",
+                "private_object_key",
+                "coordinates_json",
+                "created_at",
+            },
+        )
+        migration = (
+            ROOT / "backend/alembic/versions/20260710_0020_partner_consent.py"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "release_phase_evidence",
+            "uq_release_phase_evidence_phase",
+            "uq_release_phase_evidence_rank",
+            "trg_release_phase_evidence_append_only",
+            "prevent_control_plane_mutation()",
+            "FORCE ROW LEVEL SECURITY",
+            "vowpic_control_writer",
+            "vowpic_migration_owner",
+        ):
+            self.assertIn(required, migration)
+
+    def test_0020_adds_cas_protected_staged_auth_origin_leases(self) -> None:
+        module = importlib.import_module("app.models.release_auth_origin_lease")
+        columns = set(module.ReleaseAuthOriginLease.__table__.columns.keys())
+        self.assertEqual(
+            columns,
+            {
+                "id",
+                "release_activation_id",
+                "project_ref_sha256",
+                "callback_url",
+                "original_sha256",
+                "target_sha256",
+                "private_object_key",
+                "approval",
+                "expires_at",
+                "state",
+                "version",
+                "created_at",
+                "updated_at",
+                "removed_at",
+            },
+        )
+        migration = (
+            ROOT / "backend/alembic/versions/20260710_0020_partner_consent.py"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "release_auth_origin_leases",
+            "uq_release_auth_origin_lease_activation",
+            "enforce_release_auth_origin_lease",
+            "trg_release_auth_origin_lease_cas",
+            "trg_release_auth_origin_lease_no_delete",
+            "ck_release_auth_origin_lease_ttl",
+            "NEW.approval IS DISTINCT FROM OLD.approval",
+            "NEW.expires_at IS DISTINCT FROM OLD.expires_at",
+            "FORCE ROW LEVEL SECURITY",
+        ):
+            self.assertIn(required, migration)
+
     def test_control_plane_rls_uses_forced_non_bypass_database_roles(self) -> None:
         migration = (
             ROOT / "backend" / "alembic" / "versions" / "20260710_0013_ops_feature_flags.py"
@@ -126,6 +195,7 @@ class ReleaseActivationSchemaTest(unittest.TestCase):
             "COMMERCIAL_7A", "CONTRACT_7B",
             "uq_release_activation_runtime_bundle", "uq_release_activation_active_source",
             "uq_release_activation_production_safe_baseline", "prevent_release_activation_regression",
+            "'7A_ACCEPTED'",
             "phase rank must advance", "release_activations", "_no_delete BEFORE DELETE",
         ):
             self.assertIn(value, source)

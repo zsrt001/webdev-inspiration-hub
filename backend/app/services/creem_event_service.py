@@ -163,7 +163,13 @@ def normalize_creem_event(
         payload.get("eventType") or payload.get("event_type") or payload.get("type")
     )
     event_type = event_type.lower() if event_type else None
-    event_object = _object_value(payload.get("object") or payload.get("data"))
+    raw_event_object = payload.get("object") or payload.get("data")
+    if not isinstance(raw_event_object, dict) and event_type:
+        if event_type.startswith("subscription."):
+            raw_event_object = payload.get("subscription")
+        elif event_type == "checkout.completed":
+            raw_event_object = payload.get("checkout")
+    event_object = _object_value(raw_event_object)
     object_id = _clean_identifier(event_object.get("id"))
     if not event_id or not event_type or not object_id:
         raise CreemEventError("webhook_event_identity_invalid")
@@ -207,6 +213,11 @@ def normalize_creem_event(
             business_metadata["provider_payment_id"] = provider_payment_id
         if provider_order_id:
             business_metadata["provider_order_id"] = provider_order_id
+        provider_subscription_id = _object_identifier(
+            event_object.get("subscription") or payload.get("subscription")
+        )
+        if provider_subscription_id:
+            business_metadata["provider_subscription_id"] = provider_subscription_id
         business_metadata["provider_checkout_id"] = object_id
     elif event_type == "refund.created":
         transaction = _object_value(event_object.get("transaction"))
@@ -232,25 +243,63 @@ def normalize_creem_event(
         if explicit_outcome:
             business_metadata["dispute_outcome"] = explicit_outcome.lower()
     elif event_type.startswith("subscription."):
-        product = _object_value(event_object.get("product"))
-        transaction = _object_value(event_object.get("last_transaction"))
-        provider_product_id = _object_identifier(event_object.get("product"))
+        checkout = _object_value(payload.get("checkout"))
+        order = _object_value(payload.get("order"))
+        product = _object_value(event_object.get("product") or payload.get("product"))
+        transaction = _object_value(
+            event_object.get("last_transaction") or payload.get("transaction")
+        )
+        request_id = request_id or _clean_identifier(checkout.get("request_id"))
+        for key, value in _metadata_strings(checkout.get("metadata")).items():
+            business_metadata.setdefault(key, value)
+        provider_product_id = (
+            _object_identifier(event_object.get("product"))
+            or _object_identifier(payload.get("product"))
+            or _object_identifier(order.get("product"))
+        )
         if provider_product_id:
             business_metadata["provider_product_id"] = provider_product_id
         customer_id = customer_id or _object_identifier(event_object.get("customer"))
+        customer_id = customer_id or _object_identifier(payload.get("customer"))
+        customer_id = customer_id or _object_identifier(order.get("customer"))
         pre_tax_minor_units = _as_nonnegative_int(product.get("price"))
-        tax_minor_units = _as_nonnegative_int(transaction.get("tax_amount"))
-        currency = _clean_identifier(transaction.get("currency") or product.get("currency"))
+        if pre_tax_minor_units is None:
+            pre_tax_minor_units = _as_nonnegative_int(order.get("sub_total"))
+        if pre_tax_minor_units is None:
+            pre_tax_minor_units = _as_nonnegative_int(order.get("amount"))
+        tax_minor_units = _as_nonnegative_int(
+            transaction.get("tax_amount")
+            if transaction.get("tax_amount") is not None
+            else order.get("tax_amount")
+        )
+        if tax_minor_units is None:
+            amount_paid = _as_nonnegative_int(order.get("amount_paid"))
+            if (
+                amount_paid is not None
+                and pre_tax_minor_units is not None
+                and amount_paid >= pre_tax_minor_units
+            ):
+                tax_minor_units = amount_paid - pre_tax_minor_units
+        currency = _clean_identifier(
+            transaction.get("currency")
+            or product.get("currency")
+            or order.get("currency")
+        )
         transaction_id = _clean_identifier(
-            event_object.get("last_transaction_id") or transaction.get("id")
+            event_object.get("last_transaction_id")
+            or transaction.get("id")
+            or order.get("transaction")
         )
         if transaction_id:
             business_metadata["last_transaction_id"] = transaction_id
         provider_invoice_id = _clean_identifier(
-            transaction.get("invoice") or transaction.get("order")
+            transaction.get("invoice") or transaction.get("order") or order.get("id")
         )
         if provider_invoice_id:
             business_metadata["provider_invoice_id"] = provider_invoice_id
+        provider_checkout_id = _object_identifier(checkout)
+        if provider_checkout_id:
+            business_metadata["provider_checkout_id"] = provider_checkout_id
         for field in (
             "current_period_start_date",
             "current_period_end_date",

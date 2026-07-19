@@ -1,25 +1,52 @@
 import { defineConfig } from '@playwright/test';
 
-const protectedRun = process.env.RUN_PREVIEW_E2E === '1';
+const previewRun = process.env.RUN_PREVIEW_E2E === '1';
+const productionRun = process.env.RUN_PRODUCTION_E2E === '1';
 const localA11yRun = process.env.RUN_LOCAL_A11Y === '1';
+const protectedRun = previewRun || productionRun;
+const selectedModes = [previewRun, productionRun, localA11yRun].filter(Boolean).length;
 const baseURL = String(
-  protectedRun ? process.env.PREVIEW_BASE_URL || '' : 'http://127.0.0.1:4173',
+  previewRun
+    ? process.env.PREVIEW_BASE_URL || ''
+    : productionRun
+      ? process.env.PRODUCTION_BASE_URL || ''
+      : 'http://127.0.0.1:4173',
 ).trim().replace(/\/$/, '');
-const storageState = String(process.env.PREVIEW_GOOGLE_STORAGE_STATE_PATH || '').trim();
-const identityEmail = String(process.env.PREVIEW_GOOGLE_EMAIL || '').trim();
+const storageState = String(
+  previewRun
+    ? process.env.PREVIEW_GOOGLE_STORAGE_STATE_PATH || ''
+    : process.env.PRODUCTION_GOOGLE_STORAGE_STATE_PATH || '',
+).trim();
+const identityEmail = String(
+  previewRun
+    ? process.env.PREVIEW_GOOGLE_EMAIL || ''
+    : process.env.PRODUCTION_GOOGLE_EMAIL || '',
+).trim();
 const browserChannel = String(process.env.PLAYWRIGHT_BROWSER_CHANNEL || '').trim();
 
-if (protectedRun === localA11yRun) {
-  throw new Error('PLAYWRIGHT_MODE_REQUIRED: select exactly one protected or local-a11y mode.');
+if (selectedModes !== 1) {
+  throw new Error(
+    'PLAYWRIGHT_MODE_REQUIRED: select exactly one preview, production, or local-a11y mode.',
+  );
 }
 if (protectedRun && (!baseURL || !storageState || !identityEmail)) {
   throw new Error(
-    'PREVIEW_IDENTITY_NOT_RUN: RUN_PREVIEW_E2E=1, PREVIEW_BASE_URL, '
-    + 'PREVIEW_GOOGLE_STORAGE_STATE_PATH, and PREVIEW_GOOGLE_EMAIL are required.',
+    'PROTECTED_IDENTITY_NOT_RUN: protected base URL, Google storage state, and identity email '
+    + 'are required for the selected mode.',
   );
 }
-if (protectedRun && !baseURL.startsWith('https://')) {
-  throw new Error('PREVIEW_IDENTITY_NOT_RUN: PREVIEW_BASE_URL must be an exact HTTPS origin.');
+if (protectedRun) {
+  const parsed = new URL(baseURL);
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || parsed.pathname !== '/'
+    || parsed.search
+    || parsed.hash
+  ) {
+    throw new Error('PROTECTED_IDENTITY_NOT_RUN: base URL must be an exact HTTPS origin.');
+  }
 }
 
 export default defineConfig({
@@ -44,7 +71,15 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: protectedRun ? 'retain-on-failure' : 'off',
   },
-  projects: [
+  projects: protectedRun ? [
+    {
+      name: 'chromium',
+      use: {
+        browserName: 'chromium',
+        ...(browserChannel ? { channel: browserChannel } : {}),
+      },
+    },
+  ] : [
     {
       name: 'chromium',
       use: {

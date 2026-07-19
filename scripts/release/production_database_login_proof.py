@@ -17,6 +17,10 @@ RUNTIME_LOGIN = "vowpic_app_runtime"
 WRITER_LOGIN = "vowpic_control_writer_login"
 RUNTIME_GROUP = "vowpic_runtime"
 WRITER_GROUP = "vowpic_control_writer"
+OBSERVATION_READER_LOGIN = "vowpic_observation_reader_login"
+OBSERVATION_WRITER_LOGIN = "vowpic_observation_writer_login"
+OBSERVATION_READER_GROUP = "vowpic_observation_reader"
+OBSERVATION_WRITER_GROUP = "vowpic_observation_writer"
 IDENTITY_SERVICE_GROUP = "vowpic_identity_service"
 MIGRATION_LOGIN = "vowpic_migration_login"
 MIGRATION_OWNER = "vowpic_migration_owner"
@@ -45,6 +49,11 @@ CONTROL_PLANE_TABLES = (
     "release_activations",
 )
 ALLOWED_RUNTIME_PRIVILEGES = {"SELECT", "INSERT", "UPDATE"}
+OBSERVATION_READ_TABLES = (
+    "release_activations",
+    "release_observation_runs",
+    "release_observation_samples",
+)
 
 
 def _prove_business_tables(
@@ -276,6 +285,211 @@ def prove_database_logins(
             ),
             (WRITER_LOGIN, writer_url, WRITER_GROUP, RUNTIME_GROUP, ()),
         )
+    }
+
+
+def _validate_observation_login_facts(
+    facts: dict[str, Any],
+    *,
+    role_name: str,
+    required_group: str,
+    expect_read_only: bool,
+) -> dict[str, Any]:
+    common_forbidden = (
+        "superuser",
+        "create_db",
+        "create_role",
+        "replication",
+        "bypass_rls",
+        "owns_objects",
+        "samples_update",
+        "samples_delete",
+        "runs_insert",
+        "runs_table_update",
+        "cleanup_hash_update",
+        "run_version_update",
+        "run_state_update",
+        "runs_delete",
+        "users_select",
+        "flags_select",
+        "flags_update",
+        "recoveries_select",
+    )
+    if (
+        facts["current_user"] != role_name
+        or not facts["inherit_privileges"]
+        or not facts["schema_usage"]
+        or not facts["required_group_member"]
+        or set(facts["direct_memberships"] or []) != {required_group}
+        or any(facts[key] for key in common_forbidden)
+        or not all(
+            facts[key]
+            for key in ("activations_select", "runs_select", "samples_select")
+        )
+    ):
+        raise ValueError(
+            f"database login {role_name} violates the observation least-privilege contract"
+        )
+    default_read_only = str(facts["default_read_only"]).lower() == "on"
+    if default_read_only is not expect_read_only:
+        raise ValueError(
+            f"database login {role_name} has an invalid read-only transaction default"
+        )
+    if role_name == OBSERVATION_READER_LOGIN:
+        if (
+            facts["samples_insert"]
+            or not facts["metrics_execute"]
+        ):
+            raise ValueError("observation reader has an invalid SQL surface")
+    elif role_name == OBSERVATION_WRITER_LOGIN:
+        if (
+            not facts["samples_insert"]
+            or facts["metrics_execute"]
+        ):
+            raise ValueError("observation writer has an invalid SQL surface")
+    else:  # pragma: no cover - callers use fixed role constants.
+        raise ValueError("unknown observation database login")
+    return facts
+
+
+def _prove_observation_login(
+    role_url: str,
+    *,
+    role_name: str,
+    required_group: str,
+    expect_read_only: bool,
+) -> dict[str, Any]:
+    with psycopg2.connect(role_url, cursor_factory=RealDictCursor) as connection:
+        connection.set_session(readonly=expect_read_only, autocommit=False)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT current_user,
+                       role.rolsuper AS superuser,
+                       role.rolinherit AS inherit_privileges,
+                       role.rolcreatedb AS create_db,
+                       role.rolcreaterole AS create_role,
+                       role.rolreplication AS replication,
+                       role.rolbypassrls AS bypass_rls,
+                       current_setting('default_transaction_read_only') AS default_read_only,
+                       has_schema_privilege(current_user, 'public', 'USAGE') AS schema_usage,
+                       pg_has_role(current_user, %s, 'MEMBER') AS required_group_member,
+                       COALESCE((
+                           SELECT array_agg(parent.rolname ORDER BY parent.rolname)
+                           FROM pg_auth_members AS membership
+                           JOIN pg_roles AS parent ON parent.oid = membership.roleid
+                           WHERE membership.member = role.oid
+                       ), ARRAY[]::name[]) AS direct_memberships,
+                       EXISTS (
+                           SELECT 1 FROM pg_database AS database
+                           WHERE database.datdba = role.oid
+                       ) OR EXISTS (
+                           SELECT 1 FROM pg_namespace AS namespace
+                           WHERE namespace.nspowner = role.oid
+                       ) OR EXISTS (
+                           SELECT 1 FROM pg_class AS relation
+                           WHERE relation.relowner = role.oid
+                       ) OR EXISTS (
+                           SELECT 1 FROM pg_proc AS routine
+                           WHERE routine.proowner = role.oid
+                       ) AS owns_objects,
+                       has_table_privilege(
+                           current_user, 'public.release_activations', 'SELECT'
+                       ) AS activations_select,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_runs', 'SELECT'
+                       ) AS runs_select,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_samples', 'SELECT'
+                       ) AS samples_select,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_samples', 'INSERT'
+                       ) AS samples_insert,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_samples', 'UPDATE'
+                       ) AS samples_update,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_samples', 'DELETE'
+                       ) AS samples_delete,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_runs', 'INSERT'
+                       ) AS runs_insert,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_runs', 'UPDATE'
+                       ) AS runs_table_update,
+                       has_column_privilege(
+                           current_user,
+                           'public.release_observation_runs',
+                           'cleanup_cycle_sha256',
+                           'UPDATE'
+                       ) AS cleanup_hash_update,
+                       has_column_privilege(
+                           current_user,
+                           'public.release_observation_runs',
+                           'version',
+                           'UPDATE'
+                       ) AS run_version_update,
+                       has_column_privilege(
+                           current_user,
+                           'public.release_observation_runs',
+                           'state',
+                           'UPDATE'
+                       ) AS run_state_update,
+                       has_table_privilege(
+                           current_user, 'public.release_observation_runs', 'DELETE'
+                       ) AS runs_delete,
+                       has_table_privilege(
+                           current_user, 'public.users', 'SELECT'
+                       ) AS users_select,
+                       has_table_privilege(
+                           current_user, 'public.ops_feature_flags', 'SELECT'
+                       ) AS flags_select,
+                       has_table_privilege(
+                           current_user, 'public.ops_feature_flags', 'UPDATE'
+                       ) AS flags_update,
+                       has_table_privilege(
+                           current_user,
+                           'public.release_observation_recoveries',
+                           'SELECT'
+                       ) AS recoveries_select,
+                       has_function_privilege(
+                           current_user,
+                           'public.read_release_observation_metrics_v1(uuid)',
+                           'EXECUTE'
+                       ) AS metrics_execute
+                FROM pg_roles AS role
+                WHERE role.rolname = current_user
+                """,
+                (required_group,),
+            )
+            row = cursor.fetchone()
+    if row is None:
+        raise ValueError(f"database role proof is missing {role_name}")
+    return _validate_observation_login_facts(
+        dict(row),
+        role_name=role_name,
+        required_group=required_group,
+        expect_read_only=expect_read_only,
+    )
+
+
+def prove_observation_database_logins(
+    reader_url: str,
+    writer_url: str,
+) -> dict[str, dict[str, Any]]:
+    return {
+        OBSERVATION_READER_LOGIN: _prove_observation_login(
+            reader_url,
+            role_name=OBSERVATION_READER_LOGIN,
+            required_group=OBSERVATION_READER_GROUP,
+            expect_read_only=True,
+        ),
+        OBSERVATION_WRITER_LOGIN: _prove_observation_login(
+            writer_url,
+            role_name=OBSERVATION_WRITER_LOGIN,
+            required_group=OBSERVATION_WRITER_GROUP,
+            expect_read_only=False,
+        ),
     }
 
 

@@ -108,6 +108,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 "policy": "a" * 64,
                 "runtime": "b" * 64,
                 "gate": "c" * 64,
+                "database_roles": "d" * 64,
             },
             "tool_version": "vowpic-release-tools.v1",
         }
@@ -115,9 +116,10 @@ class RuntimeBundleIdTest(unittest.TestCase):
             role_payload = dict(base)
             role_payload["contract_hashes"] = dict(base["contract_hashes"])
             if role == "PREVIEW_COMMERCIAL":
-                role_payload["contract_hashes"]["preview"] = "d" * 64
+                role_payload["contract_hashes"]["preview"] = "e" * 64
             if role in {"COMMERCIAL_7A", "CONTRACT_7B"}:
                 role_payload["builder_contract_version"] = role.lower() + ".v1"
+                role_payload["contract_hashes"]["worker_host"] = "f" * 64
             if role == "CONTRACT_7B":
                 role_payload.update({
                     "schema_before": "20260710_0020",
@@ -159,6 +161,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 "runtime": "b" * 64,
                 "gate": "c" * 64,
                 "preview": "d" * 64,
+                "database_roles": "e" * 64,
             },
             "tool_version": "vowpic-release-tools.v1",
             "worker_image_digest": "sha256:" + "9" * 64,
@@ -170,7 +173,8 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 **base,
                 "contract_hashes": {
                     key: value for key, value in base["contract_hashes"].items() if key != "preview"
-                },
+                }
+                | {"worker_host": "f" * 64},
                 "builder_contract_version": "commercial-7a.v1",
             },
         )
@@ -184,6 +188,9 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "--release-role", "PREVIEW_COMMERCIAL",
             "--source-sha", "a" * 40,
             "--schema", "20260710_0020",
+            "--migration", "20260710_0020=" + str(
+                ROOT / "backend" / "alembic" / "versions" / "20260710_0020_partner_consent.py"
+            ),
             "--worker-image-digest", "sha256:" + "b" * 64,
             "--runtime-contract", str(ROOT / "release" / "runtime-contracts.json"),
             "--preview-contract", str(ROOT / "release" / "preview-runtime-contract.json"),
@@ -191,6 +198,9 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "--catalog-contract", str(catalog),
             "--flag-contract", str(ROOT / "release" / "gates.json"),
             "--activation-plan", str(ROOT / "release" / "activation-plan.json"),
+            "--database-role-contract", str(
+                ROOT / "release" / "commercial-7a-database-role-contract.json"
+            ),
         ]
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "runtime-id.txt"

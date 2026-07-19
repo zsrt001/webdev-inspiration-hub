@@ -1140,6 +1140,13 @@ class PaymentService:
             return None
         event_type = str(event.event_type).lower()
         if event_type == "checkout.completed":
+            from app.services.subscription_service import subscription_service
+
+            if await subscription_service.apply_checkout_completed_event(
+                db,
+                event=event,
+            ):
+                return None
             return await self._apply_checkout_capture(db, event)
         if event_type == "refund.created":
             return await self._apply_refund(db, event)

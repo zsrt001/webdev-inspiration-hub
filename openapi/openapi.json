@@ -1,6 +1,46 @@
 {
   "components": {
     "schemas": {
+      "AcceptanceMediaAbsenceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "runtime_bundle_id": {
+            "pattern": "^rtb_[0-9a-f]{64}$",
+            "title": "Runtime Bundle Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Source Sha",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "source_sha",
+          "runtime_bundle_id",
+          "deployment_id",
+          "manifest_sha256"
+        ],
+        "title": "AcceptanceMediaAbsenceRequest",
+        "type": "object"
+      },
       "AcceptedOrder": {
         "additionalProperties": false,
         "description": "Minimal 202 response; Provider and correlation facts stay private.",
@@ -92,6 +132,1531 @@
           "media_cleanup_pending"
         ],
         "title": "AccountCloseResponse",
+        "type": "object"
+      },
+      "AccountExport": {
+        "additionalProperties": false,
+        "properties": {
+          "audit_references": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportAuditReference"
+            },
+            "title": "Audit References",
+            "type": "array"
+          },
+          "canonical_user_id": {
+            "format": "uuid",
+            "title": "Canonical User Id",
+            "type": "string"
+          },
+          "consent_records": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportConsentRecord"
+            },
+            "title": "Consent Records",
+            "type": "array"
+          },
+          "disputes": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportDispute"
+            },
+            "title": "Disputes",
+            "type": "array"
+          },
+          "export_id": {
+            "format": "uuid",
+            "title": "Export Id",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "identities": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportIdentity"
+            },
+            "title": "Identities",
+            "type": "array"
+          },
+          "included_user_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Included User Ids",
+            "type": "array"
+          },
+          "invoice_adjustments": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportInvoiceAdjustment"
+            },
+            "title": "Invoice Adjustments",
+            "type": "array"
+          },
+          "invoices": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportInvoice"
+            },
+            "title": "Invoices",
+            "type": "array"
+          },
+          "ledger": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportLedgerEntry"
+            },
+            "title": "Ledger",
+            "type": "array"
+          },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportMedia"
+            },
+            "title": "Media",
+            "type": "array"
+          },
+          "merged_accounts": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportMerge"
+            },
+            "title": "Merged Accounts",
+            "type": "array"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportOrder"
+            },
+            "title": "Orders",
+            "type": "array"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/AccountExportProfile"
+          },
+          "purchases": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportPurchase"
+            },
+            "title": "Purchases",
+            "type": "array"
+          },
+          "refunds": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportRefund"
+            },
+            "title": "Refunds",
+            "type": "array"
+          },
+          "retention": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportRetention"
+            },
+            "title": "Retention",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "account-export.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "subscriptions": {
+            "items": {
+              "$ref": "#/components/schemas/AccountExportSubscription"
+            },
+            "title": "Subscriptions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "export_id",
+          "generated_at",
+          "canonical_user_id",
+          "included_user_ids",
+          "profile",
+          "merged_accounts",
+          "identities",
+          "orders",
+          "ledger",
+          "purchases",
+          "refunds",
+          "disputes",
+          "subscriptions",
+          "invoices",
+          "invoice_adjustments",
+          "consent_records",
+          "media",
+          "retention",
+          "audit_references"
+        ],
+        "title": "AccountExport",
+        "type": "object"
+      },
+      "AccountExportAuditReference": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "ACCOUNT_MERGE",
+              "ACCOUNT_CLOSURE",
+              "PARTNER_CONSENT"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id",
+          "kind",
+          "occurred_at"
+        ],
+        "title": "AccountExportAuditReference",
+        "type": "object"
+      },
+      "AccountExportConsentRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "asset_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Asset Ids",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "host_user_id": {
+            "format": "uuid",
+            "title": "Host User Id",
+            "type": "string"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "partner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partner User Id"
+          },
+          "record_id": {
+            "format": "uuid",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "record_type": {
+            "enum": [
+              "INVITE",
+              "INVITE_EVENT",
+              "CONSENT_CASE"
+            ],
+            "title": "Record Type",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "record_id",
+          "record_type",
+          "host_user_id",
+          "partner_user_id",
+          "order_id",
+          "job_id",
+          "asset_ids",
+          "status",
+          "action",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportConsentRecord",
+        "type": "object"
+      },
+      "AccountExportDispute": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "dispute_id": {
+            "format": "uuid",
+            "title": "Dispute Id",
+            "type": "string"
+          },
+          "disputed_minor_units": {
+            "title": "Disputed Minor Units",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "payment_event_id": {
+            "format": "uuid",
+            "title": "Payment Event Id",
+            "type": "string"
+          },
+          "purchase_id": {
+            "format": "uuid",
+            "title": "Purchase Id",
+            "type": "string"
+          },
+          "reversal_transaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversal Transaction Id"
+          }
+        },
+        "required": [
+          "dispute_id",
+          "purchase_id",
+          "payment_event_id",
+          "disputed_minor_units",
+          "currency",
+          "outcome",
+          "reversal_transaction_id",
+          "occurred_at",
+          "created_at"
+        ],
+        "title": "AccountExportDispute",
+        "type": "object"
+      },
+      "AccountExportIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "identity_id": {
+            "format": "uuid",
+            "title": "Identity Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity_id",
+          "user_id",
+          "provider",
+          "revoked_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportIdentity",
+        "type": "object"
+      },
+      "AccountExportInvoice": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "credit_grant_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credit Grant Id"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "dispute_state": {
+            "title": "Dispute State",
+            "type": "string"
+          },
+          "disputed_minor_units": {
+            "title": "Disputed Minor Units",
+            "type": "integer"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "payment_event_id": {
+            "format": "uuid",
+            "title": "Payment Event Id",
+            "type": "string"
+          },
+          "period_end": {
+            "format": "date-time",
+            "title": "Period End",
+            "type": "string"
+          },
+          "period_start": {
+            "format": "date-time",
+            "title": "Period Start",
+            "type": "string"
+          },
+          "pre_tax_minor_units": {
+            "title": "Pre Tax Minor Units",
+            "type": "integer"
+          },
+          "refunded_minor_units": {
+            "title": "Refunded Minor Units",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subscription_id": {
+            "format": "uuid",
+            "title": "Subscription Id",
+            "type": "string"
+          },
+          "tax_minor_units": {
+            "title": "Tax Minor Units",
+            "type": "integer"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invoice_id",
+          "subscription_id",
+          "user_id",
+          "payment_event_id",
+          "period_start",
+          "period_end",
+          "pre_tax_minor_units",
+          "tax_minor_units",
+          "currency",
+          "status",
+          "credit_grant_id",
+          "refunded_minor_units",
+          "disputed_minor_units",
+          "dispute_state",
+          "occurred_at",
+          "created_at"
+        ],
+        "title": "AccountExportInvoice",
+        "type": "object"
+      },
+      "AccountExportInvoiceAdjustment": {
+        "additionalProperties": false,
+        "properties": {
+          "adjustment_id": {
+            "format": "uuid",
+            "title": "Adjustment Id",
+            "type": "string"
+          },
+          "amount_minor_units": {
+            "title": "Amount Minor Units",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "payment_event_id": {
+            "format": "uuid",
+            "title": "Payment Event Id",
+            "type": "string"
+          },
+          "reversal_transaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversal Transaction Id"
+          }
+        },
+        "required": [
+          "adjustment_id",
+          "invoice_id",
+          "payment_event_id",
+          "kind",
+          "amount_minor_units",
+          "currency",
+          "outcome",
+          "reversal_transaction_id",
+          "occurred_at",
+          "created_at"
+        ],
+        "title": "AccountExportInvoiceAdjustment",
+        "type": "object"
+      },
+      "AccountExportLedgerEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "title": "Amount",
+            "type": "integer"
+          },
+          "balance_after": {
+            "title": "Balance After",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "provider_attempt_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Attempt Id"
+          },
+          "reversal_of_transaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversal Of Transaction Id"
+          },
+          "root_transaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root Transaction Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "transaction_id": {
+            "format": "uuid",
+            "title": "Transaction Id",
+            "type": "string"
+          },
+          "transaction_type": {
+            "title": "Transaction Type",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "user_id",
+          "transaction_type",
+          "amount",
+          "balance_after",
+          "source",
+          "root_transaction_id",
+          "reversal_of_transaction_id",
+          "provider_attempt_id",
+          "created_at"
+        ],
+        "title": "AccountExportLedgerEntry",
+        "type": "object"
+      },
+      "AccountExportMedia": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "format": "uuid",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "byte_size": {
+            "minimum": 0.0,
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "content_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "deletion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deletion Reason"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "owner_user_id": {
+            "format": "uuid",
+            "title": "Owner User Id",
+            "type": "string"
+          },
+          "parent_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Asset Id"
+          },
+          "read_revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Revoked At"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "upload_batch_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Batch Id"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "asset_id",
+          "owner_user_id",
+          "upload_batch_id",
+          "order_id",
+          "job_id",
+          "parent_asset_id",
+          "role",
+          "status",
+          "content_sha256",
+          "mime_type",
+          "byte_size",
+          "width",
+          "height",
+          "expires_at",
+          "read_revoked_at",
+          "deletion_reason",
+          "deleted_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportMedia",
+        "type": "object"
+      },
+      "AccountExportMerge": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_user_id": {
+            "format": "uuid",
+            "title": "Canonical User Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "legacy_user_id": {
+            "format": "uuid",
+            "title": "Legacy User Id",
+            "type": "string"
+          },
+          "merge_id": {
+            "format": "uuid",
+            "title": "Merge Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "merge_id",
+          "canonical_user_id",
+          "legacy_user_id",
+          "created_at"
+        ],
+        "title": "AccountExportMerge",
+        "type": "object"
+      },
+      "AccountExportOrder": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "delivery_status": {
+            "title": "Delivery Status",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "final_asset_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Final Asset Ids",
+            "type": "array"
+          },
+          "generation_job_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Job Id"
+          },
+          "order_id": {
+            "format": "uuid",
+            "title": "Order Id",
+            "type": "string"
+          },
+          "paid_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid At"
+          },
+          "preview_asset_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Preview Asset Ids",
+            "type": "array"
+          },
+          "price_minor_units": {
+            "title": "Price Minor Units",
+            "type": "integer"
+          },
+          "reservation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Id"
+          },
+          "settlement_status": {
+            "title": "Settlement Status",
+            "type": "string"
+          },
+          "source_asset_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Source Asset Ids",
+            "type": "array"
+          },
+          "source_images_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Images Expires At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "storage_cleanup_status": {
+            "title": "Storage Cleanup Status",
+            "type": "string"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "user_id",
+          "status",
+          "template_id",
+          "reservation_id",
+          "generation_job_id",
+          "source_asset_ids",
+          "preview_asset_ids",
+          "final_asset_ids",
+          "settlement_status",
+          "delivery_status",
+          "source_images_expires_at",
+          "expires_at",
+          "deleted_at",
+          "storage_cleanup_status",
+          "price_minor_units",
+          "paid_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportOrder",
+        "type": "object"
+      },
+      "AccountExportProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "last_login_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Login At"
+          },
+          "nickname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nickname"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "user_id",
+          "username",
+          "email",
+          "nickname",
+          "role",
+          "status",
+          "last_login_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportProfile",
+        "type": "object"
+      },
+      "AccountExportPurchase": {
+        "additionalProperties": false,
+        "properties": {
+          "captured_minor_units": {
+            "title": "Captured Minor Units",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "credits": {
+            "title": "Credits",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "dispute_state": {
+            "title": "Dispute State",
+            "type": "string"
+          },
+          "disputed_minor_units": {
+            "title": "Disputed Minor Units",
+            "type": "integer"
+          },
+          "grant_lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Lot Id"
+          },
+          "grant_transaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Transaction Id"
+          },
+          "pre_tax_minor_units": {
+            "title": "Pre Tax Minor Units",
+            "type": "integer"
+          },
+          "product_code": {
+            "title": "Product Code",
+            "type": "string"
+          },
+          "purchase_id": {
+            "format": "uuid",
+            "title": "Purchase Id",
+            "type": "string"
+          },
+          "refunded_minor_units": {
+            "title": "Refunded Minor Units",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tax_minor_units": {
+            "title": "Tax Minor Units",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_id",
+          "user_id",
+          "product_code",
+          "credits",
+          "pre_tax_minor_units",
+          "currency",
+          "status",
+          "captured_minor_units",
+          "tax_minor_units",
+          "refunded_minor_units",
+          "disputed_minor_units",
+          "dispute_state",
+          "grant_transaction_id",
+          "grant_lot_id",
+          "confirmed_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportPurchase",
+        "type": "object"
+      },
+      "AccountExportRefund": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "title": "Classification",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "payment_event_id": {
+            "format": "uuid",
+            "title": "Payment Event Id",
+            "type": "string"
+          },
+          "purchase_id": {
+            "format": "uuid",
+            "title": "Purchase Id",
+            "type": "string"
+          },
+          "refund_id": {
+            "format": "uuid",
+            "title": "Refund Id",
+            "type": "string"
+          },
+          "refund_minor_units": {
+            "title": "Refund Minor Units",
+            "type": "integer"
+          },
+          "reversal_transaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversal Transaction Id"
+          }
+        },
+        "required": [
+          "refund_id",
+          "purchase_id",
+          "payment_event_id",
+          "refund_minor_units",
+          "currency",
+          "classification",
+          "reversal_transaction_id",
+          "occurred_at",
+          "created_at"
+        ],
+        "title": "AccountExportRefund",
+        "type": "object"
+      },
+      "AccountExportRetention": {
+        "additionalProperties": false,
+        "properties": {
+          "account_closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Closed At"
+          },
+          "active_media_count": {
+            "minimum": 0.0,
+            "title": "Active Media Count",
+            "type": "integer"
+          },
+          "closure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closure Reason"
+          },
+          "deleted_media_count": {
+            "minimum": 0.0,
+            "title": "Deleted Media Count",
+            "type": "integer"
+          },
+          "media_cleanup_pending": {
+            "title": "Media Cleanup Pending",
+            "type": "boolean"
+          },
+          "pending_deletion_count": {
+            "minimum": 0.0,
+            "title": "Pending Deletion Count",
+            "type": "integer"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "account_closed_at",
+          "closure_reason",
+          "media_cleanup_pending",
+          "active_media_count",
+          "pending_deletion_count",
+          "deleted_media_count"
+        ],
+        "title": "AccountExportRetention",
+        "type": "object"
+      },
+      "AccountExportSubscription": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_at_period_end": {
+            "title": "Cancel At Period End",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End"
+          },
+          "current_period_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period Start"
+          },
+          "paid_through_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid Through At"
+          },
+          "product_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Code"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subscription_id": {
+            "format": "uuid",
+            "title": "Subscription Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id",
+          "user_id",
+          "product_code",
+          "status",
+          "current_period_start",
+          "current_period_end",
+          "paid_through_at",
+          "cancel_at_period_end",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AccountExportSubscription",
         "type": "object"
       },
       "AdminAuditLogItem": {
@@ -4372,6 +5937,28 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/account/export": {
+      "get": {
+        "description": "Download only the authenticated user's canonical and merge-linked facts.",
+        "operationId": "export_current_account_api_v1_account_export_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountExport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Export Current Account",
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/api/v1/admin/analytics_overview": {
       "get": {
         "description": "Return funnel, template ranking, and city ranking for operator review.",
@@ -6592,6 +8179,64 @@
           }
         },
         "summary": "Readiness",
+        "tags": [
+          "ops"
+        ]
+      }
+    },
+    "/api/v1/ops/verify_acceptance_media_absence": {
+      "post": {
+        "description": "Prove physical private-object absence for one closed acceptance account.",
+        "operationId": "verify_account_media_absence_api_v1_ops_verify_acceptance_media_absence_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptanceMediaAbsenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Account Media Absence",
         "tags": [
           "ops"
         ]

@@ -1473,7 +1473,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ):
             self.assertIn(required, worker_source)
 
-    def test_production_workflow_is_manual_serialized_and_never_auto_promotes(self) -> None:
+    def test_production_workflow_is_manual_serialized_and_promotes_only_after_acceptance(self) -> None:
         path = ROOT / ".github" / "workflows" / "production-release.yml"
         self.assertTrue(path.exists(), "manual Production workflow is missing")
         workflow = path.read_text(encoding="utf-8")
@@ -1496,12 +1496,16 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, workflow)
-        self.assertNotIn("vercel promote", workflow.lower())
         self.assertNotIn("--target=production", workflow.lower())
         self.assertNotIn("CONTRACT_7B", workflow)
         self.assertLess(
             workflow.index("register_bundle.py reserve"),
             workflow.index("secrets.VERCEL_TOKEN"),
+        )
+        self.assertEqual(workflow.lower().count('"$vercel_cli" promote'), 2)
+        self.assertLess(
+            workflow.index("--phase TARGET_ACCEPTED"),
+            workflow.lower().rindex('"$vercel_cli" promote'),
         )
 
     def test_runtime_version_route_is_not_a_mutating_or_secret_surface(self) -> None:

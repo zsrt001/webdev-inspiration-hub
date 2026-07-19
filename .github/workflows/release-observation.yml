@@ -1,0 +1,385 @@
+name: Durable Production release observation
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Protected observation operation
+        required: true
+        type: choice
+        options:
+          - sample
+          - finalize
+          - recover
+      observation_run_id:
+        description: Optional exact observation UUID for protected dispatch
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: vowpic-production-observation-${{ inputs.observation_run_id || 'active' }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Resolve the unique durable observation without application credentials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production-observation
+    outputs:
+      active: ${{ steps.resolve.outputs.active }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      observation_run_id: ${{ steps.resolve.outputs.observation_run_id }}
+      release_role: ${{ steps.resolve.outputs.release_role }}
+      state: ${{ steps.resolve.outputs.state }}
+      runtime_bundle_id: ${{ steps.resolve.outputs.runtime_bundle_id }}
+      api_deployment_id: ${{ steps.resolve.outputs.api_deployment_id }}
+      worker_deployment_id: ${{ steps.resolve.outputs.worker_deployment_id }}
+      worker_image_digest: ${{ steps.resolve.outputs.worker_image_digest }}
+    steps:
+      - name: Run the fixed read-only bootstrap query
+        id: resolve
+        env:
+          OBSERVATION_READ_DATABASE_URL: ${{ secrets.OBSERVATION_READ_DATABASE_URL }}
+          REQUESTED_OBSERVATION_RUN_ID: ${{ inputs.observation_run_id }}
+        run: |
+          set -euo pipefail
+          RESULT="$(
+            psql "$OBSERVATION_READ_DATABASE_URL" -X -v ON_ERROR_STOP=1 -At \
+              -v requested="$REQUESTED_OBSERVATION_RUN_ID" <<'SQL'
+          WITH candidates AS (
+              SELECT observation.id, observation.state,
+                     activation.source_sha,
+                     activation.kind AS release_role,
+                     observation.runtime_bundle_id,
+                     observation.api_deployment_id,
+                     observation.worker_deployment_id,
+                     observation.worker_image_digest
+              FROM public.release_observation_runs AS observation
+              JOIN public.release_activations AS activation
+                ON activation.id = observation.release_activation_id
+              WHERE (
+                  NULLIF(:'requested', '') IS NULL
+                  AND observation.state IN ('OBSERVING', 'FINALIZING', 'FAILED')
+              ) OR observation.id = NULLIF(:'requested', '')::uuid
+              ORDER BY observation.updated_at DESC
+              LIMIT 2
+          )
+          SELECT jsonb_build_object(
+              'count', (SELECT count(*) FROM candidates),
+              'row', (SELECT to_jsonb(candidates) FROM candidates LIMIT 1)
+          );
+          SQL
+          )"
+          COUNT="$(jq -er '.count' <<<"$RESULT")"
+          if test "$COUNT" = "0"; then
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          test "$COUNT" = "1"
+          STATE="$(jq -er '.row.state' <<<"$RESULT")"
+          if test "$STATE" = "OBSERVING" -o "$STATE" = "FINALIZING"; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          else
+            test "$STATE" = "FAILED"
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+          for KEY in source_sha observation_run_id release_role state runtime_bundle_id api_deployment_id worker_deployment_id worker_image_digest; do
+            case "$KEY" in
+              observation_run_id) JSON_KEY=id ;;
+              *) JSON_KEY="$KEY" ;;
+            esac
+            VALUE="$(jq -er --arg key "$JSON_KEY" '.row[$key]' <<<"$RESULT")"
+            test -n "$VALUE"
+            echo "$KEY=$VALUE" >> "$GITHUB_OUTPUT"
+          done
+
+  sample:
+    name: Append one fresh signed observation sample
+    needs: bootstrap
+    if: ${{ needs.bootstrap.outputs.state == 'OBSERVING' && (github.event_name == 'schedule' || inputs.operation == 'sample') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production-observation
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.bootstrap.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - name: Collect real incidents, database counters, Worker heartbeat, and cleanup
+        env:
+          OBSERVATION_READ_DATABASE_URL: ${{ secrets.OBSERVATION_READ_DATABASE_URL }}
+          OBSERVATION_WRITE_DATABASE_URL: ${{ secrets.OBSERVATION_WRITE_DATABASE_URL }}
+          PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
+          PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
+          OBSERVATION_SIGNING_KEY: ${{ secrets.OBSERVATION_SIGNING_KEY }}
+          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          GH_INCIDENT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python scripts/release/observe_release.py bootstrap \
+            --database-url-env OBSERVATION_READ_DATABASE_URL \
+            --requested-observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --output "$RUNNER_TEMP/sample-resolution.json"
+          python scripts/release/run_approved_worker_host.py heartbeat \
+            --contract release/worker-host-contract.json \
+            --release-resolution-report "$RUNNER_TEMP/sample-resolution.json" \
+            --expected-runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
+            --expected-image-digest "${{ needs.bootstrap.outputs.worker_image_digest }}" \
+            --require-dispatch-mode enabled --maximum-age-seconds 120 \
+            --output "$RUNNER_TEMP/worker-heartbeat.json"
+          python scripts/release/ensure_observation_cleanup_cycle.py \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --database-url-env OBSERVATION_READ_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --expected-source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
+            --expected-runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
+            --expected-api-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --output "$RUNNER_TEMP/cleanup-cycle.json"
+          python scripts/release/collect_observation_metrics.py \
+            --database-url-env OBSERVATION_READ_DATABASE_URL \
+            --github-token-env GH_INCIDENT_TOKEN \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --expected-source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
+            --expected-runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
+            --expected-api-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
+            --expected-worker-deployment-id "${{ needs.bootstrap.outputs.worker_deployment_id }}" \
+            --expected-worker-image-digest "${{ needs.bootstrap.outputs.worker_image_digest }}" \
+            --worker-report "$RUNNER_TEMP/worker-heartbeat.json" \
+            --cleanup-report "$RUNNER_TEMP/cleanup-cycle.json" \
+            --output "$RUNNER_TEMP/observation-metrics.json"
+          OBSERVATION_METRICS_INPUT_PATH="$RUNNER_TEMP/observation-metrics.json" \
+          python scripts/release/observe_release.py sample \
+            --database-url-env OBSERVATION_WRITE_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --expected-source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --signing-key-env OBSERVATION_SIGNING_KEY \
+            --output "$RUNNER_TEMP/observation-sample.json"
+
+  finalize:
+    name: Finalize only after the durable 24-hour window and one cleanup cycle
+    needs: bootstrap
+    if: ${{ (needs.bootstrap.outputs.state == 'OBSERVING' || needs.bootstrap.outputs.state == 'FINALIZING') && github.event_name == 'workflow_dispatch' && inputs.operation == 'finalize' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.bootstrap.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - name: Prepare, aggregate, read back, and atomically complete finalization
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
+          PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
+          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+          OBSERVATION_SIGNING_KEY: ${{ secrets.OBSERVATION_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          python scripts/release/observe_release.py prepare-finalize \
+            --release-kind commercial-7a \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --minimum-hours 24 --maximum-gap-minutes 15 --require-cleanup-cycle \
+            --output "$RUNNER_TEMP/finalize-lease.json"
+          python scripts/release/observe_release.py aggregate \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --maximum-gap-minutes 15 \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --signing-key-env OBSERVATION_SIGNING_KEY \
+            --index-output "$RUNNER_TEMP/final-index.json" \
+            --output "$RUNNER_TEMP/final.json"
+          python scripts/release/observe_release.py complete-finalize \
+            --release-kind commercial-7a \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --finalization-lease-report "$RUNNER_TEMP/finalize-lease.json" \
+            --final-report "$RUNNER_TEMP/final.json" \
+            --final-index-report "$RUNNER_TEMP/final-index.json" \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --expected-state FINALIZING --expected-release-phase OBSERVING \
+            --final-release-phase 7A_ACCEPTED \
+            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+            --output "$RUNNER_TEMP/observation-final.json"
+
+  emergency-handler:
+    name: Fail one genuine bad observation and force every high-risk flag OFF
+    needs: [bootstrap, sample, finalize]
+    if: ${{ always() && needs.bootstrap.outputs.active == 'true' && (needs.sample.result == 'failure' || needs.finalize.result == 'failure') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production-observation-emergency
+    outputs:
+      action: ${{ steps.reconcile.outputs.action }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.bootstrap.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - name: Record failure, apply OFF-only policy, and disable the exact Worker
+        id: reconcile
+        env:
+          OBSERVATION_EMERGENCY_DATABASE_URL: ${{ secrets.OBSERVATION_EMERGENCY_DATABASE_URL }}
+          PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
+          PRIVATE_EVIDENCE_READ_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_TOKEN }}
+          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          python scripts/release/observe_release.py fail \
+            --database-url-env OBSERVATION_EMERGENCY_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_TOKEN \
+            --off-only --output "$RUNNER_TEMP/observation-failed.json"
+          ACTION="$(jq -r '.action' "$RUNNER_TEMP/observation-failed.json")"
+          test "$ACTION" = "FAIL_AND_SHUTDOWN" -o "$ACTION" = "RESUME_FINALIZATION" -o "$ACTION" = "ALREADY_PASSED"
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+          if test "$ACTION" = "FAIL_AND_SHUTDOWN"; then
+            python scripts/release/run_approved_worker_host.py reconcile-failure \
+              --contract release/worker-host-contract.json \
+              --release-resolution-report "$RUNNER_TEMP/observation-failed.json" \
+              --desired-state stopped --output "$RUNNER_TEMP/worker-stopped.json"
+          fi
+
+  resume-finalization:
+    name: Resume only a cryptographically complete FINALIZING observation
+    needs: [bootstrap, emergency-handler]
+    if: ${{ always() && needs.emergency-handler.outputs.action == 'RESUME_FINALIZATION' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.bootstrap.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - name: Re-read every sample and atomically finish the exact observation
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
+          PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
+          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+          OBSERVATION_SIGNING_KEY: ${{ secrets.OBSERVATION_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          python scripts/release/observe_release.py prepare-finalize \
+            --release-kind commercial-7a \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --minimum-hours 24 --maximum-gap-minutes 15 --require-cleanup-cycle \
+            --output "$RUNNER_TEMP/finalize-lease.json"
+          python scripts/release/observe_release.py aggregate \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --maximum-gap-minutes 15 \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --signing-key-env OBSERVATION_SIGNING_KEY \
+            --index-output "$RUNNER_TEMP/final-index.json" \
+            --output "$RUNNER_TEMP/final.json"
+          python scripts/release/observe_release.py complete-finalize \
+            --release-kind commercial-7a \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --finalization-lease-report "$RUNNER_TEMP/finalize-lease.json" \
+            --final-report "$RUNNER_TEMP/final.json" \
+            --final-index-report "$RUNNER_TEMP/final-index.json" \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --expected-state FINALIZING --expected-release-phase OBSERVING \
+            --final-release-phase 7A_ACCEPTED \
+            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+            --output "$RUNNER_TEMP/observation-final.json"
+
+  observation-recovery:
+    name: Apply release-kind-specific recovery after a recorded failure
+    needs: [bootstrap, sample, finalize, emergency-handler, resume-finalization]
+    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'recover' && needs.bootstrap.outputs.state == 'FAILED') || (needs.emergency-handler.result == 'success' && needs.emergency-handler.outputs.action == 'FAIL_AND_SHUTDOWN' && (needs.sample.result == 'failure' || needs.finalize.result == 'failure'))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production-recovery
+    concurrency:
+      group: vowpic-production-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.bootstrap.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.17.0"
+          cache: npm
+          cache-dependency-path: scripts/release-tools/package-lock.json
+      - name: Recover 7a only to its exact private-compatible baseline
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PRODUCTION_RECOVERY_APPROVAL_ID: ${{ secrets.PRODUCTION_RECOVERY_APPROVAL_ID }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
+          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
+          PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
+          PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${{ needs.bootstrap.outputs.release_role }}" = "COMMERCIAL_7A"
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          python scripts/release/observe_release.py resolve-recovery \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
+            --output "$RUNNER_TEMP/recovery.json" --job-env "$RUNNER_TEMP/recovery.env"
+          set -a
+          . "$RUNNER_TEMP/recovery.env"
+          set +a
+          cat "$RUNNER_TEMP/recovery.env" >> "$GITHUB_ENV"
+          python scripts/release/run_approved_worker_host.py reconcile-failure \
+            --contract release/worker-host-contract.json \
+            --release-resolution-report "$RUNNER_TEMP/recovery.json" \
+            --desired-state stopped \
+            --output "$RUNNER_TEMP/recovery-worker-stopped.json"
+          "$VERCEL_CLI" rollback "$RECOVERY_PRIVATE_COMPATIBLE_BASELINE_URL" --yes --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"
+          python scripts/release/collect_runtime_report.py \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --expected-deployment-id "$RECOVERY_PRIVATE_COMPATIBLE_BASELINE_DEPLOYMENT_ID" \
+            --expected-runtime-bundle-id "$RECOVERY_RUNTIME_BUNDLE_ID" \
+            --expected-source-sha "$RECOVERY_SOURCE_SHA" \
+            --expected-schema "$RECOVERY_SCHEMA_REVISION" \
+            --expected-release-role COMMERCIAL_7A \
+            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --output "$RUNNER_TEMP/recovery-api.json"
+          python scripts/release/observe_release.py complete-recovery \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --resolution-report "$RUNNER_TEMP/recovery.json" \
+            --worker-report "$RUNNER_TEMP/recovery-worker-stopped.json" \
+            --api-report "$RUNNER_TEMP/recovery-api.json" \
+            --disposition ROLLED_BACK_PRIVATE_BASELINE \
+            --approval-id-env PRODUCTION_RECOVERY_APPROVAL_ID \
+            --worker-signing-key-env WORKER_HOST_EVIDENCE_SIGNING_KEY \
+            --api-signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --output "$RUNNER_TEMP/recovery-final.json"

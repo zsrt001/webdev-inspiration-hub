@@ -2055,3 +2055,130 @@
   migration, delete any object, probe any legacy URL, deploy, or change the
   formal domain. Those actions remain in Task 29 and require the exact final
   reviewed source/evidence chain. No Subagent was used.
+
+## 2026-07-19 - Close the COMMERCIAL_7A evidence gaps without fabricating Production readiness
+
+### Goal and evidence
+
+- Rechecked the authoritative Task 29 acceptance matrix against the current
+  release workflow, collectors, browser flow, provider contracts, and tests.
+  The safe-baseline Production recovery is already complete; this change set
+  does not rebuild, deploy, promote, change a domain, migrate Production, or
+  enable a commercial capability.
+- Current committed provider facts remain deliberately blocking:
+  `release/provider-contracts.json` has all four contracts `UNVERIFIED`, and
+  `release/worker-host-contract.json` is `NOT_APPROVED` with no executable host.
+- Creem's current official documentation says one-time-payment refunds are
+  performed through the Creem Dashboard. Its published API reference lists
+  checkout, transaction-read, subscription, and other endpoints, but does not
+  publish a refund-creation endpoint:
+  `https://docs.creem.io/features/one-time-payment`,
+  `https://docs.creem.io/merchant-of-record/finance/refunds-and-chargebacks`,
+  and `https://docs.creem.io/api-reference/introduction`.
+  Therefore a Production refund API contract cannot be invented or marked
+  verified.
+- EvoLink's current official image-generation contract still returns a task ID
+  only after a successful `POST /v1/images/generations`, and its only published
+  task lookup is `GET /v1/tasks/{task_id}`. The current request and task pages
+  contain no documented idempotency key, `request_id`, or client-correlation
+  lookup:
+  `https://docs.evolink.ai/en/api-manual/image-series/gpt-image-2/gpt-image-2-image-generation`
+  and
+  `https://docs.evolink.ai/en/api-manual/task-management/get-task-detail`.
+  This does not resolve the submit-success/response-loss ambiguity, so the
+  Evolink contract correctly remains `UNVERIFIED`.
+
+### Changes
+
+- Bound browser checkout polling to VowPic's persisted purchase ID and moved
+  the provider checkout coordinate to the read-only database collector. The
+  browser no longer guesses a Creem checkout ID from a third-party URL shape.
+- Added exact subscription evidence collection for stable paid transaction,
+  invoice uniqueness, cancellation confirmation, reversal, entitlement, and
+  signed test-mode anomaly/dispute facts.
+- Added a signed two-stage six-case quality-review handoff. Preparation binds
+  the exact source/runtime/deployment/manifest/user plus exact order/job/
+  selected-candidate/final-master coordinates, expires after two hours,
+  creates a zeroed draft, and stops Worker dispatch before the protected
+  handoff. The reviewer submits only complete non-placeholder rubric scores;
+  the protected review job keeps both signing keys inside GitHub and signs the
+  exact bound draft. The final job verifies the request/review and
+  candidate-to-final-master lineage before quality acceptance and only then
+  restores Worker dispatch. The operator procedure is recorded in
+  `docs/operations/production-quality-review.md`.
+- Added a pre-effect provider-readiness gate. Production cannot build a Worker,
+  migrate, deploy, or charge while any required provider contract is not
+  source-bound `VERIFIED`, while Creem refund creation lacks a documented
+  official endpoint, or while the Worker host contract is unapproved.
+- Removed the obsolete `scripts/run_prod_generation_acceptance.mjs` runtime
+  path and corrected the authoritative plan/design references to the linked
+  commercial acceptance runner. Removed 16 untracked local SAFE_BASELINE
+  artifact copies under `.tmp`; the authoritative protected-run artifacts and
+  recorded release coordinates remain unchanged.
+
+### Verification
+
+- Full backend discovery:
+  `python -m unittest discover -s backend/tests -t backend -p test*.py`
+  passed 976 tests with 37 explicit conditional integration/platform skips
+  after the final review-handoff and final-master lineage changes.
+- Focused release, quality-handoff, and Web-only cleanup regression passed
+  56/56; the final quality collector/runner/handoff subset passed 17/17.
+- Earlier focused acceptance/provider regression passed 84/84; the provider
+  and workflow hardening subset passed 67/67; the subscription/provider subset
+  passed 10/10.
+- Frontend unit tests passed 13/13. Frontend typecheck and Web build passed.
+  The build reported only the existing Sass legacy-API and Vite CJS
+  deprecation warnings.
+- Python compilation, Node syntax checks, workflow YAML parsing,
+  `git diff --check`, the dead-runner scan, and local `.tmp` residual scan
+  passed. No credential plaintext was read, printed, or persisted.
+
+### Honest status and next gate
+
+- Status is **code closure in review**, not `7a release accepted` and not
+  `Production accepted`.
+- The three remaining external gates are: an actually approved executable
+  long-running Worker host; genuine source-bound Evolink/Creem provider
+  evidence including a valid refund execution path; and the authorized human
+  review of the exact six generated Production cases. The current provider
+  preflight stops before effects, so none of these gaps can silently produce a
+  partial commercial deployment.
+- The Production formal domain remains on the verified SAFE_BASELINE with
+  commercial capabilities OFF. Task 30/7b must not start until Task 29 reaches
+  durable `7A_ACCEPTED`. No Subagent was used.
+
+### PR CI correction
+
+- PR #63's first CI run exposed two paths not exercised by the earlier local
+  suite: local accessibility collection imported the protected Production
+  scenario before Playwright applied its skip, and the real PostgreSQL
+  control-plane test still expected eight migration-owner policies after three
+  new control tables raised the exact set to eleven.
+- Production origin validation is now lazy inside the protected scenario, so
+  unrelated local accessibility collection has no Production-environment
+  dependency. The PostgreSQL assertion now checks the exact eleven-table
+  policy set instead of a stale count.
+- The corrected PostgreSQL integration contract passed 7/7. Frontend
+  typecheck, 13 unit tests, six real Firefox accessibility routes, and 151
+  focused CI/release contract tests passed with one existing Windows privilege
+  skip. The local Chromium download remained unavailable because the existing
+  network path timed out; GitHub's browser-install job had succeeded, so the
+  pushed CI rerun remains the authoritative cross-browser result.
+- The second CI run proved the frontend fix and all four real PostgreSQL
+  contracts, then exposed five new acceptance tests whose repository-root
+  `scripts.release` imports depended on another test having already changed
+  `sys.path`. Each affected test now establishes the repository root before
+  importing the release modules, while CI retains its previously proven
+  `backend/` discovery directory. This removes test-order dependence without
+  changing the established suite working-directory contract. The exact
+  retained CI discovery passed 976 tests with 37 explicit conditional skips;
+  the five affected modules passed 16/16 when run first from `backend/tests`.
+- The next Ubuntu run isolated eight remaining Python-to-Node acceptance
+  failures. Their shared cause was POSIX file mode, not application behavior:
+  the tests created private acceptance inputs with the runner's default mode,
+  while the production validator correctly rejects any non-Windows input that
+  is not `0600`. All four test writers now set `0600` before invoking Node;
+  the production validator remains fail-closed and unchanged. The four
+  affected modules passed 19/19 locally, with the pushed Ubuntu rerun as the
+  authoritative POSIX verification.

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,13 @@ if str(BACKEND) not in sys.path:
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
 
 from app.core.database import normalize_database_url  # noqa: E402
-from app.services.acceptance_identity_service import create_acceptance_binding  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+
+from app.models.acceptance_identity_binding import AcceptanceIdentityBinding  # noqa: E402
+from app.services.acceptance_identity_service import (  # noqa: E402
+    compute_subject_hmac,
+    create_acceptance_binding,
+)
 
 
 def _subjects(path: Path) -> list[tuple[str, str]]:
@@ -58,32 +65,91 @@ async def _run(args: argparse.Namespace) -> int:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=args.ttl_seconds)
-    entries = _subjects(Path(args.subjects_file))
+    subjects_path = args.subjects_file
+    if args.subject_file_env:
+        subjects_path = os.environ.get(args.subject_file_env, "").strip()
+    if not subjects_path:
+        raise ValueError("protected acceptance subjects file is required")
+    entries = _subjects(Path(subjects_path))
+    bindings: list[AcceptanceIdentityBinding] = []
+    effective_expiry: datetime | None = None
     try:
         async with session_factory() as db:
             async with db.begin():
                 for provider, subject in entries:
-                    await create_acceptance_binding(
-                        db,
-                        provider=provider,
-                        subject=subject,
-                        environment=args.environment,
-                        deployment_id=args.deployment_id,
-                        expires_at=expires_at,
-                        actor=args.actor,
-                        reason=f"{args.reason}; approval={approval}",
-                        hmac_key=hmac_key,
-                        now=now,
+                    subject_hmac = compute_subject_hmac(hmac_key, provider, subject)
+                    result = await db.execute(
+                        select(AcceptanceIdentityBinding).where(
+                            AcceptanceIdentityBinding.environment == args.environment,
+                            AcceptanceIdentityBinding.deployment_id == args.deployment_id,
+                            AcceptanceIdentityBinding.provider == provider,
+                            AcceptanceIdentityBinding.subject_hmac == subject_hmac,
+                        )
                     )
+                    binding = result.scalar_one_or_none()
+                    reason = f"{args.reason}; approval={approval}"
+                    if binding is None:
+                        binding_expiry = effective_expiry or expires_at
+                        binding = await create_acceptance_binding(
+                            db,
+                            provider=provider,
+                            subject=subject,
+                            environment=args.environment,
+                            deployment_id=args.deployment_id,
+                            expires_at=binding_expiry,
+                            actor=args.actor,
+                            reason=reason,
+                            hmac_key=hmac_key,
+                            now=now,
+                        )
+                    elif (
+                        binding.actor != args.actor
+                        or binding.reason != reason
+                        or binding.expires_at <= now
+                        or binding.expires_at > expires_at
+                        or binding.consumed_at is not None
+                        or binding.revoked_at is not None
+                    ):
+                        raise ValueError("existing acceptance binding drifted or was already used")
+                    if effective_expiry is None:
+                        effective_expiry = binding.expires_at
+                    elif binding.expires_at != effective_expiry:
+                        raise ValueError("acceptance binding expiries are inconsistent")
+                    bindings.append(binding)
     finally:
         await engine.dispose()
-    print(json.dumps({"created": len(entries), "environment": args.environment, "deployment_id": args.deployment_id}))
+    if effective_expiry is None:
+        raise ValueError("acceptance bindings were not created")
+    report = {
+        "schema": "vowpic.acceptance-identity-bindings.v1",
+        "passed": True,
+        "count": len(bindings),
+        "environment": args.environment,
+        "deployment_id": args.deployment_id,
+        "expires_at": effective_expiry.isoformat(),
+        "binding_id_hashes": sorted(
+            hashlib.sha256(str(binding.id).encode("utf-8")).hexdigest()
+            for binding in bindings
+        ),
+        "subject_hmac_sha256": sorted(
+            hashlib.sha256(binding.subject_hmac.encode("utf-8")).hexdigest()
+            for binding in bindings
+        ),
+    }
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(report, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+    print(json.dumps(report, sort_keys=True))
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--subjects-file", required=True)
+    parser.add_argument("--subjects-file")
+    parser.add_argument("--subject-file-env")
     parser.add_argument("--environment", required=True, choices=("preview", "production"))
     parser.add_argument("--deployment-id", required=True)
     parser.add_argument("--ttl-seconds", type=int, default=7200, choices=range(1, 86401), metavar="1..86400")
@@ -92,6 +158,7 @@ def main() -> int:
     parser.add_argument("--database-url-env", default="ACCEPTANCE_DATABASE_URL")
     parser.add_argument("--hmac-key-env", default="ACCEPTANCE_IDENTITY_HMAC_KEY")
     parser.add_argument("--approval-id-env", default="ACCEPTANCE_IDENTITY_APPROVAL_ID")
+    parser.add_argument("--output")
     return asyncio.run(_run(parser.parse_args()))
 
 

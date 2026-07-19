@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 
 from app.models.subscription_cancel_intent import SubscriptionCancelIntent
+from app.models.subscription_checkout_intent import SubscriptionCheckoutIntent
 from app.models.subscription_credit_grant import SubscriptionCreditGrant
 from app.models.subscription_invoice import (
     SubscriptionInvoice,
@@ -24,6 +25,7 @@ class SubscriptionFactsMigrationTest(unittest.TestCase):
         self.assertIn('revision = "20260710_0018"', source)
         self.assertIn('down_revision = "20260710_0017"', source)
         for table in (
+            "subscription_checkout_intents",
             "subscription_invoices",
             "subscription_invoice_adjustment_facts",
             "subscription_cancel_intents",
@@ -34,6 +36,8 @@ class SubscriptionFactsMigrationTest(unittest.TestCase):
         self.assertIn("subscription invoice is append only", source)
         self.assertIn("ENABLE ROW LEVEL SECURITY", source)
         self.assertIn("uq_user_subscriptions_one_nonterminal", source)
+        self.assertIn("uq_subscription_checkout_one_nonterminal", source)
+        self.assertIn("subscription_checkout_transition_guard", source)
         self.assertIn('"fk_subscription_grants_subscription"', source)
         self.assertIn('ondelete="RESTRICT"', source)
 
@@ -66,6 +70,10 @@ class SubscriptionFactsMigrationTest(unittest.TestCase):
         ):
             self.assertIn(column, UserSubscription.__table__.columns)
         self.assertEqual(SubscriptionCancelIntent.__tablename__, "subscription_cancel_intents")
+        self.assertEqual(
+            SubscriptionCheckoutIntent.__tablename__,
+            "subscription_checkout_intents",
+        )
         self.assertEqual(
             SubscriptionInvoiceAdjustmentFact.__tablename__,
             "subscription_invoice_adjustment_facts",

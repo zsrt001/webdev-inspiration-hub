@@ -770,7 +770,7 @@ append-only evidence entry 保存脱敏后的 user、purchase/invoice、entitlem
 - 关闭 main push 自动绑定生产域名；CI 创建 staged Production 后再受控 Promote。
 - production smoke 不能只创建匿名 remote session 或上传 favicon。
 - smoke 必须等待完整 release bundle 等于 manifest，而不只比较 `github.sha`。
-- `run_prod_generation_acceptance.mjs` 的任一 gate false 必须 exit non-zero，且普通用户 flow 不能被 Admin Probe 替代。
+- `run_linked_commercial_acceptance.mjs` 的任一必需 gate false 必须 exit non-zero，且普通用户 flow 不能被 Admin Probe 替代。
 - 当前陈旧商业 E2E 必须按真实 API contract 重写，强制用户 session，并在结束后清理测试资产。
 
 ### 15.5 Release evidence

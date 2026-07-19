@@ -500,6 +500,17 @@ class CiReleaseContractTest(unittest.TestCase):
             baseline,
         )
 
+    def test_backend_ci_annotates_exact_failed_test_ids(self) -> None:
+        workflow = _read(".github/workflows/ci.yml")
+        backend_job = workflow.split("  backend-test:", 1)[1].split(
+            "  frontend-check:",
+            1,
+        )[0]
+        self.assertIn('("failure", result.failures)', backend_job)
+        self.assertIn('("error", result.errors)', backend_job)
+        self.assertIn("Backend test {kind}", backend_job)
+        self.assertNotIn("_traceback}", backend_job)
+
     def test_frontend_scss_uses_modules_for_local_styles(self) -> None:
         deprecated_imports: list[str] = []
         source_root = ROOT / "frontend" / "src"

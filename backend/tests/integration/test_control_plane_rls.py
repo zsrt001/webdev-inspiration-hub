@@ -175,15 +175,32 @@ class ControlPlaneRlsIntegrationTest(unittest.TestCase):
                 cursor.execute(
                     """
                     SELECT has_table_privilege(current_user, 'release_activations', 'INSERT'),
-                           count(*) = %s
+                           array_agg(tablename ORDER BY tablename)
                     FROM pg_policies
                     WHERE schemaname = 'public'
                       AND policyname LIKE '%%_migration_owner_all'
                       AND 'vowpic_migration_owner' = ANY(roles)
-                    """,
-                    (8,),
+                    """
                 )
-                self.assertEqual(cursor.fetchone(), (True, True))
+                self.assertEqual(
+                    cursor.fetchone(),
+                    (
+                        True,
+                        [
+                            "acceptance_identity_bindings",
+                            "data_migration_checkpoints",
+                            "data_migration_runs",
+                            "ops_feature_flag_audits",
+                            "ops_feature_flags",
+                            "release_activations",
+                            "release_auth_origin_leases",
+                            "release_observation_recoveries",
+                            "release_observation_runs",
+                            "release_observation_samples",
+                            "release_phase_evidence",
+                        ],
+                    ),
+                )
                 cursor.execute(
                     """
                     INSERT INTO release_activations (

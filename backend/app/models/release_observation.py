@@ -63,3 +63,36 @@ class ReleaseObservationSample(Base):
     signature: Mapped[str] = mapped_column(String(512), nullable=False)
     metrics_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReleaseObservationRecovery(Base):
+    __tablename__ = "release_observation_recoveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "observation_run_id",
+            name="uq_release_observation_recovery_run",
+        ),
+        CheckConstraint(
+            "disposition IN ('ROLLED_BACK_PRIVATE_BASELINE')",
+            name="ck_release_observation_recovery_disposition",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    observation_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("release_observation_runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    resolution_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_report_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    api_report_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(64), nullable=False)
+    recovery_report_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    private_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
