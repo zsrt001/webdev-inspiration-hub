@@ -925,12 +925,18 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "--deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER",
             formal_collect_step,
         )
+        self.assertIn(
+            '--edge-bypass-state "$RUNNER_TEMP/edge-bypass-state.json"',
+            formal_collect_step,
+        )
+        self.assertEqual(formal_collect_step.count("--edge-bypass-state"), 1)
         formal_handoff_end = workflow.index(
             "Persist formal handoff evidence before its phase CAS", formal_verify
         )
         formal_handoff_step = workflow[formal_verify:formal_handoff_end]
         self.assertNotIn("VERCEL_AUTOMATION_BYPASS_HEADER", formal_handoff_step)
         self.assertNotIn("--deployment-bypass-header-env", formal_handoff_step)
+        self.assertNotIn("--edge-bypass-header-env", formal_handoff_step)
         self.assertEqual(workflow.count("collect_runtime_ddl_audit.py"), 2)
         self.assertEqual(
             workflow.count('--request-origin "$PRODUCTION_BASE_URL"'),
@@ -1604,7 +1610,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         activation = {
             "id": "11111111-1111-1111-1111-111111111111",
             "source_sha": source_sha,
-            "workflow_run_id": "29649808124",
+            "workflow_run_id": register.PROMOTED_FORMAL_AUDIT_REPAIR_PREVIOUS_WORKFLOW_RUN_ID,
             "workflow_attempt": 2,
             "phase": "PROMOTED",
             "version": 41,
@@ -1612,7 +1618,9 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "current_snapshot_hash": "c" * 64,
             "private_evidence_prefix": (
                 "https://github.com/zsrt001/webdev-inspiration-hub/"
-                "actions/runs/29649808124/artifacts/8431162000"
+                "actions/runs/"
+                f"{register.PROMOTED_FORMAL_AUDIT_REPAIR_PREVIOUS_WORKFLOW_RUN_ID}"
+                "/artifacts/8431162000"
             ),
             "runtime_bundle_id": "rtb_" + "d" * 64,
             "manifest_sha256": "e" * 64,
@@ -1656,7 +1664,9 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 workflow_run_id="29660000000",
                 workflow_attempt=1,
                 expected_source_sha=source_sha,
-                expected_workflow_run_id="29649808124",
+                expected_workflow_run_id=(
+                    register.PROMOTED_FORMAL_AUDIT_REPAIR_PREVIOUS_WORKFLOW_RUN_ID
+                ),
                 expected_version=41,
                 approval="protected-approval",
                 evidence_prefix=(
@@ -1686,6 +1696,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             for path in sorted(register.PROMOTED_TAKEOVER_REQUIRED_CONTROL_PATHS)
         ) + "\n"
         successful_calls = [
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
             subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
             subprocess.CompletedProcess([], 0, stdout=allowed_diff, stderr=""),
@@ -1695,6 +1706,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         ):
             register.validate_promoted_control_descendant(source_sha, runner_sha)
         unsafe_calls = [
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
             subprocess.CompletedProcess([], 0, stdout=runner_sha + "\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
             subprocess.CompletedProcess(
