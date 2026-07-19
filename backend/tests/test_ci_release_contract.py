@@ -500,20 +500,6 @@ class CiReleaseContractTest(unittest.TestCase):
             baseline,
         )
 
-    def test_backend_ci_discovers_tests_with_repository_imports_available(self) -> None:
-        workflow = _read(".github/workflows/ci.yml")
-        backend_job = workflow.split("  backend-test:", 1)[1].split(
-            "  frontend-check:",
-            1,
-        )[0]
-        full_suite = backend_job.split(
-            "- name: Run a non-empty backend suite",
-            1,
-        )[1]
-        self.assertNotIn("working-directory: backend", full_suite)
-        self.assertIn('"backend/tests"', full_suite)
-        self.assertIn('top_level_dir="backend"', full_suite)
-
     def test_frontend_scss_uses_modules_for_local_styles(self) -> None:
         deprecated_imports: list[str] = []
         source_root = ROOT / "frontend" / "src"

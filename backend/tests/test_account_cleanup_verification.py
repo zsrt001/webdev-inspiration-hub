@@ -9,14 +9,18 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import unittest
 from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.release._acceptance_evidence import canonical
 from scripts.release.run_account_cleanup_verification import run
 
 
-ROOT = Path(__file__).resolve().parents[2]
 TMP = ROOT / ".tmp" / "account-cleanup-verification"
 KEY = b"account-cleanup-verification-key-32-bytes"
 BINDING = {

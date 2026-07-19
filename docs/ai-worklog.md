@@ -2166,9 +2166,11 @@
   network path timed out; GitHub's browser-install job had succeeded, so the
   pushed CI rerun remains the authoritative cross-browser result.
 - The second CI run proved the frontend fix and all four real PostgreSQL
-  contracts, then exposed that the final backend discovery still ran from the
-  `backend/` directory and therefore could not import five new repository-root
-  `scripts.release` modules. CI now discovers `backend/tests` from the
-  repository root with `backend` as its package top level. The exact corrected
-  discovery passed 977 tests with 37 explicit conditional skips, and a static
-  contract prevents the CI working directory from regressing.
+  contracts, then exposed five new acceptance tests whose repository-root
+  `scripts.release` imports depended on another test having already changed
+  `sys.path`. Each affected test now establishes the repository root before
+  importing the release modules, while CI retains its previously proven
+  `backend/` discovery directory. This removes test-order dependence without
+  changing the established suite working-directory contract. The exact
+  retained CI discovery passed 976 tests with 37 explicit conditional skips;
+  the five affected modules passed 16/16 when run first from `backend/tests`.

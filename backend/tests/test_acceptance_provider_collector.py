@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.release._acceptance_provider_facts import (
     collect_commercial_finalize,
@@ -14,7 +19,6 @@ from scripts.release._acceptance_provider_facts import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 7, 19, tzinfo=timezone.utc)
 
 

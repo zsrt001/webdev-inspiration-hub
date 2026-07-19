@@ -7,7 +7,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.release._acceptance_evidence import seal_collected_input
 from scripts.release._acceptance_phase_facts import (
@@ -16,7 +21,6 @@ from scripts.release._acceptance_phase_facts import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[2]
 TMP = ROOT / ".tmp" / "acceptance-input-collector"
 NODE = shutil.which("node") or "node"
 KEY = b"acceptance-collector-test-key-at-least-32-bytes"
