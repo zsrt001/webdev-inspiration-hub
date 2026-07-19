@@ -41,7 +41,7 @@ MANIFEST_FIELDS = frozenset(
         "tool_versions",
     }
 )
-CONTRACT_HASH_FIELDS = frozenset(
+BASE_CONTRACT_HASH_FIELDS = frozenset(
     {
         "provider",
         "model",
@@ -54,6 +54,12 @@ CONTRACT_HASH_FIELDS = frozenset(
         "runtime",
     }
 )
+CONTRACT_HASH_FIELDS_BY_ROLE = {
+    "PREVIEW_COMMERCIAL": BASE_CONTRACT_HASH_FIELDS | {"database_roles"},
+    "COMMERCIAL_7A": BASE_CONTRACT_HASH_FIELDS
+    | {"database_roles", "worker_host"},
+    "CONTRACT_7B": BASE_CONTRACT_HASH_FIELDS | {"database_roles", "worker_host"},
+}
 FORBIDDEN_MUTABLE_FIELDS = frozenset(
     {
         "observed_current_flag_snapshot_hash",
@@ -172,7 +178,11 @@ def validate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
         normalized[field] = _identifier(payload[field], label=field)
 
     contracts = payload["contract_hashes"]
-    if not isinstance(contracts, dict) or set(contracts) != CONTRACT_HASH_FIELDS:
+    expected_contract_hashes = CONTRACT_HASH_FIELDS_BY_ROLE.get(
+        role,
+        BASE_CONTRACT_HASH_FIELDS,
+    )
+    if not isinstance(contracts, dict) or set(contracts) != expected_contract_hashes:
         raise ValueError("contract hashes must contain the exact immutable contract set")
     normalized["contract_hashes"] = {
         name: _sha(contracts[name], label=f"{name} contract SHA") for name in sorted(contracts)

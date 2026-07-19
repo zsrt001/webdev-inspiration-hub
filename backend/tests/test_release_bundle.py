@@ -61,6 +61,7 @@ def _manifest_payload(role: str = "PREVIEW_COMMERCIAL") -> dict[str, object]:
             "target_snapshot": "7" * 64,
             "gate": "8" * 64,
             "runtime": "9" * 64,
+            "database_roles": "a" * 64,
         },
         "tool_versions": {
             "python": "3.11.9",
@@ -70,6 +71,7 @@ def _manifest_payload(role: str = "PREVIEW_COMMERCIAL") -> dict[str, object]:
         },
     }
     if role == "COMMERCIAL_7A":
+        payload["contract_hashes"]["worker_host"] = "b" * 64
         payload.update(
             {
                 "api_deployment_id": "dpl_target",
@@ -306,6 +308,74 @@ class ReleaseBundleTest(unittest.TestCase):
                 now=now,
             )
 
+    def test_production_runtime_coordinate_report_binds_rollback_deployment(self) -> None:
+        collect = _load(COLLECT_SCRIPT, "collect_runtime_coordinate_report")
+        source_sha = "a" * 40
+        runtime_bundle_id = "rtb_" + "b" * 64
+        deployment_id = "dpl_private_baseline"
+        signing_key = b"runtime-report-signing-key-32bytes"
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+        version = {
+            "schema": "vowpic.runtime-bundle-report.v1",
+            "source_sha": source_sha,
+            "runtime_bundle_id": runtime_bundle_id,
+            "deployment_id": deployment_id,
+            "release_role": "COMMERCIAL_7A",
+            "runtime_environment": "production",
+            "schema_revision": "20260710_0020",
+            "api_compatibility_version": "api-v1",
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/health":
+                return httpx.Response(
+                    200,
+                    json={
+                        "status": "healthy",
+                        "kind": "liveness",
+                        "readiness": "/health/ready",
+                    },
+                )
+            if request.url.path == "/health/ready":
+                return httpx.Response(200, json={"ready": True})
+            if request.url.path == "/api/v1/version":
+                return httpx.Response(200, json=version)
+            return httpx.Response(404)
+
+        with httpx.Client(
+            transport=httpx.MockTransport(handler), follow_redirects=False
+        ) as client:
+            report = collect.collect_api_runtime_coordinate_report(
+                client,
+                base_url="https://www.vowpic.test",
+                expected_deployment_id=deployment_id,
+                expected_runtime_bundle_id=runtime_bundle_id,
+                expected_source_sha=source_sha,
+                expected_schema="20260710_0020",
+                expected_release_role="COMMERCIAL_7A",
+                bypass_secret="",
+                signing_key=signing_key,
+                now=now,
+            )
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["api_deployment_id"], deployment_id)
+        version["deployment_id"] = "dpl_wrong"
+        with httpx.Client(
+            transport=httpx.MockTransport(handler), follow_redirects=False
+        ) as client, self.assertRaisesRegex(ValueError, "coordinates"):
+            collect.collect_api_runtime_coordinate_report(
+                client,
+                base_url="https://www.vowpic.test",
+                expected_deployment_id=deployment_id,
+                expected_runtime_bundle_id=runtime_bundle_id,
+                expected_source_sha=source_sha,
+                expected_schema="20260710_0020",
+                expected_release_role="COMMERCIAL_7A",
+                bypass_secret="",
+                signing_key=signing_key,
+                now=now,
+            )
+
     def test_private_manifest_registration_is_content_addressed_and_read_back(self) -> None:
         register = _load(REGISTER_SCRIPT, "register_bundle")
         manifest_module = _load(MANIFEST_SCRIPT, "build_manifest_for_registration")
@@ -414,6 +484,8 @@ class ReleaseBundleTest(unittest.TestCase):
         self.assertEqual(record["phase"], "RESERVED")
         self.assertEqual(record["reservation_expires_at"], now + timedelta(hours=2))
         self.assertEqual(record["runtime_bundle_id"], None)
+        self.assertEqual(record["api_role"], "COMMERCIAL_7A_API")
+        self.assertEqual(record["worker_role"], "COMMERCIAL_7A_WORKER")
         self.assertRegex(preview_hash, r"^[0-9a-f]{64}$")
         for changed in (
             {"phase": "COMPLETED"},

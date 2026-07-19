@@ -63,6 +63,14 @@ BEGIN
         CREATE ROLE vowpic_control_writer
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_observation_reader') THEN
+        CREATE ROLE vowpic_observation_reader
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_observation_writer') THEN
+        CREATE ROLE vowpic_observation_writer
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_identity_owner') THEN
         CREATE ROLE vowpic_identity_owner
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
@@ -80,6 +88,8 @@ BEGIN
         'vowpic_migration_owner',
         'vowpic_runtime',
         'vowpic_control_writer',
+        'vowpic_observation_reader',
+        'vowpic_observation_writer',
         'vowpic_identity_owner',
         'vowpic_identity_service'
     )
@@ -100,6 +110,8 @@ BEGIN
         'vowpic_migration_owner',
         'vowpic_runtime',
         'vowpic_control_writer',
+        'vowpic_observation_reader',
+        'vowpic_observation_writer',
         'vowpic_identity_owner',
         'vowpic_identity_service'
     )
@@ -114,7 +126,12 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM pg_roles role
-        WHERE role.rolname IN ('vowpic_runtime', 'vowpic_control_writer')
+        WHERE role.rolname IN (
+            'vowpic_runtime',
+            'vowpic_control_writer',
+            'vowpic_observation_reader',
+            'vowpic_observation_writer'
+        )
           AND (
               EXISTS (SELECT 1 FROM pg_database database WHERE database.datdba = role.oid) OR
               EXISTS (SELECT 1 FROM pg_namespace namespace WHERE namespace.nspowner = role.oid) OR
@@ -141,6 +158,14 @@ BEGIN
         CREATE ROLE vowpic_control_writer_login
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_observation_reader_login') THEN
+        CREATE ROLE vowpic_observation_reader_login
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_observation_writer_login') THEN
+        CREATE ROLE vowpic_observation_writer_login
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
 
     SELECT count(*) INTO invalid_role_count
     FROM pg_roles
@@ -148,7 +173,12 @@ BEGIN
               NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
               rolreplication OR rolbypassrls OR NOT rolinherit
           ))
-       OR (rolname IN ('vowpic_app_runtime', 'vowpic_control_writer_login') AND (
+       OR (rolname IN (
+              'vowpic_app_runtime',
+              'vowpic_control_writer_login',
+              'vowpic_observation_reader_login',
+              'vowpic_observation_writer_login'
+          ) AND (
               rolsuper OR rolcreatedb OR rolcreaterole OR
               rolreplication OR rolbypassrls OR NOT rolinherit
           ));
@@ -199,10 +229,37 @@ BEGIN
         RAISE EXCEPTION 'existing control-writer login has unexpected role memberships';
     END IF;
 
+    SELECT array_agg(parent.rolname ORDER BY parent.rolname)
+    INTO unexpected_memberships
+    FROM pg_auth_members membership
+    JOIN pg_roles member ON member.oid = membership.member
+    JOIN pg_roles parent ON parent.oid = membership.roleid
+    WHERE member.rolname = 'vowpic_observation_reader_login'
+      AND parent.rolname <> 'vowpic_observation_reader';
+    IF coalesce(unexpected_memberships, ARRAY[]::text[]) <> ARRAY[]::text[] THEN
+        RAISE EXCEPTION 'existing observation-reader login has unexpected role memberships';
+    END IF;
+
+    SELECT array_agg(parent.rolname ORDER BY parent.rolname)
+    INTO unexpected_memberships
+    FROM pg_auth_members membership
+    JOIN pg_roles member ON member.oid = membership.member
+    JOIN pg_roles parent ON parent.oid = membership.roleid
+    WHERE member.rolname = 'vowpic_observation_writer_login'
+      AND parent.rolname <> 'vowpic_observation_writer';
+    IF coalesce(unexpected_memberships, ARRAY[]::text[]) <> ARRAY[]::text[] THEN
+        RAISE EXCEPTION 'existing observation-writer login has unexpected role memberships';
+    END IF;
+
     IF EXISTS (
         SELECT 1
         FROM pg_roles role
-        WHERE role.rolname IN ('vowpic_app_runtime', 'vowpic_control_writer_login')
+        WHERE role.rolname IN (
+            'vowpic_app_runtime',
+            'vowpic_control_writer_login',
+            'vowpic_observation_reader_login',
+            'vowpic_observation_writer_login'
+        )
           AND (
               EXISTS (SELECT 1 FROM pg_database database WHERE database.datdba = role.oid) OR
               EXISTS (SELECT 1 FROM pg_namespace namespace WHERE namespace.nspowner = role.oid) OR
@@ -300,6 +357,11 @@ BEGIN
             procedure.proname = 'vowpic_rotate_application_database_logins'
             AND pg_get_function_identity_arguments(procedure.oid) =
                 'runtime_password text, writer_password text'
+          )
+          AND NOT (
+            procedure.proname = 'vowpic_rotate_observation_database_logins'
+            AND pg_get_function_identity_arguments(procedure.oid) =
+                'reader_password text, writer_password text'
           )
           AND NOT (
             current_revision = '20260712_0014'
@@ -407,6 +469,73 @@ BEGIN
     REVOKE ALL ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)
       FROM PUBLIC;
     GRANT EXECUTE ON FUNCTION public.vowpic_rotate_application_database_logins(text, text)
+      TO vowpic_migration_owner;
+
+    CREATE OR REPLACE FUNCTION public.vowpic_rotate_observation_database_logins(
+        reader_password text,
+        writer_password text
+    )
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog
+    AS $rotate_observation$
+    BEGIN
+        IF session_user <> 'vowpic_migration_login'
+           OR NOT pg_has_role(session_user, 'vowpic_migration_owner', 'MEMBER') THEN
+            RAISE EXCEPTION 'observation database login rotation requires the migration login';
+        END IF;
+        IF length(reader_password) < 64 OR length(writer_password) < 64
+           OR reader_password = writer_password THEN
+            RAISE EXCEPTION 'observation database login passwords are invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_roles
+            WHERE rolname IN (
+                'vowpic_observation_reader_login',
+                'vowpic_observation_writer_login'
+            )
+              AND (
+                  rolsuper OR rolcreatedb OR rolcreaterole OR
+                  rolreplication OR rolbypassrls OR NOT rolinherit
+              )
+        ) THEN
+            RAISE EXCEPTION 'observation database login violates the least-privilege contract';
+        END IF;
+        EXECUTE format(
+            'ALTER ROLE vowpic_observation_reader_login WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
+            reader_password
+        );
+        EXECUTE format(
+            'ALTER ROLE vowpic_observation_writer_login WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
+            writer_password
+        );
+        REVOKE vowpic_runtime FROM vowpic_observation_reader_login;
+        REVOKE vowpic_control_writer FROM vowpic_observation_reader_login;
+        REVOKE vowpic_identity_service FROM vowpic_observation_reader_login;
+        REVOKE vowpic_observation_writer FROM vowpic_observation_reader_login;
+        REVOKE vowpic_runtime FROM vowpic_observation_writer_login;
+        REVOKE vowpic_control_writer FROM vowpic_observation_writer_login;
+        REVOKE vowpic_identity_service FROM vowpic_observation_writer_login;
+        REVOKE vowpic_observation_reader FROM vowpic_observation_writer_login;
+        GRANT vowpic_observation_reader TO vowpic_observation_reader_login;
+        GRANT vowpic_observation_writer TO vowpic_observation_writer_login;
+        ALTER ROLE vowpic_observation_reader_login
+          SET default_transaction_read_only = on;
+        ALTER ROLE vowpic_observation_reader_login
+          SET statement_timeout = '30s';
+        ALTER ROLE vowpic_observation_writer_login
+          RESET default_transaction_read_only;
+        ALTER ROLE vowpic_observation_writer_login
+          SET statement_timeout = '30s';
+    END
+    $rotate_observation$;
+    ALTER FUNCTION public.vowpic_rotate_observation_database_logins(text, text)
+      OWNER TO postgres;
+    REVOKE ALL ON FUNCTION public.vowpic_rotate_observation_database_logins(text, text)
+      FROM PUBLIC;
+    GRANT EXECUTE ON FUNCTION public.vowpic_rotate_observation_database_logins(text, text)
       TO vowpic_migration_owner;
 
     SELECT count(*) INTO writable_table_count

@@ -403,7 +403,12 @@ class DataMigrationControlTest(unittest.TestCase):
         self.assertIn("github.run_id", source)
         self.assertIn("github.run_attempt", source)
         self.assertIn("environment: production", source)
-        self.assertIn("group: vowpic-production-release", source)
+        self.assertNotIn("group: vowpic-production-release", source)
+        production_workflow = (
+            ROOT / ".github/workflows/production-release.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("group: vowpic-production-release", production_workflow)
+        self.assertIn("cancel-in-progress: false", production_workflow)
         self.assertIn("id: validated-report", source)
         self.assertIn(
             "steps.validated-report.outputs.sanitized == 'true'",

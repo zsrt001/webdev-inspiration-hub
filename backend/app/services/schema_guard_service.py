@@ -23,6 +23,8 @@ _REQUIRED_TABLES = frozenset(
         "data_migration_checkpoints",
         "release_observation_runs",
         "release_observation_samples",
+        "release_observation_recoveries",
+        "release_auth_origin_leases",
     }
 )
 _REQUIRED_USER_COLUMNS = frozenset(

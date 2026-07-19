@@ -293,6 +293,48 @@ async def require_checkout_catalog_product(
     )
 
 
+async def require_subscription_checkout_catalog_product(
+    db: AsyncSession,
+    *,
+    product_code: str,
+    environment: str | None = None,
+    provider: str = "creem",
+) -> CheckoutCatalogSelection:
+    """Load one active subscription product and its release-bound Provider mapping."""
+
+    target_environment = environment or settings.runtime_environment
+    catalog = await load_active_catalog(db, environment=target_environment)
+    product = catalog.by_code.get(str(product_code).strip())
+    if product is None:
+        raise BillingCatalogUnavailable("product_not_active")
+    if product.product_kind != "subscription":
+        raise BillingCatalogUnavailable("subscription_checkout_product_kind_invalid")
+    mappings = list(
+        (
+            await db.scalars(
+                select(BillingProviderProduct).where(
+                    BillingProviderProduct.catalog_version_id
+                    == uuid.UUID(catalog.catalog_id),
+                    BillingProviderProduct.environment == target_environment,
+                    BillingProviderProduct.provider == provider,
+                    BillingProviderProduct.product_code == product.product_code,
+                )
+            )
+        ).all()
+    )
+    if len(mappings) != 1:
+        raise BillingCatalogUnavailable("provider_product_mapping_cardinality")
+    provider_product_id = str(mappings[0].provider_product_id or "").strip()
+    if not provider_product_id:
+        raise BillingCatalogUnavailable("provider_product_mapping_empty")
+    return CheckoutCatalogSelection(
+        catalog_version_id=uuid.UUID(catalog.catalog_id),
+        catalog_version=catalog.version,
+        release_sha=catalog.release_sha,
+        product=replace(product, provider_product_id=provider_product_id),
+    )
+
+
 async def require_subscription_catalog_product(
     db: AsyncSession,
     *,

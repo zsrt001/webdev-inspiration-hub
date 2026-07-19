@@ -44,7 +44,9 @@
         "pre_activation_off_snapshot": {"$ref": "#/$defs/sha256"},
         "target_snapshot": {"$ref": "#/$defs/sha256"},
         "gate": {"$ref": "#/$defs/sha256"},
-        "runtime": {"$ref": "#/$defs/sha256"}
+        "runtime": {"$ref": "#/$defs/sha256"},
+        "database_roles": {"$ref": "#/$defs/sha256"},
+        "worker_host": {"$ref": "#/$defs/sha256"}
       }
     },
     "tool_versions": {

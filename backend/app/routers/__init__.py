@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.routers import admin, analytics, auth, credits, gatekeeper, legal, media, ops, ops_admin, orders, partner_invites, payments, presets, retired, runtime, subscriptions, templates, upload, users
+from app.routers import account_data, admin, analytics, auth, credits, gatekeeper, legal, media, ops, ops_admin, orders, partner_invites, payments, presets, retired, runtime, subscriptions, templates, upload, users
 
 api_router = APIRouter()
 
@@ -11,6 +11,7 @@ api_router.include_router(retired.router)
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(templates.router, prefix="/templates", tags=["templates"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
+api_router.include_router(account_data.router)
 api_router.include_router(orders.router, prefix="/orders", tags=["orders"])
 api_router.include_router(partner_invites.router)
 api_router.include_router(credits.router, prefix="/credits", tags=["credits"])

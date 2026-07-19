@@ -550,7 +550,9 @@ def _install_database_guards() -> None:
             CREATE OR REPLACE FUNCTION prevent_release_activation_regression()
             RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
-              IF OLD.phase IN ('COMPLETED', 'CLEANED', 'PASSED', 'PRODUCTION_ACCEPTED') THEN
+              IF OLD.phase IN (
+                'COMPLETED', 'CLEANED', 'PASSED', '7A_ACCEPTED', 'PRODUCTION_ACCEPTED'
+              ) THEN
                 RAISE EXCEPTION 'terminal release activation is immutable';
               END IF;
               IF NEW.version <> OLD.version + 1 THEN

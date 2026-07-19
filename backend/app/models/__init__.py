@@ -21,6 +21,10 @@ from app.models.subscription_cancel_intent import (
     CancelIntentState,
     SubscriptionCancelIntent,
 )
+from app.models.subscription_checkout_intent import (
+    SubscriptionCheckoutIntent,
+    SubscriptionCheckoutIntentState,
+)
 from app.models.payment_event import (
     PaymentCaptureFact,
     PaymentDisputeFact,
@@ -36,10 +40,16 @@ from app.models.account_risk_event import AccountRiskEvent
 from app.models.ops_feature_flag import OpsFeatureFlag
 from app.models.ops_feature_flag_audit import OpsFeatureFlagAudit
 from app.models.release_activation import ReleaseActivation
+from app.models.release_phase_evidence import ReleasePhaseEvidence
+from app.models.release_auth_origin_lease import ReleaseAuthOriginLease
 from app.models.acceptance_identity_binding import AcceptanceIdentityBinding
 from app.models.data_migration_run import DataMigrationRun
 from app.models.data_migration_checkpoint import DataMigrationCheckpoint
-from app.models.release_observation import ReleaseObservationRun, ReleaseObservationSample
+from app.models.release_observation import (
+    ReleaseObservationRecovery,
+    ReleaseObservationRun,
+    ReleaseObservationSample,
+)
 from app.models.user_identity import UserIdentity
 from app.models.oauth_login_intent import OAuthLoginIntent
 from app.models.auth_session import AuthSession
@@ -110,6 +120,8 @@ __all__ = [
     "SubscriptionInvoiceAdjustmentFact",
     "CancelIntentState",
     "SubscriptionCancelIntent",
+    "SubscriptionCheckoutIntent",
+    "SubscriptionCheckoutIntentState",
     "PaymentEvent",
     "PaymentEventProcessingState",
     "PaymentCaptureFact",
@@ -123,11 +135,13 @@ __all__ = [
     "OpsFeatureFlag",
     "OpsFeatureFlagAudit",
     "ReleaseActivation",
+    "ReleasePhaseEvidence",
     "AcceptanceIdentityBinding",
     "DataMigrationRun",
     "DataMigrationCheckpoint",
     "ReleaseObservationRun",
     "ReleaseObservationSample",
+    "ReleaseObservationRecovery",
     "UserIdentity",
     "OAuthLoginIntent",
     "AuthSession",

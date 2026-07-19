@@ -29,6 +29,7 @@ REQUIRED_OPERATION_IDS = {
     ("get", "/api/v1/subscriptions/plans"): "list_subscription_plans_api_v1_subscriptions_plans_get",
     ("post", "/api/v1/subscriptions/checkout"): "create_subscription_checkout_api_v1_subscriptions_checkout_post",
     ("post", "/api/v1/subscriptions/cancel"): "cancel_my_subscription_api_v1_subscriptions_cancel_post",
+    ("get", "/api/v1/account/export"): "export_current_account_api_v1_account_export_get",
     ("post", "/api/v1/partner-invites"): "create_invite_api_v1_partner_invites_post",
     ("post", "/api/v1/partner-invites/accept"): "accept_invite_api_v1_partner_invites_accept_post",
     (
@@ -49,6 +50,29 @@ PRIVATE_MEDIA_RESPONSE_SCHEMAS = (
     "PartnerInviteSnapshot",
     "UploadBatchResponse",
 )
+
+ACCOUNT_EXPORT_FORBIDDEN_FIELDS = {
+    "auth_subject",
+    "avatar_url",
+    "checkout_url",
+    "generation_params",
+    "metadata_json",
+    "object_key",
+    "openid",
+    "password",
+    "payload_json",
+    "provider_customer_id",
+    "provider_evidence",
+    "provider_job_id",
+    "provider_payment_id",
+    "raw_payload_sha256",
+    "request_hash",
+    "request_snapshot",
+    "stored_response",
+    "subject",
+    "token_hash",
+    "unionid",
+}
 
 FORBIDDEN_IDENTITY_FIELDS = {
     "openid",
@@ -112,6 +136,28 @@ class OpenApiContractTest(unittest.TestCase):
             ["NOT_CHARGED", "CAPTURED", "REFUNDED", "RECONCILING"],
         )
         self.assertIn("settlement_status", self.schemas["OrderRead"]["required"])
+
+    def test_account_export_is_strict_and_exposes_no_internal_or_provider_secrets(self) -> None:
+        export_models = {
+            name: schema
+            for name, schema in self.schemas.items()
+            if name == "AccountExport" or name.startswith("AccountExport")
+        }
+        self.assertGreaterEqual(len(export_models), 10)
+        for name, schema in export_models.items():
+            fields = {field.lower() for field in schema.get("properties", {})}
+            with self.subTest(schema=name):
+                self.assertTrue(
+                    fields.isdisjoint(ACCOUNT_EXPORT_FORBIDDEN_FIELDS),
+                    fields & ACCOUNT_EXPORT_FORBIDDEN_FIELDS,
+                )
+                for field in fields:
+                    self.assertFalse(field.endswith("_url"), field)
+                    self.assertFalse(field.endswith("_path"), field)
+        self.assertIn(
+            "content_sha256",
+            self.schemas["AccountExportMedia"]["properties"],
+        )
 
     def test_committed_snapshot_is_exact_deterministic_export(self) -> None:
         from scripts.export_openapi import render_openapi

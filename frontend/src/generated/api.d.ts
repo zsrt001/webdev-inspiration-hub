@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/v1/account/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Current Account
+         * @description Download only the authenticated user's canonical and merge-linked facts.
+         */
+        get: operations["export_current_account_api_v1_account_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/analytics_overview": {
         parameters: {
             query?: never;
@@ -955,6 +975,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops/verify_acceptance_media_absence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify Account Media Absence
+         * @description Prove physical private-object absence for one closed acceptance account.
+         */
+        post: operations["verify_account_media_absence_api_v1_ops_verify_acceptance_media_absence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders": {
         parameters: {
             query?: never;
@@ -1546,6 +1586,22 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AcceptanceMediaAbsenceRequest */
+        AcceptanceMediaAbsenceRequest: {
+            /** Deployment Id */
+            deployment_id: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Runtime Bundle Id */
+            runtime_bundle_id: string;
+            /** Source Sha */
+            source_sha: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
         /**
          * AcceptedOrder
          * @description Minimal 202 response; Provider and correlation facts stay private.
@@ -1590,6 +1646,611 @@ export interface components {
             closed_at: string;
             /** Media Cleanup Pending */
             media_cleanup_pending: boolean;
+        };
+        /** AccountExport */
+        AccountExport: {
+            /** Audit References */
+            audit_references: components["schemas"]["AccountExportAuditReference"][];
+            /**
+             * Canonical User Id
+             * Format: uuid
+             */
+            canonical_user_id: string;
+            /** Consent Records */
+            consent_records: components["schemas"]["AccountExportConsentRecord"][];
+            /** Disputes */
+            disputes: components["schemas"]["AccountExportDispute"][];
+            /**
+             * Export Id
+             * Format: uuid
+             */
+            export_id: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Identities */
+            identities: components["schemas"]["AccountExportIdentity"][];
+            /** Included User Ids */
+            included_user_ids: string[];
+            /** Invoice Adjustments */
+            invoice_adjustments: components["schemas"]["AccountExportInvoiceAdjustment"][];
+            /** Invoices */
+            invoices: components["schemas"]["AccountExportInvoice"][];
+            /** Ledger */
+            ledger: components["schemas"]["AccountExportLedgerEntry"][];
+            /** Media */
+            media: components["schemas"]["AccountExportMedia"][];
+            /** Merged Accounts */
+            merged_accounts: components["schemas"]["AccountExportMerge"][];
+            /** Orders */
+            orders: components["schemas"]["AccountExportOrder"][];
+            profile: components["schemas"]["AccountExportProfile"];
+            /** Purchases */
+            purchases: components["schemas"]["AccountExportPurchase"][];
+            /** Refunds */
+            refunds: components["schemas"]["AccountExportRefund"][];
+            /** Retention */
+            retention: components["schemas"]["AccountExportRetention"][];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "account-export.v1";
+            /** Subscriptions */
+            subscriptions: components["schemas"]["AccountExportSubscription"][];
+        };
+        /** AccountExportAuditReference */
+        AccountExportAuditReference: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "ACCOUNT_MERGE" | "ACCOUNT_CLOSURE" | "PARTNER_CONSENT";
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /**
+             * Reference Id
+             * Format: uuid
+             */
+            reference_id: string;
+        };
+        /** AccountExportConsentRecord */
+        AccountExportConsentRecord: {
+            /** Action */
+            action: string | null;
+            /** Asset Ids */
+            asset_ids: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Host User Id
+             * Format: uuid
+             */
+            host_user_id: string;
+            /** Job Id */
+            job_id: string | null;
+            /** Order Id */
+            order_id: string | null;
+            /** Partner User Id */
+            partner_user_id: string | null;
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /**
+             * Record Type
+             * @enum {string}
+             */
+            record_type: "INVITE" | "INVITE_EVENT" | "CONSENT_CASE";
+            /** Status */
+            status: string;
+            /** Updated At */
+            updated_at: string | null;
+        };
+        /** AccountExportDispute */
+        AccountExportDispute: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Currency */
+            currency: string;
+            /**
+             * Dispute Id
+             * Format: uuid
+             */
+            dispute_id: string;
+            /** Disputed Minor Units */
+            disputed_minor_units: number;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Outcome */
+            outcome: string;
+            /**
+             * Payment Event Id
+             * Format: uuid
+             */
+            payment_event_id: string;
+            /**
+             * Purchase Id
+             * Format: uuid
+             */
+            purchase_id: string;
+            /** Reversal Transaction Id */
+            reversal_transaction_id: string | null;
+        };
+        /** AccountExportIdentity */
+        AccountExportIdentity: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Identity Id
+             * Format: uuid
+             */
+            identity_id: string;
+            /** Provider */
+            provider: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** AccountExportInvoice */
+        AccountExportInvoice: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Credit Grant Id */
+            credit_grant_id: string | null;
+            /** Currency */
+            currency: string;
+            /** Dispute State */
+            dispute_state: string;
+            /** Disputed Minor Units */
+            disputed_minor_units: number;
+            /**
+             * Invoice Id
+             * Format: uuid
+             */
+            invoice_id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /**
+             * Payment Event Id
+             * Format: uuid
+             */
+            payment_event_id: string;
+            /**
+             * Period End
+             * Format: date-time
+             */
+            period_end: string;
+            /**
+             * Period Start
+             * Format: date-time
+             */
+            period_start: string;
+            /** Pre Tax Minor Units */
+            pre_tax_minor_units: number;
+            /** Refunded Minor Units */
+            refunded_minor_units: number;
+            /** Status */
+            status: string;
+            /**
+             * Subscription Id
+             * Format: uuid
+             */
+            subscription_id: string;
+            /** Tax Minor Units */
+            tax_minor_units: number;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** AccountExportInvoiceAdjustment */
+        AccountExportInvoiceAdjustment: {
+            /**
+             * Adjustment Id
+             * Format: uuid
+             */
+            adjustment_id: string;
+            /** Amount Minor Units */
+            amount_minor_units: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Currency */
+            currency: string;
+            /**
+             * Invoice Id
+             * Format: uuid
+             */
+            invoice_id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Outcome */
+            outcome: string;
+            /**
+             * Payment Event Id
+             * Format: uuid
+             */
+            payment_event_id: string;
+            /** Reversal Transaction Id */
+            reversal_transaction_id: string | null;
+        };
+        /** AccountExportLedgerEntry */
+        AccountExportLedgerEntry: {
+            /** Amount */
+            amount: number;
+            /** Balance After */
+            balance_after: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Provider Attempt Id */
+            provider_attempt_id: string | null;
+            /** Reversal Of Transaction Id */
+            reversal_of_transaction_id: string | null;
+            /** Root Transaction Id */
+            root_transaction_id: string | null;
+            /** Source */
+            source: string | null;
+            /**
+             * Transaction Id
+             * Format: uuid
+             */
+            transaction_id: string;
+            /** Transaction Type */
+            transaction_type: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** AccountExportMedia */
+        AccountExportMedia: {
+            /**
+             * Asset Id
+             * Format: uuid
+             */
+            asset_id: string;
+            /** Byte Size */
+            byte_size: number;
+            /** Content Sha256 */
+            content_sha256: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deleted At */
+            deleted_at: string | null;
+            /** Deletion Reason */
+            deletion_reason: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Height */
+            height: number | null;
+            /** Job Id */
+            job_id: string | null;
+            /** Mime Type */
+            mime_type: string;
+            /** Order Id */
+            order_id: string | null;
+            /**
+             * Owner User Id
+             * Format: uuid
+             */
+            owner_user_id: string;
+            /** Parent Asset Id */
+            parent_asset_id: string | null;
+            /** Read Revoked At */
+            read_revoked_at: string | null;
+            /** Role */
+            role: string;
+            /** Status */
+            status: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Upload Batch Id */
+            upload_batch_id: string | null;
+            /** Width */
+            width: number | null;
+        };
+        /** AccountExportMerge */
+        AccountExportMerge: {
+            /**
+             * Canonical User Id
+             * Format: uuid
+             */
+            canonical_user_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Legacy User Id
+             * Format: uuid
+             */
+            legacy_user_id: string;
+            /**
+             * Merge Id
+             * Format: uuid
+             */
+            merge_id: string;
+        };
+        /** AccountExportOrder */
+        AccountExportOrder: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deleted At */
+            deleted_at: string | null;
+            /** Delivery Status */
+            delivery_status: string;
+            /** Expires At */
+            expires_at: string | null;
+            /** Final Asset Ids */
+            final_asset_ids: string[];
+            /** Generation Job Id */
+            generation_job_id: string | null;
+            /**
+             * Order Id
+             * Format: uuid
+             */
+            order_id: string;
+            /** Paid At */
+            paid_at: string | null;
+            /** Preview Asset Ids */
+            preview_asset_ids: string[];
+            /** Price Minor Units */
+            price_minor_units: number;
+            /** Reservation Id */
+            reservation_id: string | null;
+            /** Settlement Status */
+            settlement_status: string;
+            /** Source Asset Ids */
+            source_asset_ids: string[];
+            /** Source Images Expires At */
+            source_images_expires_at: string | null;
+            /** Status */
+            status: string;
+            /** Storage Cleanup Status */
+            storage_cleanup_status: string;
+            /** Template Id */
+            template_id: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** AccountExportProfile */
+        AccountExportProfile: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string | null;
+            /** Last Login At */
+            last_login_at: string | null;
+            /** Nickname */
+            nickname: string | null;
+            /** Role */
+            role: string;
+            /** Status */
+            status: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** Username */
+            username: string | null;
+        };
+        /** AccountExportPurchase */
+        AccountExportPurchase: {
+            /** Captured Minor Units */
+            captured_minor_units: number;
+            /** Completed At */
+            completed_at: string | null;
+            /** Confirmed At */
+            confirmed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Credits */
+            credits: number;
+            /** Currency */
+            currency: string;
+            /** Dispute State */
+            dispute_state: string;
+            /** Disputed Minor Units */
+            disputed_minor_units: number;
+            /** Grant Lot Id */
+            grant_lot_id: string | null;
+            /** Grant Transaction Id */
+            grant_transaction_id: string | null;
+            /** Pre Tax Minor Units */
+            pre_tax_minor_units: number;
+            /** Product Code */
+            product_code: string;
+            /**
+             * Purchase Id
+             * Format: uuid
+             */
+            purchase_id: string;
+            /** Refunded Minor Units */
+            refunded_minor_units: number;
+            /** Status */
+            status: string;
+            /** Tax Minor Units */
+            tax_minor_units: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** AccountExportRefund */
+        AccountExportRefund: {
+            /** Classification */
+            classification: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Currency */
+            currency: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /**
+             * Payment Event Id
+             * Format: uuid
+             */
+            payment_event_id: string;
+            /**
+             * Purchase Id
+             * Format: uuid
+             */
+            purchase_id: string;
+            /**
+             * Refund Id
+             * Format: uuid
+             */
+            refund_id: string;
+            /** Refund Minor Units */
+            refund_minor_units: number;
+            /** Reversal Transaction Id */
+            reversal_transaction_id: string | null;
+        };
+        /** AccountExportRetention */
+        AccountExportRetention: {
+            /** Account Closed At */
+            account_closed_at: string | null;
+            /** Active Media Count */
+            active_media_count: number;
+            /** Closure Reason */
+            closure_reason: string | null;
+            /** Deleted Media Count */
+            deleted_media_count: number;
+            /** Media Cleanup Pending */
+            media_cleanup_pending: boolean;
+            /** Pending Deletion Count */
+            pending_deletion_count: number;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** AccountExportSubscription */
+        AccountExportSubscription: {
+            /** Cancel At Period End */
+            cancel_at_period_end: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Current Period End */
+            current_period_end: string | null;
+            /** Current Period Start */
+            current_period_start: string | null;
+            /** Paid Through At */
+            paid_through_at: string | null;
+            /** Product Code */
+            product_code: string | null;
+            /** Status */
+            status: string;
+            /**
+             * Subscription Id
+             * Format: uuid
+             */
+            subscription_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
         };
         /** AdminAuditLogItem */
         AdminAuditLogItem: {
@@ -3148,6 +3809,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    export_current_account_api_v1_account_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountExport"];
+                };
+            };
+        };
+    };
     get_admin_analytics_overview_api_v1_admin_analytics_overview_get: {
         parameters: {
             query?: {
@@ -4666,6 +5347,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_account_media_absence_api_v1_ops_verify_acceptance_media_absence_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptanceMediaAbsenceRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

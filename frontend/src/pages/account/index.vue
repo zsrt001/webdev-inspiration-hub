@@ -170,6 +170,18 @@
 
         <view v-if="accountAuthed" class="account-controls-grid">
           <view class="panel account-control-card">
+            <text class="section-kicker">{{ tr('账户数据', 'Account Data') }}</text>
+            <text class="section-title">{{ tr('下载我的数据', 'Download my data') }}</text>
+            <text class="control-copy">
+              {{ tr('导出当前账户以及已安全合并的历史账户记录。导出不包含登录令牌、存储地址、模型原始响应或内部路径。', 'Export this account and safely merged account history. The file excludes sign-in tokens, storage locations, raw model responses, and internal paths.') }}
+            </text>
+            <button class="btn btn-outline control-button" :disabled="exportBusy" @tap="exportAccountData">
+              {{ exportBusy ? tr('正在生成...', 'Preparing...') : tr('下载 JSON', 'Download JSON') }}
+            </button>
+            <text v-if="exportMessage" class="control-status">{{ exportMessage }}</text>
+          </view>
+
+          <view class="panel account-control-card">
             <text class="section-kicker">{{ tr('旧账户恢复', 'Legacy Account Recovery') }}</text>
             <text class="section-title">{{ tr('合并空的旧账户', 'Merge an empty legacy account') }}</text>
             <text class="control-copy">
@@ -205,6 +217,7 @@
 import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
+import { downloadAccountExport } from '../../services/account';
 import { useI18nStore } from '../../stores/i18n';
 import { useOpsStore } from '../../stores/ops';
 import { useSubscriptionStore } from '../../stores/subscription';
@@ -293,6 +306,8 @@ const claimBusy = ref(false);
 const claimMessage = ref('');
 const closeConfirmation = ref('');
 const closeBusy = ref(false);
+const exportBusy = ref(false);
+const exportMessage = ref('');
 
 const accountAuthed = computed(() => supabaseAuthed.value);
 const displayName = computed(() => profile.value?.nickname || profile.value?.email || tr('尚未登录', 'Not signed in'));
@@ -486,6 +501,25 @@ async function cancelSubscription(): Promise<void> {
     uni.showToast({ title: tr('已设置到期取消续订', 'Cancellation scheduled'), icon: 'none' });
   } catch (err: any) {
     uni.showToast({ title: err?.message || tr('取消失败', 'Cancel failed'), icon: 'none' });
+  }
+}
+
+async function exportAccountData(): Promise<void> {
+  exportBusy.value = true;
+  exportMessage.value = '';
+  try {
+    const exported = await downloadAccountExport();
+    exportMessage.value = tr(
+      `已生成 ${new Date(exported.generated_at).toLocaleString('zh-CN')} 的 ${exported.schema_version} 文件。`,
+      `Downloaded ${exported.schema_version}, generated ${new Date(exported.generated_at).toLocaleString('en-US')}.`,
+    );
+  } catch (err: any) {
+    exportMessage.value = err?.message || tr(
+      '账户数据暂时无法导出，请稍后重试。',
+      'Account data could not be exported. Please try again.',
+    );
+  } finally {
+    exportBusy.value = false;
   }
 }
 

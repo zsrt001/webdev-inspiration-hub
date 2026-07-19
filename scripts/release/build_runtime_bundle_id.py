@@ -48,8 +48,13 @@ ROLE_OPTIONAL = {
     "COMMERCIAL_7A": {"api_version"},
     "CONTRACT_7B": {"api_version"},
 }
-WORKER_CONTRACT_KEYS = {
+WORKER_BASE_CONTRACT_KEYS = {
     "payload", "provider", "model", "policy", "catalog", "flag", "gate", "activation", "runtime"
+}
+WORKER_CONTRACT_KEYS_BY_ROLE = {
+    "PREVIEW_COMMERCIAL": WORKER_BASE_CONTRACT_KEYS | {"preview", "database_roles"},
+    "COMMERCIAL_7A": WORKER_BASE_CONTRACT_KEYS | {"database_roles", "worker_host"},
+    "CONTRACT_7B": WORKER_BASE_CONTRACT_KEYS | {"database_roles", "worker_host"},
 }
 FORBIDDEN_LIVE_KEYS = {
     "deployment_id",
@@ -129,7 +134,7 @@ def _validate_payload(role: str, payload: dict[str, Any]) -> dict[str, Any]:
     if role == "PREVIEW_IDENTITY" and set(contracts) != {"identity_session_flag_preview"}:
         raise ValueError("PREVIEW_IDENTITY accepts only the identity/session/flag preview contract")
     if role in {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"}:
-        expected_contracts = WORKER_CONTRACT_KEYS | ({"preview"} if role == "PREVIEW_COMMERCIAL" else set())
+        expected_contracts = WORKER_CONTRACT_KEYS_BY_ROLE[role]
         missing_contracts = expected_contracts - set(contracts)
         unexpected_contracts = set(contracts) - expected_contracts
         if missing_contracts:
@@ -239,14 +244,21 @@ def _planned_commercial_contracts(args: argparse.Namespace) -> dict[str, str]:
         "catalog": args.catalog_contract,
         "flag": args.flag_contract,
         "activation": args.activation_plan,
+        "database_roles": args.database_role_contract,
     }
-    if not any(planned_paths.values()) and not args.preview_contract:
+    if not any(planned_paths.values()) and not args.preview_contract and not args.worker_host_contract:
         return {}
     missing = [name for name, path in planned_paths.items() if not path]
     if args.release_role == "PREVIEW_COMMERCIAL" and not args.preview_contract:
         missing.append("preview")
+    if args.release_role in {"COMMERCIAL_7A", "CONTRACT_7B"} and not args.worker_host_contract:
+        missing.append("worker_host")
     if missing:
         raise ValueError(f"planned commercial contract paths are missing: {', '.join(sorted(missing))}")
+    if args.release_role == "PREVIEW_COMMERCIAL" and args.worker_host_contract:
+        raise ValueError("Preview runtime IDs cannot bind a Production Worker-host contract")
+    if args.release_role in {"COMMERCIAL_7A", "CONTRACT_7B"} and args.preview_contract:
+        raise ValueError("Production runtime IDs cannot bind a Preview contract")
     contracts = _runtime_contract_hashes(args.runtime_contract, schema_revision=args.schema)
     contracts.update(
         {
@@ -255,12 +267,13 @@ def _planned_commercial_contracts(args: argparse.Namespace) -> dict[str, str]:
             "flag": _file_sha256(args.flag_contract),
             "gate": _file_sha256(args.flag_contract),
             "activation": _file_sha256(args.activation_plan),
+            "database_roles": _file_sha256(args.database_role_contract),
         }
     )
     if args.release_role == "PREVIEW_COMMERCIAL":
         contracts["preview"] = _file_sha256(args.preview_contract)
-    elif args.preview_contract:
-        raise ValueError("Production runtime IDs cannot bind a Preview contract")
+    else:
+        contracts["worker_host"] = _file_sha256(args.worker_host_contract)
     return contracts
 
 
@@ -280,7 +293,9 @@ def _build_cli_payload(args: argparse.Namespace) -> dict[str, Any]:
     if args.safe_baseline_contract:
         contracts["safe_baseline"] = _file_sha256(args.safe_baseline_contract)
     if planned_contracts and not migrations:
-        migrations.append({"revision": args.schema, "sha256": planned_contracts["runtime"]})
+        raise ValueError(
+            "commercial runtime IDs require explicit ordered migration checksums"
+        )
     payload: dict[str, Any] = {
         "source_sha": args.source_sha,
         "schema_revision": args.schema,
@@ -317,6 +332,8 @@ def main() -> int:
     parser.add_argument("--catalog-contract")
     parser.add_argument("--flag-contract")
     parser.add_argument("--activation-plan")
+    parser.add_argument("--database-role-contract")
+    parser.add_argument("--worker-host-contract")
     parser.add_argument("--builder-contract-version")
     parser.add_argument("--api-version")
     parser.add_argument("--tool-version", default="vowpic-release-tools.v1")

@@ -2055,3 +2055,95 @@
   migration, delete any object, probe any legacy URL, deploy, or change the
   formal domain. Those actions remain in Task 29 and require the exact final
   reviewed source/evidence chain. No Subagent was used.
+
+## 2026-07-19 - Close the COMMERCIAL_7A evidence gaps without fabricating Production readiness
+
+### Goal and evidence
+
+- Rechecked the authoritative Task 29 acceptance matrix against the current
+  release workflow, collectors, browser flow, provider contracts, and tests.
+  The safe-baseline Production recovery is already complete; this change set
+  does not rebuild, deploy, promote, change a domain, migrate Production, or
+  enable a commercial capability.
+- Current committed provider facts remain deliberately blocking:
+  `release/provider-contracts.json` has all four contracts `UNVERIFIED`, and
+  `release/worker-host-contract.json` is `NOT_APPROVED` with no executable host.
+- Creem's current official documentation says one-time-payment refunds are
+  performed through the Creem Dashboard. Its published API reference lists
+  checkout, transaction-read, subscription, and other endpoints, but does not
+  publish a refund-creation endpoint:
+  `https://docs.creem.io/features/one-time-payment`,
+  `https://docs.creem.io/merchant-of-record/finance/refunds-and-chargebacks`,
+  and `https://docs.creem.io/api-reference/introduction`.
+  Therefore a Production refund API contract cannot be invented or marked
+  verified.
+- EvoLink's current official image-generation contract still returns a task ID
+  only after a successful `POST /v1/images/generations`, and its only published
+  task lookup is `GET /v1/tasks/{task_id}`. The current request and task pages
+  contain no documented idempotency key, `request_id`, or client-correlation
+  lookup:
+  `https://docs.evolink.ai/en/api-manual/image-series/gpt-image-2/gpt-image-2-image-generation`
+  and
+  `https://docs.evolink.ai/en/api-manual/task-management/get-task-detail`.
+  This does not resolve the submit-success/response-loss ambiguity, so the
+  Evolink contract correctly remains `UNVERIFIED`.
+
+### Changes
+
+- Bound browser checkout polling to VowPic's persisted purchase ID and moved
+  the provider checkout coordinate to the read-only database collector. The
+  browser no longer guesses a Creem checkout ID from a third-party URL shape.
+- Added exact subscription evidence collection for stable paid transaction,
+  invoice uniqueness, cancellation confirmation, reversal, entitlement, and
+  signed test-mode anomaly/dispute facts.
+- Added a signed two-stage six-case quality-review handoff. Preparation binds
+  the exact source/runtime/deployment/manifest/user plus exact order/job/
+  selected-candidate/final-master coordinates, expires after two hours,
+  creates a zeroed draft, and stops Worker dispatch before the protected
+  handoff. The reviewer submits only complete non-placeholder rubric scores;
+  the protected review job keeps both signing keys inside GitHub and signs the
+  exact bound draft. The final job verifies the request/review and
+  candidate-to-final-master lineage before quality acceptance and only then
+  restores Worker dispatch. The operator procedure is recorded in
+  `docs/operations/production-quality-review.md`.
+- Added a pre-effect provider-readiness gate. Production cannot build a Worker,
+  migrate, deploy, or charge while any required provider contract is not
+  source-bound `VERIFIED`, while Creem refund creation lacks a documented
+  official endpoint, or while the Worker host contract is unapproved.
+- Removed the obsolete `scripts/run_prod_generation_acceptance.mjs` runtime
+  path and corrected the authoritative plan/design references to the linked
+  commercial acceptance runner. Removed 16 untracked local SAFE_BASELINE
+  artifact copies under `.tmp`; the authoritative protected-run artifacts and
+  recorded release coordinates remain unchanged.
+
+### Verification
+
+- Full backend discovery:
+  `python -m unittest discover -s backend/tests -t backend -p test*.py`
+  passed 976 tests with 37 explicit conditional integration/platform skips
+  after the final review-handoff and final-master lineage changes.
+- Focused release, quality-handoff, and Web-only cleanup regression passed
+  56/56; the final quality collector/runner/handoff subset passed 17/17.
+- Earlier focused acceptance/provider regression passed 84/84; the provider
+  and workflow hardening subset passed 67/67; the subscription/provider subset
+  passed 10/10.
+- Frontend unit tests passed 13/13. Frontend typecheck and Web build passed.
+  The build reported only the existing Sass legacy-API and Vite CJS
+  deprecation warnings.
+- Python compilation, Node syntax checks, workflow YAML parsing,
+  `git diff --check`, the dead-runner scan, and local `.tmp` residual scan
+  passed. No credential plaintext was read, printed, or persisted.
+
+### Honest status and next gate
+
+- Status is **code closure in review**, not `7a release accepted` and not
+  `Production accepted`.
+- The three remaining external gates are: an actually approved executable
+  long-running Worker host; genuine source-bound Evolink/Creem provider
+  evidence including a valid refund execution path; and the authorized human
+  review of the exact six generated Production cases. The current provider
+  preflight stops before effects, so none of these gaps can silently produce a
+  partial commercial deployment.
+- The Production formal domain remains on the verified SAFE_BASELINE with
+  commercial capabilities OFF. Task 30/7b must not start until Task 29 reaches
+  durable `7A_ACCEPTED`. No Subagent was used.

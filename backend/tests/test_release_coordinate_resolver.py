@@ -41,6 +41,158 @@ def _artifact_module():
 
 
 class ReleaseCoordinateResolverTest(unittest.TestCase):
+    def test_in_progress_commercial_7a_uses_hash_bound_sealed_coordinates(self) -> None:
+        module = _module()
+        now = datetime.now(timezone.utc)
+        manifest_coordinates = {
+            "source_sha": "a" * 40,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "manifest_sha256": "c" * 64,
+            "private_compatible_baseline_deployment_id": "dpl_baseline",
+            "private_compatible_baseline_deployment_url": "https://baseline.vercel.app",
+            "staged_target_deployment_id": "dpl_target",
+            "staged_target_deployment_url": "https://target.vercel.app",
+            "worker_deployment_id": "worker-production-1",
+            "worker_image_digest": "sha256:" + "d" * 64,
+        }
+        report = {
+            "schema": "vowpic.release-phase-report.v1",
+            "activation_id": "00000000-0000-0000-0000-000000000071",
+            "environment": "production",
+            "kind": "COMMERCIAL_7A",
+            "source_sha": "a" * 40,
+            "phase": "MANIFEST_SEALED",
+            "phase_rank": 4,
+            "previous_report_sha256": "e" * 64,
+            "phase_evidence": {
+                "phase": "MANIFEST_SEALED",
+                "evidence": {"manifest": {"sha256": "c" * 64}},
+                "coordinates": manifest_coordinates,
+            },
+            "evidence_chain": [
+                {
+                    "phase": "MANIFEST_SEALED",
+                    "phase_rank": 4,
+                    "phase_evidence_sha256": "f" * 64,
+                    "coordinates": manifest_coordinates,
+                }
+            ],
+        }
+        raw = json.dumps(
+            report, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8") + b"\n"
+        report_sha = hashlib.sha256(raw).hexdigest()
+        activation = {
+            "id": report["activation_id"],
+            "environment": "production",
+            "kind": "COMMERCIAL_7A",
+            "source_sha": manifest_coordinates["source_sha"],
+            "runtime_bundle_id": manifest_coordinates["runtime_bundle_id"],
+            "manifest_sha256": manifest_coordinates["manifest_sha256"],
+            "api_deployment_id": manifest_coordinates["staged_target_deployment_id"],
+            "api_deployment_url": manifest_coordinates["staged_target_deployment_url"],
+            "api_role": "COMMERCIAL_7A_API",
+            "worker_deployment_id": manifest_coordinates["worker_deployment_id"],
+            "worker_role": "COMMERCIAL_7A_WORKER",
+            "worker_image_digest": manifest_coordinates["worker_image_digest"],
+            "private_evidence_prefix": "artifacts/release/a/123-1",
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "phase": "MANIFEST_SEALED",
+            "report_sha256": report_sha,
+            "updated_at": now.isoformat(),
+        }
+        resolved = module.resolve_records(
+            "commercial-7a",
+            [activation],
+            {**report, "_content_sha256": report_sha},
+            now=now,
+            expected_phase="MANIFEST_SEALED",
+            manifest_phase_coordinates=manifest_coordinates,
+        )
+        self.assertEqual(
+            resolved["private_compatible_baseline_deployment_id"], "dpl_baseline"
+        )
+        self.assertEqual(resolved["api_deployment_id"], "dpl_target")
+        self.assertEqual(resolved["staged_target_deployment_url"], "https://target.vercel.app")
+        with self.assertRaisesRegex(ValueError, "baseline and target"):
+            module.resolve_records(
+                "commercial-7a",
+                [activation],
+                {**report, "_content_sha256": report_sha},
+                now=now,
+                expected_phase="MANIFEST_SEALED",
+                manifest_phase_coordinates={
+                    **manifest_coordinates,
+                    "private_compatible_baseline_deployment_id": "dpl_target",
+                },
+            )
+
+    def test_commercial_resolver_reads_only_the_hash_bound_canonical_manifest(self) -> None:
+        module = _module()
+        manifest_module = importlib.util.spec_from_file_location(
+            "build_manifest_for_resolver_test",
+            ROOT / "scripts/release/build_manifest.py",
+        )
+        assert manifest_module and manifest_module.loader
+        build_manifest = importlib.util.module_from_spec(manifest_module)
+        manifest_module.loader.exec_module(build_manifest)
+        payload = {
+            "schema": "vowpic.bundle-manifest.v1",
+            "release_role": "COMMERCIAL_7A",
+            "repository": "owner/vowpic",
+            "project_id": "prj_vowpic",
+            "source_sha": "a" * 40,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "api_build_sha256": "6" * 64,
+            "schema_revision": "20260710_0020",
+            "api_deployment_id": "dpl_target",
+            "staged_target_deployment_id": "dpl_target",
+            "private_compatible_baseline_deployment_id": "dpl_baseline",
+            "worker_deployment_id": "worker-production-1",
+            "worker_image_digest": "sha256:" + "c" * 64,
+            "preview_id": None,
+            "api_compatibility_version": "vowpic-api.v1",
+            "worker_compatibility_version": "vowpic-worker.v1",
+            "job_payload_min": "generation-job.v1",
+            "job_payload_max": "generation-job.v1",
+            "contract_hashes": {
+                "provider": "1" * 64,
+                "model": "2" * 64,
+                "policy": "3" * 64,
+                "catalog": "4" * 64,
+                "flag": "5" * 64,
+                "pre_activation_off_snapshot": "1" * 64,
+                "target_snapshot": "2" * 64,
+                "gate": "3" * 64,
+                "runtime": "4" * 64,
+                "database_roles": "5" * 64,
+                "worker_host": "6" * 64,
+            },
+            "tool_versions": {
+                "python": "3.11.15",
+                "node": "24.17.0",
+                "vercel": "56.2.0",
+                "docker": "27.5.1",
+            },
+        }
+        raw = build_manifest.canonical_manifest_bytes(
+            build_manifest.validate_manifest(payload)
+        )
+
+        class Store:
+            def read(self, key):
+                self.key = key
+                return raw
+
+        store = Store()
+        activation = {
+            "private_evidence_prefix": "artifacts/release/a/123-1",
+            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+        self.assertEqual(module._read_sealed_manifest(activation, store), raw)
+        self.assertEqual(store.key, "artifacts/release/a/123-1/00-bundle-manifest.json")
+
     def test_preview_identity_requires_one_fresh_matching_activation_and_report(self) -> None:
         module = _module()
         now = datetime.now(timezone.utc)
@@ -126,6 +278,7 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
                 "preview-commercial-cleaned",
                 "safe-baseline",
                 "commercial-7a",
+                "commercial-7a-failure",
                 "contract-7b",
             },
         )

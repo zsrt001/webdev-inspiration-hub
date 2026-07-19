@@ -20,6 +20,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 SCRIPT = ROOT / "scripts" / "release" / "activate_provider_contracts.py"
+READINESS = ROOT / "scripts" / "release" / "verify_commercial_provider_readiness.py"
 CONTRACT = ROOT / "release" / "provider-contracts.json"
 
 
@@ -27,6 +28,17 @@ def _module():
     if not SCRIPT.exists():
         raise AssertionError("Provider contract activator is missing")
     spec = importlib.util.spec_from_file_location("activate_provider_contracts", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _readiness_module():
+    spec = importlib.util.spec_from_file_location(
+        "verify_commercial_provider_readiness",
+        READINESS,
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -74,6 +86,65 @@ def _signed_report(
     return report
 
 
+def _creem_bundle(
+    module,
+    *,
+    document: dict,
+    now: datetime,
+    source_sha: str,
+    signing_key: bytes,
+) -> dict:
+    official_contracts = {}
+    sandbox_reports = {}
+    for index, (name, spec) in enumerate(module.CREEM_CONTRACTS.items(), start=1):
+        official = {
+            "schema": "vowpic.provider-official-contract.v1",
+            "provider": "creem",
+            "capability": spec["capability"],
+            "official_source_url": f"https://docs.creem.io/api-reference/{spec['capability']}",
+            "official_version": "2026-07-19",
+            "endpoint_schema_sha256": f"{index:x}" * 64,
+            "authentication_scheme": "x-api-key header with test-mode API credentials",
+            "correlation_semantics": "stable local request reference binds the Provider object",
+            "idempotency_semantics": "replay returns the same effect without a duplicate mutation",
+            "retry_taxonomy": "timeouts remain unknown until an authoritative Provider query resolves them",
+            "retrieved_at": now.isoformat(),
+        }
+        official_hash = hashlib.sha256(
+            module.canonical_json_bytes(official)
+        ).hexdigest()
+        report = {
+            "schema": "vowpic.creem-sandbox-report.v1",
+            "provider": "creem",
+            "capability": spec["capability"],
+            "tested_source_sha": source_sha,
+            "official_contract_sha256": official_hash,
+            "passed": True,
+            "proof_id_hash": f"{index + 4:x}" * 64,
+            "request_count": 1,
+            "replay_count": 1,
+            "duplicate_effect_count": 0,
+            "verified_facts": {
+                fact: True for fact in sorted(spec["required_facts"])
+            },
+            "produced_at": now.isoformat(),
+            "approval_ref": "provider-approval-123",
+        }
+        signature = hmac.new(
+            signing_key,
+            module.canonical_json_bytes(report),
+            hashlib.sha256,
+        ).hexdigest()
+        report["signature"] = f"hmac-sha256:{signature}"
+        official_contracts[name] = official
+        sandbox_reports[name] = report
+    return {
+        "schema": "vowpic.creem-activation-evidence.v1",
+        "official_contracts": official_contracts,
+        "sandbox_reports": sandbox_reports,
+    }
+
+
 class ProviderContractActivationTest(unittest.TestCase):
     def test_activation_requires_a_clean_worktree_including_untracked_files(self) -> None:
         module = _module()
@@ -108,6 +179,12 @@ class ProviderContractActivationTest(unittest.TestCase):
                 provider_contracts.EVOLINK_SUBMISSION_RECONCILIATION.state.value,
                 "UNVERIFIED",
             )
+
+    def test_production_preflight_rejects_the_current_unverified_contracts(self) -> None:
+        module = _readiness_module()
+        payload = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "not VERIFIED"):
+            module.validate_provider_readiness(payload)
 
     def test_activation_rejects_incomplete_wrong_stale_or_unsigned_evidence(self) -> None:
         module = _module()
@@ -187,6 +264,55 @@ class ProviderContractActivationTest(unittest.TestCase):
             if name.startswith("CREEM_"):
                 self.assertEqual(contract, original["contracts"][name])
                 self.assertEqual(contract["state"], "UNVERIFIED")
+
+    def test_creem_activation_stays_not_run_without_an_official_refund_api(self) -> None:
+        module = _module()
+        document = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        document["contracts"]["EVOLINK_SUBMISSION_RECONCILIATION"]["state"] = "VERIFIED"
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+        source_sha = "c" * 40
+        signing_key = b"provider-evidence-signing-key-32bytes"
+        bundle = _creem_bundle(
+            module,
+            document=document,
+            now=now,
+            source_sha=source_sha,
+            signing_key=signing_key,
+        )
+        before = json.loads(json.dumps(document))
+        with self.assertRaisesRegex(
+            ValueError,
+            "refund creation API endpoint is not documented",
+        ):
+            module.activate_creem_contracts(
+                document,
+                evidence_bundle=bundle,
+                expected_tested_source_sha=source_sha,
+                signing_key=signing_key,
+                approval_ref="provider-approval-123",
+                now=now,
+            )
+        self.assertEqual(document, before)
+
+    def test_creem_activation_cannot_bypass_unverified_evolink(self) -> None:
+        module = _module()
+        document = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+        with self.assertRaisesRegex(ValueError, "VERIFIED Evolink"):
+            module.activate_creem_contracts(
+                document,
+                evidence_bundle=_creem_bundle(
+                    module,
+                    document=document,
+                    now=now,
+                    source_sha="c" * 40,
+                    signing_key=b"provider-evidence-signing-key-32bytes",
+                ),
+                expected_tested_source_sha="c" * 40,
+                signing_key=b"provider-evidence-signing-key-32bytes",
+                approval_ref="provider-approval-123",
+                now=now,
+            )
 
     def test_activation_commit_must_directly_follow_support_sha_and_touch_only_two_files(self) -> None:
         module = _module()
