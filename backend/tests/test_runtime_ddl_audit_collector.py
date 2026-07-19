@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import importlib.util
+import json
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -78,6 +81,7 @@ class RuntimeDdlAuditCollectorTest(unittest.TestCase):
         self.assertEqual(report["readiness_status"], 503)
         self.assertEqual(set(report["coverage"]), collector.DDL_AUDIT_COVERAGE)
         self.assertEqual(len(report["signature_hmac_sha256"]), 64)
+        self.assertNotIn("redacted", json.dumps(report, sort_keys=True))
         verify_http.assert_called_once_with(
             "https://deployment.example",
             protected_headers={"x-bypass": "redacted"},
@@ -87,6 +91,71 @@ class RuntimeDdlAuditCollectorTest(unittest.TestCase):
             expected_runtime_bundle_id="rtb_" + "b" * 64,
             expected_deployment_id="dpl_example",
         )
+
+    def test_formal_collector_reads_both_private_bypass_headers_without_persisting_them(
+        self,
+    ) -> None:
+        edge_secret = "e" * 64
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+            state_path = Path(temp_dir) / "edge-bypass-state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "vowpic.edge-bypass-state.v1",
+                        "host": "www.vowpic.com",
+                        "header_name": collector.BYPASS_HEADER_NAME,
+                        "header_value": edge_secret,
+                        "rule_id": "rule_ephemeral",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            if os.name != "nt":
+                state_path.chmod(0o600)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "VERCEL_AUTOMATION_BYPASS_HEADER": (
+                        "x-vercel-protection-bypass: deployment-secret"
+                    )
+                },
+                clear=False,
+            ):
+                headers = collector._protected_runtime_headers(
+                    base_url="https://www.vowpic.com",
+                    deployment_bypass_header_env="VERCEL_AUTOMATION_BYPASS_HEADER",
+                    edge_bypass_state=state_path,
+                )
+        self.assertEqual(
+            headers,
+            {
+                "x-vercel-protection-bypass": "deployment-secret",
+                collector.BYPASS_HEADER_NAME: edge_secret,
+            },
+        )
+
+    def test_formal_collector_rejects_edge_state_for_another_host(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+            state_path = Path(temp_dir) / "edge-bypass-state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "vowpic.edge-bypass-state.v1",
+                        "host": "preview.vowpic.com",
+                        "header_name": collector.BYPASS_HEADER_NAME,
+                        "header_value": "e" * 64,
+                        "rule_id": "rule_ephemeral",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            if os.name != "nt":
+                state_path.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "does not match the formal domain"):
+                collector._read_edge_bypass_headers(
+                    state_path,
+                    base_url="https://www.vowpic.com",
+                )
 
     def test_collector_rejects_any_prior_or_new_runtime_ddl(self) -> None:
         with mock.patch.object(collector, "_database_audit_counts", return_value=(1, 1)):

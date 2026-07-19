@@ -1963,3 +1963,31 @@
 - The formal collector now uses the existing protected bypass header only while collecting the pre-handoff application audit. The final handoff remains unbypassed and must remove/read back every deny and runner-bypass rule before verifying the public formal domain.
 - Added a one-time PROMOTED verifier takeover pinned to source `12d5b0f7de5a7c85adb12662790badab5b541006`. It accepts exactly five modified control/evidence files, atomically transfers only run ownership/evidence and version, preserves every deployed coordinate and the PROMOTED phase, and resumes as `RETRY_PROMOTED`; rebuild, deploy, and another Promote remain impossible on this path.
 - The six directly affected tests passed, and all 67 non-temporary-file safe-baseline contract tests passed in an in-memory overlay; the remaining five filesystem tests could not create a temporary directory under this restricted client. Python AST and workflow YAML parsing passed. GitHub CI and the protected Production recovery remain required before this repair is complete. No Subagent was used.
+
+## 2026-07-18 - Route the formal audit through the actual custom edge bypass
+
+- Production recovery run `29669545740` proved the exact current-main checkout,
+  PROMOTED ownership transfer, immutable deployment reuse, and promotion
+  reconciliation, then reproduced `403` at the formal runtime-DDL collector.
+  The step already sent `x-vercel-protection-bypass`; inspection of the installed
+  firewall contract proved the active deny groups instead require the separate
+  ephemeral `x-vowpic-release-bypass` value stored only in
+  `$RUNNER_TEMP/edge-bypass-state.json`.
+- The collector now accepts that Runner-private state path, rejects non-regular,
+  oversized, non-private POSIX files and mismatched schema/host/header/value
+  contracts, and combines both protected headers only in memory. Neither header
+  is copied into its signed report or console result. The public handoff
+  verifier remains bypass-free.
+- The second ownership transfer is pinned to failed verifier
+  `16c1ff31cb91e7c34887494c860e20a79033e7c7` and activation owner run
+  `29669545740`; its cumulative source diff admits only the seven exact
+  workflow/registration/collector/test/runbook/worklog files. Build, deployment,
+  source, runtime identity, Promote, and phase remain immutable.
+- Pre-change baseline: the three runtime-DDL collector tests and 115 release
+  contract tests passed in the existing project environment. Post-change, the
+  combined focused suites passed 120/120 with one existing conditional skip;
+  Python compilation, workflow YAML parsing, whitespace checks, and the exact
+  seven-file cumulative takeover fence passed; the complete backend discovery
+  passed 846/846 with 37 existing conditional integration skips. GitHub CI,
+  protected Production recovery, and no-bypass formal-domain verification are
+  still required before this repair is complete. No Subagent was used.

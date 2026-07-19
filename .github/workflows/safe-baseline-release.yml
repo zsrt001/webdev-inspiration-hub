@@ -1639,6 +1639,7 @@ jobs:
             --base-url "$PRODUCTION_BASE_URL" \
             --request-origin "$PRODUCTION_BASE_URL" \
             --deployment-bypass-header-env VERCEL_AUTOMATION_BYPASS_HEADER \
+            --edge-bypass-state "$RUNNER_TEMP/edge-bypass-state.json" \
             --source-sha "$SOURCE_SHA" \
             --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
             --deployment-id "$DEPLOYMENT_ID" \

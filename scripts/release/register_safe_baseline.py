@@ -130,12 +130,18 @@ STAGED_TAKEOVER_ALLOWED_CONTROL_PATHS = frozenset(
 PROMOTED_FORMAL_AUDIT_REPAIR_SOURCE_SHA = (
     "12d5b0f7de5a7c85adb12662790badab5b541006"
 )
+PROMOTED_FORMAL_AUDIT_REPAIR_PREVIOUS_RUNNER_SHA = (
+    "16c1ff31cb91e7c34887494c860e20a79033e7c7"
+)
+PROMOTED_FORMAL_AUDIT_REPAIR_PREVIOUS_WORKFLOW_RUN_ID = "29669545740"
 PROMOTED_TAKEOVER_REQUIRED_CONTROL_PATHS = frozenset(
     {
         ".github/workflows/safe-baseline-release.yml",
         "backend/tests/test_ci_release_contract.py",
+        "backend/tests/test_runtime_ddl_audit_collector.py",
         "docs/ai-worklog.md",
         "docs/operations/risk-lockdown-runbook.md",
+        "scripts/release/collect_runtime_ddl_audit.py",
         "scripts/release/register_safe_baseline.py",
     }
 )
@@ -425,7 +431,11 @@ def _verifier_takeover_is_adoptable(
         str(_activation_value(activation, "phase") or "") == expected_phase
         and (
             expected_phase != "PROMOTED"
-            or source_sha == PROMOTED_FORMAL_AUDIT_REPAIR_SOURCE_SHA
+            or (
+                source_sha == PROMOTED_FORMAL_AUDIT_REPAIR_SOURCE_SHA
+                and workflow_run_id
+                == PROMOTED_FORMAL_AUDIT_REPAIR_PREVIOUS_WORKFLOW_RUN_ID
+            )
         )
         and version > 0
         and workflow_attempt > 0
@@ -604,6 +614,23 @@ def validate_staged_control_descendant(runtime_source_sha: str, runner_sha: str)
 def validate_promoted_control_descendant(runtime_source_sha: str, runner_sha: str) -> None:
     if runtime_source_sha != PROMOTED_FORMAL_AUDIT_REPAIR_SOURCE_SHA:
         raise SafeBaselineRegistrationError("promoted formal-audit takeover is not pinned to the failed source")
+    ancestry = subprocess.run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            PROMOTED_FORMAL_AUDIT_REPAIR_PREVIOUS_RUNNER_SHA,
+            runner_sha,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise SafeBaselineRegistrationError(
+            "promoted formal-audit takeover is not a descendant of the failed verifier"
+        )
     _validate_verifier_control_descendant(runtime_source_sha, runner_sha, takeover_label="promoted formal-audit takeover", allowed_paths=PROMOTED_TAKEOVER_ALLOWED_CONTROL_PATHS, required_paths=PROMOTED_TAKEOVER_REQUIRED_CONTROL_PATHS)
 
 

@@ -471,19 +471,25 @@ verification and Promote gates.
 
 A separate one-time verifier-repair exception exists for the exact PROMOTED
 safe-baseline source `12d5b0f7de5a7c85adb12662790badab5b541006` after run
-`29649808124` proved the staged application, completed the only Promote, and
-then exposed a release-workflow defect: the pre-handoff formal-domain runtime
-DDL collector omitted the already protected Vercel automation-bypass header and
-therefore observed edge `403` before the application-level `503` contract.
+`29669545740` adopted the already promoted deployment and exposed the remaining
+release-workflow defect: the pre-handoff formal-domain runtime DDL collector
+sent the Vercel deployment-protection bypass but not the independently generated
+`x-vowpic-release-bypass` value required by the active custom firewall deny
+rules. The custom edge therefore still returned `403` before the
+application-level `503` contract.
 A newly approved run may transfer only workflow run/attempt ownership, durable
 evidence URL, and row version while the activation remains `PROMOTED`. The
 source, runtime bundle, manifest, build artifact, deployment ID/URL, role,
 snapshot, and phase remain immutable. The deployed source must be the pinned
-source above, the current-main runner must be its descendant, and their complete
-diff must contain exactly modified release workflow/registration control, its
-contract test, this runbook, and the worklog. The repair passes the protected
-bypass only to the formal runtime-DDL collection that must reach the
-application. The subsequent edge handoff still removes and reads back every
+source above, the current-main runner must descend from the failed verifier
+`16c1ff31cb91e7c34887494c860e20a79033e7c7`, and their complete diff must
+contain exactly the modified release workflow/registration/collector controls,
+their two contract tests, this runbook, and the worklog. Only activation owner
+run `29669545740` is eligible for this transfer. The collector reads the
+short-lived edge header from the Runner-private `0600` state file, validates its
+schema, host, header name, size, and value shape, combines it in memory with the
+deployment-protection header, and never writes either value to evidence or
+logs. The subsequent edge handoff still removes and reads back every
 deny/bypass rule and verifies the public formal domain without any bypass. A
 recovery run starts from effective state `RETRY_PROMOTED`, must reconfirm the
 exact READY formal deployment and successful `lastAliasRequest`, and cannot
