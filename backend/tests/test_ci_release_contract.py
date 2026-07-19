@@ -1639,6 +1639,18 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             ),
             "TAKEOVER_PROMOTED",
         )
+        self.assertEqual(
+            register.classify_install_state(
+                current_revision=register.TARGET_SCHEMA,
+                activation={
+                    **activation,
+                    "workflow_run_id": "29669545740",
+                },
+                source_sha=source_sha,
+                workflow_run_id="29660000000",
+            ),
+            "CONFLICTING_INSTALL",
+        )
         connection = mock.MagicMock()
         connection.execute.return_value.mappings.return_value.one_or_none.return_value = {
             "id": activation["id"],
@@ -5801,7 +5813,10 @@ class BaselineToolContractTest(unittest.TestCase):
         self.assertNotIn("EDGE_LOCKDOWN_REPORT_B64", workflow)
         self.assertIn("github_artifact_evidence.py build-reference", formal_step)
         self.assertIn("steps.formal_evidence.outputs.artifact-id", formal_step)
-        self.assertIn("steps.formal_evidence.outputs.artifact-digest", formal_step)
+        self.assertIn(
+            'sha256:${{ steps.formal_evidence.outputs.artifact-digest }}',
+            formal_step,
+        )
         self.assertIn('--evidence-prefix "$FORMAL_EVIDENCE_REFERENCE"', formal_step)
         self.assertIn("Verify stored FORMAL_VERIFIED evidence before completion", formal_step)
         self.assertIn("github_artifact_evidence.py verify-reference", formal_step)

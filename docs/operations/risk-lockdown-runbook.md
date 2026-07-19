@@ -471,29 +471,29 @@ verification and Promote gates.
 
 A separate one-time verifier-repair exception exists for the exact PROMOTED
 safe-baseline source `12d5b0f7de5a7c85adb12662790badab5b541006` after run
-`29669545740` adopted the already promoted deployment and exposed the remaining
-release-workflow defect: the pre-handoff formal-domain runtime DDL collector
-sent the Vercel deployment-protection bypass but not the independently generated
-`x-vowpic-release-bypass` value required by the active custom firewall deny
-rules. The custom edge therefore still returned `403` before the
-application-level `503` contract.
+`29670063140` adopted the already promoted deployment, passed the protected
+formal audit and the no-bypass public handoff, then exposed the remaining
+evidence-recording defect: `upload-artifact@v7` emits a bare 64-hex output while
+the immutable reference format requires canonical `sha256:<hex>`.
 A newly approved run may transfer only workflow run/attempt ownership, durable
 evidence URL, and row version while the activation remains `PROMOTED`. The
 source, runtime bundle, manifest, build artifact, deployment ID/URL, role,
 snapshot, and phase remain immutable. The deployed source must be the pinned
 source above, the current-main runner must descend from the failed verifier
-`16c1ff31cb91e7c34887494c860e20a79033e7c7`, and their complete diff must
+`4db0f8e2a887d20c0046d6d9ec2b680d8942c4f7`, and their complete diff must
 contain exactly the modified release workflow/registration/collector controls,
-their two contract tests, this runbook, and the worklog. Only activation owner
-run `29669545740` is eligible for this transfer. The collector reads the
+their two contract tests, this runbook, and the worklog. The collector reads the
 short-lived edge header from the Runner-private `0600` state file, validates its
 schema, host, header name, size, and value shape, combines it in memory with the
 deployment-protection header, and never writes either value to evidence or
-logs. The subsequent edge handoff still removes and reads back every
-deny/bypass rule and verifies the public formal domain without any bypass. A
-recovery run starts from effective state `RETRY_PROMOTED`, must reconfirm the
-exact READY formal deployment and successful `lastAliasRequest`, and cannot
-build, deploy, arm, or send Promote again.
+logs. The formal artifact digest is prefixed exactly once at the workflow
+boundary before building the canonical reference. Only activation owner run
+`29670063140` is eligible for the next transfer. The subsequent edge handoff
+still removes and reads back every deny/bypass rule and verifies the public
+formal domain without any bypass. A recovery run starts from effective state
+`RETRY_PROMOTED`, must reconfirm the exact READY formal deployment and
+successful `lastAliasRequest`, and cannot build, deploy, arm, or send Promote
+again.
 
 A second, distinct exception exists only when an unpromoted STAGED deployment
 is proven fail-closed because `ACCEPTANCE_IDENTITY_HMAC_KEY` was missing or
