@@ -229,6 +229,10 @@ jobs:
           if count == 0:
               raise SystemExit("backend test discovery collected zero tests")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
+          for kind, cases in (("failure", result.failures), ("error", result.errors)):
+              for test, _traceback in cases:
+                  test_id = test.id().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                  print(f"::error title=Backend test {kind}::{test_id}")
           sys.exit(0 if result.wasSuccessful() else 1)
           PY
 
