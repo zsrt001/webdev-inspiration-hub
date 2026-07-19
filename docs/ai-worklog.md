@@ -2147,3 +2147,21 @@
 - The Production formal domain remains on the verified SAFE_BASELINE with
   commercial capabilities OFF. Task 30/7b must not start until Task 29 reaches
   durable `7A_ACCEPTED`. No Subagent was used.
+
+### PR CI correction
+
+- PR #63's first CI run exposed two paths not exercised by the earlier local
+  suite: local accessibility collection imported the protected Production
+  scenario before Playwright applied its skip, and the real PostgreSQL
+  control-plane test still expected eight migration-owner policies after three
+  new control tables raised the exact set to eleven.
+- Production origin validation is now lazy inside the protected scenario, so
+  unrelated local accessibility collection has no Production-environment
+  dependency. The PostgreSQL assertion now checks the exact eleven-table
+  policy set instead of a stale count.
+- The corrected PostgreSQL integration contract passed 7/7. Frontend
+  typecheck, 13 unit tests, six real Firefox accessibility routes, and 151
+  focused CI/release contract tests passed with one existing Windows privilege
+  skip. The local Chromium download remained unavailable because the existing
+  network path timed out; GitHub's browser-install job had succeeded, so the
+  pushed CI rerun remains the authoritative cross-browser result.

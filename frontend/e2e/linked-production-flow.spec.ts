@@ -22,16 +22,19 @@ import {
 
 
 const selectedPhase = String(process.env.LINKED_ACCEPTANCE_PHASE || '').trim();
-const baseOrigin = new URL(requiredString(
-  process.env.PRODUCTION_BASE_URL,
-  'Production base URL',
-  2048,
-)).origin;
 
 test.skip(
   process.env.RUN_PRODUCTION_E2E !== '1',
   'linked Production acceptance is protected-only',
 );
+
+function productionBaseOrigin(): string {
+  return new URL(requiredString(
+    process.env.PRODUCTION_BASE_URL,
+    'Production base URL',
+    2048,
+  )).origin;
+}
 
 function value(object: JsonObject, name: string): string {
   return requiredCoordinate(object[name], name);
@@ -96,6 +99,7 @@ async function buyCredits(
   instrument: JsonObject,
   timeout: number,
 ): Promise<{ purchaseId: string; status: JsonObject }> {
+  const baseOrigin = productionBaseOrigin();
   const checkout = await api<JsonObject>(page, '/api/v1/payments/checkout', {
     method: 'POST',
     headers: { 'Idempotency-Key': idempotencyKey('acceptance-credit-checkout') },
@@ -232,6 +236,7 @@ async function runCommercial(page: Page): Promise<void> {
 }
 
 async function runSubscription(page: Page): Promise<void> {
+  const baseOrigin = productionBaseOrigin();
   const input = action('subscription', [
     'currency',
     'cost_cap_minor_units',
