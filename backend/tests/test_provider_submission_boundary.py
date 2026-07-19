@@ -454,7 +454,10 @@ class ProviderSubmissionBoundaryTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(first.status, GenerationAttemptStatus.UNKNOWN)
-        provider.submit.assert_awaited_once_with(prepared.request)
+        provider.submit.assert_awaited_once_with(
+            prepared.request,
+            attempt_id=prepared.attempt_id,
+        )
         mark_unknown.assert_awaited_once()
         self.assertEqual(db.commit.await_count, 2)  # SUBMITTING, then UNKNOWN.
 

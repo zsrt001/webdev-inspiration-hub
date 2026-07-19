@@ -47,7 +47,6 @@ _TOP_LEVEL_KEYS = {
     "executable",
     "executable_sha256",
     "actions",
-    "secret_env_allowlist",
     "controls",
     "approval",
 }
@@ -62,6 +61,7 @@ _CONTROL_VALUES = {
     "late_arm_after_tombstone_forbidden": True,
     "runtime_scoped_fault_rule": True,
     "request_bytes_unchanged": True,
+    "secret_injection_idempotent": True,
 }
 _SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -107,11 +107,16 @@ def load_contract(path: Path, *, require_approved: bool) -> tuple[dict[str, Any]
     for name, specification in actions.items():
         if (
             not isinstance(specification, dict)
-            or set(specification) != {"required_cli", "optional_cli"}
+            or set(specification) != {
+                "required_cli",
+                "optional_cli",
+                "environment_allowlist",
+            }
         ):
             raise ValueError(f"Worker host action contract is invalid: {name}")
         required = specification["required_cli"]
         optional = specification["optional_cli"]
+        environment_allowlist = specification["environment_allowlist"]
         if (
             not isinstance(required, list)
             or not isinstance(optional, list)
@@ -119,15 +124,19 @@ def load_contract(path: Path, *, require_approved: bool) -> tuple[dict[str, Any]
             or any(not isinstance(flag, str) or not _FLAG.fullmatch(flag) for flag in required + optional)
         ):
             raise ValueError(f"Worker host CLI allowlist is invalid: {name}")
+        if (
+            not isinstance(environment_allowlist, list)
+            or len(set(environment_allowlist)) != len(environment_allowlist)
+            or any(
+                not isinstance(env_name, str) or not _ENV_NAME.fullmatch(env_name)
+                for env_name in environment_allowlist
+            )
+        ):
+            raise ValueError(f"Worker host environment allowlist is invalid: {name}")
+        if name != "inject-secrets" and environment_allowlist:
+            raise ValueError("Worker runtime environment may only reach inject-secrets")
     if payload.get("controls") != _CONTROL_VALUES:
         raise ValueError("Worker host safety controls are incomplete")
-    env_names = payload.get("secret_env_allowlist")
-    if (
-        not isinstance(env_names, list)
-        or len(set(env_names)) != len(env_names)
-        or any(not isinstance(name, str) or not _ENV_NAME.fullmatch(name) for name in env_names)
-    ):
-        raise ValueError("Worker host secret environment allowlist is invalid")
     approval = payload.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"state", "reference", "approved_at"}:
         raise ValueError("Worker host approval record is invalid")
@@ -261,10 +270,10 @@ def validate_host_response(payload: Any, *, action: str) -> dict[str, Any]:
     return payload
 
 
-def _safe_environment(contract: dict[str, Any]) -> dict[str, str]:
+def _safe_environment(contract: dict[str, Any], *, action: str) -> dict[str, str]:
     base_names = ("LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "TMP", "TEMP")
     result = {name: os.environ[name] for name in base_names if os.environ.get(name)}
-    for name in contract["secret_env_allowlist"]:
+    for name in contract["actions"][action]["environment_allowlist"]:
         value = os.environ.get(name)
         if not value:
             raise WorkerHostNotRun(f"approved Worker host secret environment is missing: {name}")
@@ -332,7 +341,7 @@ def run(argv: list[str]) -> int:
     completed = subprocess.run(
         command,
         cwd=Path.cwd(),
-        env=_safe_environment(contract),
+        env=_safe_environment(contract, action=action),
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

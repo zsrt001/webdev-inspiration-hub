@@ -50,11 +50,20 @@ def _official_contract(now: datetime) -> dict[str, object]:
         "schema": "vowpic.provider-official-contract.v1",
         "provider": "evolink",
         "capability": "submission_reconciliation",
-        "official_source_url": "https://docs.evolink.ai/api/submission-idempotency",
-        "official_version": "2026-07-14",
+        "official_source_url": (
+            "https://docs.evolink.ai/en/api-manual/image-series/"
+            "nanobanana/nanobanana-2-image-generate"
+        ),
+        "official_version": "retrieved-2026-07-19",
         "endpoint_schema_sha256": "a" * 64,
-        "correlation_semantics": "client_request_id is queryable after a lost submit response",
-        "idempotency_semantics": "repeating client_request_id returns the original task",
+        "correlation_semantics": (
+            "an attempt-bound HTTPS callback receives the terminal task-query payload "
+            "and its stable task ID after billing confirmation"
+        ),
+        "idempotency_semantics": (
+            "EvoLink retries a failed callback up to three times while the attempt-bound "
+            "receiver accepts one matching task ID and rejects conflicting IDs"
+        ),
         "retrieved_at": now.isoformat(),
     }
 

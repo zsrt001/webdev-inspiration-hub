@@ -142,6 +142,14 @@ jobs:
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
+          REDIS_URL: ${{ secrets.PRODUCTION_REDIS_URL }}
+          SECRET_KEY: ${{ secrets.PRODUCTION_SECRET_KEY }}
+          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
+          PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_BLOB_READ_WRITE_TOKEN }}
+          WEBHOOK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          WENWEN_VISION_API_KEY: ${{ secrets.PRODUCTION_WENWEN_VISION_API_KEY }}
         run: |
           set -euo pipefail
           python scripts/release/run_approved_worker_host.py build-push \
@@ -187,6 +195,10 @@ jobs:
             --output "$EVIDENCE_DIR/worker-suspended.json" \
             --job-env "$GITHUB_ENV" \
             --env-prefix WORKER_
+          python scripts/release/run_approved_worker_host.py inject-secrets \
+            --contract release/worker-host-contract.json \
+            --deployment-report "$EVIDENCE_DIR/worker-suspended.json" \
+            --output "$EVIDENCE_DIR/worker-secret-injection.json"
           python scripts/release/register_bundle.py advance \
             --kind COMMERCIAL_7A \
             --expected-phase RESERVED \
@@ -195,6 +207,7 @@ jobs:
             --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
             --worker-build-report "$EVIDENCE_DIR/worker-build.json" \
             --worker-deployment-report "$EVIDENCE_DIR/worker-suspended.json" \
+            --worker-secret-report "$EVIDENCE_DIR/worker-secret-injection.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$EVIDENCE_DIR/phase-worker-staged.json"

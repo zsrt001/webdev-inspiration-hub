@@ -9,70 +9,94 @@
   "actions": {
     "build-push": {
       "required_cli": ["source-sha"],
-      "optional_cli": ["release-kind"]
+      "optional_cli": ["release-kind"],
+      "environment_allowlist": []
     },
     "resolve-digest": {
       "required_cli": ["source-sha"],
-      "optional_cli": ["release-kind"]
+      "optional_cli": ["release-kind"],
+      "environment_allowlist": []
     },
     "deploy-suspended": {
       "required_cli": ["source-sha", "image-digest", "runtime-bundle-id"],
-      "optional_cli": ["release-kind"]
+      "optional_cli": ["release-kind"],
+      "environment_allowlist": []
     },
     "start": {
       "required_cli": ["image-digest", "runtime-bundle-id", "dispatch-mode"],
-      "optional_cli": ["deployment-report", "release-resolution-report"]
+      "optional_cli": ["deployment-report", "release-resolution-report"],
+      "environment_allowlist": []
     },
     "stop": {
       "required_cli": ["reason"],
-      "optional_cli": ["deployment-report", "release-resolution-report", "allow-absent"]
+      "optional_cli": ["deployment-report", "release-resolution-report", "allow-absent"],
+      "environment_allowlist": []
     },
     "set-dispatch": {
       "required_cli": ["mode"],
-      "optional_cli": ["deployment-report", "release-resolution-report", "expected-image-digest", "runtime-bundle-id", "reason", "required-fault-intent-report", "required-fault-report", "fault-cleanup-claim-report"]
+      "optional_cli": ["deployment-report", "release-resolution-report", "expected-image-digest", "runtime-bundle-id", "reason", "required-fault-intent-report", "required-fault-report", "fault-cleanup-claim-report"],
+      "environment_allowlist": []
     },
     "heartbeat": {
       "required_cli": ["expected-runtime-bundle-id"],
-      "optional_cli": ["deployment-report", "release-resolution-report", "expected-image-digest", "require-dispatch-mode", "maximum-age-seconds"]
+      "optional_cli": ["deployment-report", "release-resolution-report", "expected-image-digest", "require-dispatch-mode", "maximum-age-seconds"],
+      "environment_allowlist": []
     },
     "ensure-running": {
       "required_cli": ["dispatch-mode"],
-      "optional_cli": ["deployment-report", "release-resolution-report"]
+      "optional_cli": ["deployment-report", "release-resolution-report"],
+      "environment_allowlist": []
     },
     "rollback": {
       "required_cli": ["desired-state"],
-      "optional_cli": ["deployment-report", "release-resolution-report", "reason"]
+      "optional_cli": ["deployment-report", "release-resolution-report", "reason"],
+      "environment_allowlist": []
     },
     "reconcile-failure": {
       "required_cli": ["desired-state"],
-      "optional_cli": ["deployment-report", "release-resolution-report", "allow-absent"]
+      "optional_cli": ["deployment-report", "release-resolution-report", "allow-absent"],
+      "environment_allowlist": []
     },
     "verify-no-release": {
       "required_cli": ["source-sha", "release-kind"],
-      "optional_cli": []
+      "optional_cli": [],
+      "environment_allowlist": []
     },
     "inject-secrets": {
       "required_cli": ["deployment-report"],
-      "optional_cli": ["release-resolution-report"]
+      "optional_cli": ["release-resolution-report"],
+      "environment_allowlist": [
+        "CONTROL_PLANE_DATABASE_URL",
+        "DATABASE_URL",
+        "EVOLINK_API_KEY",
+        "PRIVATE_BLOB_READ_WRITE_TOKEN",
+        "REDIS_URL",
+        "SECRET_KEY",
+        "WEBHOOK_BASE_URL",
+        "WENWEN_VISION_API_KEY"
+      ]
     },
     "logs": {
       "required_cli": ["deployment-report"],
-      "optional_cli": ["release-resolution-report", "maximum-age-seconds"]
+      "optional_cli": ["release-resolution-report", "maximum-age-seconds"],
+      "environment_allowlist": []
     },
     "arm-response-drop-once": {
       "required_cli": ["fault-intent-report"],
-      "optional_cli": ["deployment-report", "expected-image-digest", "expected-runtime-bundle-id"]
+      "optional_cli": ["deployment-report", "expected-image-digest", "expected-runtime-bundle-id"],
+      "environment_allowlist": []
     },
     "inspect-response-drop": {
       "required_cli": [],
-      "optional_cli": ["fault-intent-report", "fault-cleanup-claim-report", "allow-absent", "require-absent", "require-none-for-runtime", "wait-control-plane-convergence"]
+      "optional_cli": ["fault-intent-report", "fault-cleanup-claim-report", "allow-absent", "require-absent", "require-none-for-runtime", "wait-control-plane-convergence"],
+      "environment_allowlist": []
     },
     "disarm-response-drop": {
       "required_cli": [],
-      "optional_cli": ["deployment-report", "fault-intent-report", "fault-report", "fault-cleanup-claim-report", "persist-intent-tombstone", "allow-not-armed", "allow-already-consumed", "require-absent", "require-none-for-runtime"]
+      "optional_cli": ["deployment-report", "fault-intent-report", "fault-report", "fault-cleanup-claim-report", "persist-intent-tombstone", "allow-not-armed", "allow-already-consumed", "require-absent", "require-none-for-runtime"],
+      "environment_allowlist": []
     }
   },
-  "secret_env_allowlist": [],
   "controls": {
     "argument_array_only": true,
     "mutable_image_tags_forbidden": true,
@@ -83,7 +107,8 @@
     "disarm_tombstone_required": true,
     "late_arm_after_tombstone_forbidden": true,
     "runtime_scoped_fault_rule": true,
-    "request_bytes_unchanged": true
+    "request_bytes_unchanged": true,
+    "secret_injection_idempotent": true
   },
   "approval": {
     "state": "NOT_APPROVED",

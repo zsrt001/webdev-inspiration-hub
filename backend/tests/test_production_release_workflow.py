@@ -213,6 +213,36 @@ class WorkerHostContractTest(unittest.TestCase):
                 {"source-sha": "a" * 40, "shell-command": "echo"},
             )
 
+    def test_only_secret_injection_receives_exact_runtime_environment_allowlist(self) -> None:
+        module = _module()
+        payload, _ = module.load_contract(CONTRACT, require_approved=False)
+        expected = {
+            "CONTROL_PLANE_DATABASE_URL",
+            "DATABASE_URL",
+            "EVOLINK_API_KEY",
+            "PRIVATE_BLOB_READ_WRITE_TOKEN",
+            "REDIS_URL",
+            "SECRET_KEY",
+            "WEBHOOK_BASE_URL",
+            "WENWEN_VISION_API_KEY",
+        }
+        self.assertEqual(
+            set(payload["actions"]["inject-secrets"]["environment_allowlist"]),
+            expected,
+        )
+        self.assertTrue(
+            all(
+                not specification["environment_allowlist"]
+                for action, specification in payload["actions"].items()
+                if action != "inject-secrets"
+            )
+        )
+        with patch.dict(os.environ, {name: f"value-for-{name}" for name in expected}):
+            injected = module._safe_environment(payload, action="inject-secrets")
+            build = module._safe_environment(payload, action="build-push")
+        self.assertTrue(expected.issubset(injected))
+        self.assertTrue(expected.isdisjoint(build))
+
     def test_host_response_must_be_exact_success_and_secret_free(self) -> None:
         module = _module()
         response = {
@@ -421,6 +451,56 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
                 evidence_sha256="f" * 64,
                 bindings=bindings,
             )
+
+    def test_worker_stage_requires_secret_injection_bound_to_exact_deployment(self) -> None:
+        register = _register_module()
+        root = TMP / "worker-stage"
+        root.mkdir(parents=True, exist_ok=True)
+        digest = "sha256:" + "b" * 64
+        runtime = "rtb_" + "c" * 64
+        worker_id = "worker-7a-01"
+
+        def write(name: str, action: str, coordinates: dict[str, str]) -> Path:
+            target = root / f"{name}.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "schema": "vowpic.worker-host-adapter-report.v1",
+                        "action": action,
+                        "passed": True,
+                        "state": "PROVEN",
+                        "coordinates": coordinates,
+                        "observed_at": "2026-07-19T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return target
+
+        build = write("build", "build-push", {"worker_image_digest": digest})
+        deployment_coordinates = {
+            "worker_image_digest": digest,
+            "worker_deployment_id": worker_id,
+            "runtime_bundle_id": runtime,
+        }
+        deployment = write("deployment", "deploy-suspended", deployment_coordinates)
+        injection = write("injection", "inject-secrets", deployment_coordinates)
+
+        self.assertEqual(
+            register._worker_bindings(build, deployment, injection),
+            {
+                "worker_image_digest": digest,
+                "worker_deployment_id": worker_id,
+                "runtime_bundle_id": runtime,
+            },
+        )
+        drifted = write(
+            "drifted-injection",
+            "inject-secrets",
+            {**deployment_coordinates, "worker_deployment_id": "worker-other"},
+        )
+        with self.assertRaisesRegex(ValueError, "secret injection binding"):
+            register._worker_bindings(build, deployment, drifted)
 
     def test_pre_schema_phase_reports_form_a_create_once_hash_chain(self) -> None:
         register = _register_module()
@@ -814,7 +894,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
         self.assertIn("group: vowpic-production-release", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
-        self.assertEqual(workflow.count("vars.PRODUCTION_BASE_URL"), 6)
+        self.assertEqual(workflow.count("vars.PRODUCTION_BASE_URL"), 7)
         self.assertNotIn("secrets.PRODUCTION_BASE_URL", workflow)
         self.assertIn("run_approved_worker_host.py build-push", workflow)
         self.assertIn("verify_commercial_provider_readiness.py", workflow)
