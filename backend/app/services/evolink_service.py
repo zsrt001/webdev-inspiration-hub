@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from enum import StrEnum
+import hashlib
+import hmac
 import re
 from typing import Any
 from urllib.parse import urlsplit
+import uuid
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -67,8 +70,8 @@ class EvolinkGenerationRequest(BaseModel):
             raise ValueError("evolink_model_params_invalid")
         return self
 
-    def provider_payload(self) -> dict[str, object]:
-        return {
+    def provider_payload(self, *, callback_url: str | None = None) -> dict[str, object]:
+        payload: dict[str, object] = {
             "model": self.model,
             "prompt": self.prompt,
             "image_urls": list(self.image_urls),
@@ -76,6 +79,9 @@ class EvolinkGenerationRequest(BaseModel):
             "quality": self.quality,
             "model_params": dict(self.model_params),
         }
+        if callback_url is not None:
+            payload["callback_url"] = _validated_https_url(callback_url)
+        return payload
 
 
 class EvolinkSubmitFact(BaseModel):
@@ -187,7 +193,13 @@ def parse_evolink_task_fact(task_id: str, payload: Any) -> EvolinkTaskFact:
         outputs = tuple(raw_outputs)
     failure_code = None
     if state in {EvolinkTaskState.FAILED, EvolinkTaskState.CANCELLED}:
-        raw_code = body.get("error_code") or ("provider_cancelled" if state is EvolinkTaskState.CANCELLED else "provider_failed")
+        raw_error = body.get("error")
+        nested_code = raw_error.get("code") if isinstance(raw_error, dict) else None
+        raw_code = (
+            body.get("error_code")
+            or nested_code
+            or ("provider_cancelled" if state is EvolinkTaskState.CANCELLED else "provider_failed")
+        )
         failure_code = re.sub(r"[^a-z0-9_.-]", "_", str(raw_code).strip().lower())[:64]
     try:
         return EvolinkTaskFact(
@@ -198,6 +210,54 @@ def parse_evolink_task_fact(task_id: str, payload: Any) -> EvolinkTaskFact:
         )
     except ValueError as exc:
         raise EvolinkProviderError("evolink_task_schema_invalid", retryable=False) from exc
+
+
+_CALLBACK_DOMAIN = b"vowpic:evolink-callback:v1:"
+
+
+def build_evolink_callback_token(
+    attempt_id: uuid.UUID,
+    *,
+    secret_key: str | None = None,
+) -> str:
+    if not isinstance(attempt_id, uuid.UUID):
+        raise ValueError("evolink_callback_attempt_id_invalid")
+    key = str(settings.secret_key if secret_key is None else secret_key).encode("utf-8")
+    if len(key) < 32:
+        raise ValueError("evolink_callback_secret_invalid")
+    return hmac.new(
+        key,
+        _CALLBACK_DOMAIN + str(attempt_id).encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_evolink_callback_token(
+    attempt_id: uuid.UUID,
+    token: str,
+    *,
+    secret_key: str | None = None,
+) -> bool:
+    candidate = str(token or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", candidate):
+        return False
+    expected = build_evolink_callback_token(attempt_id, secret_key=secret_key)
+    return hmac.compare_digest(candidate, expected)
+
+
+def build_evolink_callback_url(
+    attempt_id: uuid.UUID,
+    *,
+    base_url: str | None = None,
+    secret_key: str | None = None,
+) -> str:
+    origin = str(
+        settings.effective_webhook_base_url if base_url is None else base_url
+    ).strip().rstrip("/")
+    token = build_evolink_callback_token(attempt_id, secret_key=secret_key)
+    return _validated_https_url(
+        f"{origin}/api/v1/provider-callbacks/evolink/{attempt_id}/{token}"
+    )
 
 
 class EvolinkService:
@@ -262,6 +322,10 @@ class EvolinkService:
             errors.append("EVOLINK_API_BASE_URL must be an HTTPS origin")
         if not settings.evolink_image_model:
             errors.append("EVOLINK_IMAGE_MODEL is required")
+        try:
+            build_evolink_callback_url(uuid.UUID(int=0))
+        except ValueError:
+            errors.append("Evolink callback origin and SECRET_KEY must be production-safe")
         if errors:
             raise ValueError("; ".join(errors))
 
@@ -279,13 +343,19 @@ class EvolinkService:
             raise EvolinkProviderError("evolink_auth_failed", retryable=False)
         raise EvolinkProviderError("evolink_runtime_unavailable", retryable=True)
 
-    async def submit(self, request: EvolinkGenerationRequest) -> EvolinkSubmitFact:
+    async def submit(
+        self,
+        request: EvolinkGenerationRequest,
+        *,
+        attempt_id: uuid.UUID,
+    ) -> EvolinkSubmitFact:
         self.validate_runtime_requirements()
+        callback_url = build_evolink_callback_url(attempt_id)
         timeout = httpx.Timeout(connect=10.0, read=45.0, write=45.0, pool=10.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             response = await client.post(
                 self._image_generation_url(),
-                json=request.provider_payload(),
+                json=request.provider_payload(callback_url=callback_url),
                 headers=self._headers(),
             )
         if response.status_code in {400, 401, 402, 403, 404, 409, 422, 429}:

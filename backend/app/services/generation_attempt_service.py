@@ -456,6 +456,7 @@ async def mark_submission_unknown(
         raise GenerationAttemptBoundaryError("generation_attempt_unknown_transition_invalid")
     attempt.status = validate_attempt_transition(attempt.status, GenerationAttemptStatus.UNKNOWN)
     job.status = validate_job_transition(job.status, GenerationJobStatus.RECONCILING)
+    job.next_retry_at = current if attempt.provider_job_id else None
     job.last_error_code = str(reason)[:64]
     job.lease_owner = None
     job.lease_claim_id = None
@@ -735,7 +736,7 @@ async def submit_generation_attempt(
     retries_used = 0
     while True:
         try:
-            fact = await provider.submit(prepared.request)
+            fact = await provider.submit(prepared.request, attempt_id=prepared.attempt_id)
         except (httpx.TimeoutException, httpx.WriteError):
             attempt = await mark_submission_unknown(
                 db,

@@ -749,7 +749,11 @@ def bind_migration_parent_cas(
 
 
 _PHASE_EVIDENCE_ARGUMENTS = {
-    "WORKER_STAGED": ("worker_build_report", "worker_deployment_report"),
+    "WORKER_STAGED": (
+        "worker_build_report",
+        "worker_deployment_report",
+        "worker_secret_report",
+    ),
     "API_BASELINE_STAGED": ("build_output", "inspect_report"),
     "API_TARGET_STAGED": ("build_output", "inspect_report"),
     "SCHEMA_0020": ("migration_report", "replay_report"),
@@ -791,10 +795,22 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _worker_bindings(build_report: Path, deployment_report: Path) -> dict[str, str]:
+def _worker_bindings(
+    build_report: Path,
+    deployment_report: Path,
+    secret_report: Path,
+) -> dict[str, str]:
     build = _load_json_object(build_report, label="Worker build report")
     deployment = _load_json_object(deployment_report, label="Worker deployment report")
-    for payload, action in ((build, "build-push"), (deployment, "deploy-suspended")):
+    secret_injection = _load_json_object(
+        secret_report,
+        label="Worker secret injection report",
+    )
+    for payload, action in (
+        (build, "build-push"),
+        (deployment, "deploy-suspended"),
+        (secret_injection, "inject-secrets"),
+    ):
         if (
             payload.get("schema") != "vowpic.worker-host-adapter-report.v1"
             or payload.get("action") != action
@@ -804,6 +820,7 @@ def _worker_bindings(build_report: Path, deployment_report: Path) -> dict[str, s
             raise ValueError(f"approved Worker {action} report is invalid")
     build_coordinates = build["coordinates"]
     deployment_coordinates = deployment["coordinates"]
+    secret_coordinates = secret_injection["coordinates"]
     digest = str(build_coordinates.get("worker_image_digest") or "").lower()
     deployment_digest = str(deployment_coordinates.get("worker_image_digest") or "").lower()
     worker_id = str(deployment_coordinates.get("worker_deployment_id") or "")
@@ -814,6 +831,12 @@ def _worker_bindings(build_report: Path, deployment_report: Path) -> dict[str, s
         raise ValueError("Worker deployment ID is invalid")
     if not _RUNTIME_ID.fullmatch(runtime):
         raise ValueError("Worker deployment runtime bundle ID is invalid")
+    if (
+        str(secret_coordinates.get("worker_deployment_id") or "") != worker_id
+        or str(secret_coordinates.get("runtime_bundle_id") or "").lower() != runtime
+        or str(secret_coordinates.get("worker_image_digest") or "").lower() != digest
+    ):
+        raise ValueError("Worker secret injection binding is invalid")
     return {
         "runtime_bundle_id": runtime,
         "worker_deployment_id": worker_id,
@@ -1562,7 +1585,9 @@ def _advance_main(argv: list[str]) -> int:
         if args.phase == "WORKER_STAGED":
             bindings.update(
                 _worker_bindings(
-                    Path(args.worker_build_report), Path(args.worker_deployment_report)
+                    Path(args.worker_build_report),
+                    Path(args.worker_deployment_report),
+                    Path(args.worker_secret_report),
                 )
             )
             if args.runtime_bundle_id and args.runtime_bundle_id != bindings["runtime_bundle_id"]:
