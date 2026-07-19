@@ -2174,3 +2174,11 @@
   changing the established suite working-directory contract. The exact
   retained CI discovery passed 976 tests with 37 explicit conditional skips;
   the five affected modules passed 16/16 when run first from `backend/tests`.
+- The next Ubuntu run isolated eight remaining Python-to-Node acceptance
+  failures. Their shared cause was POSIX file mode, not application behavior:
+  the tests created private acceptance inputs with the runner's default mode,
+  while the production validator correctly rejects any non-Windows input that
+  is not `0600`. All four test writers now set `0600` before invoking Node;
+  the production validator remains fail-closed and unchanged. The four
+  affected modules passed 19/19 locally, with the pushed Ubuntu rerun as the
+  authoritative POSIX verification.

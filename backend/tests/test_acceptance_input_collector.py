@@ -208,6 +208,7 @@ class AcceptanceInputCollectorTest(unittest.TestCase):
         input_path = TMP / f"{output_name}.input.json"
         output_path = TMP / f"{output_name}.json"
         input_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        input_path.chmod(0o600)
         return subprocess.run(
             [
                 NODE,

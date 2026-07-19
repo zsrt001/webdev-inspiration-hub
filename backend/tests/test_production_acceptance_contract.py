@@ -80,6 +80,7 @@ class ProductionAcceptanceContractTest(unittest.TestCase):
             json.dumps(input_payload, sort_keys=True),
             encoding="utf-8",
         )
+        input_path.chmod(0o600)
         env = {
             **os.environ,
             "RUNNER_TEMP": str(TMP),

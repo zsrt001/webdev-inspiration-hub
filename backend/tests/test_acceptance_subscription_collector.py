@@ -219,6 +219,7 @@ class AcceptanceSubscriptionCollectorTest(unittest.TestCase):
         input_path = TMP / "subscription.input.json"
         output_path = TMP / "subscription.json"
         input_path.write_text(json.dumps(sealed, sort_keys=True), encoding="utf-8")
+        input_path.chmod(0o600)
         completed = subprocess.run(
             [
                 NODE,
