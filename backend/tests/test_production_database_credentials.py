@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "release" / "verify_production_database_credentials.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "production-database-credential-proof.yml"
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location(
+        "verify_production_database_credentials",
+        SCRIPT,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("credential proof module cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+proof = _load_module()
+
+
+def _facts(kind: str) -> dict[str, object]:
+    session = proof.EXPECTED_SESSIONS[kind]
+    current = proof.EXPECTED_CURRENT_USERS[kind]
+    current_memberships: dict[str, list[str]] = {
+        "runtime": ["vowpic_identity_service", "vowpic_runtime"],
+        "control_writer": ["vowpic_control_writer"],
+        "control_reader": [],
+    }
+    return {
+        "session_user": session,
+        "current_user": current,
+        "database": "postgres",
+        "default_read_only": "on" if kind == "control_reader" else "off",
+        "session_can_login": True,
+        "session_inherits": True,
+        "session_superuser": False,
+        "session_create_db": False,
+        "session_create_role": False,
+        "session_replication": False,
+        "session_bypass_rls": False,
+        "session_direct_memberships": [current],
+        "current_direct_memberships": current_memberships[kind],
+        "runtime_member": kind == "runtime",
+        "control_writer_member": kind == "control_writer",
+        "schema_select": True,
+        "schema_update": False,
+        "flags_select": True,
+        "flags_update": kind == "control_writer",
+        "activations_select": True,
+        "activations_insert": kind == "control_writer",
+        "activations_update": kind == "control_writer",
+        "activations_delete": kind == "control_writer",
+        "users_select": kind in {"runtime", "control_reader"},
+        "users_update": False,
+    }
+
+
+class ProductionDatabaseCredentialProofTests(unittest.TestCase):
+    def test_validates_three_distinct_tls_pooler_urls(self) -> None:
+        urls = {
+            kind: (
+                "postgresql://"
+                f"{login}.ucqdgdjituqzzsnfprqd:secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            )
+            for kind, login in proof.EXPECTED_SESSIONS.items()
+        }
+        parsed = proof.validate_database_urls(urls)
+        self.assertEqual(set(parsed), set(proof.EXPECTED_SESSIONS))
+
+    def test_rejects_reused_login(self) -> None:
+        shared = (
+            "postgresql://vowpic_release_runtime_login.ucqdgdjituqzzsnfprqd:secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        with self.assertRaisesRegex(ValueError, "invalid login"):
+            proof.validate_database_urls({kind: shared for kind in proof.EXPECTED_SESSIONS})
+
+    def test_accepts_least_privilege_facts(self) -> None:
+        result = proof.validate_database_facts(
+            {kind: _facts(kind) for kind in proof.EXPECTED_SESSIONS}
+        )
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["schema"], proof.SCHEMA)
+
+    def test_rejects_control_reader_write_privilege(self) -> None:
+        facts = {kind: _facts(kind) for kind in proof.EXPECTED_SESSIONS}
+        facts["control_reader"]["activations_update"] = True
+        with self.assertRaisesRegex(ValueError, "control-reader"):
+            proof.validate_database_facts(facts)
+
+    def test_workflow_uses_only_protected_environment_secrets(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("environment: production", workflow)
+        self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
+        for name in proof.ENVIRONMENTS.values():
+            self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
+        self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
+        self.assertNotIn("pull_request:", workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()
