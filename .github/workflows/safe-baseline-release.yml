@@ -1723,7 +1723,7 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --run-id "$GITHUB_RUN_ID" \
             --artifact-id "${{ steps.formal_evidence.outputs.artifact-id }}" \
-            --artifact-digest "${{ steps.formal_evidence.outputs.artifact-digest }}" \
+            --artifact-digest "sha256:${{ steps.formal_evidence.outputs.artifact-digest }}" \
             --report-name safe-baseline-formal.json \
             --output "$RUNNER_TEMP/formal-evidence-reference.txt"
           FORMAL_EVIDENCE_REFERENCE="$(tr -d '\r\n' < "$RUNNER_TEMP/formal-evidence-reference.txt")"

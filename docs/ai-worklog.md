@@ -1991,3 +1991,28 @@
   passed 846/846 with 37 existing conditional integration skips. GitHub CI,
   protected Production recovery, and no-bypass formal-domain verification are
   still required before this repair is complete. No Subagent was used.
+
+## 2026-07-18 - Canonicalize the uploaded formal-evidence digest
+
+- PR #60 merged as `4db0f8e2a887d20c0046d6d9ec2b680d8942c4f7`;
+  all nine PR checks passed. Protected recovery run `29670063140` then passed
+  the exact PROMOTED takeover, runtime/deployment reuse, promotion
+  reconciliation, formal runtime-DDL audit, and public no-bypass edge handoff.
+- The run stopped before `FORMAL_VERIFIED` because
+  `actions/upload-artifact@v7` returned bare digest
+  `<64 lowercase hex>`, while `github_artifact_evidence.py` correctly rejected
+  anything other than canonical `sha256:<64 lowercase hex>`. No application,
+  deployment, domain, database, or edge-handoff verification failed.
+- The workflow now adds the required `sha256:` prefix exactly at that action
+  output boundary. The next ownership transfer is pinned to failed verifier
+  `4db0f8e2a887d20c0046d6d9ec2b680d8942c4f7` and owner run `29670063140`;
+  stale owners are explicitly rejected. The runtime source, deployment,
+  Promote, edge handoff, and activation phase remain immutable.
+- A focused contract was red against the uncorrected workflow. Post-change, the
+  three directly affected takeover/reference contracts passed, the combined
+  collector/release suites passed 120/120 with one existing conditional skip,
+  Python compilation, workflow YAML parsing, whitespace and the exact
+  seven-file cumulative takeover fence passed, and full backend discovery
+  passed 846/846 with 37 existing conditional integration skips. GitHub CI,
+  protected recovery through `COMPLETED`, and final domain verification remain
+  required. No Subagent was used.
