@@ -2165,3 +2165,10 @@
   skip. The local Chromium download remained unavailable because the existing
   network path timed out; GitHub's browser-install job had succeeded, so the
   pushed CI rerun remains the authoritative cross-browser result.
+- The second CI run proved the frontend fix and all four real PostgreSQL
+  contracts, then exposed that the final backend discovery still ran from the
+  `backend/` directory and therefore could not import five new repository-root
+  `scripts.release` modules. CI now discovers `backend/tests` from the
+  repository root with `backend` as its package top level. The exact corrected
+  discovery passed 977 tests with 37 explicit conditional skips, and a static
+  contract prevents the CI working directory from regressing.

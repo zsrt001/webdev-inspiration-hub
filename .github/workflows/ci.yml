@@ -217,13 +217,15 @@ jobs:
           PARTNER_INVITE_RLS_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
         run: python -m unittest backend.tests.integration.test_partner_invite_rls -v
       - name: Run a non-empty backend suite
-        working-directory: backend
         run: |
           python - <<'PY'
           import sys
           import unittest
 
-          suite = unittest.defaultTestLoader.discover("tests")
+          suite = unittest.defaultTestLoader.discover(
+              "backend/tests",
+              top_level_dir="backend",
+          )
           count = suite.countTestCases()
           print(f"collected_backend_tests={count}")
           if count == 0:
