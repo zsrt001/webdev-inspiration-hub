@@ -5,7 +5,7 @@
   "worker_compatibility_version": "vowpic-worker.v1",
   "job_payload_version": "generation-job.v1",
   "source_sha256": {
-    "backend/app/core/config.py": "44c915a3456bb64faf14f21c534d98bb605289f62b45a013c8c2878aa37bbf80",
+    "backend/app/core/config.py": "35ed78f41be175932b5a0bb84a1831f27e01287670eb1e8865175c0a6eb0139e",
     "backend/app/main.py": "de890e4b17e03aa437d5c69568a7888232582da6d857f6020751e9ab0ddca3af",
     "backend/app/worker.py": "660a0e87242c24dd3ed8b0711af73a6ed8a86c23fb6a7856a4a42526289d2c1f",
     "backend/app/models/generation_job.py": "7fb595b3b8b01811af3bc84429f6147623fc730713aed7b3daeaa23375485bcf",
