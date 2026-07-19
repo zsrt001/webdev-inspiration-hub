@@ -1956,3 +1956,10 @@
   focused tests were red before implementation and passed after it. Full
   release-control regression, GitHub CI, protected rearm/rebuild, promotion,
   and formal-domain verification remain required.
+
+## 2026-07-18 - Resume the exact PROMOTED baseline through the protected formal audit
+
+- Protected safe-baseline run `29649808124` attempt 2 passed the immutable build, staged deployment, runtime identity, cleanup-pause audit, staged verification, durable staged evidence, and the only Promote request. It then failed before edge handoff because the formal-domain runtime DDL collector omitted the configured Vercel automation-bypass header and observed edge `403` instead of the application-level `503` contract.
+- The formal collector now uses the existing protected bypass header only while collecting the pre-handoff application audit. The final handoff remains unbypassed and must remove/read back every deny and runner-bypass rule before verifying the public formal domain.
+- Added a one-time PROMOTED verifier takeover pinned to source `12d5b0f7de5a7c85adb12662790badab5b541006`. It accepts exactly five modified control/evidence files, atomically transfers only run ownership/evidence and version, preserves every deployed coordinate and the PROMOTED phase, and resumes as `RETRY_PROMOTED`; rebuild, deploy, and another Promote remain impossible on this path.
+- The six directly affected tests passed, and all 67 non-temporary-file safe-baseline contract tests passed in an in-memory overlay; the remaining five filesystem tests could not create a temporary directory under this restricted client. Python AST and workflow YAML parsing passed. GitHub CI and the protected Production recovery remain required before this repair is complete. No Subagent was used.
