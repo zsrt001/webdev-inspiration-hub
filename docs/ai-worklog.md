@@ -2395,3 +2395,11 @@
   after the `curl` subcommand to the system curl binary. The workflow now puts
   the global token option before the subcommand, matching the CLI parser's
   verified command contract; no database design or credential contract changed.
+- Protected run `29742295692` supplied the token before the subcommand, but the
+  same pinned CLI still forwarded it to system curl. Direct inspection of the
+  pinned 56.2.0 implementation resolves the remaining ambiguity: the global
+  client reads `VERCEL_TOKEN` from the environment, while the curl-specific
+  parser treats every `--token` occurrence as an unknown tool flag and forwards
+  it. The download commands therefore omit the flag entirely and authenticate
+  through the already scoped `VERCEL_TOKEN` step environment. This run again
+  passed the database-side proof and exact deployment deletion before failing.

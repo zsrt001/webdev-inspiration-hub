@@ -986,16 +986,16 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl /credential-url.bin',
+            '"$VERCEL_CLI" curl /credential-url.bin',
             workflow,
         )
         self.assertIn(
-            '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl /proof.json',
+            '"$VERCEL_CLI" curl /proof.json',
             workflow,
         )
-        self.assertEqual(
-            workflow.count('"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl /'),
-            2,
+        self.assertNotIn(
+            '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl',
+            workflow,
         )
         self.assertEqual(workflow.count("--yes \\\n"), 3)
         self.assertIn('proof.get("state") != "PASSED"', workflow)
