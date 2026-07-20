@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sys
 from typing import Mapping
 from urllib.parse import unquote, urlsplit
@@ -29,6 +30,7 @@ ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
 RUNTIME_DATABASE_URL_ENV = "PRODUCTION_RUNTIME_DATABASE_URL"
 CONTROL_WRITER_DATABASE_URL_ENV = "PRODUCTION_CONTROL_PLANE_DATABASE_URL"
 CONTROL_READER_SECRET_ENV = "PRODUCTION_CONTROL_READ_DATABASE_URL"
+BUILD_OUTPUT_DIRECTORY = Path(".vowpic-control-reader-repair-output")
 
 
 def _required_environment(environment: Mapping[str, str], name: str) -> str:
@@ -79,6 +81,14 @@ def _safe_failure_reason(exc: Exception) -> str:
     return "database operation failed"
 
 
+def write_build_output() -> None:
+    BUILD_OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    BUILD_OUTPUT_DIRECTORY.joinpath("index.html").write_text(
+        "<!doctype html><title>Private repair completed</title>\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     try:
         result = rotate_and_prove(os.environ)
@@ -96,6 +106,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    write_build_output()
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return 0
 

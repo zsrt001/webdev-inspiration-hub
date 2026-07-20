@@ -885,6 +885,55 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             vercel_build_repair._safe_failure_reason(error),
         )
 
+    def test_vercel_build_main_writes_output_only_after_success(self) -> None:
+        result = {
+            "schema": vercel_build_repair.SCHEMA,
+            "state": "PASSED",
+        }
+        with (
+            mock.patch.object(
+                vercel_build_repair,
+                "rotate_and_prove",
+                return_value=result,
+            ),
+            mock.patch.object(
+                vercel_build_repair,
+                "write_build_output",
+            ) as write_output,
+        ):
+            self.assertEqual(vercel_build_repair.main(), 0)
+        write_output.assert_called_once_with()
+
+        with (
+            mock.patch.object(
+                vercel_build_repair,
+                "rotate_and_prove",
+                side_effect=vercel_build_repair.psycopg2.OperationalError(),
+            ),
+            mock.patch.object(
+                vercel_build_repair,
+                "write_build_output",
+            ) as forbidden_output,
+        ):
+            self.assertEqual(vercel_build_repair.main(), 1)
+        forbidden_output.assert_not_called()
+
+    def test_vercel_build_output_is_fixed_and_contains_no_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "repair-output"
+            with mock.patch.object(
+                vercel_build_repair,
+                "BUILD_OUTPUT_DIRECTORY",
+                output,
+            ):
+                vercel_build_repair.write_build_output()
+            document = output.joinpath("index.html").read_text(encoding="utf-8")
+            self.assertEqual(
+                document,
+                "<!doctype html><title>Private repair completed</title>\n",
+            )
+            self.assertNotIn("postgres", document.lower())
+
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
@@ -944,6 +993,13 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn(
             "backend/scripts/_control_reader_repair/rotate_production_control_reader_in_vercel_build.py",
             repair_config["buildCommand"],
+        )
+        self.assertLessEqual(len(repair_config["installCommand"]), 256)
+        self.assertLessEqual(len(repair_config["buildCommand"]), 256)
+        self.assertEqual(
+            repair_config["buildCommand"],
+            "python backend/scripts/_control_reader_repair/"
+            "rotate_production_control_reader_in_vercel_build.py",
         )
         self.assertEqual(
             repair_config["outputDirectory"],
