@@ -35,6 +35,7 @@ from verify_production_database_credentials import (
 CONTROL_READER_KIND = "control_reader"
 CONTROL_READER_LOGIN = EXPECTED_SESSIONS[CONTROL_READER_KIND]
 CONTROL_READER_ROLE = EXPECTED_CURRENT_USERS[CONTROL_READER_KIND]
+LEGACY_CONTROL_READER_LOGIN = "vowpic_release_control_read_login"
 POOLER_AUTH_RETRY_DELAYS_SECONDS = (0, 15, 30, 60)
 VERCEL_ENV_ENDPOINT = "https://api.vercel.com/v10/projects/{project_id}/env"
 VERCEL_ENV_VALUE_ENDPOINT = (
@@ -339,7 +340,10 @@ def _database_target(url: str) -> tuple[str, int, str]:
     return host, int(parsed.port), database
 
 
-def _validate_control_reader_role(cursor: RealDictCursor) -> None:
+def _control_reader_role_facts(
+    cursor: RealDictCursor,
+    login: str,
+) -> dict[str, object] | None:
     cursor.execute(
         """
         SELECT role.rolcanlogin, role.rolinherit, role.rolsuper, role.rolcreatedb,
@@ -362,11 +366,17 @@ def _validate_control_reader_role(cursor: RealDictCursor) -> None:
         FROM pg_roles role
         WHERE role.rolname = %s
         """,
-        (CONTROL_READER_LOGIN,),
+        (login,),
     )
     facts = cursor.fetchone()
-    if facts is None:
-        raise ValueError("Production control-reader login does not exist")
+    return dict(facts) if facts is not None else None
+
+
+def _assert_control_reader_role_facts(
+    facts: dict[str, object],
+    *,
+    login: str,
+) -> None:
     forbidden = (
         not facts["rolcanlogin"],
         not facts["rolinherit"],
@@ -379,7 +389,33 @@ def _validate_control_reader_role(cursor: RealDictCursor) -> None:
         list(facts["memberships"] or []) != [CONTROL_READER_ROLE],
     )
     if any(forbidden):
-        raise ValueError("Production control-reader login violates the recovery contract")
+        raise ValueError(f"Production control-reader login {login} violates the recovery contract")
+
+
+def _validate_control_reader_role(
+    cursor: RealDictCursor,
+    *,
+    login: str = CONTROL_READER_LOGIN,
+) -> None:
+    facts = _control_reader_role_facts(cursor, login)
+    if facts is None:
+        raise ValueError(f"Production control-reader login {login} does not exist")
+    _assert_control_reader_role_facts(facts, login=login)
+
+
+def _validate_recovery_authority(cursor: RealDictCursor) -> None:
+    cursor.execute(
+        "SELECT session_user, current_user, role.rolsuper "
+        "FROM pg_roles role WHERE role.rolname = session_user"
+    )
+    authority = cursor.fetchone()
+    if (
+        authority is None
+        or authority["session_user"] != "postgres"
+        or authority["current_user"] != "postgres"
+        or authority["rolsuper"] is not True
+    ):
+        raise ValueError("Vercel DATABASE_URL is not a postgres recovery authority")
 
 
 def rotate_control_reader_password(
@@ -407,19 +443,20 @@ def rotate_control_reader_password(
         cursor_factory=RealDictCursor,
     ) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT session_user, current_user, role.rolsuper "
-                "FROM pg_roles role WHERE role.rolname = session_user"
-            )
-            authority = cursor.fetchone()
-            if (
-                authority is None
-                or authority["session_user"] != "postgres"
-                or authority["current_user"] != "postgres"
-                or authority["rolsuper"] is not True
-            ):
-                raise ValueError("Vercel DATABASE_URL is not a postgres recovery authority")
-            _validate_control_reader_role(cursor)
+            _validate_recovery_authority(cursor)
+            existing = _control_reader_role_facts(cursor, CONTROL_READER_LOGIN)
+            if existing is None:
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB "
+                        "NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT"
+                    ).format(sql.Identifier(CONTROL_READER_LOGIN))
+                )
+            else:
+                _assert_control_reader_role_facts(
+                    existing,
+                    login=CONTROL_READER_LOGIN,
+                )
             cursor.execute("SET LOCAL password_encryption = 'scram-sha-256'")
             cursor.execute(
                 sql.SQL(
@@ -429,6 +466,42 @@ def rotate_control_reader_password(
                 (password,),
             )
             cursor.execute(
+                sql.SQL("GRANT {} TO {}").format(
+                    sql.Identifier(CONTROL_READER_ROLE),
+                    sql.Identifier(CONTROL_READER_LOGIN),
+                )
+            )
+            cursor.execute(
+                sql.SQL("ALTER ROLE {} IN DATABASE {} SET ROLE TO {}").format(
+                    sql.Identifier(CONTROL_READER_LOGIN),
+                    sql.Identifier(str(runtime["database"])),
+                    sql.Identifier(CONTROL_READER_ROLE),
+                )
+            )
+            cursor.execute(
+                sql.SQL("ALTER ROLE {} SET default_transaction_read_only = on").format(
+                    sql.Identifier(CONTROL_READER_LOGIN)
+                )
+            )
+            cursor.execute(
+                sql.SQL("ALTER ROLE {} SET statement_timeout = '5min'").format(
+                    sql.Identifier(CONTROL_READER_LOGIN)
+                )
+            )
+            cursor.execute(
+                sql.SQL("REVOKE ALL ON SCHEMA public FROM {}").format(
+                    sql.Identifier(CONTROL_READER_LOGIN)
+                )
+            )
+            for object_kind in ("TABLES", "SEQUENCES", "FUNCTIONS"):
+                cursor.execute(
+                    sql.SQL(
+                        f"REVOKE ALL PRIVILEGES ON ALL {object_kind} "
+                        "IN SCHEMA public FROM {}"
+                    ).format(sql.Identifier(CONTROL_READER_LOGIN))
+                )
+            _validate_control_reader_role(cursor)
+            cursor.execute(
                 "SELECT role.rolpassword LIKE 'SCRAM-SHA-256$%' AS password_uses_scram "
                 "FROM pg_authid role WHERE role.rolname = %s",
                 (CONTROL_READER_LOGIN,),
@@ -436,6 +509,69 @@ def rotate_control_reader_password(
             password_facts = cursor.fetchone()
             if password_facts is None or password_facts["password_uses_scram"] is not True:
                 raise ValueError("Production control-reader password is not stored as SCRAM")
+
+
+def retire_legacy_control_reader_login(
+    admin_url: str,
+    runtime_url: str,
+    control_writer_url: str,
+) -> str:
+    """Drop only the proven obsolete outer login, rolling back on any dependency."""
+    runtime = _source_coordinates(runtime_url, EXPECTED_SESSIONS["runtime"])
+    writer = _source_coordinates(
+        control_writer_url,
+        EXPECTED_SESSIONS["control_writer"],
+    )
+    if runtime != writer or _database_target(admin_url) != (
+        runtime["host"],
+        runtime["port"],
+        runtime["database"],
+    ):
+        raise ValueError("recovery authority does not share the Production target")
+    with psycopg2.connect(
+        _sync_url(admin_url),
+        cursor_factory=RealDictCursor,
+    ) as connection:
+        with connection.cursor() as cursor:
+            _validate_recovery_authority(cursor)
+            _validate_control_reader_role(cursor)
+            legacy = _control_reader_role_facts(cursor, LEGACY_CONTROL_READER_LOGIN)
+            if legacy is None:
+                return "ALREADY_ABSENT"
+            _assert_control_reader_role_facts(
+                legacy,
+                login=LEGACY_CONTROL_READER_LOGIN,
+            )
+            cursor.execute(
+                sql.SQL("ALTER ROLE {} WITH NOLOGIN").format(
+                    sql.Identifier(LEGACY_CONTROL_READER_LOGIN)
+                )
+            )
+            cursor.execute(
+                sql.SQL("REVOKE {} FROM {}").format(
+                    sql.Identifier(CONTROL_READER_ROLE),
+                    sql.Identifier(LEGACY_CONTROL_READER_LOGIN),
+                )
+            )
+            cursor.execute(
+                sql.SQL("ALTER ROLE {} RESET ALL").format(
+                    sql.Identifier(LEGACY_CONTROL_READER_LOGIN)
+                )
+            )
+            cursor.execute(
+                sql.SQL("ALTER ROLE {} IN DATABASE {} RESET ROLE").format(
+                    sql.Identifier(LEGACY_CONTROL_READER_LOGIN),
+                    sql.Identifier(str(runtime["database"])),
+                )
+            )
+            cursor.execute(
+                sql.SQL("DROP ROLE {}").format(
+                    sql.Identifier(LEGACY_CONTROL_READER_LOGIN)
+                )
+            )
+            if _control_reader_role_facts(cursor, LEGACY_CONTROL_READER_LOGIN) is not None:
+                raise ValueError("legacy Production control-reader login still exists")
+    return "DELETED"
 
 
 def prove_control_reader_after_pooler_propagation(

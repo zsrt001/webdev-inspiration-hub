@@ -19,7 +19,7 @@ SCHEMA = "vowpic.production-database-credential-proof.v1"
 EXPECTED_SESSIONS = {
     "runtime": "vowpic_release_runtime_login",
     "control_writer": "vowpic_release_control_login",
-    "control_reader": "vowpic_release_control_read_login",
+    "control_reader": "vowpic_release_inventory_login",
 }
 EXPECTED_CURRENT_USERS = {
     "runtime": "vowpic_app_runtime",

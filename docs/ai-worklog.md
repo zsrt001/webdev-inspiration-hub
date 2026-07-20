@@ -2638,3 +2638,37 @@
   release-contract, and Production release-workflow regression passes 195
   tests with two explicit local skips; Python syntax, workflow YAML and shell
   syntax, and `git diff --check` pass.
+- Protected session-pooler probe `29768463893` failed only the control-reader
+  credential on port 5432. This independently excludes transaction-pooler port
+  6543 as the cause. A first fresh-password repair attempt `29769121054` failed
+  while decoding an incorrectly supplied OpenSSH public-key line, before the
+  database or Vercel mutation step; the protected reader Secret was restored
+  immediately. The corrected PEM input was then used for protected repair run
+  `29769399307`, which passed the unaliased Vercel build, fresh-password
+  rotation, SCRAM postcondition, all three least-privilege role proofs,
+  deterministic encrypted normalization, and exact deployment deletion.
+- After 154 seconds without reader connections, independent permanent proof
+  `29769837062` still failed only `vowpic_release_control_read_login` on a
+  Supavisor node while runtime and control-writer credentials passed. This
+  disproves password reuse, URL publication drift, non-SCRAM storage, pooler
+  mode, and the documented two-minute circuit/cache interval as sufficient
+  explanations. Supabase documents password-verifier caching faults in
+  Supavisor; the minimum reversible recovery is therefore a new outer login
+  name rather than another same-login password mutation.
+- The replacement `vowpic_release_inventory_login` can only inherit the
+  existing `vowpic_inventory_login` read role, is forced to non-superuser,
+  non-creator, non-replication, non-bypass-RLS and read-only defaults, owns no
+  objects, and receives no direct public-schema object privileges. The old
+  outer login is preserved until a permanent GitHub proof succeeds. A separate
+  protected retirement pass proves the replacement first, then drops only the
+  exact legacy login in one transaction; unexpected memberships, ownership,
+  dependencies, or authority fail closed and roll back. No `DROP OWNED`,
+  `REASSIGN OWNED`, production data mutation, or Proxifier operation is used.
+- The replacement and retirement contract passes 211 focused credential,
+  database-login, CI release, Production release-workflow, and release-contract
+  tests with two explicit local skips. The direct credential module passes
+  44 tests with one unavailable-PostgreSQL skip. Python compilation, workflow
+  YAML parsing, all six workflow Bash blocks, and `git diff --check` pass. Live
+  creation, permanent proof, old-login retirement, one-time repair removal,
+  SAFE_BASELINE completion, and formal SaaS acceptance remain required. No
+  Subagent was used.

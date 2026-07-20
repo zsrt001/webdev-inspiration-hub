@@ -146,7 +146,7 @@ class _Response:
 
 
 class _Cursor:
-    def __init__(self, rows: list[dict[str, object]]) -> None:
+    def __init__(self, rows: list[dict[str, object] | None]) -> None:
         self.rows = list(rows)
         self.calls: list[tuple[object, object]] = []
 
@@ -211,6 +211,20 @@ def _facts(kind: str) -> dict[str, object]:
         "activations_delete": kind == "control_writer",
         "users_select": kind in {"runtime", "control_reader"},
         "users_update": False,
+    }
+
+
+def _reader_login_role_facts() -> dict[str, object]:
+    return {
+        "rolcanlogin": True,
+        "rolinherit": True,
+        "rolsuper": False,
+        "rolcreatedb": False,
+        "rolcreaterole": False,
+        "rolreplication": False,
+        "rolbypassrls": False,
+        "memberships": ["vowpic_inventory_login"],
+        "owns_objects": False,
     }
 
 
@@ -293,7 +307,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         result = repair.build_control_reader_url(runtime, writer, "new-secret")
         self.assertEqual(
             result,
-            "postgresql://vowpic_release_control_read_login.project:new-secret@"
+            "postgresql://vowpic_release_inventory_login.project:new-secret@"
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require",
         )
         self.assertNotIn("runtime-secret", result)
@@ -322,7 +336,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         )
         result = repair.recover_control_reader_url(runtime, writer, "reader-secret")
         self.assertIn(
-            "vowpic_release_control_read_login.project:reader-secret@",
+            "vowpic_release_inventory_login.project:reader-secret@",
             result,
         )
 
@@ -337,7 +351,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
             ),
             "control_reader": (
-                "postgresql://vowpic_release_control_read_login.project:reader-secret@"
+                "postgresql://vowpic_release_inventory_login.project:reader-secret@"
                 "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
             ),
         }
@@ -358,14 +372,14 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
         )
         copied = (
-            "postgresql://vowpic_release_control_read_login.project:\n"
+            "postgresql://vowpic_release_inventory_login.project:\n"
             "reader-secret@aws-1-us-east-1.pooler.supabase.com:6543/\n"
             "postgres?sslmode=require"
         )
         result = repair.recover_control_reader_url(runtime, writer, copied)
         self.assertEqual(
             result,
-            "postgresql://vowpic_release_control_read_login.project:reader-secret@"
+            "postgresql://vowpic_release_inventory_login.project:reader-secret@"
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require",
         )
 
@@ -389,7 +403,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         )
         self.assertEqual(
             result,
-            "postgresql://vowpic_release_control_read_login.project:inventory-secret@"
+            "postgresql://vowpic_release_inventory_login.project:inventory-secret@"
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require",
         )
 
@@ -700,17 +714,8 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         cursor = _Cursor(
             [
                 {"session_user": "postgres", "current_user": "postgres", "rolsuper": True},
-                {
-                    "rolcanlogin": True,
-                    "rolinherit": True,
-                    "rolsuper": False,
-                    "rolcreatedb": False,
-                    "rolcreaterole": False,
-                    "rolreplication": False,
-                    "rolbypassrls": False,
-                    "memberships": ["vowpic_inventory_login"],
-                    "owns_objects": False,
-                },
+                _reader_login_role_facts(),
+                _reader_login_role_facts(),
                 {"password_uses_scram": True},
             ]
         )
@@ -720,19 +725,47 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             return_value=_Connection(cursor),
         ):
             repair.rotate_control_reader_password(admin, runtime, writer, password)
-        self.assertEqual(len(cursor.calls), 5)
-        self.assertEqual(
-            str(cursor.calls[2][0]),
-            "SET LOCAL password_encryption = 'scram-sha-256'",
-        )
+        self.assertEqual(len(cursor.calls), 14)
+        self.assertEqual(str(cursor.calls[2][0]), "SET LOCAL password_encryption = 'scram-sha-256'")
         self.assertEqual(cursor.calls[3][1], (password,))
         self.assertNotIn(password, str(cursor.calls[3][0]))
-        self.assertEqual(cursor.calls[4][1], (repair.CONTROL_READER_LOGIN,))
+        self.assertEqual(cursor.calls[13][1], (repair.CONTROL_READER_LOGIN,))
         self.assertEqual(
-            str(cursor.calls[4][0]),
+            str(cursor.calls[13][0]),
             "SELECT role.rolpassword LIKE 'SCRAM-SHA-256$%' AS password_uses_scram "
             "FROM pg_authid role WHERE role.rolname = %s",
         )
+
+    def test_admin_recovery_creates_the_replacement_login_when_absent(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        cursor = _Cursor(
+            [
+                {"session_user": "postgres", "current_user": "postgres", "rolsuper": True},
+                None,
+                _reader_login_role_facts(),
+                {"password_uses_scram": True},
+            ]
+        )
+        with mock.patch.object(
+            repair.psycopg2,
+            "connect",
+            return_value=_Connection(cursor),
+        ):
+            repair.rotate_control_reader_password(admin, runtime, writer, "r" * 64)
+        self.assertIn("CREATE ROLE", str(cursor.calls[2][0]))
+        self.assertIn(repair.CONTROL_READER_LOGIN, str(cursor.calls[2][0]))
+        self.assertEqual(str(cursor.calls[3][0]), "SET LOCAL password_encryption = 'scram-sha-256'")
 
     def test_admin_recovery_rejects_a_non_scram_password_postcondition(self) -> None:
         runtime = (
@@ -755,17 +788,8 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                     "current_user": "postgres",
                     "rolsuper": True,
                 },
-                {
-                    "rolcanlogin": True,
-                    "rolinherit": True,
-                    "rolsuper": False,
-                    "rolcreatedb": False,
-                    "rolcreaterole": False,
-                    "rolreplication": False,
-                    "rolbypassrls": False,
-                    "memberships": ["vowpic_inventory_login"],
-                    "owns_objects": False,
-                },
+                _reader_login_role_facts(),
+                _reader_login_role_facts(),
                 {"password_uses_scram": False},
             ]
         )
@@ -813,6 +837,101 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                     "r" * 64,
                 )
         self.assertEqual(len(cursor.calls), 1)
+
+    def test_retires_only_the_strict_legacy_outer_login(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        cursor = _Cursor(
+            [
+                {"session_user": "postgres", "current_user": "postgres", "rolsuper": True},
+                _reader_login_role_facts(),
+                _reader_login_role_facts(),
+                None,
+            ]
+        )
+        with mock.patch.object(
+            repair.psycopg2,
+            "connect",
+            return_value=_Connection(cursor),
+        ):
+            state = repair.retire_legacy_control_reader_login(admin, runtime, writer)
+        self.assertEqual(state, "DELETED")
+        rendered = "\n".join(str(statement) for statement, _ in cursor.calls)
+        self.assertIn("WITH NOLOGIN", rendered)
+        self.assertIn("REVOKE", rendered)
+        self.assertIn("DROP ROLE", rendered)
+        self.assertNotIn("DROP OWNED", rendered)
+
+    def test_refuses_to_retire_a_legacy_login_with_unexpected_membership(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        unsafe_legacy = _reader_login_role_facts()
+        unsafe_legacy["memberships"] = ["unexpected_role", "vowpic_inventory_login"]
+        cursor = _Cursor(
+            [
+                {"session_user": "postgres", "current_user": "postgres", "rolsuper": True},
+                _reader_login_role_facts(),
+                unsafe_legacy,
+            ]
+        )
+        with mock.patch.object(
+            repair.psycopg2,
+            "connect",
+            return_value=_Connection(cursor),
+        ):
+            with self.assertRaisesRegex(ValueError, "violates the recovery contract"):
+                repair.retire_legacy_control_reader_login(admin, runtime, writer)
+        self.assertEqual(len(cursor.calls), 3)
+
+    def test_legacy_login_retirement_is_idempotent_when_already_absent(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        cursor = _Cursor(
+            [
+                {"session_user": "postgres", "current_user": "postgres", "rolsuper": True},
+                _reader_login_role_facts(),
+                None,
+            ]
+        )
+        with mock.patch.object(
+            repair.psycopg2,
+            "connect",
+            return_value=_Connection(cursor),
+        ):
+            state = repair.retire_legacy_control_reader_login(admin, runtime, writer)
+        self.assertEqual(state, "ALREADY_ABSENT")
+        rendered = "\n".join(str(statement) for statement, _ in cursor.calls)
+        self.assertNotIn("DROP ROLE", rendered)
 
     def test_failure_proof_is_sanitized_and_createable_without_an_encrypted_url(self) -> None:
         with self.subTest("controlled contract failure"):
@@ -862,7 +981,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
         )
         reader = (
-            "postgresql://vowpic_release_control_read_login.project:reader-secret@"
+            "postgresql://vowpic_release_inventory_login.project:reader-secret@"
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
         )
         proof_document = {
@@ -880,7 +999,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                     "default_read_only": "off",
                 },
                 "control_reader": {
-                    "session_user": "vowpic_release_control_read_login",
+                    "session_user": "vowpic_release_inventory_login",
                     "current_user": "vowpic_inventory_login",
                     "default_read_only": "on",
                 },
@@ -922,6 +1041,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             result["credential_rotation"],
             "unaliased_vercel_production_build",
         )
+        self.assertEqual(result["legacy_login"], "PRESERVED")
         self.assertEqual(
             set(result["credentials"]),
             {"runtime", "control_writer", "control_reader"},
@@ -929,6 +1049,77 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         serialized = json.dumps(result, sort_keys=True)
         for secret in (admin, runtime, writer, reader, "reader-secret"):
             self.assertNotIn(secret, serialized)
+
+    def test_vercel_build_retires_legacy_only_after_proving_the_existing_replacement(self) -> None:
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        reader = (
+            "postgresql://vowpic_release_inventory_login.project:reader-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        proof_document = {
+            "passed": True,
+            "database": "postgres",
+            "credentials": {
+                kind: {"session_user": session}
+                for kind, session in proof.EXPECTED_SESSIONS.items()
+            },
+        }
+        environment = {
+            "DATABASE_URL": admin,
+            "PRODUCTION_RUNTIME_DATABASE_URL": runtime,
+            "PRODUCTION_CONTROL_PLANE_DATABASE_URL": writer,
+            "PRODUCTION_CONTROL_READ_DATABASE_URL": reader,
+            "RETIRE_LEGACY_CONTROL_READER_LOGIN": "true",
+        }
+        with (
+            mock.patch.object(
+                vercel_build_repair,
+                "recover_control_reader_url",
+                return_value=reader,
+            ),
+            mock.patch.object(
+                vercel_build_repair,
+                "rotate_control_reader_password",
+            ) as forbidden_rotation,
+            mock.patch.object(
+                vercel_build_repair,
+                "prove_control_reader_after_pooler_propagation",
+                return_value=proof_document,
+            ) as prove,
+            mock.patch.object(
+                vercel_build_repair,
+                "retire_legacy_control_reader_login",
+                return_value="DELETED",
+            ) as retire,
+        ):
+            result = vercel_build_repair.rotate_and_prove(environment)
+        forbidden_rotation.assert_not_called()
+        prove.assert_called_once_with(runtime, writer, reader)
+        retire.assert_called_once_with(admin, runtime, writer)
+        self.assertEqual(result["credential_rotation"], "preserved_proven_replacement")
+        self.assertEqual(result["legacy_login"], "DELETED")
+
+    def test_vercel_build_rejects_an_invalid_legacy_retirement_value(self) -> None:
+        environment = {
+            "DATABASE_URL": "postgresql://postgres.project:admin@example.invalid/postgres",
+            "PRODUCTION_RUNTIME_DATABASE_URL": "runtime",
+            "PRODUCTION_CONTROL_PLANE_DATABASE_URL": "writer",
+            "PRODUCTION_CONTROL_READ_DATABASE_URL": "reader",
+            "RETIRE_LEGACY_CONTROL_READER_LOGIN": "yes",
+        }
+        with self.assertRaisesRegex(ValueError, "retirement input is invalid"):
+            vercel_build_repair.rotate_and_prove(environment)
 
     def test_vercel_build_rotation_sanitizes_database_failures(self) -> None:
         secret_dsn = "postgresql://postgres:must-not-leak@example.invalid/postgres"
@@ -1038,7 +1229,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertEqual("NORMALIZED", normalization["state"])
         self.assertEqual(
             {
-                "login": "vowpic_release_control_read_login",
+                "login": "vowpic_release_inventory_login",
                 "pooler_port": 6543,
                 "database": "postgres",
             },
@@ -1078,7 +1269,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 ),
                 (
                     "PRODUCTION_CONTROL_READ_DATABASE_URL",
-                    "vowpic_release_control_read_login",
+                    "vowpic_release_inventory_login",
                 ),
             )
         }
@@ -1116,7 +1307,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
             ),
             "PRODUCTION_CONTROL_READ_DATABASE_URL": (
-                "postgresql://vowpic_release_control_read_login.project:reader-secret@"
+                "postgresql://vowpic_release_inventory_login.project:reader-secret@"
                 "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
             ),
         }
@@ -1206,6 +1397,10 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}",
             workflow,
         )
+        self.assertRegex(
+            workflow,
+            r"(?s)retire_legacy_control_reader_login:.*?default: false.*?type: boolean",
+        )
         self.assertNotIn("PRODUCTION_READ_ONLY_DATABASE_URL", workflow)
         for name in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_ORG_ID"):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
@@ -1236,6 +1431,11 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn(
             '--build-env "PRODUCTION_CONTROL_READ_DATABASE_URL='
             '$PRODUCTION_CONTROL_READ_DATABASE_URL"',
+            workflow,
+        )
+        self.assertIn(
+            '--build-env "RETIRE_LEGACY_CONTROL_READER_LOGIN='
+            '$RETIRE_LEGACY_CONTROL_READER_LOGIN"',
             workflow,
         )
         self.assertNotIn("CONTROL_READER_RECIPIENT_PUBLIC_KEY_B64", workflow)
