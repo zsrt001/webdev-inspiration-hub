@@ -937,6 +937,12 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
+        self.assertIn("resume_proof_only_after_private_build:", workflow)
+        self.assertRegex(
+            workflow,
+            r"(?s)resume_proof_only_after_private_build:\s+"
+            r"description:.*?required: false\s+default: false\s+type: boolean",
+        )
         self.assertIn("environment: production", workflow)
         self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
         self.assertIn(
@@ -964,6 +970,12 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn('deployment_target != "production"', workflow)
         self.assertIn('payload.get("readyState")', workflow)
         self.assertIn('payload.get("aliases")', workflow)
+        self.assertIn(
+            "if: ${{ inputs.resume_proof_only_after_private_build == false }}",
+            workflow,
+        )
+        self.assertIn('endswith(".vercel.app")', workflow)
+        self.assertIn("private repair deployment has a custom-domain alias", workflow)
         self.assertIn("--local-config vercel.control-reader-repair.json", workflow)
         self.assertIn(
             '--build-env "PRODUCTION_CONTROL_READ_DATABASE_URL='
