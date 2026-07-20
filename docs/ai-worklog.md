@@ -2308,3 +2308,14 @@
   duplicate candidates without exposing any value, the proof reason now adds
   only aggregate entry/candidate counts and target JSON type counts. Values,
   project coordinates, tokens, and database URLs remain excluded.
+- PR #78 merged as main `ceee2e7106a25e75b6fb18a7de7128ad5b5492b2`
+  after all nine required checks passed. Protected run `29732564659` then
+  proved that the Vercel project and target are correct: 91 variables were
+  returned, two were named `DATABASE_URL`, and exactly one targeted Production.
+  The deprecated list-level `decrypt=true` path did not yield an authenticated
+  nonempty value. The repair now follows Vercel's dedicated value contract:
+  first bind the single Production variable ID from the list endpoint, then
+  retrieve that exact ID through `GET /v1/projects/{project}/env/{id}`. The
+  response must preserve the ID/key/target binding and explicitly report a
+  decrypted, nonempty value; otherwise only allowlisted type/state booleans are
+  emitted in the sanitized failure proof.
