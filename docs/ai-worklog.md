@@ -2562,3 +2562,25 @@
   anchored to its store. The failed presigned GET and DELETE capabilities,
   files, parsing, masking, and cleanup code were removed rather than retained
   as fallbacks.
+- PR #95 merged as main `4c3bf8ab1e845cc3f2c9429d539f9f357f40d5c1`
+  after all nine checks passed. Protected run `29762753424` passed the private
+  Blob preflight, completed the unaliased Vercel build and database proof, and
+  deleted the exact deployment, but the same read-write credential could not
+  retrieve the exact object after bounded retries. The delivery cleanup state
+  is `NOT_CREATED`; no temporary deployment or delivery object remains.
+- That second same-boundary failure invalidated Blob as the repair transport.
+  The replacement uses no Blob capability or object: the unaliased, forced
+  Production build still rearms and proves the fixed reader login with the
+  three protected credentials, then the same GitHub job deterministically
+  normalizes the complete reader URL from those same protected values and
+  encrypts it directly to the validated one-time RSA recipient. The plaintext
+  URL is never written or logged, and the disposable deployment still must be
+  deleted with a confirmed not-found response.
+- The Blob presign helper and its direct `@vercel/blob` dependency were removed.
+  The focused credential, database-login, CI release-contract, and Production
+  release-workflow regression now passes 190 tests with two explicit local
+  environment/platform skips. All six workflow shell blocks pass `bash -n`;
+  Python compilation, workflow YAML parsing, a clean pinned-CLI install, and
+  `git diff --check` pass. A live protected repair run, encrypted artifact
+  validation, protected-secret publication, and independent permanent
+  three-credential proof remain required before deleting the one-time repair.
