@@ -34,6 +34,10 @@ VERCEL_BUILD_REPAIR_SCRIPT = (
     / "rotate_production_control_reader_in_vercel_build.py"
 )
 VERCEL_BUILD_REPAIR_CONFIG = ROOT / "vercel.control-reader-repair.json"
+PRIVATE_BLOB_PRESIGN_SCRIPT = (
+    ROOT / "scripts" / "release" / "create_private_blob_presigned_delivery.mjs"
+)
+RELEASE_TOOLS_PACKAGE = ROOT / "scripts" / "release-tools" / "package.json"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
@@ -873,8 +877,11 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "schema": vercel_build_repair.SCHEMA,
             "state": "PASSED",
         }
-        store = mock.Mock()
-        store.put_create_once.return_value = mock.Mock(size=512, state="STORED")
+        target = (
+            "control-reader-repair/123/delivery.json",
+            "https://vercel.com/api/blob/?presigned=secret",
+            "abcdefgh",
+        )
         with (
             mock.patch.object(
                 vercel_build_repair,
@@ -892,8 +899,8 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             ) as write_output,
             mock.patch.object(
                 vercel_build_repair,
-                "delivery_destination",
-                return_value=(store, "control-reader-repair/123/delivery.json"),
+                "delivery_target",
+                return_value=target,
             ) as destination,
             mock.patch.object(
                 vercel_build_repair,
@@ -904,6 +911,14 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 vercel_build_repair,
                 "validate_delivery_payload",
             ) as validate_delivery,
+            mock.patch.object(
+                vercel_build_repair,
+                "upload_delivery",
+                return_value=vercel_build_repair.DeliveryReceipt(
+                    state="STORED",
+                    size=512,
+                ),
+            ) as upload_delivery,
             mock.patch("builtins.print") as printed,
         ):
             self.assertEqual(vercel_build_repair.main(), 0)
@@ -913,9 +928,11 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             b"encrypted-delivery",
             b"public-key",
         )
-        store.put_create_once.assert_called_once_with(
+        upload_delivery.assert_called_once_with(
             "control-reader-repair/123/delivery.json",
             b"encrypted-delivery",
+            "https://vercel.com/api/blob/?presigned=secret",
+            "abcdefgh",
         )
         write_output.assert_called_once_with()
         serialized_output = " ".join(str(call) for call in printed.call_args_list)
@@ -935,7 +952,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             ) as forbidden_output,
             mock.patch.object(
                 vercel_build_repair,
-                "delivery_destination",
+                "delivery_target",
             ) as forbidden_destination,
             mock.patch.object(
                 vercel_build_repair,
@@ -1048,35 +1065,29 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 {vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: "not-base64"}
             )
 
-    def test_vercel_build_delivery_destination_is_run_bound_and_private(self) -> None:
-        environment = {
-            vercel_build_repair.DELIVERY_OBJECT_KEY_ENV: (
-                "control-reader-repair/123/delivery.json"
-            ),
-            vercel_build_repair.PRIVATE_BLOB_STORE_ID_ENV: "store_123",
-            vercel_build_repair.PRIVATE_BLOB_TOKEN_ENV: "t" * 32,
-        }
-        with mock.patch.object(
-            vercel_build_repair,
-            "PrivateBlobEvidenceStore",
-        ) as store_type:
-            store_type.return_value.read.side_effect = FileNotFoundError
-            store, object_key = vercel_build_repair.delivery_destination(environment)
-        self.assertIs(store, store_type.return_value)
-        self.assertEqual("control-reader-repair/123/delivery.json", object_key)
-        store_type.assert_called_once_with(store_id="store_123", token="t" * 32)
-        store.read.assert_called_once_with(
-            "control-reader-repair/123/delivery.json"
+    def test_vercel_build_delivery_target_is_run_bound_and_presigned(self) -> None:
+        object_key = "control-reader-repair/123/delivery.json"
+        put_url = (
+            "https://vercel.com/api/blob/"
+            "?pathname=control-reader-repair%2F123%2Fdelivery.json"
+            "&vercel-blob-allowed-content-types=application%2Fjson"
+            "&vercel-blob-maximum-size-in-bytes=10000"
+            "&vercel-blob-add-random-suffix=false"
+            "&vercel-blob-allow-overwrite=false"
+            "&vercel-blob-delegation=delegation"
+            "&vercel-blob-signature=signature"
         )
-        with mock.patch.object(
-            vercel_build_repair,
-            "PrivateBlobEvidenceStore",
-        ) as occupied_store_type:
-            occupied_store_type.return_value.read.return_value = b"occupied"
-            with self.assertRaisesRegex(ValueError, "already exists"):
-                vercel_build_repair.delivery_destination(environment)
+        environment = {
+            vercel_build_repair.DELIVERY_OBJECT_KEY_ENV: object_key,
+            vercel_build_repair.DELIVERY_PUT_URL_ENV: put_url,
+            vercel_build_repair.PRIVATE_BLOB_STORE_ID_ENV: "store_abcdefgh",
+        }
+        self.assertEqual(
+            (object_key, put_url, "abcdefgh"),
+            vercel_build_repair.delivery_target(environment),
+        )
         with self.assertRaisesRegex(ValueError, "object key is invalid"):
-            vercel_build_repair.delivery_destination(
+            vercel_build_repair.delivery_target(
                 {
                     **environment,
                     vercel_build_repair.DELIVERY_OBJECT_KEY_ENV: (
@@ -1084,6 +1095,95 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                     ),
                 }
             )
+        with self.assertRaisesRegex(ValueError, "PUT URL is invalid"):
+            vercel_build_repair.delivery_target(
+                {
+                    **environment,
+                    vercel_build_repair.DELIVERY_PUT_URL_ENV: put_url.replace(
+                        "allow-overwrite=false",
+                        "allow-overwrite=true",
+                    ),
+                }
+            )
+
+    def test_vercel_build_upload_proves_exact_private_store_and_key(self) -> None:
+        object_key = "control-reader-repair/123/delivery.json"
+        response_payload = {
+            "pathname": object_key,
+            "url": (
+                "https://abcdefgh.private.blob.vercel-storage.com/"
+                f"{object_key}"
+            ),
+        }
+
+        class BlobResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def getcode(self):
+                return self.status
+
+            def read(self, _limit):
+                return json.dumps(response_payload).encode("utf-8")
+
+        with mock.patch.object(
+            vercel_build_repair,
+            "_open_without_redirects",
+            return_value=BlobResponse(),
+        ) as open_url:
+            receipt = vercel_build_repair.upload_delivery(
+                object_key,
+                b"encrypted-delivery",
+                "https://vercel.com/api/blob/?presigned=secret",
+                "abcdefgh",
+            )
+        self.assertEqual(
+            vercel_build_repair.DeliveryReceipt("STORED", 18),
+            receipt,
+        )
+        request = open_url.call_args.args[0]
+        self.assertEqual("PUT", request.get_method())
+        self.assertEqual(b"encrypted-delivery", request.data)
+        self.assertEqual("application/json", request.get_header("Content-type"))
+        self.assertEqual(30, open_url.call_args.kwargs["timeout"])
+
+        response_payload["url"] = response_payload["url"].replace(
+            "abcdefgh.private",
+            "wrongstore.private",
+        )
+        with (
+            mock.patch.object(
+                vercel_build_repair,
+                "_open_without_redirects",
+                return_value=BlobResponse(),
+            ),
+            self.assertRaisesRegex(ValueError, "response target is invalid"),
+        ):
+            vercel_build_repair.upload_delivery(
+                object_key,
+                b"encrypted-delivery",
+                "https://vercel.com/api/blob/?presigned=secret",
+                "abcdefgh",
+            )
+
+    def test_private_blob_presign_helper_is_pinned_and_operation_scoped(self) -> None:
+        source = PRIVATE_BLOB_PRESIGN_SCRIPT.read_text(encoding="utf-8")
+        package = json.loads(RELEASE_TOOLS_PACKAGE.read_text(encoding="utf-8"))
+        self.assertEqual("2.4.0", package["devDependencies"]["@vercel/blob"])
+        self.assertIn("issueSignedToken", source)
+        self.assertIn('operations: ["put", "get", "delete"]', source)
+        self.assertIn("VALIDITY_MS = 15 * 60 * 1_000", source)
+        self.assertIn('allowedContentTypes: ["application/json"]', source)
+        self.assertIn("maximumSizeInBytes: MAX_DELIVERY_BYTES", source)
+        self.assertIn("addRandomSuffix: false", source)
+        self.assertIn("allowOverwrite: false", source)
+        self.assertIn("parseStoreIdFromDelegationToken", source)
+        self.assertNotIn("console.log", source)
 
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
@@ -1134,11 +1234,16 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
+            '--build-env "CONTROL_READER_DELIVERY_PUT_URL='
+            '$DELIVERY_PUT_URL"',
+            workflow,
+        )
+        self.assertIn(
             '--build-env "VOWPIC_PRIVATE_BLOB_STORE_ID='
             '$PRIVATE_BLOB_STORE_ID"',
             workflow,
         )
-        self.assertIn(
+        self.assertNotIn(
             '--build-env "VOWPIC_PRIVATE_BLOB_READ_WRITE_TOKEN='
             '$PRIVATE_BLOB_READ_WRITE_TOKEN"',
             workflow,
@@ -1149,6 +1254,12 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn('writer.put_create_once(object_key, payload)', workflow)
         self.assertIn('reader.read(object_key) != payload', workflow)
         self.assertIn("blob-preflight.json", workflow)
+        self.assertIn("Issue run-bound private Blob delivery capabilities", workflow)
+        self.assertIn("create_private_blob_presigned_delivery.mjs", workflow)
+        self.assertIn("delivery-put-url.txt", workflow)
+        self.assertIn("delivery-get-url.txt", workflow)
+        self.assertIn("delivery-delete-url.txt", workflow)
+        self.assertIn('echo "::add-mask::$DELIVERY_CAPABILITY"', workflow)
         self.assertNotIn("PRIVATE_BLOB_READ_TOKEN", workflow)
         self.assertLess(
             workflow.index("Prove private Blob read-write credential"),
@@ -1162,8 +1273,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "Recover encrypted credential and sanitized proof from private Blob",
             workflow,
         )
-        self.assertIn("PrivateBlobEvidenceStore", workflow)
-        self.assertIn("store.read(object_key)", workflow)
+        self.assertIn("build_opener(RejectRedirects()).open", workflow)
         self.assertIn("validate_delivery_payload", workflow)
         self.assertIn("private repair deployment build command changed", workflow)
         self.assertIn("private repair deployment output directory changed", workflow)
@@ -1180,7 +1290,8 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn("delivery-blob-cleanup.json", workflow)
         self.assertIn("vowpic.private-repair-blob-cleanup.v1", workflow)
         self.assertIn("private repair delivery Blob was not deleted", workflow)
-        self.assertIn("delete(", workflow)
+        self.assertIn('request_status(delete_url, "DELETE")', workflow)
+        self.assertIn("Remove private delivery capability files", workflow)
         self.assertNotIn("vercel promote", workflow.lower())
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
