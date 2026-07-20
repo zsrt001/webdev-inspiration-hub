@@ -985,8 +985,18 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             '$RECIPIENT_PUBLIC_KEY_B64"',
             workflow,
         )
-        self.assertIn('"$VERCEL_CLI" curl /credential-url.bin', workflow)
-        self.assertIn('"$VERCEL_CLI" curl /proof.json', workflow)
+        self.assertIn(
+            '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl /credential-url.bin',
+            workflow,
+        )
+        self.assertIn(
+            '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl /proof.json',
+            workflow,
+        )
+        self.assertEqual(
+            workflow.count('"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl /'),
+            2,
+        )
         self.assertEqual(workflow.count("--yes \\\n"), 3)
         self.assertIn('proof.get("state") != "PASSED"', workflow)
         self.assertIn('"vowpic_release_runtime_login"', workflow)
