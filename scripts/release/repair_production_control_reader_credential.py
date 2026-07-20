@@ -1,37 +1,33 @@
-"""Rotate and prove the protected Production control-reader credential.
+"""Recover and prove the protected Production control-reader credential.
 
-The generated connection URL is encrypted in-process to a one-time RSA public
-key. Plaintext credentials are never written to disk or emitted to stdout.
+The existing secret may be either the role password or a complete connection
+URL. The normalized URL is encrypted in-process to a one-time RSA public key.
+Plaintext credentials are never written to disk or emitted to stdout.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import secrets
 from pathlib import Path
-from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit, urlunsplit
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from verify_production_database_credentials import (
-    EXPECTED_CURRENT_USERS,
     EXPECTED_SESSIONS,
     _sync_url,
     prove_production_database_credentials,
+    validate_database_urls,
 )
 
 
 CONTROL_READER_KIND = "control_reader"
 CONTROL_READER_LOGIN = EXPECTED_SESSIONS[CONTROL_READER_KIND]
-CONTROL_READER_ROLE = EXPECTED_CURRENT_USERS[CONTROL_READER_KIND]
 
 
-def _source_coordinates(url: str, expected_login: str) -> dict[str, Any]:
+def _source_coordinates(url: str, expected_login: str) -> dict[str, object]:
     parsed = urlsplit(_sync_url(url))
     username = unquote(parsed.username or "")
     database = parsed.path.lstrip("/")
@@ -89,65 +85,25 @@ def build_control_reader_url(
     )
 
 
-def validate_control_reader_role(facts: dict[str, Any]) -> None:
-    if (
-        facts.get("rolcanlogin") is not True
-        or facts.get("rolinherit") is not True
-        or facts.get("rolsuper") is not False
-        or facts.get("rolcreatedb") is not False
-        or facts.get("rolcreaterole") is not False
-        or facts.get("rolreplication") is not False
-        or facts.get("rolbypassrls") is not False
-        or set(facts.get("direct_memberships") or ()) != {CONTROL_READER_ROLE}
-    ):
-        raise ValueError("Production control-reader login is not least privilege")
-    settings = set(facts.get("role_settings") or ())
-    if (
-        f"role={CONTROL_READER_ROLE}" not in settings
-        or "default_transaction_read_only=on" not in settings
-    ):
-        raise ValueError("Production control-reader login defaults are unsafe")
-
-
-def rotate_control_reader_password(admin_url: str, password: str) -> None:
-    with psycopg2.connect(
-        _sync_url(admin_url),
-        cursor_factory=RealDictCursor,
-        connect_timeout=15,
-        application_name="vowpic-production-control-reader-credential-repair",
-    ) as connection:
-        connection.autocommit = False
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT role.rolcanlogin,
-                       role.rolinherit,
-                       role.rolsuper,
-                       role.rolcreatedb,
-                       role.rolcreaterole,
-                       role.rolreplication,
-                       role.rolbypassrls,
-                       COALESCE(role.rolconfig, ARRAY[]::text[]) AS role_settings,
-                       COALESCE((
-                           SELECT array_agg(parent.rolname ORDER BY parent.rolname)
-                           FROM pg_auth_members membership
-                           JOIN pg_roles parent ON parent.oid = membership.roleid
-                           WHERE membership.member = role.oid
-                       ), ARRAY[]::name[]) AS direct_memberships
-                FROM pg_roles role
-                WHERE role.rolname = %s
-                """,
-                (CONTROL_READER_LOGIN,),
-            )
-            facts = cursor.fetchone()
-            if facts is None:
-                raise ValueError("Production control-reader login is missing")
-            validate_control_reader_role(dict(facts))
-            cursor.execute(
-                f'ALTER ROLE "{CONTROL_READER_LOGIN}" PASSWORD %s',
-                (password,),
-            )
-        connection.commit()
+def recover_control_reader_url(
+    runtime_url: str,
+    control_writer_url: str,
+    existing_secret: str,
+) -> str:
+    value = existing_secret.strip()
+    if not value or any(character.isspace() for character in value):
+        raise ValueError("existing Production control-reader secret is invalid")
+    if value.startswith(("postgresql://", "postgresql+asyncpg://")):
+        urls = {
+            "runtime": runtime_url,
+            "control_writer": control_writer_url,
+            "control_reader": value,
+        }
+        validate_database_urls(urls)
+        return _sync_url(value)
+    if len(value) > 512 or "://" in value:
+        raise ValueError("existing Production control-reader secret is invalid")
+    return build_control_reader_url(runtime_url, control_writer_url, value)
 
 
 def encrypt_secret(secret: str, public_key_pem: bytes) -> bytes:
@@ -166,9 +122,9 @@ def encrypt_secret(secret: str, public_key_pem: bytes) -> bytes:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--admin-database-url-env", required=True)
     parser.add_argument("--runtime-database-url-env", required=True)
     parser.add_argument("--control-writer-database-url-env", required=True)
+    parser.add_argument("--existing-control-reader-secret-env", required=True)
     parser.add_argument("--recipient-public-key", type=Path, required=True)
     parser.add_argument("--encrypted-url-output", type=Path, required=True)
     parser.add_argument("--proof-output", type=Path, required=True)
@@ -186,13 +142,17 @@ def _required_environment(name: str) -> str:
 
 def main() -> int:
     args = _parse_args()
-    admin_url = _required_environment(args.admin_database_url_env)
     runtime_url = _required_environment(args.runtime_database_url_env)
     writer_url = _required_environment(args.control_writer_database_url_env)
-    password = secrets.token_hex(32)
-    reader_url = build_control_reader_url(runtime_url, writer_url, password)
+    existing_reader_secret = _required_environment(
+        args.existing_control_reader_secret_env
+    )
+    reader_url = recover_control_reader_url(
+        runtime_url,
+        writer_url,
+        existing_reader_secret,
+    )
 
-    rotate_control_reader_password(admin_url, password)
     proof = prove_production_database_credentials(
         {
             "runtime": runtime_url,
