@@ -686,6 +686,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                     "memberships": ["vowpic_inventory_login"],
                     "owns_objects": False,
                 },
+                {"password_uses_scram": True},
             ]
         )
         with mock.patch.object(
@@ -694,9 +695,63 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             return_value=_Connection(cursor),
         ):
             repair.rotate_control_reader_password(admin, runtime, writer, password)
-        self.assertEqual(len(cursor.calls), 3)
-        self.assertEqual(cursor.calls[-1][1], (password,))
-        self.assertNotIn(password, str(cursor.calls[-1][0]))
+        self.assertEqual(len(cursor.calls), 5)
+        self.assertEqual(
+            str(cursor.calls[2][0]),
+            "SET LOCAL password_encryption = 'scram-sha-256'",
+        )
+        self.assertEqual(cursor.calls[3][1], (password,))
+        self.assertNotIn(password, str(cursor.calls[3][0]))
+        self.assertEqual(cursor.calls[4][1], (repair.CONTROL_READER_LOGIN,))
+        self.assertEqual(
+            str(cursor.calls[4][0]),
+            "SELECT role.rolpassword LIKE 'SCRAM-SHA-256$%' AS password_uses_scram "
+            "FROM pg_authid role WHERE role.rolname = %s",
+        )
+
+    def test_admin_recovery_rejects_a_non_scram_password_postcondition(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        password = "r" * 64
+        cursor = _Cursor(
+            [
+                {
+                    "session_user": "postgres",
+                    "current_user": "postgres",
+                    "rolsuper": True,
+                },
+                {
+                    "rolcanlogin": True,
+                    "rolinherit": True,
+                    "rolsuper": False,
+                    "rolcreatedb": False,
+                    "rolcreaterole": False,
+                    "rolreplication": False,
+                    "rolbypassrls": False,
+                    "memberships": ["vowpic_inventory_login"],
+                    "owns_objects": False,
+                },
+                {"password_uses_scram": False},
+            ]
+        )
+        with mock.patch.object(
+            repair.psycopg2,
+            "connect",
+            return_value=_Connection(cursor),
+        ):
+            with self.assertRaisesRegex(ValueError, "not stored as SCRAM") as raised:
+                repair.rotate_control_reader_password(admin, runtime, writer, password)
+        self.assertNotIn(password, str(raised.exception))
 
     def test_admin_recovery_rejects_a_non_postgres_authority_before_rotation(self) -> None:
         runtime = (

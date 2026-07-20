@@ -2584,3 +2584,34 @@
   `git diff --check` pass. A live protected repair run, encrypted artifact
   validation, protected-secret publication, and independent permanent
   three-credential proof remain required before deleting the one-time repair.
+- PR #96 merged as main `7986e696d4a7a051fab18265f20c25e580589041`
+  after all nine required checks passed. Protected repair run `29764427407`
+  completed successfully: the private Vercel build rotated and proved the
+  fixed reader login, deterministic normalization produced the encrypted
+  credential artifact, and the disposable deployment cleanup state was
+  `DELETED`. The artifact password matched the controlled reader source in
+  memory, and the protected GitHub Production secret was updated without
+  writing or logging plaintext.
+- Independent permanent proof runs `29764753891` and `29764935326` both failed
+  authenticating only `vowpic_release_control_read_login` from the GitHub
+  runner, after the Vercel build path had accepted the same controlled
+  credential. Repeating the unchanged proof once after a propagation interval
+  produced the same error and excluded a short cache delay; it was not retried
+  again. Secret metadata, encrypted-artifact validation, and the in-memory
+  source comparison exclude URL reconstruction and publication-value drift.
+- Supabase's custom-role upgrade guidance states that platform-managed roles
+  are migrated automatically but custom roles with MD5 password storage must
+  be migrated to SCRAM or connections can fail after an upgrade:
+  https://supabase.com/docs/guides/platform/upgrading. The existing recovery
+  path ran `ALTER ROLE ... PASSWORD` without fixing `password_encryption` and
+  did not prove the stored verifier type. This is an evidence-backed remaining
+  hypothesis, not yet a confirmed live root cause.
+- The recovery transaction now sets `password_encryption` locally to
+  `scram-sha-256` before rotating the one exact least-privilege login and then
+  selects only a boolean SCRAM-prefix result from `pg_authid`. It fails closed
+  if the row is missing or the stored verifier is not SCRAM; neither the
+  verifier nor the password is returned, logged, or persisted. The focused
+  credential, database-login, CI release-contract, and Production
+  release-workflow regression passes 191 tests with two explicit local skips.
+  Live confirmation still requires the protected repair run followed by the
+  independent permanent three-credential proof. No Subagent was used.
