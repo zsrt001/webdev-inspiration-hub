@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from unittest import mock
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -981,6 +983,106 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 {vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: "not-base64"}
             )
 
+    def test_repair_workflow_build_log_parser_deduplicates_identical_records(
+        self,
+    ) -> None:
+        workflow = yaml.safe_load(REPAIR_WORKFLOW.read_text(encoding="utf-8"))
+        step = next(
+            candidate
+            for candidate in workflow["jobs"]["repair"]["steps"]
+            if candidate.get("name")
+            == "Recover encrypted credential and sanitized proof from build logs"
+        )
+        python_source = step["run"].split("python - <<'PY'\n", 1)[1].rsplit(
+            "\nPY",
+            1,
+        )[0]
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        public_key = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        encrypted = b"x" * 384
+        proof = {
+            "schema": vercel_build_repair.SCHEMA,
+            "state": "PASSED",
+            "credential_rotation": "unaliased_vercel_production_build",
+            "database": "postgres",
+            "credentials": {
+                "runtime": {
+                    "session_user": "vowpic_release_runtime_login",
+                    "current_user": "vowpic_app_runtime",
+                    "default_read_only": "off",
+                },
+                "control_writer": {
+                    "session_user": "vowpic_release_control_login",
+                    "current_user": "vowpic_control_writer_login",
+                    "default_read_only": "off",
+                },
+                "control_reader": {
+                    "session_user": "vowpic_release_control_read_login",
+                    "current_user": "vowpic_inventory_login",
+                    "default_read_only": "on",
+                },
+            },
+        }
+        encoded = vercel_build_repair.encoded_delivery(encrypted, proof)
+        marker = vercel_build_repair.DELIVERY_LOG_PREFIX
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            build_log = state / "deployment-build.log"
+            state.joinpath("recipient-public.pem").write_bytes(public_key)
+            build_log.write_text(
+                f"2026-07-20 first {marker}{encoded}\n"
+                f"2026-07-20 replay {marker}{encoded}\n",
+                encoding="utf-8",
+            )
+            environment = {
+                **os.environ,
+                "BUILD_LOG": str(build_log),
+                "STATE_DIR": str(state),
+            }
+            completed = subprocess.run(
+                [sys.executable, "-c", python_source],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual("", completed.stderr)
+            self.assertEqual(0, completed.returncode)
+            self.assertEqual(
+                encrypted,
+                state.joinpath("credential-url.bin").read_bytes(),
+            )
+            self.assertEqual(
+                proof,
+                json.loads(state.joinpath("proof.json").read_text(encoding="utf-8")),
+            )
+
+            for lines, expected_error in (
+                (["no delivery marker"], "delivery marker is missing"),
+                (
+                    [f"{marker}{encoded}", f"{marker}{encoded}A"],
+                    "delivery markers conflict",
+                ),
+            ):
+                with self.subTest(expected_error=expected_error):
+                    build_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                    failed = subprocess.run(
+                        [sys.executable, "-c", python_source],
+                        cwd=ROOT,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    self.assertNotEqual(0, failed.returncode)
+                    self.assertIn(expected_error, failed.stderr)
+
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
@@ -1023,7 +1125,9 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn("--logs \\", workflow)
         self.assertIn("VOWPIC_CONTROL_READER_DELIVERY_B64:", workflow)
         self.assertIn('trap \'rm -f "$BUILD_LOG"\' EXIT', workflow)
-        self.assertIn("private repair build delivery marker is not unique", workflow)
+        self.assertIn("private repair build delivery marker is missing", workflow)
+        self.assertIn("private repair build delivery markers conflict", workflow)
+        self.assertIn("unique_matches = set(matches)", workflow)
         self.assertIn("private repair build delivery is invalid", workflow)
         self.assertIn("private repair deployment build command changed", workflow)
         self.assertIn("private repair deployment output directory changed", workflow)
