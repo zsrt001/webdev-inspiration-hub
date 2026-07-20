@@ -1,6 +1,7 @@
 """Application configuration using pydantic-settings."""
 
 from functools import lru_cache
+import ipaddress
 from pathlib import Path
 import re
 from typing import Literal
@@ -14,6 +15,13 @@ ENV_FILE_PATH = Path(__file__).resolve().parents[2] / ".env"
 PRODUCTION_ALLOWED_IMAGE_MODELS = (
     "gemini-3-pro-image-preview",
     "gemini-3.1-flash-image-preview",
+)
+_SUPPORT_EMAIL_PATTERN = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
+)
+_SUPPORT_HOST_PATTERN = re.compile(
+    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
 )
 
 
@@ -175,8 +183,18 @@ class Settings(BaseSettings):
         "Submit the order reference to customer support after payment. Credits are issued after review."
     )
     manual_payment_contact: str = ""
-    support_contact_email: str = "zst000001@gmail.com"
-    support_contact_url: str = ""
+    support_contact_email: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPPORT_EMAIL", "SUPPORT_CONTACT_EMAIL"),
+    )
+    support_contact_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPPORT_URL", "SUPPORT_CONTACT_URL"),
+    )
+    support_contact_monitored: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SUPPORT_MONITORED", "SUPPORT_CONTACT_MONITORED"),
+    )
     refund_policy_url: str = ""
     creem_api_key: str = ""
     creem_webhook_secret: str = ""
@@ -394,6 +412,83 @@ class Settings(BaseSettings):
         local/manual cron jobs do not need to depend on Vercel naming.
         """
         return (self.cleanup_cron_token or self.cron_secret or "").strip()
+
+    @staticmethod
+    def _normalize_support_email(value: str) -> str:
+        candidate = str(value or "").strip()
+        if not candidate or not _SUPPORT_EMAIL_PATTERN.fullmatch(candidate):
+            return ""
+        local, domain = candidate.rsplit("@", 1)
+        if local.startswith(".") or local.endswith(".") or ".." in local:
+            return ""
+        return f"{local}@{domain.lower()}"
+
+    @staticmethod
+    def _normalize_support_url(value: str) -> str:
+        candidate = str(value or "").strip()
+        if not candidate:
+            return ""
+        try:
+            parsed = urlparse(candidate)
+            host = (parsed.hostname or "").strip().lower()
+            port = parsed.port
+        except (TypeError, ValueError):
+            return ""
+        if (
+            parsed.scheme.lower() != "https"
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or port not in {None, 443}
+        ):
+            return ""
+        if host == "localhost" or host.endswith(".local"):
+            return ""
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return ""
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return ""
+        if not _SUPPORT_HOST_PATTERN.fullmatch(ascii_host):
+            return ""
+        authority = ascii_host if port is None else f"{ascii_host}:{port}"
+        normalized = f"https://{authority}{parsed.path or ''}"
+        if parsed.query:
+            normalized = f"{normalized}?{parsed.query}"
+        return normalized
+
+    @property
+    def support_contact_config_errors(self) -> list[str]:
+        email_raw = str(self.support_contact_email or "").strip()
+        url_raw = str(self.support_contact_url or "").strip()
+        email = self._normalize_support_email(email_raw)
+        url = self._normalize_support_url(url_raw)
+        errors: list[str] = []
+        if email_raw and not email:
+            errors.append("SUPPORT_EMAIL must be a valid public email address")
+        if url_raw and not url:
+            errors.append("SUPPORT_URL must be a public HTTPS URL without credentials or fragments")
+        if not email and not url:
+            errors.append("SUPPORT_EMAIL or SUPPORT_URL is required")
+        if not self.support_contact_monitored:
+            errors.append("SUPPORT_MONITORED must confirm an actively monitored support channel")
+        return errors
+
+    @property
+    def public_support_contact(self) -> dict[str, str | bool]:
+        if self.support_contact_config_errors:
+            return {"available": False, "email": "", "url": ""}
+        return {
+            "available": True,
+            "email": self._normalize_support_email(self.support_contact_email),
+            "url": self._normalize_support_url(self.support_contact_url),
+        }
 
     @property
     def rate_limit_exempt_path_list(self) -> list[str]:

@@ -31,6 +31,7 @@ from app.models.user_account_merge import UserAccountMerge  # noqa: E402
 from app.models.user_credit import UserCredit  # noqa: E402
 from app.models.user_identity import UserIdentity  # noqa: E402
 from app.models.user_subscription import UserSubscription  # noqa: E402
+from app.core.config import Settings  # noqa: E402
 from app.services.account_claim_proof_service import (  # noqa: E402
     record_support_claim_proof,
     verify_payment_claim_reference,
@@ -270,28 +271,38 @@ class AccountClaimProofTest(unittest.IsolatedAsyncioTestCase):
         canonical, legacy, _identity, _proof = _account_fixture()
         ordinary = User(id=uuid4(), status="active", role="user")
         admin = User(id=uuid4(), status="active", role="admin")
+        support_settings = Settings(
+            _env_file=None,
+            support_contact_email="support@example.com",
+            support_contact_monitored=True,
+        )
         invalid_inputs = (
             {"admin_user": ordinary, "monitored_support_channel": "support@example.com", "audit_evidence_hash": "b" * 64},
             {"admin_user": admin, "monitored_support_channel": "", "audit_evidence_hash": "b" * 64},
+            {"admin_user": admin, "monitored_support_channel": "other@example.com", "audit_evidence_hash": "b" * 64},
             {"admin_user": admin, "monitored_support_channel": "support@example.com", "audit_evidence_hash": "not-a-hash"},
         )
-        for changed in invalid_inputs:
-            db = _FakeDb()
-            with self.subTest(changed=changed), self.assertRaises(AccountClaimError):
-                await record_support_claim_proof(
-                    db, canonical_user_id=canonical.id, legacy_user_id=legacy.id,
-                    support_case_reference="CASE-123", audit_request_id="req-support",
-                    now=NOW, **changed,
-                )
-            self.assertFalse(db.added)
+        with patch(
+            "app.services.account_claim_proof_service.get_settings",
+            return_value=support_settings,
+        ):
+            for changed in invalid_inputs:
+                db = _FakeDb()
+                with self.subTest(changed=changed), self.assertRaises(AccountClaimError):
+                    await record_support_claim_proof(
+                        db, canonical_user_id=canonical.id, legacy_user_id=legacy.id,
+                        support_case_reference="CASE-123", audit_request_id="req-support",
+                        now=NOW, **changed,
+                    )
+                self.assertFalse(db.added)
 
-        db = _FakeDb()
-        proof = await record_support_claim_proof(
-            db, canonical_user_id=canonical.id, legacy_user_id=legacy.id,
-            support_case_reference="CASE-123", audit_evidence_hash="b" * 64,
-            admin_user=admin, monitored_support_channel="support@example.com",
-            audit_request_id="req-support", now=NOW,
-        )
+            db = _FakeDb()
+            proof = await record_support_claim_proof(
+                db, canonical_user_id=canonical.id, legacy_user_id=legacy.id,
+                support_case_reference="CASE-123", audit_evidence_hash="b" * 64,
+                admin_user=admin, monitored_support_channel="support@example.com",
+                audit_request_id="req-support", now=NOW,
+            )
         self.assertIsInstance(proof, AccountClaimProof)
         self.assertEqual(proof.proof_type, AccountClaimProofType.VERIFIED_SUPPORT_CASE)
         self.assertEqual(proof.verifier_actor, f"database-admin:{admin.id}")

@@ -53,6 +53,7 @@ describe('operations capability fallback', () => {
     const store = useOpsStore();
     store.publicConfig = {
       placements: store.publicConfig.placements,
+      support: store.publicConfig.support,
       capabilities: {
         google_auth: true,
         authenticated_upload: true,

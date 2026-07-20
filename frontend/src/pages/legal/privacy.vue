@@ -5,7 +5,7 @@
       <view class="legal-hero">
         <text class="eyebrow">{{ tr('法务与合规', 'Legal & Compliance') }}</text>
         <text class="title heading-serif" role="heading" aria-level="1">{{ tr('隐私政策', 'Privacy Policy') }}</text>
-        <text class="subtitle">{{ tr('最后更新：2026 年 4 月 26 日', 'Last updated: April 26, 2026') }}</text>
+        <text class="subtitle">{{ tr('最后更新：2026 年 7 月 20 日', 'Last updated: July 20, 2026') }}</text>
       </view>
 
       <view class="legal-content">
@@ -13,6 +13,15 @@
           <text class="section-index">{{ section.index }}</text>
           <text class="section-title heading-serif">{{ tr(section.titleZh, section.titleEn) }}</text>
           <text v-for="line in activeLines(section)" :key="line" class="section-line">{{ line }}</text>
+          <a
+            v-if="section.anchor === 'rights' && supportAvailable"
+            class="support-link"
+            :href="supportContactHref"
+            :target="supportOpensNewTab ? '_blank' : undefined"
+            :rel="supportOpensNewTab ? 'noopener noreferrer' : undefined"
+          >
+            {{ supportContactLabel }}
+          </a>
         </view>
       </view>
       <LegalFooter />
@@ -21,13 +30,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
+import { useOpsStore } from '../../stores/ops';
 
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const supportAvailable = computed(() => opsStore.supportAvailable);
+const supportContactHref = computed(() => opsStore.supportContactHref);
+const supportOpensNewTab = computed(() => supportContactHref.value.startsWith('https://'));
+const supportContactLabel = computed(() =>
+  opsStore.publicConfig.support.url
+    ? tr('打开已验证隐私客服入口', 'Open verified privacy-support channel')
+    : opsStore.publicConfig.support.email,
+);
 
 const sections = computed(() => [
   {
@@ -81,16 +100,30 @@ const sections = computed(() => [
     index: '04',
     titleZh: '你的权利',
     titleEn: 'Your Rights',
-    zh: [
-      '你可以查看账户、订单、生成历史和积分流水。站内图片删除和账户关闭请求目前暂停，恢复时间以本页状态为准。',
-      '目前尚未发布经过验证的隐私客服渠道；请勿向未经验证的地址发送身份证件、支付凭证或其他敏感信息。',
-    ],
-    en: [
-      'You can view account data, orders, generated history, and credit ledger entries. In-product image deletion and account-closure requests are currently paused; this page is the current status notice.',
-      'A verified privacy-support channel has not yet been published. Do not send identity documents, payment evidence, or other sensitive information to an unverified address.',
-    ],
+    zh: supportAvailable.value
+      ? [
+          '你可以查看账户、订单、生成历史和积分流水。站内图片删除和账户关闭请求目前暂停，恢复时间以本页状态为准。',
+          '如需提交隐私请求，请使用下方经运行时确认的受监控入口；不要发送完整证件号、银行卡信息或支付密码。',
+        ]
+      : [
+          '你可以查看账户、订单、生成历史和积分流水。站内图片删除和账户关闭请求目前暂停，恢复时间以本页状态为准。',
+          '目前尚未发布经过验证且受监控的隐私客服渠道；请勿向未经验证的地址发送身份证件、支付凭证或其他敏感信息。',
+        ],
+    en: supportAvailable.value
+      ? [
+          'You can view account data, orders, generated history, and credit ledger entries. In-product image deletion and account-closure requests are currently paused; this page is the current status notice.',
+          'Use the monitored runtime-confirmed channel below for privacy requests. Do not send full identity numbers, card details, or payment passwords.',
+        ]
+      : [
+          'You can view account data, orders, generated history, and credit ledger entries. In-product image deletion and account-closure requests are currently paused; this page is the current status notice.',
+          'A verified, monitored privacy-support channel has not yet been published. Do not send identity documents, payment evidence, or other sensitive information to an unverified address.',
+        ],
   },
 ]);
+
+onMounted(() => {
+  void opsStore.fetchPublicConfig();
+});
 
 function activeLines(section: any): string[] {
   return i18nStore.locale === 'zh' ? section.zh : section.en;
@@ -146,6 +179,25 @@ function activeLines(section: any): string[] {
   background: #ffffff;
   border: 1px solid #dde1e8;
   box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
+}
+
+.support-link {
+  display: inline-flex;
+  margin-top: 16px;
+  min-height: 44px;
+  align-items: center;
+  border-radius: 6px;
+  background: #116a60;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 0 18px;
+  text-decoration: none;
+}
+
+.support-link:focus-visible {
+  outline: 3px solid rgba(17, 106, 96, 0.35);
+  outline-offset: 3px;
 }
 
 .section-index {

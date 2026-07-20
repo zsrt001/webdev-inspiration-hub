@@ -2231,3 +2231,34 @@
   1,013 tests with 38 explicit conditional integration/platform skips. Python
   compilation and `git diff --check` passed. GitHub CI remains the authoritative
   clean Linux verification. No Subagent was used.
+
+## 2026-07-20 - Fail-closed monitored support-channel contract
+
+- Removed the hardcoded personal support-email default. The canonical runtime
+  inputs are now `SUPPORT_EMAIL`, `SUPPORT_URL`, and `SUPPORT_MONITORED`, with
+  the former `SUPPORT_CONTACT_*` names retained as compatibility aliases.
+  Email and HTTPS ticket URLs are normalized and validated; credentials,
+  fragments, non-default ports, local hosts, IP literals, invalid addresses,
+  and unconfirmed channels remain unavailable.
+- `/ops/public_config` and the public legal-policy response expose only the
+  validated contact. Internal database-Admin support proofs must name that
+  exact configured channel instead of accepting an arbitrary email-shaped or
+  HTTPS-shaped string. Missing support blocks only `PREVIEW_COMMERCIAL`,
+  `COMMERCIAL_7A`, and `CONTRACT_7B`; `SAFE_BASELINE` remains browseable with
+  commercial capabilities off and no support promise.
+- Privacy and refund pages now fetch the sanitized runtime contract. They render
+  a native support link only when the backend confirms the channel; otherwise
+  they show order/receipt/failure-time recovery steps and never publish an
+  unverified address. The policy dates now reflect this 2026-07-20 change.
+- Focused backend regression passed 80/80 before the final scope correction;
+  full backend discovery then passed 1,021 tests with 38 explicit conditional
+  integration/platform skips. Frontend unit tests passed 21/21, typecheck and
+  Web build passed, and two real Chromium route tests proved both hidden and
+  confirmed-HTTPS states. The no-channel page was also inspected from a full
+  local render. The Playwright-managed browser download was unavailable through
+  the existing network route, so the same pinned tests used the installed Chrome
+  channel without modifying or restarting Proxifier. No Subagent was used.
+- This closes the code-owned UI/configuration gap only. A real monitored support
+  owner and evidence are still required before `SUPPORT_MONITORED=true` may be
+  set; Task 29 and Production acceptance remain `NOT_RUN` until that and the
+  other recorded external gates are genuinely satisfied.

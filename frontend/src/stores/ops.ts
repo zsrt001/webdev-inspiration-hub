@@ -1,5 +1,6 @@
 ﻿import { defineStore } from 'pinia';
 import { get } from '../utils/api';
+import { normalizeSupportConfig, supportHref, type PublicSupportConfig } from '../utils/support';
 
 export interface HomeBannerConfig {
   enabled: boolean;
@@ -24,6 +25,7 @@ export interface PublicOpsConfig {
   placements: {
     home_banner: HomeBannerConfig;
   };
+  support: PublicSupportConfig;
   capabilities: ActiveCapabilities;
 }
 
@@ -60,6 +62,7 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
       image_url: '/style-previews/couple_old_money.jpg',
     },
   },
+  support: normalizeSupportConfig(null),
   capabilities: { ...DEFAULT_CAPABILITIES },
 };
 
@@ -77,6 +80,8 @@ export const useOpsStore = defineStore('ops', {
     billingAvailable: (state) =>
       state.publicConfig.capabilities.credit_pack_checkout ||
       state.publicConfig.capabilities.subscription_billing,
+    supportAvailable: (state) => state.publicConfig.support.available,
+    supportContactHref: (state) => supportHref(state.publicConfig.support),
     privateDownloadAvailable: (state) => state.publicConfig.capabilities.private_download,
     partnerInviteAvailable: (state) => state.publicConfig.capabilities.partner_invite,
   },
@@ -100,6 +105,7 @@ export const useOpsStore = defineStore('ops', {
               ...(res?.placements?.home_banner || {}),
             },
           },
+          support: normalizeSupportConfig(res?.support),
           capabilities: normalizeCapabilities(res?.capabilities),
         };
         const heroImage = String(this.publicConfig.placements.home_banner.image_url || '').trim();
