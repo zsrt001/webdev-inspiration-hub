@@ -2492,3 +2492,14 @@
   records only pass/fail and cleanup state. The focused regression remains 191
   passing tests with two explicit skips; all eight workflow shell blocks parse,
   workflow YAML parsing and `git diff --check` pass.
+- Protected run `29755635867` stopped at that preflight before any database or
+  Vercel deployment operation. Its sanitized proof records `FAILED` with
+  cleanup `DELETED`, proving the GitHub read-write credential created and
+  removed the exact probe while the separately named read credential could not
+  retrieve it. Vercel's official Private Blob contract and the pinned Python
+  SDK both require the store's read-write token for authenticated private reads;
+  no separate private-read token capability exists in that platform contract.
+  The protected one-time repair therefore uses the same existing read-write
+  token for its exact write, read, and delete operations. This does not broaden
+  runtime application access and the whole repair workflow remains scheduled
+  for deletion immediately after the credential proof succeeds.
