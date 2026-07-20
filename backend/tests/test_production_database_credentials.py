@@ -881,9 +881,20 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 vercel_build_repair,
                 "write_build_output",
             ) as write_output,
+            mock.patch.object(
+                vercel_build_repair,
+                "encoded_delivery",
+                return_value="encoded-delivery",
+            ) as encode_delivery,
+            mock.patch("builtins.print") as printed,
         ):
             self.assertEqual(vercel_build_repair.main(), 0)
-        write_output.assert_called_once_with(b"encrypted-reader-url", result)
+        encode_delivery.assert_called_once_with(b"encrypted-reader-url", result)
+        write_output.assert_called_once_with()
+        printed.assert_any_call(
+            f"{vercel_build_repair.DELIVERY_LOG_PREFIX}encoded-delivery",
+            flush=True,
+        )
 
         with (
             mock.patch.object(
@@ -896,11 +907,16 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 vercel_build_repair,
                 "write_build_output",
             ) as forbidden_output,
+            mock.patch.object(
+                vercel_build_repair,
+                "encoded_delivery",
+            ) as forbidden_delivery,
         ):
             self.assertEqual(vercel_build_repair.main(), 1)
         key_check.assert_called_once_with(vercel_build_repair.os.environ)
         forbidden_rearm.assert_not_called()
         forbidden_output.assert_not_called()
+        forbidden_delivery.assert_not_called()
 
     def test_vercel_build_output_is_fixed_and_contains_no_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -910,34 +926,41 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 "BUILD_OUTPUT_DIRECTORY",
                 output,
             ):
-                vercel_build_repair.write_build_output(
-                    b"encrypted-reader-url",
-                    {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"},
-                )
+                vercel_build_repair.write_build_output()
             document = output.joinpath("index.html").read_text(encoding="utf-8")
-            delivery = json.loads(document)
             self.assertEqual(
-                {
-                    "credential": {
-                        "algorithm": "RSA-OAEP-SHA256",
-                        "ciphertext_b64": base64.b64encode(
-                            b"encrypted-reader-url"
-                        ).decode("ascii"),
-                        "schema": vercel_build_repair.CREDENTIAL_ENVELOPE_SCHEMA,
-                    },
-                    "proof": {
-                        "schema": vercel_build_repair.SCHEMA,
-                        "state": "PASSED",
-                    },
-                    "schema": vercel_build_repair.DELIVERY_SCHEMA,
-                },
-                delivery,
+                "<!doctype html><title>Private repair completed</title>\n",
+                document,
             )
+            self.assertNotIn("encrypted-reader-url", document)
             self.assertEqual(
                 [path.name for path in output.iterdir()],
                 ["index.html"],
             )
             self.assertFalse(output.joinpath("credential-url.bin").exists())
+
+    def test_vercel_build_delivery_log_contains_only_encrypted_credential(self) -> None:
+        proof = {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"}
+        encoded = vercel_build_repair.encoded_delivery(
+            b"encrypted-reader-url",
+            proof,
+        )
+        delivery = json.loads(base64.b64decode(encoded, validate=True))
+        self.assertEqual(
+            {
+                "credential": {
+                    "algorithm": "RSA-OAEP-SHA256",
+                    "ciphertext_b64": base64.b64encode(
+                        b"encrypted-reader-url"
+                    ).decode("ascii"),
+                    "schema": vercel_build_repair.CREDENTIAL_ENVELOPE_SCHEMA,
+                },
+                "proof": proof,
+                "schema": vercel_build_repair.DELIVERY_SCHEMA,
+            },
+            delivery,
+        )
+        self.assertNotIn("postgresql://", encoded)
 
     def test_vercel_build_recipient_key_is_validated_before_rearm(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
@@ -995,16 +1018,15 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             '$RECIPIENT_PUBLIC_KEY_B64"',
             workflow,
         )
-        self.assertIn(
-            '"$VERCEL_CLI" curl / \\',
-            workflow,
-        )
-        self.assertNotIn('"$VERCEL_CLI" curl /proof.json', workflow)
-        self.assertNotIn('"$VERCEL_CLI" curl /credential.json', workflow)
-        self.assertNotIn(
-            '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl',
-            workflow,
-        )
+        self.assertNotIn('"$VERCEL_CLI" curl', workflow)
+        self.assertIn('"$VERCEL_CLI" inspect "$DEPLOYMENT_URL" \\', workflow)
+        self.assertIn("--logs \\", workflow)
+        self.assertIn("VOWPIC_CONTROL_READER_DELIVERY_B64:", workflow)
+        self.assertIn('trap \'rm -f "$BUILD_LOG"\' EXIT', workflow)
+        self.assertIn("private repair build delivery marker is not unique", workflow)
+        self.assertIn("private repair build delivery is invalid", workflow)
+        self.assertIn("private repair deployment build command changed", workflow)
+        self.assertIn("private repair deployment output directory changed", workflow)
         self.assertIn("vowpic.encrypted-control-reader-credential.v1", workflow)
         self.assertIn("vowpic.control-reader-repair-delivery.v1", workflow)
         self.assertIn("private repair delivery envelope schema is invalid", workflow)
@@ -1013,7 +1035,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             'state.joinpath("credential-url.bin").write_bytes(encrypted)',
             workflow,
         )
-        self.assertEqual(workflow.count("--yes \\\n"), 2)
+        self.assertEqual(workflow.count("--yes \\\n"), 1)
         self.assertIn('proof.get("state") != "PASSED"', workflow)
         self.assertIn('"vowpic_release_runtime_login"', workflow)
         self.assertIn('"vowpic_release_control_login"', workflow)
