@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -594,6 +595,23 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 )
         self.assertEqual(len(cursor.calls), 1)
 
+    def test_failure_proof_is_sanitized_and_createable_without_an_encrypted_url(self) -> None:
+        with self.subTest("controlled contract failure"):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "proof.json"
+                repair.write_failure_proof(path, ValueError("fixed safe reason"))
+                document = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(document["state"], "FAILED")
+                self.assertEqual(document["reason"], "fixed safe reason")
+                self.assertEqual(document["schema"], repair.FAILURE_SCHEMA)
+        secret_dsn = "postgresql://postgres:must-not-leak@example.invalid/postgres"
+        error = repair.psycopg2.OperationalError(secret_dsn)
+        self.assertEqual(
+            repair.sanitized_failure_reason(error),
+            "database operation failed",
+        )
+        self.assertNotIn(secret_dsn, repair.sanitized_failure_reason(error))
+
     def test_encrypts_repaired_url_to_one_time_rsa_recipient(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         public_key = private_key.public_key().public_bytes(
@@ -635,6 +653,10 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("credential-url.txt", workflow)
+        self.assertRegex(
+            workflow,
+            r"(?s)- name: Upload encrypted credential and sanitized proof\s+if: always\(\)",
+        )
 
 
 if __name__ == "__main__":

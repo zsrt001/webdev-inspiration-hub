@@ -2292,3 +2292,11 @@
   parsing, and `git diff --check` pass. GitHub CI and the protected live repair
   remain required before the Production credential proof can be called PASS.
   No Subagent was used.
+- GitHub run `29731479506` then failed in the guarded normalize/rearm step and
+  created no credential artifact. The CLI could not download the hosted Actions
+  log through the existing network route, so the workflow now uploads a
+  create-once sanitized `proof.json` even when the repair exits nonzero. A
+  controlled `ValueError` contributes only its fixed contract reason; database
+  exceptions collapse to `database operation failed`, preventing a DSN from
+  entering logs or artifacts. The encrypted URL remains success-only. The
+  expanded focused suites pass 141 tests with the same two explicit skips.
