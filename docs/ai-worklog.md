@@ -2319,3 +2319,29 @@
   response must preserve the ID/key/target binding and explicitly report a
   decrypted, nonempty value; otherwise only allowlisted type/state booleans are
   emitted in the sanitized failure proof.
+
+## 2026-07-20 - Private-build Production control-reader recovery
+
+- PR #79 merged as main `89a67c95c21bd314655645e037a27bdbe1f2b1cb`.
+  Protected run `29734253337` proved that Vercel's dedicated environment-value
+  response still describes the sensitive Production `DATABASE_URL` as
+  undecrypted, so API-side value recovery is no longer a viable repair path.
+- The replacement keeps that administrator URL exclusively inside one
+  unaliased, disposable Vercel Production build. GitHub supplies only the three
+  already protected application credentials as build variables; the build
+  reuses the fixed-target and fixed-role validation before one password rearm.
+  The deployment uses a separate minimal static output, never receives a custom
+  domain, and must report Production/READY with no aliases before the normal
+  three-credential proof can encrypt the repaired reader URL.
+- Cleanup removes the exact deployment ID and requires a confirmed Vercel 404,
+  with bounded eventual-consistency retries. The workflow has a 30-minute job
+  boundary so cleanup is not crowded out by installation, build, pooler
+  propagation, or inspection time. The permanent `.vercelignore` continues to
+  exclude `/scripts`; only three allowlisted repair modules are copied into a
+  runner-local backend path for the disposable upload.
+- Focused credential and release-contract tests pass 144 tests, 284 subtests,
+  with two explicit environment/platform skips. Python compilation, JSON/YAML
+  parsing, eight shell-block syntax checks, pinned Vercel CLI 56.2.0, and
+  `git diff --check` pass. The protected live repair and post-run deployment
+  deletion proof remain required before the Production credential is accepted.
+  No Subagent was used.

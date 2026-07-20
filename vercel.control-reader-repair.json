@@ -1,0 +1,6 @@
+{
+    "$schema": "https://openapi.vercel.sh/vercel.json",
+    "installCommand": "python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt",
+    "buildCommand": "python backend/scripts/_control_reader_repair/rotate_production_control_reader_in_vercel_build.py && mkdir -p .vowpic-control-reader-repair-output && printf '%s\\n' '<!doctype html><title>Private repair completed</title>' > .vowpic-control-reader-repair-output/index.html",
+    "outputDirectory": ".vowpic-control-reader-repair-output"
+}
