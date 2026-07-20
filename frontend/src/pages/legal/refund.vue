@@ -5,7 +5,7 @@
       <view class="legal-hero">
         <text class="eyebrow">{{ tr('法务与支持', 'Legal & Support') }}</text>
         <text class="title heading-serif" role="heading" aria-level="1">{{ tr('退款与客服说明', 'Refunds & Support') }}</text>
-        <text class="subtitle">{{ tr('最后更新：2026 年 4 月 27 日', 'Last updated: April 27, 2026') }}</text>
+        <text class="subtitle">{{ tr('最后更新：2026 年 7 月 20 日', 'Last updated: July 20, 2026') }}</text>
       </view>
 
       <view class="legal-content">
@@ -13,6 +13,15 @@
           <text class="section-index">{{ section.index }}</text>
           <text class="section-title heading-serif">{{ tr(section.titleZh, section.titleEn) }}</text>
           <text v-for="line in activeLines(section)" :key="line" class="section-line">{{ line }}</text>
+          <a
+            v-if="section.anchor === 'contact' && supportAvailable"
+            class="support-link"
+            :href="supportContactHref"
+            :target="supportOpensNewTab ? '_blank' : undefined"
+            :rel="supportOpensNewTab ? 'noopener noreferrer' : undefined"
+          >
+            {{ supportContactLabel }}
+          </a>
         </view>
       </view>
 
@@ -22,14 +31,25 @@
 </template>
 
 <script setup lang="ts">
+import { computed, onMounted } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
 import { useI18nStore } from '../../stores/i18n';
+import { useOpsStore } from '../../stores/ops';
 
 const i18nStore = useI18nStore();
+const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const supportAvailable = computed(() => opsStore.supportAvailable);
+const supportContactHref = computed(() => opsStore.supportContactHref);
+const supportOpensNewTab = computed(() => supportContactHref.value.startsWith('https://'));
+const supportContactLabel = computed(() =>
+  opsStore.publicConfig.support.url
+    ? tr('打开已验证客服入口', 'Open verified support channel')
+    : opsStore.publicConfig.support.email,
+);
 
-const sections = [
+const sections = computed(() => [
   {
     anchor: 'scope',
     index: '01',
@@ -77,16 +97,30 @@ const sections = [
     index: '04',
     titleZh: '客服入口',
     titleEn: 'Support Contact',
-    zh: [
-      '如需退款、补发积分或查询订单，请通过网站页脚、支付页或账户中心提供的客服邮箱 / 工单入口联系我们。',
-      '为了保护你的账户安全，请不要在客服沟通中发送银行卡号、CVV、完整证件号或支付密码。',
-    ],
-    en: [
-      'For refunds, credit reissues, or order checks, contact us through the support email or ticket link shown in the footer, checkout page, or account center.',
-      'For account safety, do not send card numbers, CVV, full ID numbers, or payment passwords in support conversations.',
-    ],
+    zh: supportAvailable.value
+      ? [
+          '如需退款、补发积分或查询订单，请使用下方经运行时确认的受监控客服入口。',
+          '为了保护你的账户安全，请不要在客服沟通中发送银行卡号、CVV、完整证件号或支付密码。',
+        ]
+      : [
+          '目前没有经过验证且受监控的客服入口；本页不会显示未验证邮箱或工单链接。',
+          '请先在账户中心保存订单号、支付提供商收据和错误时间，并保留支付提供商的交易记录；客服渠道恢复后再提交处理。',
+        ],
+    en: supportAvailable.value
+      ? [
+          'For refunds, credit reissues, or order checks, use the monitored support channel confirmed by the runtime below.',
+          'For account safety, do not send card numbers, CVV, full ID numbers, or payment passwords in support conversations.',
+        ]
+      : [
+          'No verified, monitored support channel is currently available. This page does not publish unverified email addresses or ticket links.',
+          'Keep the order ID, provider receipt, failure timestamp, and provider transaction record in your account; submit them after a verified channel is restored.',
+        ],
   },
-];
+]);
+
+onMounted(() => {
+  void opsStore.fetchPublicConfig();
+});
 
 function activeLines(section: any): string[] {
   return i18nStore.locale === 'zh' ? section.zh : section.en;
@@ -142,6 +176,25 @@ function activeLines(section: any): string[] {
   background: #ffffff;
   border: 1px solid #dde1e8;
   box-shadow: 0 14px 38px rgba(23, 25, 31, 0.06);
+}
+
+.support-link {
+  display: inline-flex;
+  margin-top: 16px;
+  min-height: 44px;
+  align-items: center;
+  border-radius: 6px;
+  background: #116a60;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 0 18px;
+  text-decoration: none;
+}
+
+.support-link:focus-visible {
+  outline: 3px solid rgba(17, 106, 96, 0.35);
+  outline-offset: 3px;
 }
 
 .section-index {

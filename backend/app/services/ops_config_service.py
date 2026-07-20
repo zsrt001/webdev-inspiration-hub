@@ -221,4 +221,5 @@ def get_public_ops_config() -> dict[str, Any]:
             "supabase_url": settings.supabase_url.strip() if settings.supabase_oauth_enabled else "",
             "supabase_publishable_key": settings.supabase_anon_key.strip() if settings.supabase_oauth_enabled else "",
         },
+        "support": settings.public_support_contact,
     }

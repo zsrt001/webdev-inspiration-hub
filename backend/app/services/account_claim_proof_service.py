@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import is_database_admin_user
+from app.core.config import get_settings
 from app.models.account_claim_proof import AccountClaimProof, AccountClaimProofType
 from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus
 from app.models.payment_event import PaymentEvent
@@ -22,7 +23,6 @@ from app.services.account_merge_service import AccountClaimError
 
 CLAIM_PROOF_TTL = timedelta(minutes=15)
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_EMAIL_CHANNEL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _PAID_EVENT_MARKERS = ("paid", "succeeded", "completed")
 
 
@@ -54,7 +54,13 @@ def _status_value(value: object) -> str:
 
 def _support_channel_is_monitored(value: str) -> bool:
     channel = str(value or "").strip()
-    return bool(_EMAIL_CHANNEL.fullmatch(channel) or channel.startswith("https://"))
+    support = get_settings().public_support_contact
+    if not support["available"] or not channel:
+        return False
+    return any(
+        candidate and hmac.compare_digest(channel, str(candidate))
+        for candidate in (support["email"], support["url"])
+    )
 
 
 async def _persist_proof(

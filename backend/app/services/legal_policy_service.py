@@ -16,9 +16,18 @@ from app.core.config import get_settings
 
 def get_legal_policies() -> dict:
     settings = get_settings()
-    support_contact = settings.support_contact_url or settings.support_contact_email or settings.manual_payment_contact
+    support = settings.public_support_contact
+    support_contact = str(support["url"] or support["email"])
+    refund_summary = (
+        "Refunds are reviewed through the verified support channel. Duplicate payments, unrecoverable provider "
+        "failures, and confirmed platform-side delivery failures can be compensated by refund or credit adjustment "
+        "after ledger review."
+        if support["available"]
+        else "No verified support channel is currently published. Keep the order reference, provider receipt, and "
+        "failure timestamp so a claim can be submitted after a monitored channel is activated."
+    )
     return {
-        "last_updated": date(2026, 7, 13).isoformat(),
+        "last_updated": date(2026, 7, 20).isoformat(),
         "retention": {
             "source_images_days": SOURCE_IMAGE_RETENTION_DAYS,
             "free_generated_days": FREE_ORDER_RETENTION_DAYS,
@@ -44,12 +53,10 @@ def get_legal_policies() -> dict:
             "Refunds and failure compensation are recorded as ledger adjustments rather than rewriting historical transactions.",
         ],
         "refunds": {
+            "support_available": bool(support["available"]),
             "support_contact": support_contact,
             "refund_policy_url": settings.refund_policy_url or "/pages/legal/refund",
-            "summary": (
-                "Refunds are reviewed through support. Duplicate payments, unrecoverable provider failures, and confirmed "
-                "platform-side delivery failures can be compensated by refund or credit adjustment after ledger review."
-            ),
+            "summary": refund_summary,
         },
         "embed_points": [
             "Google sign-in and account creation",
