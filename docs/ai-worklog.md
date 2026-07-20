@@ -2547,3 +2547,18 @@
   helper also maps issuance, delegation parsing, and local URL signing failures
   to fixed non-sensitive reason categories so a future protected failure can be
   located without logging tokens or presigned URLs.
+- PR #94 merged as main `abdeb33f49991d6d1c3c49a5897e3a2700f795d3`
+  after all nine checks passed. Protected run `29761877446` passed the Blob
+  preflight, issued all three short-lived capabilities, completed the unaliased
+  Vercel build and database proof, and deleted the exact deployment. The
+  presigned GET still returned not-found; the cleanup step completed and the
+  delivery cleanup proof is `NOT_CREATED`, so no temporary deployment or Blob
+  remains.
+- The live result narrows the supported boundary further: Vercel now receives
+  only an exact-path, create-once, 15-minute presigned PUT. The protected GitHub
+  job performs bounded exact-object reads and deletion with the same read-write
+  token whose independent round trip passes before database mutation. That
+  token never enters the Vercel build, while the write is cryptographically
+  anchored to its store. The failed presigned GET and DELETE capabilities,
+  files, parsing, masking, and cleanup code were removed rather than retained
+  as fallbacks.

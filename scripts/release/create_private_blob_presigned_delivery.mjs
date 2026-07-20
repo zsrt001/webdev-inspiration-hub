@@ -19,20 +19,16 @@ const MAX_DELIVERY_BYTES = 10_000;
 const VALIDITY_MS = 15 * 60 * 1_000;
 const OBJECT_KEY_PATTERN =
   /^control-reader-repair\/[1-9][0-9]*\/delivery\.json$/;
-const SIGNATURE_QUERY_KEYS = new Set([
-  "vercel-blob-delegation",
-  "vercel-blob-signature",
-  "vercel-blob-valid-until",
-]);
 const PUT_QUERY_KEYS = new Set([
   "pathname",
   "vercel-blob-add-random-suffix",
   "vercel-blob-allow-overwrite",
   "vercel-blob-allowed-content-types",
+  "vercel-blob-delegation",
   "vercel-blob-maximum-size-in-bytes",
-  ...SIGNATURE_QUERY_KEYS,
+  "vercel-blob-signature",
+  "vercel-blob-valid-until",
 ]);
-const DELETE_QUERY_KEYS = new Set(["pathname", ...SIGNATURE_QUERY_KEYS]);
 const SAFE_FAILURE_REASONS = new Set([
   "private repair signed token issuance failed",
   "private repair delegation token validation failed",
@@ -104,27 +100,10 @@ function validateCommonUrl(value) {
   return url;
 }
 
-export function validatePresignedUrl(
-  value,
-  operation,
-  objectKey,
-  storeId,
-) {
+export function validatePresignedPutUrl(value, objectKey) {
   const url = validateCommonUrl(value);
-  if (operation === "get") {
-    uniqueQuery(url, SIGNATURE_QUERY_KEYS);
-    if (
-      url.hostname !== `${storeId}.private.blob.vercel-storage.com` ||
-      url.pathname !== `/${objectKey}`
-    ) {
-      throw new Error("private repair GET URL target is invalid");
-    }
-    return url.toString();
-  }
-  const allowedKeys = operation === "put" ? PUT_QUERY_KEYS : DELETE_QUERY_KEYS;
-  uniqueQuery(url, allowedKeys);
+  uniqueQuery(url, PUT_QUERY_KEYS);
   if (
-    !["put", "delete"].includes(operation) ||
     url.hostname !== "vercel.com" ||
     url.pathname !== "/api/blob/" ||
     url.searchParams.get("pathname") !== objectKey
@@ -132,13 +111,12 @@ export function validatePresignedUrl(
     throw new Error("private repair control-plane URL target is invalid");
   }
   if (
-    operation === "put" &&
-    (url.searchParams.get("vercel-blob-allowed-content-types") !==
+    url.searchParams.get("vercel-blob-allowed-content-types") !==
       "application/json" ||
-      url.searchParams.get("vercel-blob-maximum-size-in-bytes") !==
-        String(MAX_DELIVERY_BYTES) ||
-      url.searchParams.get("vercel-blob-add-random-suffix") !== "false" ||
-      url.searchParams.get("vercel-blob-allow-overwrite") !== "false")
+    url.searchParams.get("vercel-blob-maximum-size-in-bytes") !==
+      String(MAX_DELIVERY_BYTES) ||
+    url.searchParams.get("vercel-blob-add-random-suffix") !== "false" ||
+    url.searchParams.get("vercel-blob-allow-overwrite") !== "false"
   ) {
     throw new Error("private repair PUT URL constraints are invalid");
   }
@@ -203,7 +181,7 @@ export async function createDeliveryCapabilities({
     signedToken = await issueSignedToken({
       token,
       pathname: key,
-      operations: ["put", "get", "delete"],
+      operations: ["put"],
       validUntil: requestedValidUntil,
       allowedContentTypes: ["application/json"],
       maximumSizeInBytes: MAX_DELIVERY_BYTES,
@@ -229,45 +207,32 @@ export async function createDeliveryCapabilities({
   ) {
     throw new Error("private repair Blob delegation expiry is invalid");
   }
-  const common = { pathname: key, access: "private", validUntil: signedToken.validUntil };
   let put;
-  let get;
-  let remove;
   try {
-    [put, get, remove] = await Promise.all([
-      presignUrl(signedToken, {
-        ...common,
-        operation: "put",
-        allowedContentTypes: ["application/json"],
-        maximumSizeInBytes: MAX_DELIVERY_BYTES,
-        addRandomSuffix: false,
-        allowOverwrite: false,
-      }),
-      presignUrl(signedToken, { ...common, operation: "get" }),
-      presignUrl(signedToken, { ...common, operation: "delete" }),
-    ]);
+    put = await presignUrl(signedToken, {
+      pathname: key,
+      access: "private",
+      validUntil: signedToken.validUntil,
+      operation: "put",
+      allowedContentTypes: ["application/json"],
+      maximumSizeInBytes: MAX_DELIVERY_BYTES,
+      addRandomSuffix: false,
+      allowOverwrite: false,
+    });
   } catch {
     throw new Error("private repair presigned URL creation failed");
   }
-  const putUrl = validatePresignedUrl(put.presignedUrl, "put", key, actualStoreId);
-  const getUrl = validatePresignedUrl(get.presignedUrl, "get", key, actualStoreId);
-  const deleteUrl = validatePresignedUrl(
-    remove.presignedUrl,
-    "delete",
-    key,
-    actualStoreId,
-  );
+  const putUrl = validatePresignedPutUrl(put.presignedUrl, key);
 
   await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
   await chmod(outputDirectory, 0o700);
   await writeSecretFile(outputDirectory, "delivery-object-key.txt", key);
   await writeSecretFile(outputDirectory, "delivery-put-url.txt", putUrl);
-  await writeSecretFile(outputDirectory, "delivery-get-url.txt", getUrl);
-  await writeSecretFile(outputDirectory, "delivery-delete-url.txt", deleteUrl);
   const state = {
     expires_at: new Date(signedToken.validUntil).toISOString(),
     maximum_size_in_bytes: MAX_DELIVERY_BYTES,
     object_key: key,
+    operations: ["put"],
     schema: DELIVERY_SCHEMA,
     state: "ISSUED",
   };
