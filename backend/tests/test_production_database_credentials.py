@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -250,6 +251,112 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require",
         )
 
+    def test_recovers_reader_candidate_from_exact_legacy_inventory_target(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        legacy = (
+            "postgresql://vowpic_inventory_login.project:inventory-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        result = repair.recover_control_reader_url_from_legacy_inventory(
+            runtime,
+            writer,
+            legacy,
+        )
+        self.assertEqual(
+            result,
+            "postgresql://vowpic_release_control_read_login.project:inventory-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require",
+        )
+
+    def test_rejects_legacy_inventory_url_from_another_target(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        legacy = (
+            "postgresql://vowpic_inventory_login.other:inventory-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        with self.assertRaisesRegex(ValueError, "one target"):
+            repair.recover_control_reader_url_from_legacy_inventory(
+                runtime,
+                writer,
+                legacy,
+            )
+
+    def test_proves_legacy_candidate_only_after_existing_secret_fails(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        legacy = (
+            "postgresql://vowpic_inventory_login.project:inventory-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        safe_proof = {"passed": True}
+        with mock.patch.object(
+            repair,
+            "prove_production_database_credentials",
+            side_effect=[
+                repair.psycopg2.OperationalError("authentication failed"),
+                safe_proof,
+            ],
+        ) as prove:
+            reader_url, result = repair.recover_and_prove_control_reader(
+                runtime,
+                writer,
+                "stale-reader-secret",
+                legacy,
+            )
+        self.assertEqual(result, safe_proof)
+        self.assertIn(":inventory-secret@", reader_url)
+        self.assertEqual(prove.call_count, 2)
+        self.assertIn(
+            ":stale-reader-secret@",
+            prove.call_args_list[0].args[0]["control_reader"],
+        )
+        self.assertIn(
+            ":inventory-secret@",
+            prove.call_args_list[1].args[0]["control_reader"],
+        )
+
+    def test_does_not_hide_programming_errors_while_trying_candidates(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        with mock.patch.object(
+            repair,
+            "prove_production_database_credentials",
+            side_effect=RuntimeError("proof implementation failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "implementation failed"):
+                repair.recover_and_prove_control_reader(
+                    runtime,
+                    writer,
+                    "reader-secret",
+                    "",
+                )
+
     def test_encrypts_repaired_url_to_one_time_rsa_recipient(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         public_key = private_key.public_key().public_bytes(
@@ -275,6 +382,15 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn(
             "PRODUCTION_CONTROL_READ_DATABASE_URL: "
             "${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}",
+            workflow,
+        )
+        self.assertIn(
+            "PRODUCTION_READ_ONLY_DATABASE_URL: "
+            "${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}",
+            workflow,
+        )
+        self.assertIn(
+            "--legacy-read-only-secret-env PRODUCTION_READ_ONLY_DATABASE_URL",
             workflow,
         )
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
