@@ -2300,3 +2300,11 @@
   exceptions collapse to `database operation failed`, preventing a DSN from
   entering logs or artifacts. The encrypted URL remains success-only. The
   expanded focused suites pass 141 tests with the same two explicit skips.
+- PR #77 merged as main `26a6bf332a31127b49c65575487cd8c081108753` after
+  all nine required checks passed. Protected repair run `29732065293` then
+  uploaded its sanitized failure proof as designed; the exact result was
+  `one decrypted Production DATABASE_URL was not found`. To distinguish a
+  missing variable, a non-Production target, an unsupported target shape, and
+  duplicate candidates without exposing any value, the proof reason now adds
+  only aggregate entry/candidate counts and target JSON type counts. Values,
+  project coordinates, tokens, and database URLs remain excluded.

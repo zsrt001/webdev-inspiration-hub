@@ -217,18 +217,50 @@ def fetch_vercel_production_database_url(
         entries = document
     if not isinstance(entries, list):
         raise ValueError("Vercel Production environment response is invalid")
+    database_url_entries = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("key") == "DATABASE_URL"
+    ]
+    production_entries = [
+        entry
+        for entry in database_url_entries
+        if "production" in _production_targets(entry.get("target"))
+    ]
     candidates = [
         entry.get("value", "")
-        for entry in entries
-        if isinstance(entry, dict)
-        and entry.get("key") == "DATABASE_URL"
-        and "production" in _production_targets(entry.get("target"))
-        and isinstance(entry.get("value"), str)
+        for entry in production_entries
+        if isinstance(entry.get("value"), str)
         and entry.get("decrypted") in {True, "true", None}
     ]
     candidates = [value.strip() for value in candidates if value.strip()]
     if len(candidates) != 1:
-        raise ValueError("one decrypted Production DATABASE_URL was not found")
+        target_shape_counts = {
+            "string": sum(
+                isinstance(entry.get("target"), str)
+                for entry in database_url_entries
+            ),
+            "list": sum(
+                isinstance(entry.get("target"), list)
+                for entry in database_url_entries
+            ),
+        }
+        target_shape_counts["other"] = (
+            len(database_url_entries)
+            - target_shape_counts["string"]
+            - target_shape_counts["list"]
+        )
+        raise ValueError(
+            "one decrypted Production DATABASE_URL was not found "
+            f"(entries={len(entries)}, "
+            f"database_url_entries={len(database_url_entries)}, "
+            f"production_entries={len(production_entries)}, "
+            f"decrypted_nonempty_candidates={len(candidates)}, "
+            "target_shapes="
+            f"string:{target_shape_counts['string']},"
+            f"list:{target_shape_counts['list']},"
+            f"other:{target_shape_counts['other']})"
+        )
     return candidates[0]
 
 

@@ -471,6 +471,42 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 ),
             )
 
+    def test_reports_only_sanitized_vercel_candidate_metadata(self) -> None:
+        secret_url = "postgresql://postgres.project:admin-secret@pooler/postgres"
+        with self.assertRaises(ValueError) as raised:
+            repair.fetch_vercel_production_database_url(
+                "token",
+                "project",
+                "team",
+                opener=lambda *_args, **_kwargs: _Response(
+                    {
+                        "envs": [
+                            {
+                                "key": "DATABASE_URL",
+                                "target": {"type": "production"},
+                                "decrypted": True,
+                                "value": secret_url,
+                            },
+                            {
+                                "key": "OTHER_SECRET",
+                                "target": ["production"],
+                                "decrypted": True,
+                                "value": "must-not-leak",
+                            },
+                        ]
+                    }
+                ),
+            )
+
+        reason = str(raised.exception)
+        self.assertIn("entries=2", reason)
+        self.assertIn("database_url_entries=1", reason)
+        self.assertIn("production_entries=0", reason)
+        self.assertIn("decrypted_nonempty_candidates=0", reason)
+        self.assertIn("target_shapes=string:0,list:0,other:1", reason)
+        self.assertNotIn(secret_url, reason)
+        self.assertNotIn("must-not-leak", reason)
+
     def test_rotates_only_after_protected_candidates_fail(self) -> None:
         runtime = (
             "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
