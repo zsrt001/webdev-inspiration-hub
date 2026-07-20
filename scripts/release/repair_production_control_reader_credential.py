@@ -37,6 +37,9 @@ CONTROL_READER_LOGIN = EXPECTED_SESSIONS[CONTROL_READER_KIND]
 CONTROL_READER_ROLE = EXPECTED_CURRENT_USERS[CONTROL_READER_KIND]
 POOLER_AUTH_RETRY_DELAYS_SECONDS = (0, 15, 30, 60)
 VERCEL_ENV_ENDPOINT = "https://api.vercel.com/v10/projects/{project_id}/env"
+VERCEL_ENV_VALUE_ENDPOINT = (
+    "https://api.vercel.com/v1/projects/{project_id}/env/{env_id}"
+)
 FAILURE_SCHEMA = "vowpic.production-control-reader-credential-repair.v1"
 
 
@@ -197,20 +200,32 @@ def fetch_vercel_production_database_url(
     """Return the decrypted Production DATABASE_URL without persisting it."""
     if not token or not project_id or not team_id:
         raise ValueError("protected Vercel recovery coordinates are incomplete")
-    endpoint = VERCEL_ENV_ENDPOINT.format(project_id=quote(project_id, safe=""))
-    request = Request(
-        f"{endpoint}?decrypt=true&teamId={quote(team_id, safe='')}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "vowpic-production-control-reader-repair/1",
-        },
-    )
-    try:
-        with opener(request, timeout=20) as response:
-            document = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("Vercel Production environment recovery failed") from exc
+
+    def fetch_document(endpoint: str) -> object:
+        request = Request(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "vowpic-production-control-reader-repair/1",
+            },
+        )
+        try:
+            with opener(request, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (
+            HTTPError,
+            URLError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ValueError("Vercel Production environment recovery failed") from exc
+
+    quoted_project_id = quote(project_id, safe="")
+    quoted_team_id = quote(team_id, safe="")
+    list_endpoint = VERCEL_ENV_ENDPOINT.format(project_id=quoted_project_id)
+    document = fetch_document(f"{list_endpoint}?teamId={quoted_team_id}")
     if isinstance(document, dict):
         entries = document.get("envs", document.get("environmentVariables", []))
     else:
@@ -227,14 +242,7 @@ def fetch_vercel_production_database_url(
         for entry in database_url_entries
         if "production" in _production_targets(entry.get("target"))
     ]
-    candidates = [
-        entry.get("value", "")
-        for entry in production_entries
-        if isinstance(entry.get("value"), str)
-        and entry.get("decrypted") in {True, "true", None}
-    ]
-    candidates = [value.strip() for value in candidates if value.strip()]
-    if len(candidates) != 1:
+    if len(production_entries) != 1:
         target_shape_counts = {
             "string": sum(
                 isinstance(entry.get("target"), str)
@@ -255,13 +263,62 @@ def fetch_vercel_production_database_url(
             f"(entries={len(entries)}, "
             f"database_url_entries={len(database_url_entries)}, "
             f"production_entries={len(production_entries)}, "
-            f"decrypted_nonempty_candidates={len(candidates)}, "
             "target_shapes="
             f"string:{target_shape_counts['string']},"
             f"list:{target_shape_counts['list']},"
             f"other:{target_shape_counts['other']})"
         )
-    return candidates[0]
+
+    metadata = production_entries[0]
+    env_id = metadata.get("id")
+    if not isinstance(env_id, str) or not env_id.strip():
+        raise ValueError("Production DATABASE_URL has no environment variable id")
+    value_endpoint = VERCEL_ENV_VALUE_ENDPOINT.format(
+        project_id=quoted_project_id,
+        env_id=quote(env_id, safe=""),
+    )
+    decrypted_entry = fetch_document(f"{value_endpoint}?teamId={quoted_team_id}")
+    if not isinstance(decrypted_entry, dict):
+        raise ValueError("decrypted Vercel Production DATABASE_URL response is invalid")
+    returned_id = decrypted_entry.get("id")
+    returned_target = decrypted_entry.get("target")
+    if (
+        decrypted_entry.get("key") != "DATABASE_URL"
+        or (returned_id is not None and returned_id != env_id)
+        or (
+            returned_target is not None
+            and "production" not in _production_targets(returned_target)
+        )
+    ):
+        raise ValueError("decrypted Vercel Production DATABASE_URL response is invalid")
+
+    value = decrypted_entry.get("value")
+    decrypted = decrypted_entry.get("decrypted")
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or decrypted not in {True, "true"}
+    ):
+        variable_type = decrypted_entry.get("type", metadata.get("type"))
+        safe_type = (
+            variable_type
+            if variable_type in {"encrypted", "plain", "secret", "sensitive", "system"}
+            else "other"
+        )
+        if decrypted in {True, "true"}:
+            decrypted_state = "true"
+        elif decrypted in {False, "false"}:
+            decrypted_state = "false"
+        elif decrypted is None:
+            decrypted_state = "missing"
+        else:
+            decrypted_state = "other"
+        raise ValueError(
+            "Vercel Production DATABASE_URL was not decrypted "
+            f"(type={safe_type}, decrypted={decrypted_state}, "
+            f"value_nonempty={isinstance(value, str) and bool(value.strip())})"
+        )
+    return value.strip()
 
 
 def _database_target(url: str) -> tuple[str, int, str]:

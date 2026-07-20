@@ -411,27 +411,42 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
         )
 
+        requested_urls = []
+
         def opener(request, *, timeout):
             self.assertEqual(timeout, 20)
-            self.assertIn("decrypt=true", request.full_url)
             self.assertIn("teamId=team", request.full_url)
             self.assertEqual(request.get_header("Authorization"), "Bearer token")
+            requested_urls.append(request.full_url)
+            if "/v10/projects/project/env?" in request.full_url:
+                return _Response(
+                    {
+                        "envs": [
+                            {
+                                "id": "env-preview",
+                                "key": "DATABASE_URL",
+                                "target": ["preview"],
+                            },
+                            {
+                                "id": "env-production",
+                                "key": "DATABASE_URL",
+                                "target": ["production"],
+                            },
+                        ]
+                    }
+                )
+            self.assertIn(
+                "/v1/projects/project/env/env-production?",
+                request.full_url,
+            )
             return _Response(
                 {
-                    "envs": [
-                        {
-                            "key": "DATABASE_URL",
-                            "target": ["preview"],
-                            "decrypted": True,
-                            "value": "postgresql://wrong",
-                        },
-                        {
-                            "key": "DATABASE_URL",
-                            "target": ["production"],
-                            "decrypted": True,
-                            "value": admin_url,
-                        },
-                    ]
+                    "id": "env-production",
+                    "key": "DATABASE_URL",
+                    "target": ["production"],
+                    "type": "encrypted",
+                    "decrypted": True,
+                    "value": admin_url,
                 }
             )
 
@@ -444,6 +459,8 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             ),
             admin_url,
         )
+        self.assertEqual(len(requested_urls), 2)
+        self.assertNotIn("decrypt=true", requested_urls[0])
 
     def test_rejects_ambiguous_vercel_production_database_urls(self) -> None:
         with self.assertRaisesRegex(ValueError, "one decrypted"):
@@ -502,10 +519,51 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn("entries=2", reason)
         self.assertIn("database_url_entries=1", reason)
         self.assertIn("production_entries=0", reason)
-        self.assertIn("decrypted_nonempty_candidates=0", reason)
         self.assertIn("target_shapes=string:0,list:0,other:1", reason)
         self.assertNotIn(secret_url, reason)
         self.assertNotIn("must-not-leak", reason)
+
+    def test_reports_sanitized_dedicated_value_decryption_failure(self) -> None:
+        hidden_value = "ciphertext-must-not-leak"
+
+        def opener(request, **_kwargs):
+            if "/v10/projects/project/env?" in request.full_url:
+                return _Response(
+                    {
+                        "envs": [
+                            {
+                                "id": "env-production",
+                                "key": "DATABASE_URL",
+                                "target": ["production"],
+                                "type": "sensitive",
+                            }
+                        ]
+                    }
+                )
+            return _Response(
+                {
+                    "id": "env-production",
+                    "key": "DATABASE_URL",
+                    "target": ["production"],
+                    "type": "sensitive",
+                    "decrypted": False,
+                    "value": hidden_value,
+                }
+            )
+
+        with self.assertRaises(ValueError) as raised:
+            repair.fetch_vercel_production_database_url(
+                "token",
+                "project",
+                "team",
+                opener=opener,
+            )
+
+        reason = str(raised.exception)
+        self.assertIn("type=sensitive", reason)
+        self.assertIn("decrypted=false", reason)
+        self.assertIn("value_nonempty=True", reason)
+        self.assertNotIn(hidden_value, reason)
 
     def test_rotates_only_after_protected_candidates_fail(self) -> None:
         runtime = (
