@@ -2448,3 +2448,31 @@
   still fail as conflicting. All duplicates must collapse to one byte-for-byte
   identical Base64 value before the existing envelope, identity, and RSA-size
   checks run. No credential or proof validation was weakened.
+- PR #89 merged as main `d6df141f4a32a1ee38df1834d81ad97742a855fc`
+  after all nine required checks passed. Protected run `29748005789` again
+  completed the Production role rearm, three-credential proof, build-config
+  validation, and exact deployment deletion, but the authenticated Vercel build
+  log contained no delivery marker. This disproves build-log retrieval as a
+  ciphertext transport; no further log parser variant is retained.
+- A scoped temporary link to the existing Vercel project confirmed that CLI
+  56.2.0 `env run -e production` does not inject the encrypted database values
+  into the child process under the current authenticated session. Inspection of
+  the pinned CLI implementation showed that `env run` calls the raw environment
+  record endpoint and lacks the sensitive-value reauthentication path used by
+  `env pull`. The local-env route was therefore rejected rather than persisting
+  decrypted Production values to disk.
+- The repair now uses the already provisioned private Blob as a ciphertext-only
+  handoff. The Vercel build validates the run-bound object key and private store
+  before database mutation, performs the existing exact role rearm and proof,
+  validates its own RSA envelope, and writes it create-once with an exact
+  store/key read-back. GitHub retrieves the object with the independent read
+  token, reuses the same envelope validator, and always deletes the exact object
+  with the read-write token before proving it unreadable. The exact disposable
+  deployment deletion and 404 proof remain unchanged.
+- The focused credential, database-login, CI release-contract, and Production
+  release-workflow regression passes 191 tests with two explicit local
+  environment/platform skips. All seven workflow shell blocks pass `bash -n`;
+  Python compilation, workflow YAML parsing, and `git diff --check` pass. The
+  protected live run, encrypted artifact recovery, Blob/deployment cleanup
+  proofs, protected-secret publication, and independent three-credential proof
+  remain required before accepting the credential repair.

@@ -5,7 +5,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -862,12 +861,20 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             secret_dsn,
             vercel_build_repair._safe_failure_reason(error),
         )
+        self.assertEqual(
+            "private delivery storage failed",
+            vercel_build_repair._safe_failure_reason(
+                RuntimeError("private token must not leak")
+            ),
+        )
 
-    def test_vercel_build_main_writes_output_only_after_success(self) -> None:
+    def test_vercel_build_main_stores_delivery_only_after_success(self) -> None:
         result = {
             "schema": vercel_build_repair.SCHEMA,
             "state": "PASSED",
         }
+        store = mock.Mock()
+        store.put_create_once.return_value = mock.Mock(size=512, state="STORED")
         with (
             mock.patch.object(
                 vercel_build_repair,
@@ -885,18 +892,35 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             ) as write_output,
             mock.patch.object(
                 vercel_build_repair,
-                "encoded_delivery",
-                return_value="encoded-delivery",
-            ) as encode_delivery,
+                "delivery_destination",
+                return_value=(store, "control-reader-repair/123/delivery.json"),
+            ) as destination,
+            mock.patch.object(
+                vercel_build_repair,
+                "delivery_payload",
+                return_value=b"encrypted-delivery",
+            ) as build_delivery,
+            mock.patch.object(
+                vercel_build_repair,
+                "validate_delivery_payload",
+            ) as validate_delivery,
             mock.patch("builtins.print") as printed,
         ):
             self.assertEqual(vercel_build_repair.main(), 0)
-        encode_delivery.assert_called_once_with(b"encrypted-reader-url", result)
-        write_output.assert_called_once_with()
-        printed.assert_any_call(
-            f"{vercel_build_repair.DELIVERY_LOG_PREFIX}encoded-delivery",
-            flush=True,
+        destination.assert_called_once_with(vercel_build_repair.os.environ)
+        build_delivery.assert_called_once_with(b"encrypted-reader-url", result)
+        validate_delivery.assert_called_once_with(
+            b"encrypted-delivery",
+            b"public-key",
         )
+        store.put_create_once.assert_called_once_with(
+            "control-reader-repair/123/delivery.json",
+            b"encrypted-delivery",
+        )
+        write_output.assert_called_once_with()
+        serialized_output = " ".join(str(call) for call in printed.call_args_list)
+        self.assertIn('"state": "PASSED"', serialized_output)
+        self.assertNotIn("encrypted-delivery", serialized_output)
 
         with (
             mock.patch.object(
@@ -911,11 +935,16 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             ) as forbidden_output,
             mock.patch.object(
                 vercel_build_repair,
-                "encoded_delivery",
+                "delivery_destination",
+            ) as forbidden_destination,
+            mock.patch.object(
+                vercel_build_repair,
+                "delivery_payload",
             ) as forbidden_delivery,
         ):
             self.assertEqual(vercel_build_repair.main(), 1)
         key_check.assert_called_once_with(vercel_build_repair.os.environ)
+        forbidden_destination.assert_not_called()
         forbidden_rearm.assert_not_called()
         forbidden_output.assert_not_called()
         forbidden_delivery.assert_not_called()
@@ -941,68 +970,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             )
             self.assertFalse(output.joinpath("credential-url.bin").exists())
 
-    def test_vercel_build_delivery_log_contains_only_encrypted_credential(self) -> None:
-        proof = {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"}
-        encoded = vercel_build_repair.encoded_delivery(
-            b"encrypted-reader-url",
-            proof,
-        )
-        delivery = json.loads(base64.b64decode(encoded, validate=True))
-        self.assertEqual(
-            {
-                "credential": {
-                    "algorithm": "RSA-OAEP-SHA256",
-                    "ciphertext_b64": base64.b64encode(
-                        b"encrypted-reader-url"
-                    ).decode("ascii"),
-                    "schema": vercel_build_repair.CREDENTIAL_ENVELOPE_SCHEMA,
-                },
-                "proof": proof,
-                "schema": vercel_build_repair.DELIVERY_SCHEMA,
-            },
-            delivery,
-        )
-        self.assertNotIn("postgresql://", encoded)
-
-    def test_vercel_build_recipient_key_is_validated_before_rearm(self) -> None:
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-        public_key = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        encoded = base64.b64encode(public_key).decode("ascii")
-        environment = {
-            vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: encoded,
-        }
-        self.assertEqual(
-            vercel_build_repair.recipient_public_key(environment),
-            public_key,
-        )
-        with self.assertRaisesRegex(ValueError, "recipient public key is invalid"):
-            vercel_build_repair.recipient_public_key(
-                {vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: "not-base64"}
-            )
-
-    def test_repair_workflow_build_log_parser_deduplicates_identical_records(
-        self,
-    ) -> None:
-        workflow = yaml.safe_load(REPAIR_WORKFLOW.read_text(encoding="utf-8"))
-        step = next(
-            candidate
-            for candidate in workflow["jobs"]["repair"]["steps"]
-            if candidate.get("name")
-            == "Recover encrypted credential and sanitized proof from build logs"
-        )
-        python_source = step["run"].split("python - <<'PY'\n", 1)[1].rsplit(
-            "\nPY",
-            1,
-        )[0]
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-        public_key = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        encrypted = b"x" * 384
+    def test_vercel_build_delivery_blob_contains_only_encrypted_credential(self) -> None:
         proof = {
             "schema": vercel_build_repair.SCHEMA,
             "state": "PASSED",
@@ -1026,62 +994,96 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 },
             },
         }
-        encoded = vercel_build_repair.encoded_delivery(encrypted, proof)
-        marker = vercel_build_repair.DELIVERY_LOG_PREFIX
-        with tempfile.TemporaryDirectory() as directory:
-            state = Path(directory)
-            build_log = state / "deployment-build.log"
-            state.joinpath("recipient-public.pem").write_bytes(public_key)
-            build_log.write_text(
-                f"2026-07-20 first {marker}{encoded}\n"
-                f"2026-07-20 replay {marker}{encoded}\n",
-                encoding="utf-8",
-            )
-            environment = {
-                **os.environ,
-                "BUILD_LOG": str(build_log),
-                "STATE_DIR": str(state),
-            }
-            completed = subprocess.run(
-                [sys.executable, "-c", python_source],
-                cwd=ROOT,
-                env=environment,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            self.assertEqual("", completed.stderr)
-            self.assertEqual(0, completed.returncode)
-            self.assertEqual(
-                encrypted,
-                state.joinpath("credential-url.bin").read_bytes(),
-            )
-            self.assertEqual(
-                proof,
-                json.loads(state.joinpath("proof.json").read_text(encoding="utf-8")),
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        public_key = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        encrypted = b"x" * 384
+        payload = vercel_build_repair.delivery_payload(encrypted, proof)
+        delivery = json.loads(payload)
+        self.assertEqual(
+            {
+                "credential": {
+                    "algorithm": "RSA-OAEP-SHA256",
+                    "ciphertext_b64": base64.b64encode(
+                        encrypted
+                    ).decode("ascii"),
+                    "schema": vercel_build_repair.CREDENTIAL_ENVELOPE_SCHEMA,
+                },
+                "proof": proof,
+                "schema": vercel_build_repair.DELIVERY_SCHEMA,
+            },
+            delivery,
+        )
+        self.assertNotIn(b"postgresql://", payload)
+        self.assertEqual(
+            (encrypted, proof),
+            vercel_build_repair.validate_delivery_payload(payload, public_key),
+        )
+        invalid = json.loads(payload)
+        invalid["credential"]["ciphertext_b64"] = "not-base64"
+        with self.assertRaisesRegex(ValueError, "encrypted URL is invalid"):
+            vercel_build_repair.validate_delivery_payload(
+                json.dumps(invalid).encode("utf-8"),
+                public_key,
             )
 
-            for lines, expected_error in (
-                (["no delivery marker"], "delivery marker is missing"),
-                (
-                    [f"{marker}{encoded}", f"{marker}{encoded}A"],
-                    "delivery markers conflict",
-                ),
-            ):
-                with self.subTest(expected_error=expected_error):
-                    build_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
-                    failed = subprocess.run(
-                        [sys.executable, "-c", python_source],
-                        cwd=ROOT,
-                        env=environment,
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                        check=False,
-                    )
-                    self.assertNotEqual(0, failed.returncode)
-                    self.assertIn(expected_error, failed.stderr)
+    def test_vercel_build_recipient_key_is_validated_before_rearm(self) -> None:
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        public_key = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        encoded = base64.b64encode(public_key).decode("ascii")
+        environment = {
+            vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: encoded,
+        }
+        self.assertEqual(
+            vercel_build_repair.recipient_public_key(environment),
+            public_key,
+        )
+        with self.assertRaisesRegex(ValueError, "recipient public key is invalid"):
+            vercel_build_repair.recipient_public_key(
+                {vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: "not-base64"}
+            )
+
+    def test_vercel_build_delivery_destination_is_run_bound_and_private(self) -> None:
+        environment = {
+            vercel_build_repair.DELIVERY_OBJECT_KEY_ENV: (
+                "control-reader-repair/123/delivery.json"
+            ),
+            vercel_build_repair.PRIVATE_BLOB_STORE_ID_ENV: "store_123",
+            vercel_build_repair.PRIVATE_BLOB_TOKEN_ENV: "t" * 32,
+        }
+        with mock.patch.object(
+            vercel_build_repair,
+            "PrivateBlobEvidenceStore",
+        ) as store_type:
+            store_type.return_value.read.side_effect = FileNotFoundError
+            store, object_key = vercel_build_repair.delivery_destination(environment)
+        self.assertIs(store, store_type.return_value)
+        self.assertEqual("control-reader-repair/123/delivery.json", object_key)
+        store_type.assert_called_once_with(store_id="store_123", token="t" * 32)
+        store.read.assert_called_once_with(
+            "control-reader-repair/123/delivery.json"
+        )
+        with mock.patch.object(
+            vercel_build_repair,
+            "PrivateBlobEvidenceStore",
+        ) as occupied_store_type:
+            occupied_store_type.return_value.read.return_value = b"occupied"
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                vercel_build_repair.delivery_destination(environment)
+        with self.assertRaisesRegex(ValueError, "object key is invalid"):
+            vercel_build_repair.delivery_destination(
+                {
+                    **environment,
+                    vercel_build_repair.DELIVERY_OBJECT_KEY_ENV: (
+                        "control-reader-repair/not-a-run/delivery.json"
+                    ),
+                }
+            )
 
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
@@ -1095,7 +1097,14 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("PRODUCTION_READ_ONLY_DATABASE_URL", workflow)
-        for name in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_ORG_ID"):
+        for name in (
+            "VERCEL_TOKEN",
+            "VERCEL_PROJECT_ID",
+            "VERCEL_ORG_ID",
+            "PRIVATE_BLOB_STORE_ID",
+            "PRIVATE_BLOB_READ_TOKEN",
+            "PRIVATE_BLOB_READ_WRITE_TOKEN",
+        ):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
         self.assertIn("node-version: \"24.17.0\"", workflow)
         self.assertIn("timeout-minutes: 30", workflow)
@@ -1120,35 +1129,38 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             '$RECIPIENT_PUBLIC_KEY_B64"',
             workflow,
         )
+        self.assertIn(
+            '--build-env "CONTROL_READER_DELIVERY_OBJECT_KEY='
+            '$DELIVERY_OBJECT_KEY"',
+            workflow,
+        )
         self.assertNotIn('"$VERCEL_CLI" curl', workflow)
         self.assertIn('"$VERCEL_CLI" inspect "$DEPLOYMENT_URL" \\', workflow)
-        self.assertIn("--logs \\", workflow)
-        self.assertIn("VOWPIC_CONTROL_READER_DELIVERY_B64:", workflow)
-        self.assertIn('trap \'rm -f "$BUILD_LOG"\' EXIT', workflow)
-        self.assertIn("private repair build delivery marker is missing", workflow)
-        self.assertIn("private repair build delivery markers conflict", workflow)
-        self.assertIn("unique_matches = set(matches)", workflow)
-        self.assertIn("private repair build delivery is invalid", workflow)
+        self.assertNotIn("--logs \\", workflow)
+        self.assertNotIn("VOWPIC_CONTROL_READER_DELIVERY_B64:", workflow)
+        self.assertIn(
+            "Recover encrypted credential and sanitized proof from private Blob",
+            workflow,
+        )
+        self.assertIn("PrivateBlobEvidenceStore", workflow)
+        self.assertIn("store.read(object_key)", workflow)
+        self.assertIn("validate_delivery_payload", workflow)
         self.assertIn("private repair deployment build command changed", workflow)
         self.assertIn("private repair deployment output directory changed", workflow)
-        self.assertIn("vowpic.encrypted-control-reader-credential.v1", workflow)
-        self.assertIn("vowpic.control-reader-repair-delivery.v1", workflow)
-        self.assertIn("private repair delivery envelope schema is invalid", workflow)
-        self.assertIn("private repair credential envelope schema is invalid", workflow)
         self.assertIn(
             'state.joinpath("credential-url.bin").write_bytes(encrypted)',
             workflow,
         )
         self.assertEqual(workflow.count("--yes \\\n"), 1)
-        self.assertIn('proof.get("state") != "PASSED"', workflow)
-        self.assertIn('"vowpic_release_runtime_login"', workflow)
-        self.assertIn('"vowpic_release_control_login"', workflow)
-        self.assertIn('"vowpic_release_control_read_login"', workflow)
-        self.assertIn("private repair build credential identity is invalid", workflow)
         self.assertNotIn("--proof-only", workflow)
         self.assertIn('"$VERCEL_CLI" remove "$DEPLOYMENT_ID" --yes', workflow)
         self.assertIn("for delay in 0 2 5 10; do", workflow)
         self.assertIn('test "$STATUS_CODE" = "404"', workflow)
+        self.assertIn("Delete the private delivery Blob", workflow)
+        self.assertIn("delivery-blob-cleanup.json", workflow)
+        self.assertIn("vowpic.private-repair-blob-cleanup.v1", workflow)
+        self.assertIn("private repair delivery Blob was not deleted", workflow)
+        self.assertIn("delete(", workflow)
         self.assertNotIn("vercel promote", workflow.lower())
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
@@ -1183,6 +1195,10 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertNotIn("frontend", repair_config["buildCommand"])
         vercel_ignore = (ROOT / ".vercelignore").read_text(encoding="utf-8")
         self.assertIn("/scripts", vercel_ignore.splitlines())
+        self.assertIn(
+            "scripts/release/private_evidence_store.py",
+            workflow,
+        )
         self.assertIn(
             "scripts/release/rotate_production_control_reader_in_vercel_build.py",
             workflow,
