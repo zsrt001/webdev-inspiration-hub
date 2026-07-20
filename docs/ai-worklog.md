@@ -2476,3 +2476,19 @@
   protected live run, encrypted artifact recovery, Blob/deployment cleanup
   proofs, protected-secret publication, and independent three-credential proof
   remain required before accepting the credential repair.
+- PR #90 merged as main `4fa6c606ee7874c8327852e36d59226b1b42952e`
+  after all nine required checks passed. Protected run `29754448072` completed
+  the Vercel-side role rearm, three-credential proof, and exact deployment
+  deletion, but GitHub's independent Blob reader returned `BlobNotFound`. The
+  build could only have completed after its own exact-key read-back; the
+  artifact's Blob cleanup state was `NOT_CREATED`. Together these prove that
+  the Vercel build and GitHub reader were using different Blob storage
+  identities, not that the database operation failed.
+- The workflow now proves the GitHub read and read-write Blob credentials with
+  a run-bound, non-sensitive create/read/delete preflight before any database
+  mutation. It then injects that same protected store ID and read-write token
+  into the disposable private Vercel build, so the writer, independent reader,
+  and cleanup step share one proven storage identity. The preflight artifact
+  records only pass/fail and cleanup state. The focused regression remains 191
+  passing tests with two explicit skips; all eight workflow shell blocks parse,
+  workflow YAML parsing and `git diff --check` pass.

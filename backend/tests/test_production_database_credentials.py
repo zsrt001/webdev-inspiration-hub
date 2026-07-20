@@ -1134,6 +1134,26 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             '$DELIVERY_OBJECT_KEY"',
             workflow,
         )
+        self.assertIn(
+            '--build-env "VOWPIC_PRIVATE_BLOB_STORE_ID='
+            '$PRIVATE_BLOB_STORE_ID"',
+            workflow,
+        )
+        self.assertIn(
+            '--build-env "VOWPIC_PRIVATE_BLOB_READ_WRITE_TOKEN='
+            '$PRIVATE_BLOB_READ_WRITE_TOKEN"',
+            workflow,
+        )
+        self.assertIn("Prove private Blob handoff credentials", workflow)
+        self.assertIn("vowpic.private-repair-blob-preflight.v1", workflow)
+        self.assertIn("private Blob cross-token handoff preflight failed", workflow)
+        self.assertIn('writer.put_create_once(object_key, payload)', workflow)
+        self.assertIn('reader.read(object_key) != payload', workflow)
+        self.assertIn("blob-preflight.json", workflow)
+        self.assertLess(
+            workflow.index("Prove private Blob handoff credentials"),
+            workflow.index("Rotate through an unaliased private Production build"),
+        )
         self.assertNotIn('"$VERCEL_CLI" curl', workflow)
         self.assertIn('"$VERCEL_CLI" inspect "$DEPLOYMENT_URL" \\', workflow)
         self.assertNotIn("--logs \\", workflow)
