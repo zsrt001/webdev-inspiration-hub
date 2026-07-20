@@ -266,6 +266,7 @@ def _normalized_private_store_id(value: str) -> str:
     store_id = validated_store_id(value)
     if store_id.startswith("store_"):
         store_id = store_id.removeprefix("store_")
+    store_id = store_id.lower()
     if re.fullmatch(r"[a-z0-9]{8,64}", store_id) is None:
         raise ValueError("private repair Blob store ID is invalid")
     return store_id
