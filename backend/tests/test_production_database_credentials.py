@@ -22,6 +22,7 @@ REPAIR_WORKFLOW = (
     / "workflows"
     / "production-control-reader-credential-repair.yml"
 )
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _load_module():
@@ -143,13 +144,23 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertNotIn("JOIN pg_roles current_role", source)
 
     def test_connection_query_executes_on_postgresql_when_available(self) -> None:
-        database_url = os.environ.get("DATABASE_URL", "").strip()
+        database_url = os.environ.get(
+            "PRODUCTION_DATABASE_PROOF_TEST_URL", ""
+        ).strip()
         if not database_url.startswith(("postgresql://", "postgresql+asyncpg://")):
-            self.skipTest("PostgreSQL DATABASE_URL is unavailable")
+            self.skipTest("PostgreSQL proof test URL is unavailable")
         facts = proof._connection_facts(database_url)
         self.assertTrue(facts["database"])
         self.assertTrue(facts["session_user"])
         self.assertTrue(facts["current_user"])
+
+    def test_ci_binds_proof_query_to_the_running_postgresql_service(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "PRODUCTION_DATABASE_PROOF_TEST_URL: "
+            "postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test",
+            workflow,
+        )
 
     def test_builds_control_reader_url_from_two_proven_targets(self) -> None:
         runtime = (
