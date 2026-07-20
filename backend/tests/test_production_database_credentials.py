@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -21,6 +22,7 @@ REPAIR_WORKFLOW = (
     / "workflows"
     / "production-control-reader-credential-repair.yml"
 )
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _load_module():
@@ -135,6 +137,30 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
+
+    def test_connection_proof_does_not_use_postgresql_keyword_as_alias(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("JOIN pg_roles active_role", source)
+        self.assertNotIn("JOIN pg_roles current_role", source)
+
+    def test_connection_query_executes_on_postgresql_when_available(self) -> None:
+        database_url = os.environ.get(
+            "PRODUCTION_DATABASE_PROOF_TEST_URL", ""
+        ).strip()
+        if not database_url.startswith(("postgresql://", "postgresql+asyncpg://")):
+            self.skipTest("PostgreSQL proof test URL is unavailable")
+        facts = proof._connection_facts(database_url)
+        self.assertTrue(facts["database"])
+        self.assertTrue(facts["session_user"])
+        self.assertTrue(facts["current_user"])
+
+    def test_ci_binds_proof_query_to_the_running_postgresql_service(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "PRODUCTION_DATABASE_PROOF_TEST_URL: "
+            "postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test",
+            workflow,
+        )
 
     def test_builds_control_reader_url_from_two_proven_targets(self) -> None:
         runtime = (

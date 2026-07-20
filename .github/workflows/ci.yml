@@ -218,6 +218,8 @@ jobs:
         run: python -m unittest backend.tests.integration.test_partner_invite_rls -v
       - name: Run a non-empty backend suite
         working-directory: backend
+        env:
+          PRODUCTION_DATABASE_PROOF_TEST_URL: postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test
         run: |
           python - <<'PY'
           import sys
