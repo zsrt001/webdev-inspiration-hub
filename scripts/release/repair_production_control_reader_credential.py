@@ -420,6 +420,7 @@ def rotate_control_reader_password(
             ):
                 raise ValueError("Vercel DATABASE_URL is not a postgres recovery authority")
             _validate_control_reader_role(cursor)
+            cursor.execute("SET LOCAL password_encryption = 'scram-sha-256'")
             cursor.execute(
                 sql.SQL(
                     "ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
@@ -427,6 +428,14 @@ def rotate_control_reader_password(
                 ).format(sql.Identifier(CONTROL_READER_LOGIN)),
                 (password,),
             )
+            cursor.execute(
+                "SELECT role.rolpassword LIKE 'SCRAM-SHA-256$%' AS password_uses_scram "
+                "FROM pg_authid role WHERE role.rolname = %s",
+                (CONTROL_READER_LOGIN,),
+            )
+            password_facts = cursor.fetchone()
+            if password_facts is None or password_facts["password_uses_scram"] is not True:
+                raise ValueError("Production control-reader password is not stored as SCRAM")
 
 
 def prove_control_reader_after_pooler_propagation(
