@@ -19,8 +19,30 @@ REQUIRED = {
     "CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION",
     "EVOLINK_SUBMISSION_RECONCILIATION",
 }
+EXPECTED_IDENTITIES = {
+    "CREEM_REFUND_CREATION": ("creem", "refund_creation", "docs.creem.io"),
+    "CREEM_SUBSCRIPTION_PAID_TRANSACTION": (
+        "creem",
+        "subscription_paid_transaction",
+        "docs.creem.io",
+    ),
+    "CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION": (
+        "creem",
+        "subscription_period_end_cancellation",
+        "docs.creem.io",
+    ),
+    "EVOLINK_SUBMISSION_RECONCILIATION": (
+        "evolink",
+        "submission_reconciliation",
+        "docs.evolink.ai",
+    ),
+}
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _is_exact_official_host(hostname: str | None, expected: str) -> bool:
+    return str(hostname or "").lower() == expected
 
 
 def validate_provider_readiness(document: dict[str, Any]) -> dict[str, str]:
@@ -36,15 +58,19 @@ def validate_provider_readiness(document: dict[str, Any]) -> dict[str, str]:
     for name in sorted(REQUIRED):
         entry = document["contracts"][name]
         source = urlsplit(str(entry.get("official_source_url") or ""))
+        expected_provider, expected_capability, expected_host = EXPECTED_IDENTITIES[name]
         if (
             not isinstance(entry, dict)
+            or entry.get("provider") != expected_provider
+            or entry.get("capability") != expected_capability
             or entry.get("state") != "VERIFIED"
             or not SHA40.fullmatch(str(entry.get("tested_source_sha") or ""))
             or not SHA64.fullmatch(str(entry.get("official_contract_sha256") or ""))
             or not SHA64.fullmatch(str(entry.get("endpoint_schema_sha256") or ""))
             or not SHA64.fullmatch(str(entry.get("test_evidence_sha256") or ""))
             or source.scheme != "https"
-            or not source.hostname
+            or not _is_exact_official_host(source.hostname, expected_host)
+            or source.port not in {None, 443}
             or source.username
             or source.password
         ):
@@ -54,8 +80,7 @@ def validate_provider_readiness(document: dict[str, Any]) -> dict[str, str]:
         str(document["contracts"]["CREEM_REFUND_CREATION"]["official_source_url"])
     )
     if (
-        not refund_url.hostname
-        or not refund_url.hostname.endswith("creem.io")
+        not _is_exact_official_host(refund_url.hostname, "docs.creem.io")
         or "/api-reference/endpoint/" not in refund_url.path
         or "refund" not in refund_url.path.lower()
     ):

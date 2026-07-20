@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 
 class ProviderContractState(str, Enum):
@@ -40,6 +41,32 @@ ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_PATH = ROOT / "release" / "provider-contracts.json"
 _SHA64 = re.compile(r"^[0-9a-f]{64}$")
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _official_source_valid(value: Any, *, provider: str, capability: str) -> bool:
+    try:
+        source = urlsplit(str(value or ""))
+        port = source.port
+    except ValueError:
+        return False
+    expected_host = {
+        "creem": "docs.creem.io",
+        "evolink": "docs.evolink.ai",
+    }.get(provider)
+    if (
+        source.scheme != "https"
+        or source.hostname != expected_host
+        or port not in {None, 443}
+        or source.username
+        or source.password
+    ):
+        return False
+    if capability == "refund_creation":
+        return (
+            "/api-reference/endpoint/" in source.path
+            and "refund" in source.path.lower()
+        )
+    return True
 
 
 def _load_document() -> dict[str, Any]:
@@ -80,7 +107,11 @@ def _contract(name: str, *, provider: str, capability: str) -> ProviderContract:
         and _SHA64.fullmatch(evidence) is not None
         and _SHA64.fullmatch(official_hash) is not None
         and _SHA40.fullmatch(tested_sha) is not None
-        and bool(str(raw.get("official_source_url") or "").strip())
+        and _official_source_valid(
+            raw.get("official_source_url"),
+            provider=provider,
+            capability=capability,
+        )
         and bool(str(raw.get("official_version") or "").strip())
         and bool(str(raw.get("approval_ref") or "").strip())
     )

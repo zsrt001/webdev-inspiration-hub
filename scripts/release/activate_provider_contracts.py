@@ -24,10 +24,11 @@ EVOLINK_KEY = "EVOLINK_SUBMISSION_RECONCILIATION"
 CREEM_CONTRACTS = {
     "CREEM_REFUND_CREATION": {
         "capability": "refund_creation",
-        # Creem currently documents Dashboard-only refunds and a
-        # refund.created webhook, but no refund-creation REST endpoint.  This
-        # must stay None until a later reviewed source change cites a genuine
-        # official API endpoint and implements it.
+        # Creem's public guide says refunds may be processed through the
+        # dashboard or API, but its complete public API reference currently
+        # publishes no refund-creation endpoint or request schema.  This must
+        # stay None until a reviewed source change cites a genuine official
+        # endpoint and implements it.
         "official_endpoint_path": None,
         "required_facts": {
             "exact_purchase_ref",
@@ -62,6 +63,10 @@ ALLOWED_ACTIVATION_PATHS = frozenset({"release/provider-contracts.json", "docs/a
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA64 = re.compile(r"^[0-9a-f]{64}$")
 _SIGNATURE = re.compile(r"^hmac-sha256:([0-9a-f]{64})$")
+
+
+def _is_exact_official_host(hostname: str | None, expected: str) -> bool:
+    return str(hostname or "").lower() == expected
 
 
 def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
@@ -109,8 +114,14 @@ def _validate_official_contract(contract: dict[str, Any], *, now: datetime) -> s
     ):
         raise ValueError("official Provider contract identity is invalid")
     source = urlsplit(str(contract.get("official_source_url") or ""))
-    if source.scheme != "https" or not source.hostname or source.username or source.password:
-        raise ValueError("official Provider source must be an exact HTTPS URL")
+    if (
+        source.scheme != "https"
+        or not _is_exact_official_host(source.hostname, "docs.evolink.ai")
+        or source.port not in {None, 443}
+        or source.username
+        or source.password
+    ):
+        raise ValueError("official Provider source must be an exact EvoLink documentation HTTPS URL")
     if not str(contract.get("official_version") or "").strip():
         raise ValueError("official Provider version is required")
     endpoint_hash = str(contract.get("endpoint_schema_sha256") or "").strip().lower()
@@ -237,7 +248,7 @@ def _validate_creem_official_contract(
 ) -> str:
     if capability == "refund_creation":
         raise ValueError(
-            "official Creem refund creation API endpoint is not documented"
+            "official Creem refund creation API endpoint/schema is not publicly documented"
         )
     expected_fields = {
         "schema",
@@ -264,11 +275,12 @@ def _validate_creem_official_contract(
     if (
         source.scheme != "https"
         or not source.hostname
+        or source.port not in {None, 443}
         or source.username
         or source.password
-        or not source.hostname.endswith("creem.io")
+        or not _is_exact_official_host(source.hostname, "docs.creem.io")
     ):
-        raise ValueError("official Creem source must be an exact Creem HTTPS URL")
+        raise ValueError("official Creem source must be an exact Creem documentation HTTPS URL")
     if not str(contract.get("official_version") or "").strip():
         raise ValueError("official Creem version is required")
     if not _SHA64.fullmatch(

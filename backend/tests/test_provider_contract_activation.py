@@ -154,6 +154,41 @@ def _creem_bundle(
     }
 
 
+def _verified_document() -> dict:
+    document = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    sources = {
+        "CREEM_REFUND_CREATION": (
+            "https://docs.creem.io/api-reference/endpoint/create-refund"
+        ),
+        "CREEM_SUBSCRIPTION_PAID_TRANSACTION": (
+            "https://docs.creem.io/code/webhooks#subscription-paid"
+        ),
+        "CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION": (
+            "https://docs.creem.io/api-reference/endpoint/cancel-subscription"
+        ),
+        "EVOLINK_SUBMISSION_RECONCILIATION": (
+            "https://docs.evolink.ai/en/api-manual/task-management/get-task-detail"
+        ),
+    }
+    for index, (name, source) in enumerate(sources.items(), start=1):
+        document["contracts"][name].update(
+            {
+                "state": "VERIFIED",
+                "official_source_url": source,
+                "official_contract_sha256": f"{index:x}" * 64,
+                "endpoint_schema_sha256": f"{index + 4:x}" * 64,
+                "test_evidence_sha256": f"{index + 8:x}" * 64,
+                "tested_source_sha": "a" * 40,
+                "official_version": "test-fixture-v1",
+                "evidence_created_at": "2026-07-20T12:00:00+00:00",
+                "approval_ref": "test-approval",
+                "correlation_semantics": "test fixture stable correlation semantics",
+                "idempotency_semantics": "test fixture replay idempotency semantics",
+            }
+        )
+    return document
+
+
 class ProviderContractActivationTest(unittest.TestCase):
     def test_activation_requires_a_clean_worktree_including_untracked_files(self) -> None:
         module = _module()
@@ -194,6 +229,126 @@ class ProviderContractActivationTest(unittest.TestCase):
         payload = json.loads(CONTRACT.read_text(encoding="utf-8"))
         with self.assertRaisesRegex(ValueError, "not VERIFIED"):
             module.validate_provider_readiness(payload)
+
+    def test_official_contract_sources_reject_spoofed_provider_domains(self) -> None:
+        module = _module()
+        now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+        evolink = {
+            **_official_contract(now),
+            "official_source_url": (
+                "https://docs.evolink.ai.attacker.example/en/api-manual/task"
+            ),
+        }
+        with self.assertRaisesRegex(ValueError, "EvoLink documentation"):
+            module._validate_official_contract(evolink, now=now)
+
+        creem = _creem_bundle(
+            module,
+            document=json.loads(CONTRACT.read_text(encoding="utf-8")),
+            now=now,
+            source_sha="c" * 40,
+            signing_key=b"provider-evidence-signing-key-32bytes",
+        )["official_contracts"]["CREEM_SUBSCRIPTION_PAID_TRANSACTION"]
+        creem["official_source_url"] = (
+            "https://docs.creem.io.attacker.example/api-reference/subscription"
+        )
+        with self.assertRaisesRegex(ValueError, "Creem documentation"):
+            module._validate_creem_official_contract(
+                creem,
+                capability="subscription_paid_transaction",
+                now=now,
+            )
+
+    def test_production_readiness_accepts_only_exact_official_documentation_hosts(self) -> None:
+        module = _readiness_module()
+        valid = _verified_document()
+        evidence = module.validate_provider_readiness(valid)
+        self.assertEqual(set(evidence), set(valid["contracts"]))
+
+        spoofed_sources = {
+            "CREEM_SUBSCRIPTION_PAID_TRANSACTION": (
+                "https://docs.creem.io.attacker.example/code/webhooks"
+            ),
+            "EVOLINK_SUBMISSION_RECONCILIATION": (
+                "https://docs.evolink.ai.attacker.example/en/api-manual/task"
+            ),
+        }
+        for name, source in spoofed_sources.items():
+            payload = json.loads(json.dumps(valid))
+            payload["contracts"][name]["official_source_url"] = source
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError,
+                "not VERIFIED",
+            ):
+                module.validate_provider_readiness(payload)
+
+        wrong_identity = json.loads(json.dumps(valid))
+        wrong_identity["contracts"]["EVOLINK_SUBMISSION_RECONCILIATION"][
+            "provider"
+        ] = "creem"
+        with self.assertRaisesRegex(ValueError, "not VERIFIED"):
+            module.validate_provider_readiness(wrong_identity)
+
+        wrong_port = json.loads(json.dumps(valid))
+        wrong_port["contracts"]["EVOLINK_SUBMISSION_RECONCILIATION"][
+            "official_source_url"
+        ] = "https://docs.evolink.ai:8443/en/api-manual/task"
+        with self.assertRaisesRegex(ValueError, "not VERIFIED"):
+            module.validate_provider_readiness(wrong_port)
+
+    def test_runtime_authority_rejects_directly_committed_spoofed_source(self) -> None:
+        from app.core import provider_contracts
+
+        raw = _verified_document()["contracts"]["EVOLINK_SUBMISSION_RECONCILIATION"]
+        with patch.object(
+            provider_contracts,
+            "_CONTRACTS",
+            {"EVOLINK_SUBMISSION_RECONCILIATION": raw},
+        ):
+            valid = provider_contracts._contract(
+                "EVOLINK_SUBMISSION_RECONCILIATION",
+                provider="evolink",
+                capability="submission_reconciliation",
+            )
+        self.assertEqual(valid.state, provider_contracts.ProviderContractState.VERIFIED)
+
+        spoofed = json.loads(json.dumps(raw))
+        spoofed["official_source_url"] = (
+            "https://docs.evolink.ai.attacker.example/en/api-manual/task"
+        )
+        with patch.object(
+            provider_contracts,
+            "_CONTRACTS",
+            {"EVOLINK_SUBMISSION_RECONCILIATION": spoofed},
+        ):
+            rejected = provider_contracts._contract(
+                "EVOLINK_SUBMISSION_RECONCILIATION",
+                provider="evolink",
+                capability="submission_reconciliation",
+            )
+        self.assertEqual(
+            rejected.state,
+            provider_contracts.ProviderContractState.UNVERIFIED,
+        )
+
+        malformed = json.loads(json.dumps(raw))
+        malformed["official_source_url"] = (
+            "https://docs.evolink.ai:not-a-port/en/api-manual/task"
+        )
+        with patch.object(
+            provider_contracts,
+            "_CONTRACTS",
+            {"EVOLINK_SUBMISSION_RECONCILIATION": malformed},
+        ):
+            rejected_malformed = provider_contracts._contract(
+                "EVOLINK_SUBMISSION_RECONCILIATION",
+                provider="evolink",
+                capability="submission_reconciliation",
+            )
+        self.assertEqual(
+            rejected_malformed.state,
+            provider_contracts.ProviderContractState.UNVERIFIED,
+        )
 
     def test_activation_rejects_incomplete_wrong_stale_or_unsigned_evidence(self) -> None:
         module = _module()
@@ -291,7 +446,7 @@ class ProviderContractActivationTest(unittest.TestCase):
         before = json.loads(json.dumps(document))
         with self.assertRaisesRegex(
             ValueError,
-            "refund creation API endpoint is not documented",
+            "refund creation API endpoint/schema is not publicly documented",
         ):
             module.activate_creem_contracts(
                 document,
