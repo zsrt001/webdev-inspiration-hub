@@ -516,7 +516,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--recipient-public-key", type=Path, required=True)
     parser.add_argument("--encrypted-url-output", type=Path, required=True)
     parser.add_argument("--proof-output", type=Path, required=True)
-    parser.add_argument("--proof-only", action="store_true")
     return parser.parse_args()
 
 
@@ -568,23 +567,15 @@ def main() -> int:
     )
     legacy_read_only_secret = _optional_environment(args.legacy_read_only_secret_env)
     try:
-        if args.proof_only:
-            reader_url, proof = recover_and_prove_control_reader(
-                runtime_url,
-                writer_url,
-                existing_reader_secret,
-                legacy_read_only_secret,
-            )
-        else:
-            reader_url, proof = recover_prove_or_rotate_control_reader(
-                runtime_url,
-                writer_url,
-                existing_reader_secret,
-                legacy_read_only_secret,
-                vercel_token=_optional_environment("VERCEL_TOKEN"),
-                vercel_project_id=_optional_environment("VERCEL_PROJECT_ID"),
-                vercel_team_id=_optional_environment("VERCEL_ORG_ID"),
-            )
+        reader_url, proof = recover_prove_or_rotate_control_reader(
+            runtime_url,
+            writer_url,
+            existing_reader_secret,
+            legacy_read_only_secret,
+            vercel_token=_optional_environment("VERCEL_TOKEN"),
+            vercel_project_id=_optional_environment("VERCEL_PROJECT_ID"),
+            vercel_team_id=_optional_environment("VERCEL_ORG_ID"),
+        )
         encrypted_url = encrypt_secret(
             reader_url,
             args.recipient_public_key.read_bytes(),
