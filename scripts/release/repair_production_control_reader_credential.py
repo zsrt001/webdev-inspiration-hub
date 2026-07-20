@@ -12,10 +12,12 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit, urlunsplit
 
+import psycopg2
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from verify_production_database_credentials import (
+    EXPECTED_CURRENT_USERS,
     EXPECTED_SESSIONS,
     _sync_url,
     prove_production_database_credentials,
@@ -109,6 +111,63 @@ def recover_control_reader_url(
     return build_control_reader_url(runtime_url, control_writer_url, value)
 
 
+def recover_control_reader_url_from_legacy_inventory(
+    runtime_url: str,
+    control_writer_url: str,
+    legacy_read_only_url: str,
+) -> str:
+    value = "".join(legacy_read_only_url.strip().split())
+    if not value:
+        raise ValueError("legacy Production read-only URL is invalid")
+    runtime = _source_coordinates(runtime_url, EXPECTED_SESSIONS["runtime"])
+    writer = _source_coordinates(
+        control_writer_url,
+        EXPECTED_SESSIONS["control_writer"],
+    )
+    inventory = _source_coordinates(
+        value,
+        EXPECTED_CURRENT_USERS[CONTROL_READER_KIND],
+    )
+    if runtime != writer or runtime != inventory:
+        raise ValueError("protected Production database URLs do not share one target")
+    password = unquote(urlsplit(_sync_url(value)).password or "")
+    return build_control_reader_url(runtime_url, control_writer_url, password)
+
+
+def recover_and_prove_control_reader(
+    runtime_url: str,
+    control_writer_url: str,
+    existing_control_reader_secret: str,
+    legacy_read_only_url: str,
+) -> tuple[str, dict[str, object]]:
+    candidates = (
+        (recover_control_reader_url, existing_control_reader_secret),
+        (recover_control_reader_url_from_legacy_inventory, legacy_read_only_url),
+    )
+    for recover, candidate in candidates:
+        if not candidate.strip():
+            continue
+        try:
+            reader_url = recover(
+                runtime_url,
+                control_writer_url,
+                candidate,
+            )
+            proof = prove_production_database_credentials(
+                {
+                    "runtime": runtime_url,
+                    "control_writer": control_writer_url,
+                    "control_reader": reader_url,
+                }
+            )
+            return reader_url, proof
+        except (ValueError, psycopg2.OperationalError):
+            continue
+    raise ValueError(
+        "no protected Production control-reader candidate authenticated safely"
+    )
+
+
 def encrypt_secret(secret: str, public_key_pem: bytes) -> bytes:
     public_key = serialization.load_pem_public_key(public_key_pem)
     if not isinstance(public_key, rsa.RSAPublicKey) or public_key.key_size < 3072:
@@ -128,6 +187,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-database-url-env", required=True)
     parser.add_argument("--control-writer-database-url-env", required=True)
     parser.add_argument("--existing-control-reader-secret-env", required=True)
+    parser.add_argument("--legacy-read-only-secret-env", required=True)
     parser.add_argument("--recipient-public-key", type=Path, required=True)
     parser.add_argument("--encrypted-url-output", type=Path, required=True)
     parser.add_argument("--proof-output", type=Path, required=True)
@@ -143,6 +203,12 @@ def _required_environment(name: str) -> str:
     return value
 
 
+def _optional_environment(name: str) -> str:
+    import os
+
+    return os.environ.get(name, "").strip()
+
+
 def main() -> int:
     args = _parse_args()
     runtime_url = _required_environment(args.runtime_database_url_env)
@@ -150,18 +216,12 @@ def main() -> int:
     existing_reader_secret = _required_environment(
         args.existing_control_reader_secret_env
     )
-    reader_url = recover_control_reader_url(
+    legacy_read_only_secret = _optional_environment(args.legacy_read_only_secret_env)
+    reader_url, proof = recover_and_prove_control_reader(
         runtime_url,
         writer_url,
         existing_reader_secret,
-    )
-
-    proof = prove_production_database_credentials(
-        {
-            "runtime": runtime_url,
-            "control_writer": writer_url,
-            "control_reader": reader_url,
-        }
+        legacy_read_only_secret,
     )
     encrypted_url = encrypt_secret(
         reader_url,

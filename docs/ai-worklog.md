@@ -2182,3 +2182,24 @@
   the production validator remains fail-closed and unchanged. The four
   affected modules passed 19/19 locally, with the pushed Ubuntu rerun as the
   authoritative POSIX verification.
+
+## 2026-07-20 - Fail-closed control-reader credential candidate recovery
+
+- Protected Production run `29716440101` proved the runtime and control-writer
+  URL shape, then failed authentication for
+  `vowpic_release_control_read_login`; none of the preceding repair attempts
+  changed a database password or schema.
+- The repair workflow now treats the already protected
+  `PRODUCTION_READ_ONLY_DATABASE_URL` only as a second password candidate. It
+  first requires the exact `vowpic_inventory_login`, Supabase pooler, TLS,
+  database, port, and project coordinates to match both independently proven
+  application URLs, then constructs the required distinct control-reader
+  login in memory. The candidate is accepted only if the existing three-login
+  identity and least-privilege proof succeeds; validation and programming
+  errors are not converted into success.
+- The workflow remains manual, main-only, Production-environment protected,
+  database-read-only, and encrypted-artifact-only. It neither alters a role nor
+  publishes a secret by itself. The focused credential and release-control
+  suites passed 135 tests with two explicit local environment/platform skips;
+  `git diff --check` passed. GitHub CI and the protected live proof remain
+  required before the Production secret can be changed. No Subagent was used.
