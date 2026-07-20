@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 import unittest
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "release" / "verify_production_database_credentials.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "production-database-credential-proof.yml"
+REPAIR_SCRIPT = (
+    ROOT / "scripts" / "release" / "repair_production_control_reader_credential.py"
+)
+REPAIR_WORKFLOW = (
+    ROOT
+    / ".github"
+    / "workflows"
+    / "production-control-reader-credential-repair.yml"
+)
 
 
 def _load_module():
@@ -23,6 +36,24 @@ def _load_module():
 
 
 proof = _load_module()
+
+
+def _load_repair_module():
+    release_scripts = str(REPAIR_SCRIPT.parent)
+    if release_scripts not in sys.path:
+        sys.path.insert(0, release_scripts)
+    spec = importlib.util.spec_from_file_location(
+        "repair_production_control_reader_credential",
+        REPAIR_SCRIPT,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("credential repair module cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+repair = _load_repair_module()
 
 
 def _facts(kind: str) -> dict[str, object]:
@@ -104,6 +135,67 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
+
+    def test_builds_control_reader_url_from_two_proven_targets(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        result = repair.build_control_reader_url(runtime, writer, "new-secret")
+        self.assertEqual(
+            result,
+            "postgresql://vowpic_release_control_read_login.project:new-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require",
+        )
+        self.assertNotIn("runtime-secret", result)
+        self.assertNotIn("writer-secret", result)
+
+    def test_rejects_control_reader_rotation_when_source_targets_differ(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.other:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        with self.assertRaisesRegex(ValueError, "one target"):
+            repair.build_control_reader_url(runtime, writer, "new-secret")
+
+    def test_encrypts_repaired_url_to_one_time_rsa_recipient(self) -> None:
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        public_key = private_key.public_key().public_bytes(
+            encoding=repair.serialization.Encoding.PEM,
+            format=repair.serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        encrypted = repair.encrypt_secret("postgresql://protected", public_key)
+        decrypted = private_key.decrypt(
+            encrypted,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        self.assertEqual(decrypted, b"postgresql://protected")
+
+    def test_repair_workflow_is_manual_protected_and_never_reads_old_secret(self) -> None:
+        workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
+        self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
+        self.assertIn("environment: production", workflow)
+        self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
+        self.assertIn(
+            "PRODUCTION_MIGRATION_DATABASE_URL: "
+            "${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}",
+            workflow,
+        )
+        self.assertNotIn("PRODUCTION_CONTROL_READ_DATABASE_URL", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("credential-url.txt", workflow)
 
 
 if __name__ == "__main__":
