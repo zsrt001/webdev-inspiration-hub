@@ -24,6 +24,7 @@ from app.services.job_lease_service import (
     read_worker_runtime_heartbeat,
     worker_runtime_config_hash,
 )
+from app.services.runtime_bundle_service import public_runtime_bundle
 from app.services.storage import DeleteResult, storage_service
 
 settings = get_settings()
@@ -196,6 +197,20 @@ async def _check_database() -> tuple[bool, str]:
     async with async_session_maker() as db:
         await db.execute(text("SELECT 1"))
     return True, "ok"
+
+
+async def _check_database_schema() -> tuple[bool, str]:
+    expected = public_runtime_bundle(settings).schema_revision
+    if not expected:
+        raise RuntimeError("runtime schema revision is missing")
+    async with async_session_maker() as db:
+        actual = str(
+            (await db.execute(text("SELECT version_num FROM alembic_version")))
+            .scalar_one()
+        )
+    if actual != expected:
+        return False, f"expected={expected},actual={actual}"
+    return True, actual
 
 
 async def _check_database_role(
@@ -422,6 +437,12 @@ async def run_readiness_checks(
     checks[name] = result
     if strict:
         name, result = await _run_check(
+            "database_schema",
+            _check_database_schema,
+            timeout_s=15.0,
+        )
+        checks[name] = result
+        name, result = await _run_check(
             "database_role",
             lambda: _check_database_role(
                 async_session_maker,
@@ -489,7 +510,9 @@ async def run_readiness_checks(
     if strict:
         required.insert(0, "payments_config")
         required.insert(0, "commercial_config")
-        required.extend(["database_role", "control_plane_database"])
+        required.extend(
+            ["database_schema", "database_role", "control_plane_database"]
+        )
     if probe_storage:
         required.append("storage_rw_probe")
     if probe_generation_queue:
@@ -534,6 +557,12 @@ async def run_core_readiness_checks(*, strict_mode: bool | None = None) -> dict[
     checks[name] = result
     if strict:
         name, result = await _run_check(
+            "database_schema",
+            _check_database_schema,
+            timeout_s=15.0,
+        )
+        checks[name] = result
+        name, result = await _run_check(
             "database_role",
             lambda: _check_database_role(
                 async_session_maker,
@@ -563,7 +592,9 @@ async def run_core_readiness_checks(*, strict_mode: bool | None = None) -> dict[
     required = ["database"]
     if strict:
         required.insert(0, "commercial_config")
-        required.extend(["database_role", "control_plane_database"])
+        required.extend(
+            ["database_schema", "database_role", "control_plane_database"]
+        )
     if _redis_required():
         required.append("redis")
     if _task_queue_required():

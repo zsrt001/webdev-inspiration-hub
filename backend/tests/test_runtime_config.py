@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib
 import os
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -263,6 +264,147 @@ class RuntimeConfigTest(unittest.TestCase):
 
 
 class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
+    async def test_database_schema_check_reads_live_alembic_revision(self) -> None:
+        from app.core import runtime_checks
+
+        class Result:
+            def scalar_one(self) -> str:
+                return "20260712_0014"
+
+        class Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback) -> None:
+                return None
+
+            async def execute(self, statement):
+                return Result()
+
+        with (
+            patch.object(
+                runtime_checks,
+                "public_runtime_bundle",
+                return_value=SimpleNamespace(schema_revision="20260712_0014"),
+            ),
+            patch.object(
+                runtime_checks,
+                "async_session_maker",
+                return_value=Session(),
+            ),
+        ):
+            self.assertEqual(
+                await runtime_checks._check_database_schema(),
+                (True, "20260712_0014"),
+            )
+
+    async def test_live_schema_drift_blocks_strict_core_readiness(self) -> None:
+        from app.core import runtime_checks
+
+        with (
+            patch.object(
+                runtime_checks,
+                "validate_commercial_config_values",
+                return_value=[],
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_database",
+                AsyncMock(return_value=(True, "ok")),
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_database_schema",
+                AsyncMock(
+                    return_value=(
+                        False,
+                        "expected=20260710_0020,actual=20260712_0014",
+                    )
+                ),
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_database_role",
+                AsyncMock(return_value=(True, "least-privilege")),
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_redis",
+                AsyncMock(return_value=(True, "not_required")),
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_task_queue",
+                AsyncMock(return_value=(True, "not_required")),
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_worker_heartbeat",
+                AsyncMock(return_value=(True, "not_required")),
+            ),
+        ):
+            report = await runtime_checks.run_core_readiness_checks(
+                strict_mode=True
+            )
+
+        self.assertFalse(report["ready"])
+        self.assertIn("database_schema", report["required"])
+        self.assertEqual(report["blockers"], ["database_schema"])
+        self.assertEqual(
+            report["checks"]["database_schema"]["detail"],
+            "expected=20260710_0020,actual=20260712_0014",
+        )
+
+    async def test_live_schema_drift_blocks_strict_operational_readiness(self) -> None:
+        from app.core import runtime_checks
+
+        healthy = AsyncMock(return_value=(True, "ok"))
+        with (
+            patch.object(
+                runtime_checks,
+                "validate_commercial_config_values",
+                return_value=[],
+            ),
+            patch.object(runtime_checks, "_check_database", healthy),
+            patch.object(
+                runtime_checks,
+                "_check_database_schema",
+                AsyncMock(
+                    return_value=(
+                        False,
+                        "expected=20260710_0020,actual=20260712_0014",
+                    )
+                ),
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_database_role",
+                AsyncMock(return_value=(True, "least-privilege")),
+            ),
+            patch.object(runtime_checks, "_check_redis", healthy),
+            patch.object(runtime_checks, "_check_task_queue", healthy),
+            patch.object(runtime_checks, "_check_worker_heartbeat", healthy),
+            patch.object(runtime_checks, "_check_generation_runtime", healthy),
+            patch.object(
+                runtime_checks,
+                "_check_storage_config",
+                return_value=(True, "ok"),
+            ),
+            patch.object(
+                runtime_checks,
+                "_check_payments_config",
+                return_value=(True, "ok"),
+            ),
+        ):
+            report = await runtime_checks.run_readiness_checks(strict_mode=True)
+
+        self.assertFalse(report["commercial_ready"])
+        self.assertEqual(report["blockers"], ["database_schema"])
+        self.assertEqual(
+            report["checks"]["database_schema"]["detail"],
+            "expected=20260710_0020,actual=20260712_0014",
+        )
+
     async def test_invalid_hosted_config_makes_operational_readiness_fail_before_database(self) -> None:
         from app.core import runtime_checks
 
