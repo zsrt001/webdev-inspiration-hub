@@ -2345,3 +2345,11 @@
   `git diff --check` pass. The protected live repair and post-run deployment
   deletion proof remain required before the Production credential is accepted.
   No Subagent was used.
+- PR #80 merged as main `ff45df7d547716f7e7adf33500284b168117b533`
+  after all nine required checks passed. Protected run `29739130435` was
+  rejected before deployment because Vercel limits `buildCommand` to 256
+  characters and the repair command was 270 characters. Its cleanup proof is
+  `NOT_CREATED`, proving no temporary deployment or database rearm occurred.
+  Static output creation now lives in the build-only Python module, reducing
+  the Vercel command to a fixed 97-character invocation while preserving the
+  same success-only output boundary.
