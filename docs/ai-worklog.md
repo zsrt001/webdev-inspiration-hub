@@ -2615,3 +2615,26 @@
   release-workflow regression passes 191 tests with two explicit local skips.
   Live confirmation still requires the protected repair run followed by the
   independent permanent three-credential proof. No Subagent was used.
+- PR #97 merged as main `32131f55f466ca1a8eee2c1a458a1af182761e39`
+  after all nine required checks passed. Protected repair run `29766204901`
+  passed the explicit SCRAM storage postcondition, the Vercel-side three-role
+  least-privilege proof, encrypted normalization, and exact temporary
+  deployment deletion. The sanitized artifact states are `NORMALIZED` and
+  `DELETED`.
+- Independent protected proof run `29766564842` still failed authenticating
+  only `vowpic_release_control_read_login` through transaction-pooler port
+  6543, now against a third observed Supavisor address. This disproves SCRAM
+  storage as the complete root cause. The role is no longer rotated or retried
+  without a new discriminating test.
+- Supabase documents shared-pooler session mode on port 5432 and transaction
+  mode on port 6543 as separate supported connection modes for the same
+  project. A temporary, main-only, Production-environment protected diagnostic
+  now rewrites only the in-memory port of all three protected URLs to 5432 and
+  runs the complete read-only identity and least-privilege proof. It never
+  changes a role or Secret and uploads only a one-day sanitized result. This
+  single comparison will determine whether the stable permanent reader URL can
+  use session mode or whether the remaining fault must be escalated as a
+  Supavisor platform issue. The focused credential, database-login,
+  release-contract, and Production release-workflow regression passes 195
+  tests with two explicit local skips; Python syntax, workflow YAML and shell
+  syntax, and `git diff --check` pass.

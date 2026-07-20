@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -39,6 +40,15 @@ MATERIALIZE_READER_SCRIPT = (
     / "scripts"
     / "release"
     / "materialize_production_control_reader_credential.py"
+)
+SESSION_POOLER_PROBE_SCRIPT = (
+    ROOT / "scripts" / "release" / "probe_production_database_session_pooler.py"
+)
+SESSION_POOLER_PROBE_WORKFLOW = (
+    ROOT
+    / ".github"
+    / "workflows"
+    / "production-database-session-pooler-probe.yml"
 )
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
@@ -104,6 +114,21 @@ def _load_materialize_reader_module():
 
 
 materialize_reader = _load_materialize_reader_module()
+
+
+def _load_session_pooler_probe_module():
+    spec = importlib.util.spec_from_file_location(
+        "probe_production_database_session_pooler",
+        SESSION_POOLER_PROBE_SCRIPT,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("session-pooler probe module cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+session_pooler_probe = _load_session_pooler_probe_module()
 
 
 class _Response:
@@ -1037,6 +1062,139 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         }
         with self.assertRaises(ValueError):
             materialize_reader.normalize_and_encrypt(environment, b"not-a-public-key")
+
+    def test_session_pooler_probe_changes_only_the_ports_and_proves_all_roles(self) -> None:
+        environment = {
+            kind: (
+                "postgresql://"
+                f"{login}.project:{kind}-secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            )
+            for kind, login in (
+                ("PRODUCTION_RUNTIME_DATABASE_URL", "vowpic_release_runtime_login"),
+                (
+                    "PRODUCTION_CONTROL_PLANE_DATABASE_URL",
+                    "vowpic_release_control_login",
+                ),
+                (
+                    "PRODUCTION_CONTROL_READ_DATABASE_URL",
+                    "vowpic_release_control_read_login",
+                ),
+            )
+        }
+        facts = [_facts(kind) for kind in proof.EXPECTED_SESSIONS]
+        with mock.patch.object(
+            session_pooler_probe.credential_proof,
+            "_connection_facts",
+            side_effect=facts,
+        ) as connect:
+            result = session_pooler_probe.probe_session_pooler(environment)
+        self.assertEqual(result["state"], "PASSED")
+        self.assertEqual(result["pooler_mode"], "session")
+        self.assertEqual(result["pooler_port"], 5432)
+        self.assertEqual(connect.call_count, 3)
+        for call, original in zip(connect.call_args_list, environment.values(), strict=True):
+            candidate = call.args[0]
+            self.assertIn(":5432/postgres?sslmode=require", candidate)
+            self.assertNotIn(":6543/", candidate)
+            self.assertEqual(
+                urlsplit(candidate).password,
+                urlsplit(original).password,
+            )
+        serialized = json.dumps(result, sort_keys=True)
+        for secret in environment.values():
+            self.assertNotIn(secret, serialized)
+
+    def test_session_pooler_probe_reports_only_the_failed_credential(self) -> None:
+        environment = {
+            "PRODUCTION_RUNTIME_DATABASE_URL": (
+                "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+            "PRODUCTION_CONTROL_PLANE_DATABASE_URL": (
+                "postgresql://vowpic_release_control_login.project:writer-secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+            "PRODUCTION_CONTROL_READ_DATABASE_URL": (
+                "postgresql://vowpic_release_control_read_login.project:reader-secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+        }
+        with mock.patch.object(
+            session_pooler_probe.credential_proof,
+            "_connection_facts",
+            side_effect=(
+                _facts("runtime"),
+                _facts("control_writer"),
+                session_pooler_probe.psycopg2.OperationalError("reader-secret"),
+            ),
+        ):
+            with self.assertRaises(session_pooler_probe.SessionPoolerProbeError) as raised:
+                session_pooler_probe.probe_session_pooler(environment)
+        self.assertEqual(raised.exception.credential, "control_reader")
+        self.assertEqual(raised.exception.reason, "connection_failed")
+        self.assertNotIn("reader-secret", str(raised.exception))
+
+    def test_session_pooler_probe_main_writes_only_a_sanitized_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "proof.json"
+            with (
+                mock.patch.object(
+                    session_pooler_probe,
+                    "probe_session_pooler",
+                    side_effect=session_pooler_probe.SessionPoolerProbeError(
+                        "control_reader",
+                        "connection_failed",
+                    ),
+                ),
+                mock.patch("sys.argv", ["probe", "--output", str(output)]),
+                mock.patch("builtins.print") as printed,
+            ):
+                self.assertEqual(session_pooler_probe.main(), 1)
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8")),
+                {
+                    "schema": session_pooler_probe.SCHEMA,
+                    "state": "FAILED",
+                    "pooler_mode": "session",
+                    "pooler_port": 5432,
+                    "failure": {
+                        "credential": "control_reader",
+                        "reason": "connection_failed",
+                    },
+                },
+            )
+            self.assertNotIn("reader-secret", str(printed.call_args_list))
+
+    def test_session_pooler_probe_workflow_is_manual_protected_and_read_only(self) -> None:
+        workflow = SESSION_POOLER_PROBE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
+        self.assertIn("environment: production", workflow)
+        self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("timeout-minutes: 15", workflow)
+        self.assertIn("permissions:\n  contents: read", workflow)
+        for name in (
+            "PRODUCTION_RUNTIME_DATABASE_URL",
+            "PRODUCTION_CONTROL_PLANE_DATABASE_URL",
+            "PRODUCTION_CONTROL_READ_DATABASE_URL",
+        ):
+            self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
+        self.assertIn(
+            "scripts/release/probe_production_database_session_pooler.py",
+            workflow,
+        )
+        self.assertRegex(
+            workflow,
+            r"(?s)- name: Upload sanitized session-pooler proof\s+if: always\(\)",
+        )
+        for forbidden in (
+            "PRODUCTION_MIGRATION_DATABASE_URL",
+            "git push",
+            "gh secret",
+            "ALTER ROLE",
+            "vercel deploy",
+        ):
+            self.assertNotIn(forbidden, workflow)
 
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")

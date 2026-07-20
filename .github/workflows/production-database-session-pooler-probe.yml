@@ -1,0 +1,42 @@
+name: Protected Production database session-pooler probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vowpic-production-database-credential-proof
+  cancel-in-progress: false
+
+jobs:
+  prove:
+    name: Prove Production credentials through the session pooler
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - name: Prove all three protected credentials without writes
+        env:
+          PRODUCTION_RUNTIME_DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          PRODUCTION_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
+          PRODUCTION_CONTROL_READ_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/production-database-session-pooler-probe
+          python scripts/release/probe_production_database_session_pooler.py \
+            --output artifacts/production-database-session-pooler-probe/proof.json
+      - name: Upload sanitized session-pooler proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-database-session-pooler-probe
+          path: artifacts/production-database-session-pooler-probe/proof.json
+          if-no-files-found: error
+          retention-days: 1
