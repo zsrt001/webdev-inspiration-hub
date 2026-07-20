@@ -2417,3 +2417,23 @@
   only route already proven to exist: root `/`. Its sole `index.html` is a strict
   JSON document containing the encrypted credential envelope and sanitized
   proof; GitHub validates the full nested schema before publishing either file.
+- PR #87 merged as main `dfcc385cb7340a3b9f8758179d035294116ec152`
+  after all nine required checks passed. Protected run `29744592645` again
+  completed the Vercel-side fixed-role rearm and three-credential proof, then
+  deleted the exact disposable deployment. Root `/` still returned a body that
+  was not JSON, disproving the protected static HTTP transport rather than the
+  database repair. After two equivalent route failures the transport was
+  replaced instead of trying further URL variants.
+- The replacement emits one Base64-framed delivery record into the disposable
+  Vercel build log. That record contains only RSA-OAEP-SHA256 ciphertext and the
+  sanitized proof. GitHub retrieves it with the pinned CLI's authenticated
+  `inspect --logs`, requires exactly one marker, validates the complete nested
+  schema and RSA-sized ciphertext, deletes the local log through an EXIT trap,
+  and still deletes the exact deployment. The served static output is now a
+  fixed credential-free completion page. Deployment inspection also proves the
+  expected build command and output directory before accepting the log record.
+- A local read-only CLI diagnostic from an unlinked worktree unexpectedly
+  created an empty Vercel project named `vowpic-control-reader-credential-repair`.
+  It had no deployment or domain and was removed immediately; the generated
+  local `.vercel` link and duplicate `.gitignore` entry were also removed. A
+  follow-up project listing and clean Git status confirmed the cleanup.

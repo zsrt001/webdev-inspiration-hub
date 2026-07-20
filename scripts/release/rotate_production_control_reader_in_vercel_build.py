@@ -33,6 +33,7 @@ from repair_production_control_reader_credential import (
 SCHEMA = "vowpic.vercel-build-control-reader-repair.v1"
 CREDENTIAL_ENVELOPE_SCHEMA = "vowpic.encrypted-control-reader-credential.v1"
 DELIVERY_SCHEMA = "vowpic.control-reader-repair-delivery.v1"
+DELIVERY_LOG_PREFIX = "VOWPIC_CONTROL_READER_DELIVERY_B64:"
 ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
 RUNTIME_DATABASE_URL_ENV = "PRODUCTION_RUNTIME_DATABASE_URL"
 CONTROL_WRITER_DATABASE_URL_ENV = "PRODUCTION_CONTROL_PLANE_DATABASE_URL"
@@ -116,13 +117,12 @@ def _safe_failure_reason(exc: Exception) -> str:
     return "database operation failed"
 
 
-def write_build_output(
+def encoded_delivery(
     encrypted_reader_url: bytes,
     proof: Mapping[str, object],
-) -> None:
+) -> str:
     if not encrypted_reader_url:
         raise ValueError("encrypted reader URL is empty")
-    BUILD_OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
     credential = {
         "algorithm": "RSA-OAEP-SHA256",
         "ciphertext_b64": base64.b64encode(encrypted_reader_url).decode(
@@ -130,18 +130,23 @@ def write_build_output(
         ),
         "schema": CREDENTIAL_ENVELOPE_SCHEMA,
     }
+    payload = json.dumps(
+        {
+            "credential": credential,
+            "proof": proof,
+            "schema": DELIVERY_SCHEMA,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.b64encode(payload).decode("ascii")
+
+
+def write_build_output() -> None:
+    BUILD_OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
     BUILD_OUTPUT_DIRECTORY.joinpath("index.html").write_text(
-        json.dumps(
-            {
-                "credential": credential,
-                "proof": proof,
-                "schema": DELIVERY_SCHEMA,
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-            indent=2,
-        )
-        + "\n",
+        "<!doctype html><title>Private repair completed</title>\n",
         encoding="utf-8",
     )
 
@@ -150,7 +155,8 @@ def main() -> int:
     try:
         public_key_pem = recipient_public_key(os.environ)
         encrypted_reader_url, result = rotate_and_prove(os.environ, public_key_pem)
-        write_build_output(encrypted_reader_url, result)
+        delivery = encoded_delivery(encrypted_reader_url, result)
+        write_build_output()
     except (OSError, ValueError, psycopg2.Error) as exc:
         print(
             json.dumps(
@@ -165,6 +171,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    print(f"{DELIVERY_LOG_PREFIX}{delivery}", flush=True)
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return 0
 
