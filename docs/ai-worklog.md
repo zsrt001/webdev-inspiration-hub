@@ -2203,3 +2203,31 @@
   suites passed 135 tests with two explicit local environment/platform skips;
   `git diff --check` passed. GitHub CI and the protected live proof remain
   required before the Production secret can be changed. No Subagent was used.
+
+## 2026-07-20 - Provider official-source boundary hardening
+
+- Official documentation review found no public Creem refund-creation endpoint
+  or request schema: the refund guide says dashboard or API, while the complete
+  public API reference lists transaction reads and refund webhooks but no
+  merchant refund mutation. EvoLink documents task lookup only by the task ID
+  returned from submit; it does not document a client correlation lookup,
+  submission idempotency key, or task-list recovery contract. Both capabilities
+  therefore remain `UNVERIFIED` rather than being guessed from undocumented
+  URLs or behaviors.
+- Provider evidence activation and commercial readiness now accept official
+  contract sources only from the exact documentation hosts
+  `docs.evolink.ai` and `docs.creem.io`. Similar-looking attacker-controlled
+  hosts such as `docs.evolink.ai.attacker.example` and
+  `docs.creem.io.attacker.example` fail closed before evidence can authorize a
+  release.
+- Protected credential-proof run `29723972664`, bound to exact main SHA
+  `47a76ed5356b9857b0f43e991127976c02519062`, failed before connection with
+  `control_reader Production database URL is incomplete`. The refreshed secret
+  is therefore not a usable connection URL; the run made no database write and
+  produced no proof artifact.
+- The provider activation regression baseline passed 8/8 before the change and
+  10/10 after adding exact-host and spoofed-domain cases. The focused release
+  and acceptance regression passed 45/45; full backend discovery passed
+  1,013 tests with 38 explicit conditional integration/platform skips. Python
+  compilation and `git diff --check` passed. GitHub CI remains the authoritative
+  clean Linux verification. No Subagent was used.
