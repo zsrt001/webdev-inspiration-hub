@@ -1102,7 +1102,6 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "VERCEL_PROJECT_ID",
             "VERCEL_ORG_ID",
             "PRIVATE_BLOB_STORE_ID",
-            "PRIVATE_BLOB_READ_TOKEN",
             "PRIVATE_BLOB_READ_WRITE_TOKEN",
         ):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
@@ -1144,14 +1143,15 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             '$PRIVATE_BLOB_READ_WRITE_TOKEN"',
             workflow,
         )
-        self.assertIn("Prove private Blob handoff credentials", workflow)
+        self.assertIn("Prove private Blob read-write credential", workflow)
         self.assertIn("vowpic.private-repair-blob-preflight.v1", workflow)
-        self.assertIn("private Blob cross-token handoff preflight failed", workflow)
+        self.assertIn("private Blob read-write round-trip preflight failed", workflow)
         self.assertIn('writer.put_create_once(object_key, payload)', workflow)
         self.assertIn('reader.read(object_key) != payload', workflow)
         self.assertIn("blob-preflight.json", workflow)
+        self.assertNotIn("PRIVATE_BLOB_READ_TOKEN", workflow)
         self.assertLess(
-            workflow.index("Prove private Blob handoff credentials"),
+            workflow.index("Prove private Blob read-write credential"),
             workflow.index("Rotate through an unaliased private Production build"),
         )
         self.assertNotIn('"$VERCEL_CLI" curl', workflow)
