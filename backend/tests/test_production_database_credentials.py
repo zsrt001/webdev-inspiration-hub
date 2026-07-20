@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -57,6 +58,52 @@ def _load_repair_module():
 
 
 repair = _load_repair_module()
+
+
+class _Response:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
+class _Cursor:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = list(rows)
+        self.calls: list[tuple[object, object]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def execute(self, statement, parameters=None) -> None:
+        self.calls.append((statement, parameters))
+
+    def fetchone(self):
+        return self.rows.pop(0) if self.rows else None
+
+
+class _Connection:
+    def __init__(self, cursor: _Cursor) -> None:
+        self._cursor = cursor
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def cursor(self) -> _Cursor:
+        return self._cursor
 
 
 def _facts(kind: str) -> dict[str, object]:
@@ -357,6 +404,196 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                     "",
                 )
 
+    def test_fetches_only_the_decrypted_production_database_url(self) -> None:
+        admin_url = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+
+        def opener(request, *, timeout):
+            self.assertEqual(timeout, 20)
+            self.assertIn("decrypt=true", request.full_url)
+            self.assertIn("teamId=team", request.full_url)
+            self.assertEqual(request.get_header("Authorization"), "Bearer token")
+            return _Response(
+                {
+                    "envs": [
+                        {
+                            "key": "DATABASE_URL",
+                            "target": ["preview"],
+                            "decrypted": True,
+                            "value": "postgresql://wrong",
+                        },
+                        {
+                            "key": "DATABASE_URL",
+                            "target": ["production"],
+                            "decrypted": True,
+                            "value": admin_url,
+                        },
+                    ]
+                }
+            )
+
+        self.assertEqual(
+            repair.fetch_vercel_production_database_url(
+                "token",
+                "project",
+                "team",
+                opener=opener,
+            ),
+            admin_url,
+        )
+
+    def test_rejects_ambiguous_vercel_production_database_urls(self) -> None:
+        with self.assertRaisesRegex(ValueError, "one decrypted"):
+            repair.fetch_vercel_production_database_url(
+                "token",
+                "project",
+                "team",
+                opener=lambda *_args, **_kwargs: _Response(
+                    {
+                        "envs": [
+                            {
+                                "key": "DATABASE_URL",
+                                "target": ["production"],
+                                "decrypted": True,
+                                "value": "postgresql://first",
+                            },
+                            {
+                                "key": "DATABASE_URL",
+                                "target": ["production"],
+                                "decrypted": True,
+                                "value": "postgresql://second",
+                            },
+                        ]
+                    }
+                ),
+            )
+
+    def test_rotates_only_after_protected_candidates_fail(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        password = "r" * 64
+        expected_proof = {"passed": True}
+        with (
+            mock.patch.object(
+                repair,
+                "recover_and_prove_control_reader",
+                side_effect=ValueError("no candidate"),
+            ),
+            mock.patch.object(
+                repair,
+                "fetch_vercel_production_database_url",
+                return_value=admin,
+            ) as fetch,
+            mock.patch.object(repair, "rotate_control_reader_password") as rotate,
+            mock.patch.object(
+                repair,
+                "prove_control_reader_after_pooler_propagation",
+                return_value=expected_proof,
+            ) as prove,
+        ):
+            reader_url, result = repair.recover_prove_or_rotate_control_reader(
+                runtime,
+                writer,
+                password,
+                "",
+                vercel_token="token",
+                vercel_project_id="project",
+                vercel_team_id="team",
+            )
+        self.assertEqual(result, expected_proof)
+        self.assertIn(f":{password}@", reader_url)
+        fetch.assert_called_once_with("token", "project", "team")
+        rotate.assert_called_once_with(admin, runtime, writer, password)
+        prove.assert_called_once_with(runtime, writer, reader_url)
+
+    def test_admin_recovery_rotates_only_the_exact_least_privilege_login(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        admin = (
+            "postgresql://postgres.project:admin-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        password = "r" * 64
+        cursor = _Cursor(
+            [
+                {"session_user": "postgres", "current_user": "postgres", "rolsuper": True},
+                {
+                    "rolcanlogin": True,
+                    "rolinherit": True,
+                    "rolsuper": False,
+                    "rolcreatedb": False,
+                    "rolcreaterole": False,
+                    "rolreplication": False,
+                    "rolbypassrls": False,
+                    "memberships": ["vowpic_inventory_login"],
+                    "owns_objects": False,
+                },
+            ]
+        )
+        with mock.patch.object(
+            repair.psycopg2,
+            "connect",
+            return_value=_Connection(cursor),
+        ):
+            repair.rotate_control_reader_password(admin, runtime, writer, password)
+        self.assertEqual(len(cursor.calls), 3)
+        self.assertEqual(cursor.calls[-1][1], (password,))
+        self.assertNotIn(password, str(cursor.calls[-1][0]))
+
+    def test_admin_recovery_rejects_a_non_postgres_authority_before_rotation(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        candidate = (
+            "postgresql://vowpic_app_runtime.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        cursor = _Cursor(
+            [
+                {
+                    "session_user": "vowpic_app_runtime",
+                    "current_user": "vowpic_app_runtime",
+                    "rolsuper": False,
+                }
+            ]
+        )
+        with mock.patch.object(
+            repair.psycopg2,
+            "connect",
+            return_value=_Connection(cursor),
+        ):
+            with self.assertRaisesRegex(ValueError, "not a postgres"):
+                repair.rotate_control_reader_password(
+                    candidate,
+                    runtime,
+                    writer,
+                    "r" * 64,
+                )
+        self.assertEqual(len(cursor.calls), 1)
+
     def test_encrypts_repaired_url_to_one_time_rsa_recipient(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         public_key = private_key.public_key().public_bytes(
@@ -393,6 +630,8 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "--legacy-read-only-secret-env PRODUCTION_READ_ONLY_DATABASE_URL",
             workflow,
         )
+        for name in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_ORG_ID"):
+            self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("credential-url.txt", workflow)

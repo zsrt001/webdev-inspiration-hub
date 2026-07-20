@@ -2262,3 +2262,33 @@
   owner and evidence are still required before `SUPPORT_MONITORED=true` may be
   set; Task 29 and Production acceptance remain `NOT_RUN` until that and the
   other recorded external gates are genuinely satisfied.
+
+## 2026-07-20 - Fixed-target Production control-reader password rearm
+
+- Protected repair run `29729131600` proved that neither the current
+  control-reader secret nor the legacy inventory password authenticates as
+  `vowpic_release_control_read_login`. A separate read-only role inventory
+  confirmed that the login still exists with the expected non-superuser,
+  non-owner membership in `vowpic_inventory_login`; the remaining defect is a
+  password/secret mismatch rather than a privilege-model or schema failure.
+- The manual, main-only, Production-environment repair workflow now has one
+  bounded rearm path. Only after both protected password candidates fail, it
+  retrieves the single decrypted Vercel Production `DATABASE_URL` in memory.
+  That URL must share the exact Supabase host, port, and database coordinates,
+  and the database must prove `session_user = current_user = postgres` with
+  superuser authority. The target login must already satisfy the exact
+  LOGIN/NOSUPERUSER/NOCREATEDB/NOCREATEROLE/NOREPLICATION/NOBYPASSRLS,
+  no-owned-objects, and inventory-only membership contract before one
+  parameterized password rotation can run.
+- The legacy administrator URL is never written, logged, uploaded, or published
+  as an application secret. The repaired URL is accepted only after the three
+  distinct session/current-user and least-privilege checks pass, with bounded
+  Supavisor password-propagation retries, and is returned only in the existing
+  one-time RSA-encrypted artifact. Any target, authority, role, or response
+  ambiguity fails and rolls back before rotation.
+- Focused credential tests now pass 24/24 with one explicit local PostgreSQL
+  skip; the credential plus release-control suites pass 140 tests with two
+  explicit environment/platform skips. Python compilation, workflow YAML
+  parsing, and `git diff --check` pass. GitHub CI and the protected live repair
+  remain required before the Production credential proof can be called PASS.
+  No Subagent was used.
