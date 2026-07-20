@@ -33,6 +33,12 @@ const PUT_QUERY_KEYS = new Set([
   ...SIGNATURE_QUERY_KEYS,
 ]);
 const DELETE_QUERY_KEYS = new Set(["pathname", ...SIGNATURE_QUERY_KEYS]);
+const SAFE_FAILURE_REASONS = new Set([
+  "private repair signed token issuance failed",
+  "private repair delegation token validation failed",
+  "private repair presigned URL creation failed",
+  "private repair Blob token targets an unexpected store",
+]);
 
 function required(value, message) {
   const clean = String(value ?? "").trim();
@@ -55,6 +61,7 @@ export function normalizedStoreId(value) {
   if (storeId.startsWith("store_")) {
     storeId = storeId.slice("store_".length);
   }
+  storeId = storeId.toLowerCase();
   if (!/^[a-z0-9]{8,64}$/.test(storeId)) {
     throw new Error("private repair Blob store ID is invalid");
   }
@@ -191,17 +198,27 @@ export async function createDeliveryCapabilities({
   }
   const issuedAt = Date.now();
   const requestedValidUntil = issuedAt + VALIDITY_MS;
-  const signedToken = await issueSignedToken({
-    token,
-    pathname: key,
-    operations: ["put", "get", "delete"],
-    validUntil: requestedValidUntil,
-    allowedContentTypes: ["application/json"],
-    maximumSizeInBytes: MAX_DELIVERY_BYTES,
-  });
-  const actualStoreId = normalizedStoreId(
-    parseStoreIdFromDelegationToken(signedToken.delegationToken),
-  );
+  let signedToken;
+  try {
+    signedToken = await issueSignedToken({
+      token,
+      pathname: key,
+      operations: ["put", "get", "delete"],
+      validUntil: requestedValidUntil,
+      allowedContentTypes: ["application/json"],
+      maximumSizeInBytes: MAX_DELIVERY_BYTES,
+    });
+  } catch {
+    throw new Error("private repair signed token issuance failed");
+  }
+  let actualStoreId;
+  try {
+    actualStoreId = normalizedStoreId(
+      parseStoreIdFromDelegationToken(signedToken.delegationToken),
+    );
+  } catch {
+    throw new Error("private repair delegation token validation failed");
+  }
   if (actualStoreId !== expectedStoreId) {
     throw new Error("private repair Blob token targets an unexpected store");
   }
@@ -213,19 +230,25 @@ export async function createDeliveryCapabilities({
     throw new Error("private repair Blob delegation expiry is invalid");
   }
   const common = { pathname: key, access: "private", validUntil: signedToken.validUntil };
-  const put = await presignUrl(signedToken, {
-    ...common,
-    operation: "put",
-    allowedContentTypes: ["application/json"],
-    maximumSizeInBytes: MAX_DELIVERY_BYTES,
-    addRandomSuffix: false,
-    allowOverwrite: false,
-  });
-  const get = await presignUrl(signedToken, { ...common, operation: "get" });
-  const remove = await presignUrl(signedToken, {
-    ...common,
-    operation: "delete",
-  });
+  let put;
+  let get;
+  let remove;
+  try {
+    [put, get, remove] = await Promise.all([
+      presignUrl(signedToken, {
+        ...common,
+        operation: "put",
+        allowedContentTypes: ["application/json"],
+        maximumSizeInBytes: MAX_DELIVERY_BYTES,
+        addRandomSuffix: false,
+        allowOverwrite: false,
+      }),
+      presignUrl(signedToken, { ...common, operation: "get" }),
+      presignUrl(signedToken, { ...common, operation: "delete" }),
+    ]);
+  } catch {
+    throw new Error("private repair presigned URL creation failed");
+  }
   const putUrl = validatePresignedUrl(put.presignedUrl, "put", key, actualStoreId);
   const getUrl = validatePresignedUrl(get.presignedUrl, "get", key, actualStoreId);
   const deleteUrl = validatePresignedUrl(
@@ -270,8 +293,11 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(() => {
-    process.stderr.write("private Blob delivery capability generation failed\n");
+  main().catch((error) => {
+    const reason = SAFE_FAILURE_REASONS.has(error?.message)
+      ? error.message
+      : "private Blob delivery capability generation failed";
+    process.stderr.write(`${reason}\n`);
     process.exitCode = 1;
   });
 }

@@ -1086,6 +1086,10 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             (object_key, put_url, "abcdefgh"),
             vercel_build_repair.delivery_target(environment),
         )
+        self.assertEqual(
+            "abcdefgh",
+            vercel_build_repair._normalized_private_store_id("store_AbCdEfGh"),
+        )
         with self.assertRaisesRegex(ValueError, "object key is invalid"):
             vercel_build_repair.delivery_target(
                 {
@@ -1183,6 +1187,10 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn("addRandomSuffix: false", source)
         self.assertIn("allowOverwrite: false", source)
         self.assertIn("parseStoreIdFromDelegationToken", source)
+        self.assertIn("storeId = storeId.toLowerCase()", source)
+        self.assertIn("private repair signed token issuance failed", source)
+        self.assertIn("private repair delegation token validation failed", source)
+        self.assertIn("private repair presigned URL creation failed", source)
         self.assertNotIn("console.log", source)
 
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:

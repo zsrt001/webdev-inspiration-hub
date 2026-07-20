@@ -2535,3 +2535,15 @@
   protected repair run, exact Blob/deployment cleanup proofs, protected secret
   publication, and the independent permanent three-credential proof remain
   required before the one-time repair can be removed. No Subagent was used.
+- PR #93 merged as main `0cff05cabecccfa5c003f00258b9ec5abef88ba5`
+  after all nine checks passed. Protected run `29761267264` passed the existing
+  private Blob read-write round trip and stopped while validating the newly
+  issued delegation, before any database mutation or Vercel deployment. Both
+  cleanup proofs are `NOT_CREATED`; the preflight object is `DELETED`.
+- The pinned SDK's `parseStoreIdFromDelegationToken` removes only the `store_`
+  prefix and preserves the mixed-case control-plane store ID, while the
+  configured Blob hostname ID is canonically lower-case. Store comparison now
+  normalizes both representations to lower-case, matching DNS semantics. The
+  helper also maps issuance, delegation parsing, and local URL signing failures
+  to fixed non-sensitive reason categories so a future protected failure can be
+  located without logging tokens or presigned URLs.
