@@ -2353,3 +2353,16 @@
   Static output creation now lives in the build-only Python module, reducing
   the Vercel command to a fixed 97-character invocation while preserving the
   same success-only output boundary.
+- PR #81 merged as main `eb816ab3446410882e7ba980655a3cf9637f97af`
+  after all nine required checks passed. Protected run `29739566190` uploaded,
+  built, and reached `READY`; therefore its success-only build module completed
+  the fixed-role password rearm and three-credential proof. The workflow then
+  rejected Vercel's platform alias metadata before the GitHub-side normalization
+  step. Its cleanup proof is `DELETED`, including the required post-delete 404.
+- Independent read-only proof run `29739812384` failed before connecting because
+  the GitHub `PRODUCTION_CONTROL_READ_DATABASE_URL` secret is intentionally still
+  the raw reader password rather than a complete URL. The protected repair now
+  has a default-off resume input which skips the already completed private build
+  and performs only normalization, read-only proof, RSA encryption, and the
+  no-deployment cleanup proof. Normal private-build runs accept only Vercel-owned
+  `*.vercel.app` alias metadata and continue to reject any custom-domain alias.
