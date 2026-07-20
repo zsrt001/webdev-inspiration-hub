@@ -105,7 +105,7 @@ def _connection_facts(url: str) -> dict[str, Any]:
                            SELECT array_agg(parent.rolname ORDER BY parent.rolname)
                            FROM pg_auth_members membership
                            JOIN pg_roles parent ON parent.oid = membership.roleid
-                           WHERE membership.member = current_role.oid
+                           WHERE membership.member = active_role.oid
                        ), ARRAY[]::name[]) AS current_direct_memberships,
                        pg_has_role(current_user, 'vowpic_runtime', 'MEMBER') AS runtime_member,
                        pg_has_role(current_user, 'vowpic_control_writer', 'MEMBER') AS control_writer_member,
@@ -120,7 +120,7 @@ def _connection_facts(url: str) -> dict[str, Any]:
                        has_table_privilege(current_user, 'public.users', 'SELECT') AS users_select,
                        has_table_privilege(current_user, 'public.users', 'UPDATE') AS users_update
                 FROM pg_roles session_role
-                JOIN pg_roles current_role ON current_role.rolname = current_user
+                JOIN pg_roles active_role ON active_role.rolname = current_user
                 WHERE session_role.rolname = session_user
                 """
             )

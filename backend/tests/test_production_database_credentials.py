@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -135,6 +136,20 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
+
+    def test_connection_proof_does_not_use_postgresql_keyword_as_alias(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("JOIN pg_roles active_role", source)
+        self.assertNotIn("JOIN pg_roles current_role", source)
+
+    def test_connection_query_executes_on_postgresql_when_available(self) -> None:
+        database_url = os.environ.get("DATABASE_URL", "").strip()
+        if not database_url.startswith(("postgresql://", "postgresql+asyncpg://")):
+            self.skipTest("PostgreSQL DATABASE_URL is unavailable")
+        facts = proof._connection_facts(database_url)
+        self.assertTrue(facts["database"])
+        self.assertTrue(facts["session_user"])
+        self.assertTrue(facts["current_user"])
 
     def test_builds_control_reader_url_from_two_proven_targets(self) -> None:
         runtime = (
