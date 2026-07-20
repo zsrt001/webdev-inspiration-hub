@@ -2388,3 +2388,10 @@
   a deployment URL, automatic protection bypass, non-interactive `--yes`, and
   forwarding curl output flags after `--`; the workflow downloads directly to
   files and never emits the ciphertext or sanitized proof body to the log.
+- Protected run `29741722645` completed the Vercel-side fixed-role rearm and
+  three-credential proof, then deleted the exact disposable deployment with a
+  confirmed `DELETED` cleanup proof. The artifact download failed before any
+  ciphertext left Vercel because CLI 56.2.0 forwarded a global `--token` placed
+  after the `curl` subcommand to the system curl binary. The workflow now puts
+  the global token option before the subcommand, matching the CLI parser's
+  verified command contract; no database design or credential contract changed.
