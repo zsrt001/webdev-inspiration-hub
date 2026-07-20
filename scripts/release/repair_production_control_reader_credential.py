@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 import time
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -36,6 +37,7 @@ CONTROL_READER_LOGIN = EXPECTED_SESSIONS[CONTROL_READER_KIND]
 CONTROL_READER_ROLE = EXPECTED_CURRENT_USERS[CONTROL_READER_KIND]
 POOLER_AUTH_RETRY_DELAYS_SECONDS = (0, 15, 30, 60)
 VERCEL_ENV_ENDPOINT = "https://api.vercel.com/v10/projects/{project_id}/env"
+FAILURE_SCHEMA = "vowpic.production-control-reader-credential-repair.v1"
 
 
 def _source_coordinates(url: str, expected_login: str) -> dict[str, object]:
@@ -443,6 +445,30 @@ def _optional_environment(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
+def sanitized_failure_reason(exc: Exception) -> str:
+    if isinstance(exc, ValueError):
+        return str(exc)
+    return "database operation failed"
+
+
+def write_failure_proof(path: Path, exc: Exception) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema": FAILURE_SCHEMA,
+                "state": "FAILED",
+                "reason": sanitized_failure_reason(exc),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     args = _parse_args()
     runtime_url = _required_environment(args.runtime_database_url_env)
@@ -451,28 +477,33 @@ def main() -> int:
         args.existing_control_reader_secret_env
     )
     legacy_read_only_secret = _optional_environment(args.legacy_read_only_secret_env)
-    reader_url, proof = recover_prove_or_rotate_control_reader(
-        runtime_url,
-        writer_url,
-        existing_reader_secret,
-        legacy_read_only_secret,
-        vercel_token=_optional_environment("VERCEL_TOKEN"),
-        vercel_project_id=_optional_environment("VERCEL_PROJECT_ID"),
-        vercel_team_id=_optional_environment("VERCEL_ORG_ID"),
-    )
-    encrypted_url = encrypt_secret(
-        reader_url,
-        args.recipient_public_key.read_bytes(),
-    )
+    try:
+        reader_url, proof = recover_prove_or_rotate_control_reader(
+            runtime_url,
+            writer_url,
+            existing_reader_secret,
+            legacy_read_only_secret,
+            vercel_token=_optional_environment("VERCEL_TOKEN"),
+            vercel_project_id=_optional_environment("VERCEL_PROJECT_ID"),
+            vercel_team_id=_optional_environment("VERCEL_ORG_ID"),
+        )
+        encrypted_url = encrypt_secret(
+            reader_url,
+            args.recipient_public_key.read_bytes(),
+        )
 
-    args.encrypted_url_output.parent.mkdir(parents=True, exist_ok=True)
-    args.encrypted_url_output.write_bytes(encrypted_url)
-    args.proof_output.parent.mkdir(parents=True, exist_ok=True)
-    args.proof_output.write_text(
-        json.dumps(proof, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return 0
+        args.encrypted_url_output.parent.mkdir(parents=True, exist_ok=True)
+        args.encrypted_url_output.write_bytes(encrypted_url)
+        args.proof_output.parent.mkdir(parents=True, exist_ok=True)
+        args.proof_output.write_text(
+            json.dumps(proof, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return 0
+    except (ValueError, psycopg2.Error) as exc:
+        write_failure_proof(args.proof_output, exc)
+        print(f"ERROR: {sanitized_failure_reason(exc)}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
