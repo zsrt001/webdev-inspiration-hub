@@ -203,6 +203,27 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         )
         self.assertEqual(result, urls["control_reader"])
 
+    def test_removes_copy_whitespace_before_strict_url_validation(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        copied = (
+            "postgresql://vowpic_release_control_read_login.project:\n"
+            "reader-secret@aws-1-us-east-1.pooler.supabase.com:6543/\n"
+            "postgres?sslmode=require"
+        )
+        result = repair.recover_control_reader_url(runtime, writer, copied)
+        self.assertEqual(
+            result,
+            "postgresql://vowpic_release_control_read_login.project:reader-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require",
+        )
+
     def test_encrypts_repaired_url_to_one_time_rsa_recipient(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         public_key = private_key.public_key().public_bytes(
