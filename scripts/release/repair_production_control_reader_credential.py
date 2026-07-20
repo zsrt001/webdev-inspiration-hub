@@ -90,8 +90,11 @@ def recover_control_reader_url(
     control_writer_url: str,
     existing_secret: str,
 ) -> str:
-    value = existing_secret.strip()
-    if not value or any(character.isspace() for character in value):
+    raw_value = existing_secret.strip()
+    if not raw_value:
+        raise ValueError("existing Production control-reader secret is invalid")
+    value = "".join(raw_value.split())
+    if not value:
         raise ValueError("existing Production control-reader secret is invalid")
     if value.startswith(("postgresql://", "postgresql+asyncpg://")):
         urls = {
