@@ -2437,3 +2437,14 @@
   It had no deployment or domain and was removed immediately; the generated
   local `.vercel` link and duplicate `.gitignore` entry were also removed. A
   follow-up project listing and clean Git status confirmed the cleanup.
+- PR #88 merged as main `2c3dd991f18fd3e9f0fe2133c759b4c6edfc7cd6`
+  after all nine required checks passed. Protected run `29746544064` completed
+  the database rearm, three-credential proof, build-config validation, and exact
+  deployment deletion, but rejected the retrieved build log because the marker
+  count was not exactly one. The deleted deployment correctly returns not found,
+  so its former build log cannot be re-read for diagnostics.
+- The parser now treats platform replay of the exact same encrypted marker as
+  idempotent: zero markers still fails as missing and multiple distinct values
+  still fail as conflicting. All duplicates must collapse to one byte-for-byte
+  identical Base64 value before the existing envelope, identity, and RSA-size
+  checks run. No credential or proof validation was weakened.
