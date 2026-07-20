@@ -9,6 +9,8 @@ database target and least-privilege role before changing the password.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 from pathlib import Path
@@ -17,8 +19,11 @@ from typing import Mapping
 from urllib.parse import unquote, urlsplit
 
 import psycopg2
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from repair_production_control_reader_credential import (
+    encrypt_secret,
     prove_control_reader_after_pooler_propagation,
     recover_control_reader_url,
     rotate_control_reader_password,
@@ -30,6 +35,7 @@ ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
 RUNTIME_DATABASE_URL_ENV = "PRODUCTION_RUNTIME_DATABASE_URL"
 CONTROL_WRITER_DATABASE_URL_ENV = "PRODUCTION_CONTROL_PLANE_DATABASE_URL"
 CONTROL_READER_SECRET_ENV = "PRODUCTION_CONTROL_READ_DATABASE_URL"
+RECIPIENT_PUBLIC_KEY_B64_ENV = "CONTROL_READER_RECIPIENT_PUBLIC_KEY_B64"
 BUILD_OUTPUT_DIRECTORY = Path(".vowpic-control-reader-repair-output")
 
 
@@ -40,7 +46,22 @@ def _required_environment(environment: Mapping[str, str], name: str) -> str:
     return value
 
 
-def rotate_and_prove(environment: Mapping[str, str]) -> dict[str, object]:
+def recipient_public_key(environment: Mapping[str, str]) -> bytes:
+    encoded = _required_environment(environment, RECIPIENT_PUBLIC_KEY_B64_ENV)
+    try:
+        public_key_pem = base64.b64decode(encoded, validate=True)
+        public_key = serialization.load_pem_public_key(public_key_pem)
+    except (binascii.Error, TypeError, ValueError) as exc:
+        raise ValueError("recipient public key is invalid") from exc
+    if not isinstance(public_key, rsa.RSAPublicKey) or public_key.key_size < 3072:
+        raise ValueError("recipient public key must be RSA with at least 3072 bits")
+    return public_key_pem
+
+
+def rotate_and_prove(
+    environment: Mapping[str, str],
+    public_key_pem: bytes,
+) -> tuple[bytes, dict[str, object]]:
     admin_url = _required_environment(environment, ADMIN_DATABASE_URL_ENV)
     runtime_url = _required_environment(environment, RUNTIME_DATABASE_URL_ENV)
     writer_url = _required_environment(
@@ -49,6 +70,7 @@ def rotate_and_prove(environment: Mapping[str, str]) -> dict[str, object]:
     )
     reader_secret = _required_environment(environment, CONTROL_READER_SECRET_ENV)
     reader_url = recover_control_reader_url(runtime_url, writer_url, reader_secret)
+    encrypted_reader_url = encrypt_secret(reader_url, public_key_pem)
     password = unquote(urlsplit(reader_url).password or "")
     rotate_control_reader_password(
         admin_url,
@@ -62,27 +84,50 @@ def rotate_and_prove(environment: Mapping[str, str]) -> dict[str, object]:
         reader_url,
     )
     try:
-        reader_facts = dict(proof["credentials"]["control_reader"])
+        if proof.get("passed") is not True:
+            raise ValueError("Production credential proof did not pass")
+        credentials = {
+            kind: dict(facts)
+            for kind, facts in dict(proof["credentials"]).items()
+        }
+        if set(credentials) != {"runtime", "control_writer", "control_reader"}:
+            raise ValueError("Production credential proof set is invalid")
         database = str(proof["database"])
-    except (KeyError, TypeError, ValueError) as exc:
+        if not database:
+            raise ValueError("Production credential proof database is missing")
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("Production credential proof shape is invalid") from exc
-    return {
+    return encrypted_reader_url, {
         "schema": SCHEMA,
         "state": "PASSED",
         "credential_rotation": "unaliased_vercel_production_build",
         "database": database,
-        "control_reader": reader_facts,
+        "credentials": credentials,
     }
 
 
 def _safe_failure_reason(exc: Exception) -> str:
     if isinstance(exc, ValueError):
         return str(exc)
+    if isinstance(exc, OSError):
+        return "private build output could not be written"
     return "database operation failed"
 
 
-def write_build_output() -> None:
+def write_build_output(
+    encrypted_reader_url: bytes,
+    proof: Mapping[str, object],
+) -> None:
+    if not encrypted_reader_url:
+        raise ValueError("encrypted reader URL is empty")
     BUILD_OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    BUILD_OUTPUT_DIRECTORY.joinpath("credential-url.bin").write_bytes(
+        encrypted_reader_url
+    )
+    BUILD_OUTPUT_DIRECTORY.joinpath("proof.json").write_text(
+        json.dumps(proof, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
     BUILD_OUTPUT_DIRECTORY.joinpath("index.html").write_text(
         "<!doctype html><title>Private repair completed</title>\n",
         encoding="utf-8",
@@ -91,8 +136,10 @@ def write_build_output() -> None:
 
 def main() -> int:
     try:
-        result = rotate_and_prove(os.environ)
-    except (ValueError, psycopg2.Error) as exc:
+        public_key_pem = recipient_public_key(os.environ)
+        encrypted_reader_url, result = rotate_and_prove(os.environ, public_key_pem)
+        write_build_output(encrypted_reader_url, result)
+    except (OSError, ValueError, psycopg2.Error) as exc:
         print(
             json.dumps(
                 {
@@ -106,7 +153,6 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    write_build_output()
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return 0
 

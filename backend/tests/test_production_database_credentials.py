@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
-from argparse import Namespace
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 
@@ -746,66 +746,6 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         )
         self.assertEqual(decrypted, b"postgresql://protected")
 
-    def test_proof_only_never_enters_the_vercel_rotation_path(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            recipient = root / "recipient.pem"
-            recipient.write_bytes(b"test-public-key")
-            encrypted = root / "credential-url.bin"
-            proof_output = root / "proof.json"
-            args = Namespace(
-                runtime_database_url_env="RUNTIME",
-                control_writer_database_url_env="WRITER",
-                existing_control_reader_secret_env="READER",
-                legacy_read_only_secret_env="LEGACY",
-                recipient_public_key=recipient,
-                encrypted_url_output=encrypted,
-                proof_output=proof_output,
-                proof_only=True,
-            )
-            protected_url = "postgresql://protected-reader"
-            proof_document = {"schema": proof.SCHEMA, "passed": True}
-            with (
-                mock.patch.object(repair, "_parse_args", return_value=args),
-                mock.patch.object(
-                    repair,
-                    "_required_environment",
-                    side_effect=lambda name: name.lower(),
-                ),
-                mock.patch.object(
-                    repair,
-                    "_optional_environment",
-                    return_value="legacy",
-                ),
-                mock.patch.object(
-                    repair,
-                    "recover_and_prove_control_reader",
-                    return_value=(protected_url, proof_document),
-                ) as prove_only,
-                mock.patch.object(
-                    repair,
-                    "recover_prove_or_rotate_control_reader",
-                ) as forbidden_rotation,
-                mock.patch.object(
-                    repair,
-                    "encrypt_secret",
-                    return_value=b"encrypted-reader-url",
-                ),
-            ):
-                self.assertEqual(repair.main(), 0)
-            prove_only.assert_called_once_with(
-                "runtime",
-                "writer",
-                "reader",
-                "legacy",
-            )
-            forbidden_rotation.assert_not_called()
-            self.assertEqual(encrypted.read_bytes(), b"encrypted-reader-url")
-            self.assertEqual(
-                json.loads(proof_output.read_text(encoding="utf-8")),
-                proof_document,
-            )
-
     def test_vercel_build_rotation_reuses_the_fixed_role_contract(self) -> None:
         admin = (
             "postgresql://postgres.project:admin-secret@"
@@ -824,8 +764,19 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
         )
         proof_document = {
+            "passed": True,
             "database": "postgres",
             "credentials": {
+                "runtime": {
+                    "session_user": "vowpic_release_runtime_login",
+                    "current_user": "vowpic_app_runtime",
+                    "default_read_only": "off",
+                },
+                "control_writer": {
+                    "session_user": "vowpic_release_control_login",
+                    "current_user": "vowpic_control_writer_login",
+                    "default_read_only": "off",
+                },
                 "control_reader": {
                     "session_user": "vowpic_release_control_read_login",
                     "current_user": "vowpic_inventory_login",
@@ -839,6 +790,15 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "PRODUCTION_CONTROL_PLANE_DATABASE_URL": writer,
             "PRODUCTION_CONTROL_READ_DATABASE_URL": "reader-secret",
         }
+        sensitive_sequence: list[str] = []
+
+        def encrypt_before_rotation(_reader: str, _public_key: bytes) -> bytes:
+            sensitive_sequence.append("encrypt")
+            return b"encrypted-reader-url"
+
+        def rotate_after_encryption(*_args: str) -> None:
+            sensitive_sequence.append("rotate")
+
         with (
             mock.patch.object(
                 vercel_build_repair,
@@ -848,15 +808,25 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             mock.patch.object(
                 vercel_build_repair,
                 "rotate_control_reader_password",
+                side_effect=rotate_after_encryption,
             ) as rotate,
             mock.patch.object(
                 vercel_build_repair,
                 "prove_control_reader_after_pooler_propagation",
                 return_value=proof_document,
             ) as prove,
+            mock.patch.object(
+                vercel_build_repair,
+                "encrypt_secret",
+                side_effect=encrypt_before_rotation,
+            ) as encrypt,
         ):
-            result = vercel_build_repair.rotate_and_prove(environment)
+            encrypted_reader, result = vercel_build_repair.rotate_and_prove(
+                environment,
+                b"public-key",
+            )
         recover.assert_called_once_with(runtime, writer, "reader-secret")
+        encrypt.assert_called_once_with(reader, b"public-key")
         rotate.assert_called_once_with(
             admin,
             runtime,
@@ -864,10 +834,16 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "reader-secret",
         )
         prove.assert_called_once_with(runtime, writer, reader)
+        self.assertEqual(sensitive_sequence, ["encrypt", "rotate"])
+        self.assertEqual(encrypted_reader, b"encrypted-reader-url")
         self.assertEqual(result["state"], "PASSED")
         self.assertEqual(
             result["credential_rotation"],
             "unaliased_vercel_production_build",
+        )
+        self.assertEqual(
+            set(result["credentials"]),
+            {"runtime", "control_writer", "control_reader"},
         )
         serialized = json.dumps(result, sort_keys=True)
         for secret in (admin, runtime, writer, reader, "reader-secret"):
@@ -893,8 +869,13 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         with (
             mock.patch.object(
                 vercel_build_repair,
+                "recipient_public_key",
+                return_value=b"public-key",
+            ),
+            mock.patch.object(
+                vercel_build_repair,
                 "rotate_and_prove",
-                return_value=result,
+                return_value=(b"encrypted-reader-url", result),
             ),
             mock.patch.object(
                 vercel_build_repair,
@@ -902,20 +883,23 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             ) as write_output,
         ):
             self.assertEqual(vercel_build_repair.main(), 0)
-        write_output.assert_called_once_with()
+        write_output.assert_called_once_with(b"encrypted-reader-url", result)
 
         with (
             mock.patch.object(
                 vercel_build_repair,
-                "rotate_and_prove",
-                side_effect=vercel_build_repair.psycopg2.OperationalError(),
-            ),
+                "recipient_public_key",
+                side_effect=ValueError("recipient public key is invalid"),
+            ) as key_check,
+            mock.patch.object(vercel_build_repair, "rotate_and_prove") as forbidden_rearm,
             mock.patch.object(
                 vercel_build_repair,
                 "write_build_output",
             ) as forbidden_output,
         ):
             self.assertEqual(vercel_build_repair.main(), 1)
+        key_check.assert_called_once_with(vercel_build_repair.os.environ)
+        forbidden_rearm.assert_not_called()
         forbidden_output.assert_not_called()
 
     def test_vercel_build_output_is_fixed_and_contains_no_credentials(self) -> None:
@@ -926,23 +910,48 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 "BUILD_OUTPUT_DIRECTORY",
                 output,
             ):
-                vercel_build_repair.write_build_output()
+                vercel_build_repair.write_build_output(
+                    b"encrypted-reader-url",
+                    {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"},
+                )
             document = output.joinpath("index.html").read_text(encoding="utf-8")
             self.assertEqual(
                 document,
                 "<!doctype html><title>Private repair completed</title>\n",
             )
             self.assertNotIn("postgres", document.lower())
+            self.assertEqual(
+                output.joinpath("credential-url.bin").read_bytes(),
+                b"encrypted-reader-url",
+            )
+            self.assertEqual(
+                json.loads(output.joinpath("proof.json").read_text(encoding="utf-8")),
+                {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"},
+            )
+
+    def test_vercel_build_recipient_key_is_validated_before_rearm(self) -> None:
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        public_key = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        encoded = base64.b64encode(public_key).decode("ascii")
+        environment = {
+            vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: encoded,
+        }
+        self.assertEqual(
+            vercel_build_repair.recipient_public_key(environment),
+            public_key,
+        )
+        with self.assertRaisesRegex(ValueError, "recipient public key is invalid"):
+            vercel_build_repair.recipient_public_key(
+                {vercel_build_repair.RECIPIENT_PUBLIC_KEY_B64_ENV: "not-base64"}
+            )
 
     def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
-        self.assertIn("resume_proof_only_after_private_build:", workflow)
-        self.assertRegex(
-            workflow,
-            r"(?s)resume_proof_only_after_private_build:\s+"
-            r"description:.*?required: false\s+default: false\s+type: boolean",
-        )
+        self.assertNotIn("resume_proof_only_after_private_build", workflow)
         self.assertIn("environment: production", workflow)
         self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
         self.assertIn(
@@ -950,15 +959,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             "${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}",
             workflow,
         )
-        self.assertIn(
-            "PRODUCTION_READ_ONLY_DATABASE_URL: "
-            "${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}",
-            workflow,
-        )
-        self.assertIn(
-            "--legacy-read-only-secret-env PRODUCTION_READ_ONLY_DATABASE_URL",
-            workflow,
-        )
+        self.assertNotIn("PRODUCTION_READ_ONLY_DATABASE_URL", workflow)
         for name in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_ORG_ID"):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", workflow)
         self.assertIn("node-version: \"24.17.0\"", workflow)
@@ -970,11 +971,8 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertIn('deployment_target != "production"', workflow)
         self.assertIn('payload.get("readyState")', workflow)
         self.assertIn('payload.get("aliases")', workflow)
-        self.assertIn(
-            "if: ${{ inputs.resume_proof_only_after_private_build == false }}",
-            workflow,
-        )
-        self.assertIn('endswith(".vercel.app")', workflow)
+        self.assertIn('hostname.endswith(".vercel.app")', workflow)
+        self.assertIn('and "/" not in hostname', workflow)
         self.assertIn("private repair deployment has a custom-domain alias", workflow)
         self.assertIn("--local-config vercel.control-reader-repair.json", workflow)
         self.assertIn(
@@ -982,7 +980,20 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             '$PRODUCTION_CONTROL_READ_DATABASE_URL"',
             workflow,
         )
-        self.assertIn("--proof-only", workflow)
+        self.assertIn(
+            '--build-env "CONTROL_READER_RECIPIENT_PUBLIC_KEY_B64='
+            '$RECIPIENT_PUBLIC_KEY_B64"',
+            workflow,
+        )
+        self.assertIn('"$VERCEL_CLI" curl /credential-url.bin', workflow)
+        self.assertIn('"$VERCEL_CLI" curl /proof.json', workflow)
+        self.assertEqual(workflow.count("--yes \\\n"), 3)
+        self.assertIn('proof.get("state") != "PASSED"', workflow)
+        self.assertIn('"vowpic_release_runtime_login"', workflow)
+        self.assertIn('"vowpic_release_control_login"', workflow)
+        self.assertIn('"vowpic_release_control_read_login"', workflow)
+        self.assertIn("private repair build credential identity is invalid", workflow)
+        self.assertNotIn("--proof-only", workflow)
         self.assertIn('"$VERCEL_CLI" remove "$DEPLOYMENT_ID" --yes', workflow)
         self.assertIn("for delay in 0 2 5 10; do", workflow)
         self.assertIn('test "$STATUS_CODE" = "404"', workflow)

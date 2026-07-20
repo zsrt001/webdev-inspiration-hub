@@ -2366,3 +2366,25 @@
   and performs only normalization, read-only proof, RSA encryption, and the
   no-deployment cleanup proof. Normal private-build runs accept only Vercel-owned
   `*.vercel.app` alias metadata and continue to reject any custom-domain alias.
+- PR #82 merged as main `0307dd95cd31f6f955133b21c5bc98775841c502`
+  after all nine required checks passed. Proof-only run `29740253950` skipped the
+  private deployment exactly as intended (`NOT_CREATED`) but exhausted all four
+  bounded attempts with `no protected Production control-reader candidate
+  authenticated safely`. This disproves the cross-runner normalization design:
+  the same raw password which passes inside the Vercel build is not a reliable
+  authentication contract from the GitHub runner.
+- The repaired design keeps the entire sensitive chain in the already proven
+  Vercel build. It validates the one-time RSA public key before any database
+  mutation, performs the fixed-role rearm and three-credential proof, encrypts
+  the complete reader URL in memory, and publishes only the ciphertext plus a
+  sanitized proof in the unaliased static output. GitHub downloads those two
+  files with the pinned Vercel CLI's automatic deployment-protection bypass,
+  validates their schema/key-sized ciphertext, and then deletes the exact
+  deployment. The failed proof-only input and workflow path were removed.
+- The final pre-push regression passes 146 tests and 284 subtests, with two
+  explicit environment/platform skips. Python compilation, workflow YAML
+  parsing, all six current shell blocks, `git diff --check`, and the pinned
+  Vercel CLI 56.2.0 `curl` contract pass. The CLI contract explicitly supports
+  a deployment URL, automatic protection bypass, non-interactive `--yes`, and
+  forwarding curl output flags after `--`; the workflow downloads directly to
+  files and never emits the ciphertext or sanitized proof body to the log.
