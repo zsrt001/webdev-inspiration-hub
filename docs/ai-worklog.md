@@ -2410,3 +2410,10 @@
   strict JSON envelope containing only the RSA-OAEP-SHA256 ciphertext encoded as
   Base64. GitHub validates the envelope schema, algorithm, Base64 encoding, and
   RSA key-sized decoded bytes before writing the same raw ciphertext artifact.
+- Protected run `29743788566` downloaded both named JSON paths successfully, but
+  the first response was not JSON (`JSONDecodeError` at the first byte). This is
+  consistent with the project's static fallback serving `index.html` for named
+  paths. The disposable deployment was again deleted. The delivery now uses the
+  only route already proven to exist: root `/`. Its sole `index.html` is a strict
+  JSON document containing the encrypted credential envelope and sanitized
+  proof; GitHub validates the full nested schema before publishing either file.
