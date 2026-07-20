@@ -166,6 +166,43 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one target"):
             repair.build_control_reader_url(runtime, writer, "new-secret")
 
+    def test_recovers_control_reader_url_from_existing_password(self) -> None:
+        runtime = (
+            "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        writer = (
+            "postgresql://vowpic_release_control_login.project:writer-secret@"
+            "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        )
+        result = repair.recover_control_reader_url(runtime, writer, "reader-secret")
+        self.assertIn(
+            "vowpic_release_control_read_login.project:reader-secret@",
+            result,
+        )
+
+    def test_preserves_an_existing_valid_control_reader_url(self) -> None:
+        urls = {
+            "runtime": (
+                "postgresql://vowpic_release_runtime_login.project:runtime-secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+            "control_writer": (
+                "postgresql://vowpic_release_control_login.project:writer-secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+            "control_reader": (
+                "postgresql://vowpic_release_control_read_login.project:reader-secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+        }
+        result = repair.recover_control_reader_url(
+            urls["runtime"],
+            urls["control_writer"],
+            urls["control_reader"],
+        )
+        self.assertEqual(result, urls["control_reader"])
+
     def test_encrypts_repaired_url_to_one_time_rsa_recipient(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         public_key = private_key.public_key().public_bytes(
@@ -183,17 +220,17 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         )
         self.assertEqual(decrypted, b"postgresql://protected")
 
-    def test_repair_workflow_is_manual_protected_and_never_reads_old_secret(self) -> None:
+    def test_repair_workflow_is_manual_protected_and_normalizes_old_secret(self) -> None:
         workflow = REPAIR_WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
         self.assertIn("environment: production", workflow)
         self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
         self.assertIn(
-            "PRODUCTION_MIGRATION_DATABASE_URL: "
-            "${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}",
+            "PRODUCTION_CONTROL_READ_DATABASE_URL: "
+            "${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}",
             workflow,
         )
-        self.assertNotIn("PRODUCTION_CONTROL_READ_DATABASE_URL", workflow)
+        self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("credential-url.txt", workflow)
 
