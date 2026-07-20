@@ -19,7 +19,6 @@
   "devDependencies": {
     "@emnapi/core": "1.11.2",
     "@emnapi/runtime": "1.11.2",
-    "@vercel/blob": "2.4.0",
     "vercel": "56.2.0"
   }
 }
