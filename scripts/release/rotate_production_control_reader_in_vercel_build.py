@@ -31,6 +31,7 @@ from repair_production_control_reader_credential import (
 
 
 SCHEMA = "vowpic.vercel-build-control-reader-repair.v1"
+CREDENTIAL_ENVELOPE_SCHEMA = "vowpic.encrypted-control-reader-credential.v1"
 ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
 RUNTIME_DATABASE_URL_ENV = "PRODUCTION_RUNTIME_DATABASE_URL"
 CONTROL_WRITER_DATABASE_URL_ENV = "PRODUCTION_CONTROL_PLANE_DATABASE_URL"
@@ -121,8 +122,21 @@ def write_build_output(
     if not encrypted_reader_url:
         raise ValueError("encrypted reader URL is empty")
     BUILD_OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    BUILD_OUTPUT_DIRECTORY.joinpath("credential-url.bin").write_bytes(
-        encrypted_reader_url
+    BUILD_OUTPUT_DIRECTORY.joinpath("credential.json").write_text(
+        json.dumps(
+            {
+                "algorithm": "RSA-OAEP-SHA256",
+                "ciphertext_b64": base64.b64encode(encrypted_reader_url).decode(
+                    "ascii"
+                ),
+                "schema": CREDENTIAL_ENVELOPE_SCHEMA,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )
     BUILD_OUTPUT_DIRECTORY.joinpath("proof.json").write_text(
         json.dumps(proof, ensure_ascii=True, sort_keys=True, indent=2) + "\n",

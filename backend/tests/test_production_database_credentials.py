@@ -920,10 +920,20 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                 "<!doctype html><title>Private repair completed</title>\n",
             )
             self.assertNotIn("postgres", document.lower())
-            self.assertEqual(
-                output.joinpath("credential-url.bin").read_bytes(),
-                b"encrypted-reader-url",
+            credential = json.loads(
+                output.joinpath("credential.json").read_text(encoding="utf-8")
             )
+            self.assertEqual(
+                credential,
+                {
+                    "algorithm": "RSA-OAEP-SHA256",
+                    "ciphertext_b64": base64.b64encode(
+                        b"encrypted-reader-url"
+                    ).decode("ascii"),
+                    "schema": vercel_build_repair.CREDENTIAL_ENVELOPE_SCHEMA,
+                },
+            )
+            self.assertFalse(output.joinpath("credential-url.bin").exists())
             self.assertEqual(
                 json.loads(output.joinpath("proof.json").read_text(encoding="utf-8")),
                 {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"},
@@ -986,7 +996,7 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            '"$VERCEL_CLI" curl /credential-url.bin',
+            '"$VERCEL_CLI" curl /credential.json',
             workflow,
         )
         self.assertIn(
@@ -995,6 +1005,12 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         )
         self.assertNotIn(
             '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl',
+            workflow,
+        )
+        self.assertIn("vowpic.encrypted-control-reader-credential.v1", workflow)
+        self.assertIn("private repair credential envelope schema is invalid", workflow)
+        self.assertIn(
+            'state.joinpath("credential-url.bin").write_bytes(encrypted)',
             workflow,
         )
         self.assertEqual(workflow.count("--yes \\\n"), 3)

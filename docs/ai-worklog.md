@@ -2403,3 +2403,10 @@
   it. The download commands therefore omit the flag entirely and authenticate
   through the already scoped `VERCEL_TOKEN` step environment. This run again
   passed the database-side proof and exact deployment deletion before failing.
+- Protected run `29743043230` confirmed that environment authentication and both
+  HTTP downloads now succeed. The downloaded binary body did not preserve the
+  expected 512-byte RSA ciphertext boundary, so it was rejected before artifact
+  publication; the exact deployment was again deleted. The transport now uses a
+  strict JSON envelope containing only the RSA-OAEP-SHA256 ciphertext encoded as
+  Base64. GitHub validates the envelope schema, algorithm, Base64 encoding, and
+  RSA key-sized decoded bytes before writing the same raw ciphertext artifact.
