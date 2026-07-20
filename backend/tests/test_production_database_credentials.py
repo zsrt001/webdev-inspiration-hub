@@ -915,29 +915,29 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
                     {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"},
                 )
             document = output.joinpath("index.html").read_text(encoding="utf-8")
+            delivery = json.loads(document)
             self.assertEqual(
-                document,
-                "<!doctype html><title>Private repair completed</title>\n",
-            )
-            self.assertNotIn("postgres", document.lower())
-            credential = json.loads(
-                output.joinpath("credential.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(
-                credential,
                 {
-                    "algorithm": "RSA-OAEP-SHA256",
-                    "ciphertext_b64": base64.b64encode(
-                        b"encrypted-reader-url"
-                    ).decode("ascii"),
-                    "schema": vercel_build_repair.CREDENTIAL_ENVELOPE_SCHEMA,
+                    "credential": {
+                        "algorithm": "RSA-OAEP-SHA256",
+                        "ciphertext_b64": base64.b64encode(
+                            b"encrypted-reader-url"
+                        ).decode("ascii"),
+                        "schema": vercel_build_repair.CREDENTIAL_ENVELOPE_SCHEMA,
+                    },
+                    "proof": {
+                        "schema": vercel_build_repair.SCHEMA,
+                        "state": "PASSED",
+                    },
+                    "schema": vercel_build_repair.DELIVERY_SCHEMA,
                 },
+                delivery,
+            )
+            self.assertEqual(
+                [path.name for path in output.iterdir()],
+                ["index.html"],
             )
             self.assertFalse(output.joinpath("credential-url.bin").exists())
-            self.assertEqual(
-                json.loads(output.joinpath("proof.json").read_text(encoding="utf-8")),
-                {"schema": vercel_build_repair.SCHEMA, "state": "PASSED"},
-            )
 
     def test_vercel_build_recipient_key_is_validated_before_rearm(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
@@ -996,24 +996,24 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            '"$VERCEL_CLI" curl /credential.json',
+            '"$VERCEL_CLI" curl / \\',
             workflow,
         )
-        self.assertIn(
-            '"$VERCEL_CLI" curl /proof.json',
-            workflow,
-        )
+        self.assertNotIn('"$VERCEL_CLI" curl /proof.json', workflow)
+        self.assertNotIn('"$VERCEL_CLI" curl /credential.json', workflow)
         self.assertNotIn(
             '"$VERCEL_CLI" --token="$VERCEL_TOKEN" curl',
             workflow,
         )
         self.assertIn("vowpic.encrypted-control-reader-credential.v1", workflow)
+        self.assertIn("vowpic.control-reader-repair-delivery.v1", workflow)
+        self.assertIn("private repair delivery envelope schema is invalid", workflow)
         self.assertIn("private repair credential envelope schema is invalid", workflow)
         self.assertIn(
             'state.joinpath("credential-url.bin").write_bytes(encrypted)',
             workflow,
         )
-        self.assertEqual(workflow.count("--yes \\\n"), 3)
+        self.assertEqual(workflow.count("--yes \\\n"), 2)
         self.assertIn('proof.get("state") != "PASSED"', workflow)
         self.assertIn('"vowpic_release_runtime_login"', workflow)
         self.assertIn('"vowpic_release_control_login"', workflow)
