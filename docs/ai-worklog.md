@@ -2799,3 +2799,27 @@
   `git diff --check` passes. Live execution, sanitized cleanup proof,
   independent read-only absence proof, duplicate Production Secret deletion,
   and removal of the one-time cleanup code remain required.
+- PR #105 merged as main `d5a593f0eac75f536d8c6a15fdd925ee59a61ca6`
+  after all nine required checks passed. Protected cleanup run `29798050070`
+  then proved that Vercel created its Production environment file without a
+  downloadable `DATABASE_URL`; the direct runner failed closed with `Vercel
+  DATABASE_URL is missing` before opening a database connection. Its sanitized
+  artifact remains `FAILED`. The existing GitHub migration credential is not a
+  substitute because the project contract deliberately keeps that login
+  `NOCREATEROLE`.
+- The one-time cleanup is now exposed only through an unaliased, protected
+  Vercel Python function so the existing Sensitive administrator connection
+  never leaves Vercel. The function accepts only POST with a per-run 256-bit
+  bearer token, rejects unauthorized requests before database access, validates
+  the expected Supabase project and `postgres` recovery authority, performs the
+  unchanged exact all-or-nothing role transaction, and returns only sanitized
+  JSON. GitHub masks the trigger token before deployment, uses the existing
+  Vercel protection-bypass secret, validates the function identity and proof,
+  deletes the disposable deployment on every outcome, and requires a 404
+  read-back. `--skip-domain` prevents formal-domain promotion.
+- The function cleanup contract passes 13 focused tests. The complete related
+  regression passes 194 tests with two explicit environment skips. Changed
+  Python files compile, workflow YAML and the one-function deployment JSON
+  parse, all five workflow Bash blocks pass Git Bash `bash -n`, and
+  `git diff --check` passes. Live invocation, sanitized cleanup/deletion proof,
+  and independent read-only absence proof remain required.

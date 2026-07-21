@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import argparse
+import hmac
+from http.server import BaseHTTPRequestHandler
 import json
 import os
-from pathlib import Path
-import stat
-import sys
-from typing import Any
+import re
+from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from dotenv import dotenv_values
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
@@ -23,23 +21,16 @@ OBSOLETE_LOGINS = (
     "vowpic_release_control_read_login",
     "vowpic_release_inventory_login",
 )
-MAX_ENV_FILE_BYTES = 1024 * 1024
+ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
+EXPECTED_PROJECT_REF_ENV = "EXPECTED_SUPABASE_PROJECT_REF"
+TRIGGER_TOKEN_ENV = "CLEANUP_TRIGGER_TOKEN"
 
 
-def _load_admin_url(vercel_env_file: Path) -> str:
-    facts = vercel_env_file.lstat()
-    if (
-        stat.S_ISLNK(facts.st_mode)
-        or not stat.S_ISREG(facts.st_mode)
-        or facts.st_size <= 0
-        or facts.st_size > MAX_ENV_FILE_BYTES
-        or (os.name != "nt" and stat.S_IMODE(facts.st_mode) & 0o077)
-    ):
-        raise ValueError("protected Vercel environment file is unsafe")
-    value = dotenv_values(vercel_env_file).get("DATABASE_URL")
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("Vercel DATABASE_URL is missing")
-    return value.strip()
+def _required_environment(environment: Mapping[str, str], name: str) -> str:
+    value = str(environment.get(name) or "").strip()
+    if not value:
+        raise ValueError(f"required protected function variable is missing: {name}")
+    return value
 
 
 def _sync_url(value: str) -> str:
@@ -218,56 +209,70 @@ def retire_obsolete_reader_logins(
     }
 
 
-def _replace_sanitized_proof(output: Path, proof: dict[str, object]) -> None:
-    if output.is_symlink() or not output.is_file():
-        raise ValueError("sanitized cleanup proof target is unsafe")
-    temporary = output.with_name(f".{output.name}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump(proof, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, output)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _safe_failure_reason(exc: Exception) -> str:
     if isinstance(exc, ValueError):
         return str(exc)
     if isinstance(exc, OSError):
-        return "private cleanup evidence could not be written"
+        return "cleanup function could not read its protected configuration"
     return "database cleanup failed"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--vercel-env-file", required=True)
-    parser.add_argument("--expected-project-ref", required=True)
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args()
+def handle_cleanup_request(
+    authorization: str,
+    environment: Mapping[str, str],
+) -> tuple[int, dict[str, object]]:
     try:
-        proof = retire_obsolete_reader_logins(
-            _load_admin_url(Path(args.vercel_env_file)),
-            args.expected_project_ref.strip(),
-        )
-        _replace_sanitized_proof(Path(args.output), proof)
+        trigger_token = _required_environment(environment, TRIGGER_TOKEN_ENV)
+        if re.fullmatch(r"[0-9a-f]{64}", trigger_token) is None:
+            raise ValueError("cleanup function trigger contract is invalid")
     except (OSError, ValueError, psycopg2.Error) as exc:
-        print(
-            json.dumps(
-                {
-                    "schema": SCHEMA,
-                    "state": "FAILED",
-                    "reason": _safe_failure_reason(exc),
-                },
-                sort_keys=True,
-            ),
-            file=sys.stderr,
+        return 503, {
+            "schema": SCHEMA,
+            "state": "FAILED",
+            "reason": _safe_failure_reason(exc),
+        }
+    if not hmac.compare_digest(authorization, f"Bearer {trigger_token}"):
+        return 404, {"state": "NOT_FOUND"}
+    try:
+        expected_project_ref = _required_environment(
+            environment,
+            EXPECTED_PROJECT_REF_ENV,
         )
-        return 1
-    print(json.dumps({"schema": SCHEMA, "state": "PASSED"}, sort_keys=True))
-    return 0
+        if re.fullmatch(r"[a-z0-9]{20}", expected_project_ref) is None:
+            raise ValueError("expected Supabase project identity is invalid")
+        proof = retire_obsolete_reader_logins(
+            _required_environment(environment, ADMIN_DATABASE_URL_ENV),
+            expected_project_ref,
+        )
+    except (OSError, ValueError, psycopg2.Error) as exc:
+        return 409, {
+            "schema": SCHEMA,
+            "state": "FAILED",
+            "reason": _safe_failure_reason(exc),
+        }
+    return 200, proof
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+class handler(BaseHTTPRequestHandler):
+    def _write_json(self, status: int, payload: dict[str, object]) -> None:
+        body = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        status, payload = handle_cleanup_request(
+            str(self.headers.get("Authorization") or ""),
+            os.environ,
+        )
+        self._write_json(status, payload)
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        self._write_json(404, {"state": "NOT_FOUND"})
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
