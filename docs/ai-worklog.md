@@ -2858,3 +2858,20 @@
   representation. Production targeting, alias restrictions, bearer auth,
   database fail-closed checks, exact role scope, deployment deletion, and 404
   read-back remain unchanged.
+- PR #108 merged as main `c5fab5339e4d37b029f728b5f516573dc71034e9`
+  after all nine required checks passed. Protected run `29800106472` then built
+  and invoked the exact function, connected to the expected database, and
+  failed before DDL because the recovery-authority contract required
+  `rolsuper=true`. The deployment was again deleted with a confirmed 404 and
+  the sanitized artifact remained `FAILED`.
+- Supabase's hosted-database contract deliberately withholds true superuser
+  status from its `postgres` login while retaining administrative privileges.
+  The cleanup now continues to require both `session_user` and `current_user`
+  to be exactly `postgres`, and additionally requires the concrete
+  `CREATEROLE` attribute needed for this role lifecycle operation. It no longer
+  mistakes the expected hosted-Supabase `rolsuper=false` value for an invalid
+  administrator. Ordinary application and migration credentials remain
+  rejected. The focused cleanup contract passes 16 tests and the complete
+  backend suite passes 1,032 tests with 38 explicit environment/dependency
+  skips; changed Python files compile, workflow YAML and all five Bash blocks
+  parse, and `git diff --check` passes.
