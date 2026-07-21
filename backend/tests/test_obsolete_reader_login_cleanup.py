@@ -138,7 +138,8 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
                 {
                     "session_user": "postgres",
                     "current_user": "postgres",
-                    "rolsuper": True,
+                    "rolsuper": False,
+                    "rolcreaterole": True,
                 },
                 safe_inventory,
                 safe_outer,
@@ -179,7 +180,8 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
                 {
                     "session_user": "postgres",
                     "current_user": "postgres",
-                    "rolsuper": True,
+                    "rolsuper": False,
+                    "rolcreaterole": True,
                 },
                 _facts(memberships=[]),
                 _facts(memberships=[cleanup.INVENTORY_LOGIN]),
@@ -200,6 +202,45 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         self.assertFalse(
             any(not isinstance(statement, str) for statement, _parameters in cursor.calls)
         )
+
+    def test_accepts_managed_supabase_postgres_admin_without_superuser(self) -> None:
+        cursor = _Cursor(
+            [
+                {
+                    "session_user": "postgres",
+                    "current_user": "postgres",
+                    "rolsuper": False,
+                    "rolcreaterole": True,
+                }
+            ]
+        )
+        cleanup._validate_recovery_authority(cursor)
+
+    def test_rejects_non_postgres_or_non_role_admin_authority(self) -> None:
+        cases = (
+            (
+                {
+                    "session_user": "application_admin",
+                    "current_user": "application_admin",
+                    "rolsuper": False,
+                    "rolcreaterole": True,
+                },
+                "postgres admin role",
+            ),
+            (
+                {
+                    "session_user": "postgres",
+                    "current_user": "postgres",
+                    "rolsuper": False,
+                    "rolcreaterole": False,
+                },
+                "cannot manage database roles",
+            ),
+        )
+        for authority, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    cleanup._validate_recovery_authority(_Cursor([authority]))
 
     def test_workflow_is_protected_exact_and_self_cleaning(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

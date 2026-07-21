@@ -116,7 +116,7 @@ def _assert_role_facts(
 
 def _validate_recovery_authority(cursor: RealDictCursor) -> None:
     cursor.execute(
-        "SELECT session_user, current_user, role.rolsuper "
+        "SELECT session_user, current_user, role.rolsuper, role.rolcreaterole "
         "FROM pg_roles role WHERE role.rolname = session_user"
     )
     authority = cursor.fetchone()
@@ -124,9 +124,10 @@ def _validate_recovery_authority(cursor: RealDictCursor) -> None:
         authority is None
         or authority["session_user"] != "postgres"
         or authority["current_user"] != "postgres"
-        or authority["rolsuper"] is not True
     ):
-        raise ValueError("Vercel DATABASE_URL is not a postgres recovery authority")
+        raise ValueError("Vercel DATABASE_URL does not use the postgres admin role")
+    if authority["rolcreaterole"] is not True:
+        raise ValueError("Supabase postgres admin role cannot manage database roles")
 
 
 def retire_obsolete_reader_logins(
