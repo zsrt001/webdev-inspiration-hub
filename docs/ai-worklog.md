@@ -2974,3 +2974,36 @@
   cleanup references are absent, `git diff --check` passes, and no
   credential-shaped added line was found.
 - Proxifier was not modified, restarted, or used as part of this cleanup.
+
+## 2026-07-21 - Protected observation database-login provisioning entrypoint
+
+### Goal and evidence
+
+- The scheduled `release-observation.yml` runs were failing before their fixed
+  read-only bootstrap query because the dedicated
+  `OBSERVATION_READ_DATABASE_URL` and `OBSERVATION_WRITE_DATABASE_URL` Secrets
+  were absent from the `production-observation` GitHub Environment.
+- The existing role bootstrap, migration grants, proof code, and provisioner
+  already define two separate least-privilege logins. Reusing the general
+  Production inventory or control-writer URL would violate that reviewed
+  contract, so no credential alias or fallback was added.
+
+### Change
+
+- Added a manual, exact-main, Production-protected one-time workflow that uses
+  the existing migration login only inside GitHub Actions to rotate, prove, and
+  publish the two dedicated observation URLs. It uploads only the sanitized
+  role/Secret-metadata proof.
+- The GitHub credential used to publish Environment Secrets is a temporary
+  protected Secret. The workflow deletes that Secret in an `always()` cleanup
+  step; external post-run verification and cleanup remain mandatory before the
+  one-time workflow is removed.
+
+### Verification
+
+- `python -m unittest backend.tests.test_observation_database_logins backend.tests.test_production_release_workflow`
+  passed 36 tests using the existing project virtual environment.
+- The new workflow parses as YAML and `git diff --check` passes. Live role
+  rotation, protected Secret metadata read-back, scheduled-observation
+  bootstrap, cleanup of the temporary publisher credential, and removal of the
+  one-time workflow remain required before this repair is complete.

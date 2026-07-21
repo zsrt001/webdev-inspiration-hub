@@ -1,0 +1,59 @@
+name: Protected one-time Production observation database logins
+
+on:
+  workflow_dispatch:
+    inputs:
+      required_main_sha:
+        description: Exact reviewed main commit allowed to rotate the observation logins
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vowpic-production-observation-database-logins
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Rotate, prove, and publish the dedicated observation logins
+    if: github.ref == 'refs/heads/main' && github.sha == inputs.required_main_sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - name: Rotate and prove the two least-privilege logins
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          GH_TOKEN: ${{ secrets.ONE_TIME_OBSERVATION_SECRET_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ inputs.required_main_sha }}"
+          mkdir -p artifacts/production-observation-database-logins
+          python scripts/release/provision_observation_database_logins.py \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --github-repository "$GITHUB_REPOSITORY" \
+            --github-environment production-observation \
+            --output artifacts/production-observation-database-logins/proof.json
+      - name: Remove the one-time GitHub publishing credential
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.ONE_TIME_OBSERVATION_SECRET_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh secret delete ONE_TIME_OBSERVATION_SECRET_PUBLISH_TOKEN \
+            --repo "$GITHUB_REPOSITORY" \
+            --env production
+      - name: Upload the sanitized least-privilege proof
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-observation-database-logins
+          path: artifacts/production-observation-database-logins/proof.json
+          if-no-files-found: ignore
+          retention-days: 7
