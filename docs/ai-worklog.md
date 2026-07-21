@@ -3007,3 +3007,38 @@
   rotation, protected Secret metadata read-back, scheduled-observation
   bootstrap, cleanup of the temporary publisher credential, and removal of the
   one-time workflow remain required before this repair is complete.
+
+## 2026-07-21 - Additive Production observation-role bootstrap
+
+### Root cause and bounded recovery
+
+- Protected run `29816584138` failed before credential rotation with the
+  sanitized error that the required `vowpic_observation_reader` group did not
+  exist. Its `always()` cleanup deleted the temporary GitHub publisher Secret;
+  independent metadata reads confirmed that neither observation URL had been
+  partially published.
+- The full Production role bootstrap is not safe to replay because it also
+  rotates the already-active inventory and migration credentials. The recovery
+  is therefore a separate additive SQL contract that creates only the two
+  observation groups, two initially disabled logins, and their migration-only
+  security-definer rotation function. It never reads or changes an existing
+  Production password.
+- The addendum accepts only the reviewed pre- or post-`0020` schema revision,
+  validates the existing migration and base-group prerequisites, rejects
+  elevated flags, unexpected memberships and owned objects, and returns only
+  sanitized role metadata.
+
+### Regression proof
+
+- Added a real PostgreSQL integration test that runs the addendum twice,
+  rejects direct administrator rotation, activates the logins only through the
+  migration login, proves the reader/writer split, reruns the addendum, and
+  proves the same credentials still work. The CI job runs this contract against
+  the fresh service's isolated `postgres` database before Alembic migration.
+- Focused static regression passed 154 tests with one unrelated Windows
+  symlink-permission skip. Python compilation and workflow YAML parsing passed.
+- A locally isolated Docker proof could not start because Docker Desktop's
+  Linux engine did not answer its named-pipe API within the bounded retries.
+  No Production action was substituted for that missing local proof; the real
+  PostgreSQL CI job remains the required execution evidence before merge.
+- Proxifier was not modified or restarted.

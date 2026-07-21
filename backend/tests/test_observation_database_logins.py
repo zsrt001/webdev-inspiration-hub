@@ -12,6 +12,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_DIR = ROOT / "scripts" / "release"
 BOOTSTRAP_SQL = RELEASE_DIR / "bootstrap_production_database_roles.sql"
+OBSERVATION_BOOTSTRAP_SQL = (
+    RELEASE_DIR / "bootstrap_observation_database_roles.sql"
+)
 MIGRATION = (
     ROOT
     / "backend"
@@ -80,6 +83,33 @@ def _observation_facts(
 
 
 class ObservationDatabaseRoleContractTest(unittest.TestCase):
+    def test_additive_bootstrap_never_rotates_existing_production_credentials(self) -> None:
+        source = OBSERVATION_BOOTSTRAP_SQL.read_text(encoding="utf-8")
+        for required in (
+            "vowpic.observation-role-bootstrap.v1",
+            "vowpic_observation_reader",
+            "vowpic_observation_writer",
+            "vowpic_observation_reader_login",
+            "vowpic_observation_writer_login",
+            "vowpic_rotate_observation_database_logins",
+            "observation database login rotation requires the migration login",
+            "OWNER TO postgres",
+            "FROM PUBLIC",
+            "TO vowpic_migration_owner",
+            "current_revision NOT IN ('20260712_0014', '20260710_0020')",
+        ):
+            self.assertIn(required, source)
+        for forbidden in (
+            "inventory_password",
+            "migration_password",
+            "ALTER ROLE vowpic_inventory_login",
+            "ALTER ROLE vowpic_migration_login",
+            "ALTER ROLE vowpic_app_runtime",
+            "ALTER ROLE vowpic_control_writer_login",
+            "GRANT postgres",
+        ):
+            self.assertNotIn(forbidden, source)
+
     def test_bootstrap_precreates_and_scopes_both_observation_logins(self) -> None:
         source = BOOTSTRAP_SQL.read_text(encoding="utf-8")
         for required in (
