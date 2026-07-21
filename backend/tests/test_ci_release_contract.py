@@ -196,6 +196,27 @@ class CiReleaseContractTest(unittest.TestCase):
         )
         self.assertIn('docker logs --tail 100 "$POSTGRES_SERVICE_ID"', backend_job)
 
+    def test_backend_ci_proves_the_observation_role_addendum_before_migrations(self) -> None:
+        workflow = _read(".github/workflows/ci.yml")
+        backend_job = workflow[
+            workflow.index("  backend-test:") : workflow.index("  frontend-check:")
+        ]
+        observation_step = (
+            "- name: Run the additive observation-role bootstrap contract"
+        )
+        migration_step = "- name: Run an empty PostgreSQL migration to head"
+
+        self.assertIn("RUN_OBSERVATION_ROLE_BOOTSTRAP_INTEGRATION: '1'", backend_job)
+        self.assertIn("OBSERVATION_ROLE_BOOTSTRAP_TEST_DATABASE_URL:", backend_job)
+        self.assertIn(
+            "backend.tests.integration.test_observation_role_bootstrap",
+            backend_job,
+        )
+        self.assertLess(
+            backend_job.index(observation_step),
+            backend_job.index(migration_step),
+        )
+
     def test_ci_resolver_uses_current_pinned_python_311_patch_image(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
         self.assertIn(
