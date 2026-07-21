@@ -2919,3 +2919,58 @@
 - Live merged-main cleanup, independent read-only absence proof, duplicate
   Production Secret deletion, and removal of the one-time cleanup code remain
   required; no completion claim is made before those protected steps pass.
+
+## 2026-07-21 - Obsolete Production reader cleanup completed
+
+### Live result
+
+- A one-time Supabase Management token was created only for this repair and
+  retained in process memory. The read-only preflight proved
+  `session_user=postgres`, `current_user=postgres`, `rolcreaterole=true`, no
+  elevated flags or owned objects on the target login, and no shared
+  dependencies. `vowpic_release_inventory_login` was already absent; only
+  `vowpic_release_control_read_login` remained.
+- The first guarded transaction stopped before DDL because the preservation
+  assertion had not included the inventory role's existing
+  `default_transaction_read_only=on` and `statement_timeout=5min` settings.
+  The transaction rolled back. After a read-only exact-config inventory, the
+  corrected single transaction disabled login, revoked only the target's
+  inventory inheritance, reset its role settings, and dropped the target.
+- The immediate Management API postflight proved both obsolete logins absent.
+  `vowpic_inventory_login` remains login-capable, inherits no role, has no
+  elevated flags or owned objects, and retains its two read-only settings and
+  all non-target member rows.
+- Protected credential-proof run `29804766321` passed on
+  `main@d100f7353b28f1be11f9d76f146ae2520e8ee3d3`. Its sanitized artifact proves
+  the runtime and control-writer chains connect as their expected roles, the
+  control reader connects directly as `vowpic_inventory_login`, default
+  read-only is on, and `obsolete_logins_absent=true`.
+- The one-time Supabase token was deleted in the account UI. A subsequent
+  Management API probe returned HTTP 401, the token page showed no remaining
+  token, and all in-process plaintext references were cleared. No credential
+  was written to the repository, GitHub, Vercel, or disk.
+
+### Residual cleanup
+
+- Deleted the unused Production environment secret
+  `PRODUCTION_CONTROL_READ_DATABASE_URL`; repository workflows already use the
+  proven `PRODUCTION_READ_ONLY_DATABASE_URL` and tests forbid the duplicate
+  name.
+- Removed the completed one-time cleanup workflow
+  `.github/workflows/production-obsolete-reader-login-cleanup.yml`, its isolated
+  helper `scripts/release/retire_obsolete_reader_logins_in_vercel_build.py`, and
+  the helper-only test `backend/tests/test_obsolete_reader_login_cleanup.py`.
+  The permanent three-credential proof and Production release checks remain.
+
+### Verification
+
+- Before removal, the one-time cleanup and adjacent credential/release tests
+  passed `62 passed, 1 skipped, 13 subtests passed`.
+- After removal, the permanent database credential, database-login, CI release,
+  Production release, and release-contract regression passed
+  `179 passed, 2 skipped, 308 subtests passed`.
+- The complete backend suite passed `978 passed, 38 skipped, 1229 subtests
+  passed`. Every remaining workflow YAML document parses, executable one-time
+  cleanup references are absent, `git diff --check` passes, and no
+  credential-shaped added line was found.
+- Proxifier was not modified, restarted, or used as part of this cleanup.
