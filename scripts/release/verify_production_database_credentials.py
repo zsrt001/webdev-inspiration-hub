@@ -19,7 +19,7 @@ SCHEMA = "vowpic.production-database-credential-proof.v1"
 EXPECTED_SESSIONS = {
     "runtime": "vowpic_release_runtime_login",
     "control_writer": "vowpic_release_control_login",
-    "control_reader": "vowpic_release_inventory_login",
+    "control_reader": "vowpic_inventory_login",
 }
 EXPECTED_CURRENT_USERS = {
     "runtime": "vowpic_app_runtime",
@@ -29,7 +29,7 @@ EXPECTED_CURRENT_USERS = {
 ENVIRONMENTS = {
     "runtime": "PRODUCTION_RUNTIME_DATABASE_URL",
     "control_writer": "PRODUCTION_CONTROL_PLANE_DATABASE_URL",
-    "control_reader": "PRODUCTION_CONTROL_READ_DATABASE_URL",
+    "control_reader": "PRODUCTION_READ_ONLY_DATABASE_URL",
 }
 
 
@@ -130,7 +130,9 @@ def _connection_facts(url: str) -> dict[str, Any]:
             return dict(row)
 
 
-def _safe_session(facts: dict[str, Any], expected_membership: str) -> bool:
+def _safe_session(
+    facts: dict[str, Any], expected_memberships: set[str]
+) -> bool:
     return (
         facts.get("session_can_login") is True
         and facts.get("session_inherits") is True
@@ -140,7 +142,7 @@ def _safe_session(facts: dict[str, Any], expected_membership: str) -> bool:
         and facts.get("session_replication") is False
         and facts.get("session_bypass_rls") is False
         and set(facts.get("session_direct_memberships") or ())
-        == {expected_membership}
+        == expected_memberships
     )
 
 
@@ -157,7 +159,7 @@ def validate_database_facts(
     if (
         runtime.get("session_user") != EXPECTED_SESSIONS["runtime"]
         or runtime.get("current_user") != EXPECTED_CURRENT_USERS["runtime"]
-        or not _safe_session(runtime, EXPECTED_CURRENT_USERS["runtime"])
+        or not _safe_session(runtime, {EXPECTED_CURRENT_USERS["runtime"]})
         or set(runtime.get("current_direct_memberships") or ())
         != {"vowpic_identity_service", "vowpic_runtime"}
         or runtime.get("runtime_member") is not True
@@ -174,7 +176,7 @@ def validate_database_facts(
     if (
         writer.get("session_user") != EXPECTED_SESSIONS["control_writer"]
         or writer.get("current_user") != EXPECTED_CURRENT_USERS["control_writer"]
-        or not _safe_session(writer, EXPECTED_CURRENT_USERS["control_writer"])
+        or not _safe_session(writer, {EXPECTED_CURRENT_USERS["control_writer"]})
         or set(writer.get("current_direct_memberships") or ())
         != {"vowpic_control_writer"}
         or writer.get("runtime_member") is not False
@@ -192,7 +194,7 @@ def validate_database_facts(
     if (
         reader.get("session_user") != EXPECTED_SESSIONS["control_reader"]
         or reader.get("current_user") != EXPECTED_CURRENT_USERS["control_reader"]
-        or not _safe_session(reader, EXPECTED_CURRENT_USERS["control_reader"])
+        or not _safe_session(reader, set())
         or set(reader.get("current_direct_memberships") or ())
         or str(reader.get("default_read_only") or "").lower() != "on"
         or reader.get("runtime_member") is not False

@@ -31,6 +31,7 @@ CANARY_EXTRACTOR = ROOT / "scripts" / "release" / "extract_production_canary_bun
 CONTRACT = ROOT / "release" / "worker-host-contract.json"
 TMP = ROOT / ".tmp" / "production-release-workflow"
 CANARY_TMP = ROOT / ".tmp" / "production-canary-extractor"
+PRODUCTION_RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "production-release.yml"
 PYTHON = shutil.which("python") or "python"
 
 
@@ -70,6 +71,16 @@ def _path_module(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class ProductionReleaseCredentialContractTest(unittest.TestCase):
+    def test_uses_the_proven_inventory_login_for_all_control_reads(self) -> None:
+        workflow = PRODUCTION_RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("PRODUCTION_CONTROL_READ_DATABASE_URL", workflow)
+        self.assertEqual(
+            workflow.count("--database-url-env PRODUCTION_READ_ONLY_DATABASE_URL"),
+            4,
+        )
 
 
 class ProductionCanaryBundleExtractorTest(unittest.TestCase):

@@ -2672,3 +2672,37 @@
   creation, permanent proof, old-login retirement, one-time repair removal,
   SAFE_BASELINE completion, and formal SaaS acceptance remain required. No
   Subagent was used.
+- PR #99 merged as main `0e937538bebf8c14e253f895456519e8d4466800`
+  after all required checks passed. Protected replacement run `29772455671`
+  created and proved `vowpic_release_inventory_login` from the private Vercel
+  build and deleted the disposable deployment, but the independent GitHub
+  proof `29772902609` failed only that reader with Supavisor `EAUTHQUERY user
+  not found`. The Production control-reader Secret was restored to the prior
+  complete URL; neither outer login was retired.
+- Existing SAFE_BASELINE run `29670370419` provides the missing discriminating
+  evidence: the GitHub runner successfully connected through
+  `PRODUCTION_READ_ONLY_DATABASE_URL`, completed the formal-domain runtime DDL
+  audit and no-bypass SaaS verification, then recorded the terminal
+  `COMPLETED` phase. The underlying `vowpic_inventory_login` is already the
+  bootstrap-enforced read-only login: it has no memberships or object
+  ownership, defaults transactions to read-only, and has SELECT without public
+  write privileges. The two outer-login attempts therefore add no database
+  privilege reduction and introduce only the demonstrated Supavisor failure
+  boundary.
+- Production release coordinate reads and the permanent credential proof now
+  use the already proven `PRODUCTION_READ_ONLY_DATABASE_URL` directly. The
+  verifier requires the base inventory identity, no direct memberships,
+  read-only defaults, and the existing negative write-privilege assertions.
+  The failed outer-login repair and session-pooler diagnostic workflows,
+  scripts, configuration, and their obsolete tests were removed. This change
+  does not modify a database, domain, Production Secret, or Proxifier. A live
+  protected credential proof on merged main is still required before dropping
+  the two unused outer roles and deleting the now-unreferenced duplicate
+  Production Secret.
+- The pre-change direct regression passed 72 tests with one local PostgreSQL
+  skip. After the change, the focused credential, database-login, CI release,
+  Production release-workflow, and release-contract regression passed 175
+  tests and 308 subtests with two explicit environment skips. Three changed
+  Python files compile, all seven workflow files parse, all 24 Bash blocks in
+  the changed workflows pass `bash -n`, and `git diff --check` passes. No
+  Subagent was used.
