@@ -66,6 +66,7 @@ def _facts(kind: str) -> dict[str, object]:
         "activations_delete": kind == "control_writer",
         "users_select": kind in {"runtime", "control_reader"},
         "users_update": False,
+        "obsolete_logins_absent": True,
     }
 
 
@@ -150,6 +151,21 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         facts["control_reader"]["activations_update"] = True
         with self.assertRaisesRegex(ValueError, "control-reader"):
             proof.validate_database_facts(facts)
+
+    def test_rejects_obsolete_production_logins(self) -> None:
+        facts = {kind: _facts(kind) for kind in proof.EXPECTED_SESSIONS}
+        facts["control_reader"]["obsolete_logins_absent"] = False
+        with self.assertRaisesRegex(ValueError, "control-reader"):
+            proof.validate_database_facts(facts)
+
+    def test_proof_names_only_the_two_obsolete_outer_logins(self) -> None:
+        self.assertEqual(
+            set(proof.OBSOLETE_LOGINS),
+            {
+                "vowpic_release_control_read_login",
+                "vowpic_release_inventory_login",
+            },
+        )
 
     def test_workflow_uses_only_protected_environment_secrets(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
