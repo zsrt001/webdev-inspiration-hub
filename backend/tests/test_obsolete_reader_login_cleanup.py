@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-from contextlib import redirect_stdout
 import importlib.util
-import io
 import json
-import os
 from pathlib import Path
-import tempfile
 import unittest
 from unittest import mock
 
@@ -14,6 +10,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "release" / "retire_obsolete_reader_logins_in_vercel_build.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "production-obsolete-reader-login-cleanup.yml"
+CONFIG = ROOT / "vercel.obsolete-reader-cleanup.json"
 
 
 def _load_module():
@@ -213,21 +210,46 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
             '--build-env "PRODUCTION_READ_ONLY_DATABASE_URL=',
             workflow,
         )
-        self.assertNotIn("VERCEL_AUTOMATION_BYPASS_HEADER", workflow)
-        self.assertIn("./.github/actions/setup-release-python", workflow)
+        self.assertIn("VERCEL_AUTOMATION_BYPASS_HEADER", workflow)
         self.assertIn('pull --yes --environment=production', workflow)
-        self.assertIn('--vercel-env-file "$ENV_FILE"', workflow)
         self.assertIn('test ! -e "$GITHUB_WORKSPACE/.vercel"', workflow)
-        self.assertIn('test ! -L "$ENV_FILE"', workflow)
-        self.assertIn('chmod 600 "$ENV_FILE"', workflow)
-        self.assertIn('trap cleanup_sensitive EXIT', workflow)
+        self.assertIn('rm -f -- "$GITHUB_WORKSPACE/.vercel/.env.production.local"', workflow)
         self.assertIn('rm -rf -- "$GITHUB_WORKSPACE/.vercel"', workflow)
-        self.assertNotIn("vercel deploy", workflow)
-        self.assertNotIn("--skip-domain", workflow)
-        self.assertNotIn("deployment-cleanup.json", workflow)
+        self.assertIn('python -c \'import secrets; print(secrets.token_hex(32))\'', workflow)
+        self.assertIn('echo "::add-mask::$TRIGGER_TOKEN"', workflow)
+        self.assertIn('--env "CLEANUP_TRIGGER_TOKEN=$TRIGGER_TOKEN"', workflow)
+        self.assertIn('--skip-domain', workflow)
+        self.assertIn('--request POST', workflow)
+        self.assertIn('Authorization: Bearer $TRIGGER_TOKEN', workflow)
+        self.assertIn('x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_HEADER', workflow)
+        self.assertIn('"$VERCEL_CLI" remove "$DEPLOYMENT_ID" --yes', workflow)
+        self.assertIn('test "$STATUS_CODE" = "404"', workflow)
+        self.assertLess(
+            workflow.index('joinpath("deployment-id.txt").write_text'),
+            workflow.index('private cleanup deployment URL is invalid'),
+        )
+        self.assertIn("deployment-cleanup.json", workflow)
         self.assertIn("production-obsolete-reader-login-cleanup", workflow)
         self.assertNotIn("DROP OWNED", workflow)
         self.assertNotIn("REASSIGN OWNED", workflow)
+
+    def test_function_deployment_contains_only_the_cleanup_entrypoint(self) -> None:
+        config = json.loads(CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(
+            config["builds"],
+            [{"src": "api/index.py", "use": "@vercel/python@6.50.0"}],
+        )
+        self.assertEqual(
+            config["routes"],
+            [
+                {
+                    "src": "/api/obsolete-reader-cleanup",
+                    "methods": ["POST"],
+                    "dest": "/api/index.py",
+                },
+                {"src": "/(.*)", "status": 404},
+            ],
+        )
 
     def test_script_never_uses_broad_role_cleanup(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
@@ -242,7 +264,7 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
             },
         )
 
-    def test_direct_main_replaces_only_the_sanitized_proof(self) -> None:
+    def test_authenticated_function_returns_only_the_sanitized_proof(self) -> None:
         proof = {
             "schema": cleanup.SCHEMA,
             "state": "PASSED",
@@ -252,55 +274,64 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
                 login: "ALREADY_ABSENT" for login in cleanup.OBSOLETE_LOGINS
             },
         }
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            env_file = root / ".env.production.local"
-            env_file.write_text(
-                'DATABASE_URL="protected"\nOTHER_SECRET="not-read"\n',
-                encoding="utf-8",
+        environment = {
+            cleanup.TRIGGER_TOKEN_ENV: "a" * 64,
+            cleanup.EXPECTED_PROJECT_REF_ENV: "a" * 20,
+            cleanup.ADMIN_DATABASE_URL_ENV: "protected",
+        }
+        with mock.patch.object(
+            cleanup,
+            "retire_obsolete_reader_logins",
+            return_value=proof,
+        ) as retire:
+            status, payload = cleanup.handle_cleanup_request(
+                f"Bearer {environment[cleanup.TRIGGER_TOKEN_ENV]}",
+                environment,
             )
-            os.chmod(env_file, 0o600)
-            output_path = root / "proof.json"
-            output_path.write_text('{"state":"FAILED"}\n', encoding="utf-8")
-            stdout = io.StringIO()
-            with (
-                mock.patch.object(
-                    cleanup,
-                    "retire_obsolete_reader_logins",
-                    return_value=proof,
-                ) as retire,
-                mock.patch.object(
-                    cleanup.sys,
-                    "argv",
-                    [
-                        "cleanup",
-                        "--vercel-env-file",
-                        str(env_file),
-                        "--expected-project-ref",
-                        "project",
-                        "--output",
-                        str(output_path),
-                    ],
-                ),
-                redirect_stdout(stdout),
-            ):
-                self.assertEqual(cleanup.main(), 0)
-            retire.assert_called_once_with("protected", "project")
-            self.assertEqual(json.loads(output_path.read_text(encoding="utf-8")), proof)
-            self.assertEqual(
-                json.loads(stdout.getvalue()),
-                {"schema": cleanup.SCHEMA, "state": "PASSED"},
-            )
-            self.assertFalse(output_path.with_name(".proof.json.tmp").exists())
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, proof)
+        retire.assert_called_once_with("protected", "a" * 20)
 
-    @unittest.skipIf(os.name == "nt", "POSIX mode contract is enforced in CI")
-    def test_env_reader_rejects_group_readable_files(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            env_file = Path(directory) / ".env.production.local"
-            env_file.write_text('DATABASE_URL="protected"\n', encoding="utf-8")
-            os.chmod(env_file, 0o640)
-            with self.assertRaisesRegex(ValueError, "unsafe"):
-                cleanup._load_admin_url(env_file)
+    def test_unauthenticated_function_never_opens_the_database(self) -> None:
+        environment = {
+            cleanup.TRIGGER_TOKEN_ENV: "b" * 64,
+            cleanup.EXPECTED_PROJECT_REF_ENV: "b" * 20,
+            cleanup.ADMIN_DATABASE_URL_ENV: "protected",
+        }
+        with mock.patch.object(cleanup, "retire_obsolete_reader_logins") as retire:
+            status, payload = cleanup.handle_cleanup_request("Bearer wrong", environment)
+        self.assertEqual(status, 404)
+        self.assertEqual(payload, {"state": "NOT_FOUND"})
+        retire.assert_not_called()
+
+    def test_function_failure_is_sanitized(self) -> None:
+        environment = {
+            cleanup.TRIGGER_TOKEN_ENV: "c" * 64,
+            cleanup.EXPECTED_PROJECT_REF_ENV: "c" * 20,
+            cleanup.ADMIN_DATABASE_URL_ENV: "protected-secret-url",
+        }
+        with mock.patch.object(
+            cleanup,
+            "retire_obsolete_reader_logins",
+            side_effect=cleanup.psycopg2.OperationalError("protected-secret-url"),
+        ):
+            status, payload = cleanup.handle_cleanup_request(
+                f"Bearer {environment[cleanup.TRIGGER_TOKEN_ENV]}",
+                environment,
+            )
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["state"], "FAILED")
+        self.assertEqual(payload["reason"], "database cleanup failed")
+        self.assertNotIn("protected-secret-url", json.dumps(payload))
+
+    def test_function_rejects_invalid_trigger_contract(self) -> None:
+        status, payload = cleanup.handle_cleanup_request(
+            "Bearer short",
+            {cleanup.TRIGGER_TOKEN_ENV: "short"},
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["state"], "FAILED")
+        self.assertNotIn("short", json.dumps(payload))
 
 
 if __name__ == "__main__":

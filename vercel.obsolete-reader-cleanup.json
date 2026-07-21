@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python@6.50.0"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/obsolete-reader-cleanup",
+      "methods": [
+        "POST"
+      ],
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/(.*)",
+      "status": 404
+    }
+  ]
+}
