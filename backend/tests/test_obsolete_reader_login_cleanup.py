@@ -229,6 +229,8 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         self.assertIn('private cleanup dependency lock is not hash-pinned', workflow)
         self.assertIn('--logs', workflow)
         self.assertIn('private cleanup deployment build failed', workflow)
+        self.assertIn('private cleanup deployment build proof is invalid', workflow)
+        self.assertNotIn('build.get("entrypoint")', workflow)
         self.assertIn('rm -rf -- "$GITHUB_WORKSPACE/.vercel" "$STATE_DIR/deployment"', workflow)
         self.assertIn('python -c \'import secrets; print(secrets.token_hex(32))\'', workflow)
         self.assertIn('echo "::add-mask::$TRIGGER_TOKEN"', workflow)

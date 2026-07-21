@@ -2843,3 +2843,18 @@
   Changed Python files compile, the workflow YAML parses, all five Bash blocks
   pass `bash -n`, and `git diff --check` passes. Live merged-main execution and
   proof are still required.
+- PR #107 merged as main `c6058c786655f718815e3d7441945366b40dc90e`
+  after all nine required checks passed. Protected run `29799719840` proved the
+  four-file deployment built successfully and reached `READY`, then failed only
+  because the workflow assumed Vercel CLI's structured build record would use
+  the source spelling `api/index.py` as its `entrypoint`. The function had not
+  yet been called. Deployment deletion and its 404 read-back passed again, and
+  the sanitized artifact correctly remained `FAILED`.
+- Function identity is already bound before upload by the exact four-file stage
+  manifest and the parsed one-function Vercel config, then after upload by the
+  authenticated endpoint's exact response schema and database contract. The
+  post-build gate now validates that Vercel reports nonempty build records and
+  every record is `READY`, without coupling safety to an undocumented CLI path
+  representation. Production targeting, alias restrictions, bearer auth,
+  database fail-closed checks, exact role scope, deployment deletion, and 404
+  read-back remain unchanged.
