@@ -32,6 +32,12 @@ CONTRACT = ROOT / "release" / "worker-host-contract.json"
 TMP = ROOT / ".tmp" / "production-release-workflow"
 CANARY_TMP = ROOT / ".tmp" / "production-canary-extractor"
 PRODUCTION_RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "production-release.yml"
+OBSERVATION_LOGIN_WORKFLOW = (
+    ROOT
+    / ".github"
+    / "workflows"
+    / "production-observation-database-logins.yml"
+)
 PYTHON = shutil.which("python") or "python"
 
 
@@ -81,6 +87,30 @@ class ProductionReleaseCredentialContractTest(unittest.TestCase):
             workflow.count("--database-url-env PRODUCTION_READ_ONLY_DATABASE_URL"),
             4,
         )
+
+    def test_observation_login_rotation_is_manual_exact_main_and_self_cleaning(self) -> None:
+        workflow = OBSERVATION_LOGIN_WORKFLOW.read_text(encoding="utf-8")
+        payload = yaml.load(workflow, Loader=yaml.BaseLoader)
+        self.assertEqual(set(payload["on"]), {"workflow_dispatch"})
+        job = payload["jobs"]["provision"]
+        self.assertEqual(job["environment"], "production")
+        self.assertIn("github.ref == 'refs/heads/main'", job["if"])
+        self.assertIn("github.sha == inputs.required_main_sha", job["if"])
+        self.assertIn(
+            "secrets.PRODUCTION_MIGRATION_DATABASE_URL",
+            workflow,
+        )
+        self.assertIn(
+            "secrets.ONE_TIME_OBSERVATION_SECRET_PUBLISH_TOKEN",
+            workflow,
+        )
+        self.assertIn("provision_observation_database_logins.py", workflow)
+        self.assertIn("--github-environment production-observation", workflow)
+        self.assertIn(
+            "gh secret delete ONE_TIME_OBSERVATION_SECRET_PUBLISH_TOKEN",
+            workflow,
+        )
+        self.assertNotIn("PRODUCTION_CONTROL_PLANE_DATABASE_URL", workflow)
 
 
 class ProductionCanaryBundleExtractorTest(unittest.TestCase):
