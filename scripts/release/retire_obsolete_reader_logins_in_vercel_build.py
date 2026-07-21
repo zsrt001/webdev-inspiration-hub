@@ -2,35 +2,44 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
+import stat
 import sys
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from dotenv import dotenv_values
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
 
 SCHEMA = "vowpic.obsolete-reader-login-cleanup.v1"
-BUILD_PROOF_MARKER = "VOWPIC_OBSOLETE_READER_CLEANUP_PROOF="
-ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
-EXPECTED_PROJECT_REF_ENV = "EXPECTED_SUPABASE_PROJECT_REF"
 INVENTORY_LOGIN = "vowpic_inventory_login"
 OBSOLETE_LOGINS = (
     "vowpic_release_control_read_login",
     "vowpic_release_inventory_login",
 )
-OUTPUT_DIRECTORY = Path(".vowpic-obsolete-reader-cleanup-output")
+MAX_ENV_FILE_BYTES = 1024 * 1024
 
 
-def _required_environment(environment: Mapping[str, str], name: str) -> str:
-    value = str(environment.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"required protected build variable is missing: {name}")
-    return value
+def _load_admin_url(vercel_env_file: Path) -> str:
+    facts = vercel_env_file.lstat()
+    if (
+        stat.S_ISLNK(facts.st_mode)
+        or not stat.S_ISREG(facts.st_mode)
+        or facts.st_size <= 0
+        or facts.st_size > MAX_ENV_FILE_BYTES
+        or (os.name != "nt" and stat.S_IMODE(facts.st_mode) & 0o077)
+    ):
+        raise ValueError("protected Vercel environment file is unsafe")
+    value = dotenv_values(vercel_env_file).get("DATABASE_URL")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Vercel DATABASE_URL is missing")
+    return value.strip()
 
 
 def _sync_url(value: str) -> str:
@@ -209,29 +218,40 @@ def retire_obsolete_reader_logins(
     }
 
 
-def _write_build_output() -> None:
-    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=False)
-    OUTPUT_DIRECTORY.joinpath("index.html").write_text(
-        "<!doctype html><title>Obsolete reader cleanup completed</title>\n",
-        encoding="utf-8",
-    )
+def _replace_sanitized_proof(output: Path, proof: dict[str, object]) -> None:
+    if output.is_symlink() or not output.is_file():
+        raise ValueError("sanitized cleanup proof target is unsafe")
+    temporary = output.with_name(f".{output.name}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(proof, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _safe_failure_reason(exc: Exception) -> str:
     if isinstance(exc, ValueError):
         return str(exc)
     if isinstance(exc, OSError):
-        return "private build output could not be written"
+        return "private cleanup evidence could not be written"
     return "database cleanup failed"
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--vercel-env-file", required=True)
+    parser.add_argument("--expected-project-ref", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
     try:
         proof = retire_obsolete_reader_logins(
-            _required_environment(os.environ, ADMIN_DATABASE_URL_ENV),
-            _required_environment(os.environ, EXPECTED_PROJECT_REF_ENV),
+            _load_admin_url(Path(args.vercel_env_file)),
+            args.expected_project_ref.strip(),
         )
-        _write_build_output()
+        _replace_sanitized_proof(Path(args.output), proof)
     except (OSError, ValueError, psycopg2.Error) as exc:
         print(
             json.dumps(
@@ -245,7 +265,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"{BUILD_PROOF_MARKER}{json.dumps(proof, sort_keys=True)}")
+    print(json.dumps({"schema": SCHEMA, "state": "PASSED"}, sort_keys=True))
     return 0
 
 

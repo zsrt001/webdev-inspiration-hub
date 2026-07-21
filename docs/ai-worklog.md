@@ -2775,3 +2775,27 @@
   proof will decide whether any database cleanup work remains. The complete
   related regression passes 192 tests with two explicit local-environment
   skips; changed Python files compile and `git diff --check` passes.
+- PR #104 merged as main `7a5c52375e722fde087b6f355ae8ac4c91449294`
+  after all nine required checks passed. Protected read-only credential proof
+  `29797353743` then failed only the newly added obsolete-login absence
+  assertion (`Production control-reader credential violates least privilege`).
+  The same credential and all earlier least-privilege assertions had already
+  passed on merged main, so this is direct evidence that at least one exact
+  obsolete login still exists and that neither failed remote-deployment run
+  completed the required all-or-nothing cleanup.
+- The one-time cleanup no longer deploys code or transports database evidence
+  through Vercel build output. A main-only, Production-environment GitHub job
+  pulls the existing Vercel Production environment into its isolated runner,
+  verifies the generated environment file is a private regular non-symlink,
+  reads only `DATABASE_URL`, performs the same exact fail-closed transaction,
+  replaces an initialized artifact with sanitized proof, and removes the
+  runner-created `.vercel` directory on every exit path. It requires the whole
+  directory to be absent before creation, creates no deployment or domain
+  alias, and never touches Proxifier. The obsolete deployment configuration is
+  removed.
+- The direct-runner cleanup contract and complete related regression pass 191
+  tests with three explicit environment skips. Changed Python files compile,
+  the workflow YAML parses, all four shell blocks pass Git Bash `bash -n`, and
+  `git diff --check` passes. Live execution, sanitized cleanup proof,
+  independent read-only absence proof, duplicate Production Secret deletion,
+  and removal of the one-time cleanup code remain required.
