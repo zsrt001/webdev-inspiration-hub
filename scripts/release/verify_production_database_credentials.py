@@ -31,6 +31,10 @@ ENVIRONMENTS = {
     "control_writer": "PRODUCTION_CONTROL_PLANE_DATABASE_URL",
     "control_reader": "PRODUCTION_READ_ONLY_DATABASE_URL",
 }
+OBSOLETE_LOGINS = (
+    "vowpic_release_control_read_login",
+    "vowpic_release_inventory_login",
+)
 
 
 def _sync_url(value: str) -> str:
@@ -122,11 +126,17 @@ def _connection_facts(url: str) -> dict[str, Any]:
                        has_table_privilege(current_user, 'public.release_activations', 'UPDATE') AS activations_update,
                        has_table_privilege(current_user, 'public.release_activations', 'DELETE') AS activations_delete,
                        has_table_privilege(current_user, 'public.users', 'SELECT') AS users_select,
-                       has_table_privilege(current_user, 'public.users', 'UPDATE') AS users_update
+                       has_table_privilege(current_user, 'public.users', 'UPDATE') AS users_update,
+                       NOT EXISTS (
+                           SELECT 1
+                           FROM pg_roles obsolete_role
+                           WHERE obsolete_role.rolname = ANY(%s::name[])
+                       ) AS obsolete_logins_absent
                 FROM pg_roles session_role
                 JOIN pg_roles active_role ON active_role.rolname = current_user
                 WHERE session_role.rolname = session_user
-                """
+                """,
+                (list(OBSOLETE_LOGINS),),
             )
             row = cursor.fetchone()
             if row is None:
@@ -209,6 +219,7 @@ def validate_database_facts(
         or reader.get("activations_delete") is not False
         or reader.get("flags_update") is not False
         or reader.get("users_update") is not False
+        or reader.get("obsolete_logins_absent") is not True
     ):
         raise ValueError("Production control-reader credential violates least privilege")
 
@@ -216,6 +227,7 @@ def validate_database_facts(
         "schema": SCHEMA,
         "passed": True,
         "database": databases.pop(),
+        "obsolete_logins_absent": True,
         "credentials": {
             kind: {
                 "session_user": str(facts_by_kind[kind]["session_user"]),

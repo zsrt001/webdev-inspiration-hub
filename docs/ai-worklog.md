@@ -2760,3 +2760,18 @@
   all five shell blocks pass `bash -n`, and `git diff --check` passes. No
   Production database, Secret, domain, or Proxifier mutation was performed by
   this correction itself.
+- PR #103 merged as main `fffaaab0c64aabe1c9903279ab26eb8af907de1f`
+  after all nine required checks passed. Corrected cleanup run `29796933510`
+  again reached a READY unaliased deployment and deleted it with a confirmed
+  404, but the one-shot post-build event read did not contain the final proof
+  marker. Its artifact therefore remains explicitly `FAILED`; neither cleanup
+  run alone is accepted as proof that the two roles are absent.
+- The permanent three-credential proof now adds a read-only `pg_roles` absence
+  assertion for exactly `vowpic_release_control_read_login` and
+  `vowpic_release_inventory_login`. The already-proven inventory credential
+  can evaluate this catalog fact without DDL or elevated authority, and the
+  sanitized result exposes only one boolean. This replaces further guessing
+  on the failed Vercel evidence-transport boundary; a protected merged-main
+  proof will decide whether any database cleanup work remains. The complete
+  related regression passes 192 tests with two explicit local-environment
+  skips; changed Python files compile and `git diff --check` passes.
