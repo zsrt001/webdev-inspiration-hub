@@ -83,6 +83,39 @@ class ProductionDatabaseCredentialProofTests(unittest.TestCase):
         self.assertEqual(set(parsed), set(proof.EXPECTED_SESSIONS))
         self.assertEqual(parsed["control_reader"]["login"], "vowpic_inventory_login")
 
+    def test_accepts_supported_pooler_endpoints_for_one_project(self) -> None:
+        urls = {
+            "runtime": (
+                "postgresql://vowpic_release_runtime_login.project:secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+            "control_writer": (
+                "postgresql://vowpic_release_control_login.project:secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            ),
+            "control_reader": (
+                "postgresql://vowpic_inventory_login.project:secret@"
+                "aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+            ),
+        }
+        parsed = proof.validate_database_urls(urls)
+        self.assertEqual(parsed["control_reader"]["pooler_port"], 5432)
+
+    def test_rejects_credentials_from_different_supabase_projects(self) -> None:
+        urls = {
+            kind: (
+                "postgresql://"
+                f"{login}.project:secret@"
+                "aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+            )
+            for kind, login in proof.EXPECTED_SESSIONS.items()
+        }
+        urls["control_reader"] = urls["control_reader"].replace(
+            ".project:secret@", ".other-project:secret@"
+        )
+        with self.assertRaisesRegex(ValueError, "one Supabase project"):
+            proof.validate_database_urls(urls)
+
     def test_rejects_reused_login(self) -> None:
         shared = (
             "postgresql://vowpic_release_runtime_login.ucqdgdjituqzzsnfprqd:secret@"
