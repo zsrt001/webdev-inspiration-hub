@@ -103,14 +103,12 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
         run: |
           set -euo pipefail
           test -n "$EXPECTED_SUPABASE_PROJECT_REF"
           test -n "$VERCEL_TOKEN"
           test -n "$VERCEL_PROJECT_ID"
           test -n "$VERCEL_ORG_ID"
-          test -n "$VERCEL_AUTOMATION_BYPASS_HEADER"
           RUNTIME_DIR="$GITHUB_WORKSPACE/backend/scripts/_obsolete_reader_cleanup"
           test ! -e "$RUNTIME_DIR"
           install -m 700 -d "$RUNTIME_DIR"
@@ -195,16 +193,41 @@ jobs:
           if config.get("outputDirectory") != ".vowpic-obsolete-reader-cleanup-output":
               raise SystemExit("private cleanup deployment output directory changed")
           PY
-          curl --fail --silent --show-error --max-redirs 0 \
-            --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_HEADER" \
-            --output "$STATE_DIR/proof.json" \
-            "$DEPLOYMENT_URL/proof.json"
+          "$VERCEL_CLI" inspect "$DEPLOYMENT_URL" \
+            --logs \
+            --format=json \
+            --no-color \
+            --token="$VERCEL_TOKEN" \
+            > "$STATE_DIR/deployment-build.log"
           STATE_DIR="$STATE_DIR" python - <<'PY'
           import json
           import os
           from pathlib import Path
+          import re
 
-          payload = json.loads(Path(os.environ["STATE_DIR"], "proof.json").read_text(encoding="utf-8"))
+          root = Path(os.environ["STATE_DIR"])
+          marker = "VOWPIC_OBSOLETE_READER_CLEANUP_PROOF="
+          events = json.loads(
+              root.joinpath("deployment-build.log").read_text(
+                  encoding="utf-8",
+                  errors="strict",
+              )
+          )
+          if not isinstance(events, list):
+              raise SystemExit("private cleanup build logs are invalid")
+          lines = [
+              line
+              for event in events
+              if isinstance(event, dict)
+              for line in str(event.get("text") or "").splitlines()
+          ]
+          matches = [line.split(marker, 1)[1] for line in lines if marker in line]
+          if len(matches) != 1:
+              raise SystemExit("private cleanup build proof is missing or duplicated")
+          value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", matches[0]).strip()
+          payload, consumed = json.JSONDecoder().raw_decode(value)
+          if value[consumed:].strip():
+              raise SystemExit("private cleanup build proof has trailing data")
           expected = {
               "vowpic_release_control_read_login",
               "vowpic_release_inventory_login",
@@ -220,6 +243,11 @@ jobs:
               or not set(states.values()).issubset({"DELETED", "ALREADY_ABSENT"})
           ):
               raise SystemExit("private cleanup proof is invalid")
+          root.joinpath("proof.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          root.joinpath("deployment-build.log").unlink()
           PY
       - name: Delete the private cleanup deployment
         if: always()
@@ -249,6 +277,7 @@ jobs:
               encoding="utf-8",
           )
           PY
+            rm -f "$STATE_DIR/deployment-build.log"
             rm -rf .vercel backend/scripts/_obsolete_reader_cleanup
             exit 0
           fi
@@ -281,6 +310,7 @@ jobs:
               encoding="utf-8",
           )
           PY
+          rm -f "$STATE_DIR/deployment-build.log"
           rm -rf .vercel backend/scripts/_obsolete_reader_cleanup
       - name: Upload only sanitized cleanup evidence
         if: always()
