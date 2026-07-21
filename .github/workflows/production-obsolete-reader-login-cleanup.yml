@@ -239,13 +239,16 @@ jobs:
               if not hostname.endswith(".vercel.app") or "/" in hostname:
                   raise SystemExit("private cleanup deployment has a custom-domain alias")
           builds = payload.get("builds") or []
-          entries = [
-              build
-              for build in builds
-              if isinstance(build, dict) and build.get("entrypoint") == "api/index.py"
-          ]
-          if len(entries) != 1:
-              raise SystemExit("private cleanup function identity is invalid")
+          if (
+              not isinstance(builds, list)
+              or not builds
+              or any(
+                  not isinstance(build, dict)
+                  or str(build.get("readyState") or "").upper() != "READY"
+                  for build in builds
+              )
+          ):
+              raise SystemExit("private cleanup deployment build proof is invalid")
           PY
           RESPONSE_JSON="$STATE_DIR/response.json"
           STATUS_CODE="$(curl --silent --show-error --max-time 90 \
