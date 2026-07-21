@@ -15,6 +15,7 @@ from psycopg2.extras import RealDictCursor
 
 
 SCHEMA = "vowpic.obsolete-reader-login-cleanup.v1"
+BUILD_PROOF_MARKER = "VOWPIC_OBSOLETE_READER_CLEANUP_PROOF="
 ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
 EXPECTED_PROJECT_REF_ENV = "EXPECTED_SUPABASE_PROJECT_REF"
 INVENTORY_LOGIN = "vowpic_inventory_login"
@@ -208,14 +209,10 @@ def retire_obsolete_reader_logins(
     }
 
 
-def _write_build_output(proof: dict[str, object]) -> None:
+def _write_build_output() -> None:
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=False)
     OUTPUT_DIRECTORY.joinpath("index.html").write_text(
         "<!doctype html><title>Obsolete reader cleanup completed</title>\n",
-        encoding="utf-8",
-    )
-    OUTPUT_DIRECTORY.joinpath("proof.json").write_text(
-        json.dumps(proof, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -234,7 +231,7 @@ def main() -> int:
             _required_environment(os.environ, ADMIN_DATABASE_URL_ENV),
             _required_environment(os.environ, EXPECTED_PROJECT_REF_ENV),
         )
-        _write_build_output(proof)
+        _write_build_output()
     except (OSError, ValueError, psycopg2.Error) as exc:
         print(
             json.dumps(
@@ -248,7 +245,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(json.dumps(proof, sort_keys=True))
+    print(f"{BUILD_PROOF_MARKER}{json.dumps(proof, sort_keys=True)}")
     return 0
 
 

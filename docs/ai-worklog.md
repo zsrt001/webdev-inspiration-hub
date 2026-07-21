@@ -2743,3 +2743,20 @@
   `git diff --check` passes. The live cleanup, sanitized proof, deployment
   deletion, duplicate GitHub Secret deletion, and immediate removal of this
   one-time workflow remain required.
+- Protected cleanup run `29796270215` created a Production-targeted unaliased
+  deployment, reached the proof-read stage, and then deleted the disposable
+  deployment with a confirmed 404. The uploaded cleanup evidence records
+  `DELETED`, but the requested `/proof.json` was rewritten to the existing
+  VowPic SPA HTML by the project fallback route, so the run correctly failed
+  rather than treating HTML as database proof. This does not prove whether the
+  idempotent database transaction first deleted the roles or found them
+  absent; a corrected rerun is required.
+- The one-time workflow now reads the pinned Vercel CLI's structured build-log
+  JSON and extracts exactly one marker-prefixed, schema-validated sanitized
+  cleanup result. It no longer fetches a public proof path or uses the Vercel
+  protection-bypass secret, and its static output exposes only a minimal
+  `index.html`. The related regression passes 190 tests with two explicit
+  environment skips; both changed Python files compile, workflow YAML parses,
+  all five shell blocks pass `bash -n`, and `git diff --check` passes. No
+  Production database, Secret, domain, or Proxifier mutation was performed by
+  this correction itself.

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -212,7 +215,11 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         )
         self.assertIn("--skip-domain", workflow)
         self.assertIn("--no-wait", workflow)
-        self.assertIn("VERCEL_AUTOMATION_BYPASS_HEADER", workflow)
+        self.assertNotIn("VERCEL_AUTOMATION_BYPASS_HEADER", workflow)
+        self.assertIn('--logs', workflow)
+        self.assertIn('--format=json', workflow)
+        self.assertIn("VOWPIC_OBSOLETE_READER_CLEANUP_PROOF=", workflow)
+        self.assertNotIn('"$DEPLOYMENT_URL/proof.json"', workflow)
         self.assertIn("production-obsolete-reader-login-cleanup", workflow)
         self.assertIn('"$VERCEL_CLI" remove "$DEPLOYMENT_ID" --yes', workflow)
         self.assertIn('test "$STATUS_CODE" = "404"', workflow)
@@ -244,6 +251,53 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
                 "vowpic_release_inventory_login",
             },
         )
+
+    def test_success_is_emitted_as_one_sanitized_build_log_proof(self) -> None:
+        proof = {
+            "schema": cleanup.SCHEMA,
+            "state": "PASSED",
+            "database": "postgres",
+            "inventory_login": "PRESERVED",
+            "obsolete_logins": {
+                login: "ALREADY_ABSENT" for login in cleanup.OBSOLETE_LOGINS
+            },
+        }
+        output = io.StringIO()
+        with (
+            mock.patch.dict(
+                cleanup.os.environ,
+                {
+                    cleanup.ADMIN_DATABASE_URL_ENV: "protected",
+                    cleanup.EXPECTED_PROJECT_REF_ENV: "project",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                cleanup,
+                "retire_obsolete_reader_logins",
+                return_value=proof,
+            ),
+            mock.patch.object(cleanup, "_write_build_output") as write_output,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(cleanup.main(), 0)
+        write_output.assert_called_once_with()
+        line = output.getvalue().strip()
+        self.assertTrue(line.startswith(cleanup.BUILD_PROOF_MARKER))
+        self.assertEqual(
+            json.loads(line.removeprefix(cleanup.BUILD_PROOF_MARKER)),
+            proof,
+        )
+
+    def test_static_build_output_does_not_expose_the_role_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_directory = Path(directory) / "output"
+            with mock.patch.object(cleanup, "OUTPUT_DIRECTORY", output_directory):
+                cleanup._write_build_output()
+            self.assertEqual(
+                [path.name for path in output_directory.iterdir()],
+                ["index.html"],
+            )
 
 
 if __name__ == "__main__":
