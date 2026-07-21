@@ -21,7 +21,17 @@ OBSOLETE_LOGINS = (
     "vowpic_release_control_read_login",
     "vowpic_release_inventory_login",
 )
-ADMIN_DATABASE_URL_ENV = "DATABASE_URL"
+ADMIN_DATABASE_URL_ENVS = (
+    "POSTGRES_URL_NON_POOLING",
+    "POSTGRES_URL",
+    "POSTGRES_PRISMA_URL",
+    "SUPABASE_DB_URL",
+    "DATABASE_URL",
+)
+PREFIXED_ADMIN_DATABASE_URL_ENV = re.compile(
+    r"[A-Z][A-Z0-9_]{0,31}_(?:POSTGRES_URL_NON_POOLING|POSTGRES_URL|"
+    r"POSTGRES_PRISMA_URL|SUPABASE_DB_URL)"
+)
 EXPECTED_PROJECT_REF_ENV = "EXPECTED_SUPABASE_PROJECT_REF"
 TRIGGER_TOKEN_ENV = "CLEANUP_TRIGGER_TOKEN"
 
@@ -34,7 +44,8 @@ def _required_environment(environment: Mapping[str, str], name: str) -> str:
 
 
 def _sync_url(value: str) -> str:
-    return value.strip().replace("postgresql+asyncpg://", "postgresql://", 1)
+    normalized = value.strip().replace("postgresql+asyncpg://", "postgresql://", 1)
+    return normalized.replace("postgres://", "postgresql://", 1)
 
 
 def _database_target(database_url: str) -> tuple[str, str]:
@@ -51,7 +62,7 @@ def _database_target(database_url: str) -> tuple[str, str]:
         or parsed.port not in {5432, 6543}
         or parse_qs(parsed.query).get("sslmode") != ["require"]
     ):
-        raise ValueError("Vercel DATABASE_URL is not a complete TLS PostgreSQL URL")
+        raise ValueError("protected database URL is not a complete TLS PostgreSQL URL")
     if host.startswith("db.") and host.endswith(".supabase.co"):
         project_ref = host.removeprefix("db.").removesuffix(".supabase.co")
     elif host.endswith(".pooler.supabase.com"):
@@ -61,7 +72,7 @@ def _database_target(database_url: str) -> tuple[str, str]:
     else:
         project_ref = ""
     if not project_ref:
-        raise ValueError("Vercel DATABASE_URL is not a Supabase project URL")
+        raise ValueError("protected database URL is not a Supabase project URL")
     return project_ref, database
 
 
@@ -125,7 +136,7 @@ def _validate_recovery_authority(cursor: RealDictCursor) -> None:
         or authority["session_user"] != "postgres"
         or authority["current_user"] != "postgres"
     ):
-        raise ValueError("Vercel DATABASE_URL does not use the postgres admin role")
+        raise ValueError("protected database URL does not use the postgres admin role")
     if authority["rolcreaterole"] is not True:
         raise ValueError("Supabase postgres admin role cannot manage database roles")
 
@@ -135,8 +146,8 @@ def retire_obsolete_reader_logins(
     expected_project_ref: str,
 ) -> dict[str, object]:
     project_ref, database = _database_target(admin_url)
-    if project_ref != expected_project_ref:
-        raise ValueError("Vercel DATABASE_URL does not target the expected project")
+    if project_ref != expected_project_ref or database != "postgres":
+        raise ValueError("protected database URL does not target the expected project")
     states: dict[str, str] = {}
     with psycopg2.connect(
         _sync_url(admin_url),
@@ -210,6 +221,52 @@ def retire_obsolete_reader_logins(
     }
 
 
+def _probe_recovery_authority(
+    database_url: str,
+    expected_project_ref: str,
+) -> None:
+    project_ref, database = _database_target(database_url)
+    if project_ref != expected_project_ref or database != "postgres":
+        raise ValueError("protected database URL does not target the expected project")
+    with psycopg2.connect(
+        _sync_url(database_url),
+        cursor_factory=RealDictCursor,
+        connect_timeout=15,
+        application_name="vowpic-obsolete-reader-login-authority-probe",
+    ) as connection:
+        with connection.cursor() as cursor:
+            _validate_recovery_authority(cursor)
+
+
+def retire_obsolete_reader_logins_from_environment(
+    environment: Mapping[str, str],
+    expected_project_ref: str,
+) -> dict[str, object]:
+    candidate_seen = False
+    prefixed_names = sorted(
+        name
+        for name in environment
+        if name not in ADMIN_DATABASE_URL_ENVS
+        and not name.startswith(("NEXT_PUBLIC_", "PUBLIC_"))
+        and PREFIXED_ADMIN_DATABASE_URL_ENV.fullmatch(name) is not None
+    )
+    for name in (*ADMIN_DATABASE_URL_ENVS, *prefixed_names):
+        candidate = str(environment.get(name) or "").strip()
+        if not candidate:
+            continue
+        candidate_seen = True
+        try:
+            _probe_recovery_authority(candidate, expected_project_ref)
+        except (ValueError, psycopg2.Error):
+            continue
+        return retire_obsolete_reader_logins(candidate, expected_project_ref)
+    if not candidate_seen:
+        raise ValueError("no allowlisted protected database URL is configured")
+    raise ValueError(
+        "no protected Vercel database URL provides postgres role administration"
+    )
+
+
 def _safe_failure_reason(exc: Exception) -> str:
     if isinstance(exc, ValueError):
         return str(exc)
@@ -241,8 +298,8 @@ def handle_cleanup_request(
         )
         if re.fullmatch(r"[a-z0-9]{20}", expected_project_ref) is None:
             raise ValueError("expected Supabase project identity is invalid")
-        proof = retire_obsolete_reader_logins(
-            _required_environment(environment, ADMIN_DATABASE_URL_ENV),
+        proof = retire_obsolete_reader_logins_from_environment(
+            environment,
             expected_project_ref,
         )
     except (OSError, ValueError, psycopg2.Error) as exc:

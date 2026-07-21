@@ -115,7 +115,7 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         )
         self.assertEqual(
             cleanup._database_target(
-                "postgresql://postgres:secret@"
+                "postgres://postgres:secret@"
                 "db.project.supabase.co:5432/postgres?sslmode=require"
             ),
             ("project", "postgres"),
@@ -242,6 +242,94 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     cleanup._validate_recovery_authority(_Cursor([authority]))
 
+    def test_uses_the_first_allowlisted_postgres_admin_candidate(self) -> None:
+        expected_project_ref = "a" * 20
+        application_url = "postgresql://app.example/ignored"
+        admin_url = "postgresql://postgres.example/accepted"
+        proof = {
+            "schema": cleanup.SCHEMA,
+            "state": "PASSED",
+            "database": "postgres",
+            "inventory_login": "PRESERVED",
+            "obsolete_logins": {
+                login: "DELETED" for login in cleanup.OBSOLETE_LOGINS
+            },
+        }
+        environment = {
+            "POSTGRES_URL_NON_POOLING": application_url,
+            "POSTGRES_URL": admin_url,
+            "DATABASE_URL": "postgresql://fallback.example/not-used",
+        }
+        with (
+            mock.patch.object(
+                cleanup,
+                "_probe_recovery_authority",
+                side_effect=(ValueError("not admin"), None),
+            ) as probe,
+            mock.patch.object(
+                cleanup,
+                "retire_obsolete_reader_logins",
+                return_value=proof,
+            ) as retire,
+        ):
+            result = cleanup.retire_obsolete_reader_logins_from_environment(
+                environment,
+                expected_project_ref,
+            )
+        self.assertEqual(result, proof)
+        self.assertEqual(
+            probe.call_args_list,
+            [
+                mock.call(application_url, expected_project_ref),
+                mock.call(admin_url, expected_project_ref),
+            ],
+        )
+        retire.assert_called_once_with(admin_url, expected_project_ref)
+
+    def test_rejects_environment_without_an_allowlisted_admin_candidate(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no allowlisted protected database URL"):
+            cleanup.retire_obsolete_reader_logins_from_environment(
+                {"UNRELATED_DATABASE_URL": "protected"},
+                "a" * 20,
+            )
+
+    def test_rejects_allowlisted_candidates_without_admin_authority(self) -> None:
+        with mock.patch.object(
+            cleanup,
+            "_probe_recovery_authority",
+            side_effect=ValueError("not admin"),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "no protected Vercel database URL provides postgres role administration",
+            ):
+                cleanup.retire_obsolete_reader_logins_from_environment(
+                    {"POSTGRES_URL": "protected"},
+                    "a" * 20,
+                )
+
+    def test_supports_a_strictly_prefixed_marketplace_admin_url(self) -> None:
+        proof = {"schema": cleanup.SCHEMA, "state": "PASSED"}
+        environment = {
+            "NEXT_PUBLIC_POSTGRES_URL": "public-name-must-not-match",
+            "VOWPIC_POSTGRES_URL": "protected-admin-url",
+        }
+        with (
+            mock.patch.object(cleanup, "_probe_recovery_authority") as probe,
+            mock.patch.object(
+                cleanup,
+                "retire_obsolete_reader_logins",
+                return_value=proof,
+            ) as retire,
+        ):
+            result = cleanup.retire_obsolete_reader_logins_from_environment(
+                environment,
+                "a" * 20,
+            )
+        self.assertEqual(result, proof)
+        probe.assert_called_once_with("protected-admin-url", "a" * 20)
+        retire.assert_called_once_with("protected-admin-url", "a" * 20)
+
     def test_workflow_is_protected_exact_and_self_cleaning(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
@@ -345,11 +433,11 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         environment = {
             cleanup.TRIGGER_TOKEN_ENV: "a" * 64,
             cleanup.EXPECTED_PROJECT_REF_ENV: "a" * 20,
-            cleanup.ADMIN_DATABASE_URL_ENV: "protected",
+            "POSTGRES_URL_NON_POOLING": "protected",
         }
         with mock.patch.object(
             cleanup,
-            "retire_obsolete_reader_logins",
+            "retire_obsolete_reader_logins_from_environment",
             return_value=proof,
         ) as retire:
             status, payload = cleanup.handle_cleanup_request(
@@ -358,15 +446,18 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         self.assertEqual(payload, proof)
-        retire.assert_called_once_with("protected", "a" * 20)
+        retire.assert_called_once_with(environment, "a" * 20)
 
     def test_unauthenticated_function_never_opens_the_database(self) -> None:
         environment = {
             cleanup.TRIGGER_TOKEN_ENV: "b" * 64,
             cleanup.EXPECTED_PROJECT_REF_ENV: "b" * 20,
-            cleanup.ADMIN_DATABASE_URL_ENV: "protected",
+            "POSTGRES_URL_NON_POOLING": "protected",
         }
-        with mock.patch.object(cleanup, "retire_obsolete_reader_logins") as retire:
+        with mock.patch.object(
+            cleanup,
+            "retire_obsolete_reader_logins_from_environment",
+        ) as retire:
             status, payload = cleanup.handle_cleanup_request("Bearer wrong", environment)
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"state": "NOT_FOUND"})
@@ -376,11 +467,11 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         environment = {
             cleanup.TRIGGER_TOKEN_ENV: "c" * 64,
             cleanup.EXPECTED_PROJECT_REF_ENV: "c" * 20,
-            cleanup.ADMIN_DATABASE_URL_ENV: "protected-secret-url",
+            "POSTGRES_URL_NON_POOLING": "protected-secret-url",
         }
         with mock.patch.object(
             cleanup,
-            "retire_obsolete_reader_logins",
+            "retire_obsolete_reader_logins_from_environment",
             side_effect=cleanup.psycopg2.OperationalError("protected-secret-url"),
         ):
             status, payload = cleanup.handle_cleanup_request(

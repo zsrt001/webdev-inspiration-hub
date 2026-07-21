@@ -2875,3 +2875,47 @@
   backend suite passes 1,032 tests with 38 explicit environment/dependency
   skips; changed Python files compile, workflow YAML and all five Bash blocks
   parse, and `git diff --check` passes.
+
+## 2026-07-21 - Existing Vercel Supabase administrator discovery
+
+### Goal and evidence
+
+- Protected cleanup run `29800564754` built and invoked the isolated function,
+  connected to the expected Production database, and failed before DDL because
+  Vercel `DATABASE_URL` is not the `postgres` administrator. Its sanitized
+  artifact remains `FAILED`; the disposable deployment was deleted and its
+  deletion artifact records `DELETED`.
+- The official Supabase Vercel integration contract supplies database URLs as
+  `POSTGRES_URL`, `POSTGRES_PRISMA_URL`, and
+  `POSTGRES_URL_NON_POOLING`; Vercel integrations may also use a bounded
+  operator-selected prefix. The previous cleanup checked none of these existing
+  protected runtime variables and therefore treated one application URL as the
+  only possible authority.
+- Chrome extension and Windows UI control both failed while attempting a
+  read-only view of the already signed-in Supabase page. No SQL, database,
+  Vercel setting, secret, domain, or Proxifier operation was performed through
+  either UI channel.
+
+### Changes
+
+- The protected function now probes only the official database URL names and
+  strictly prefixed variants, excluding public-prefixed variables. Each
+  candidate must be a complete TLS Supabase URL for the exact project and
+  `postgres` database, then reconnect as both `session_user=postgres` and
+  `current_user=postgres` with `CREATEROLE` before the unchanged cleanup
+  transaction can run.
+- Candidate parse, network, project, database, identity, or authority failures
+  are read-only and advance to the next bounded candidate. Once an authority
+  passes, any role-contract or cleanup failure propagates and rolls back; it is
+  not hidden by trying another credential. No URL, password, candidate name, or
+  database error text is returned in the sanitized proof.
+
+### Verification
+
+- The focused cleanup contract passes 20 tests. The complete backend suite
+  passes 1,036 tests with 38 explicit environment/dependency skips. Changed
+  Python files compile, workflow YAML and the isolated Vercel JSON parse, all
+  five workflow Bash blocks pass `bash -n`, and `git diff --check` passes.
+- Live merged-main cleanup, independent read-only absence proof, duplicate
+  Production Secret deletion, and removal of the one-time cleanup code remain
+  required; no completion claim is made before those protected steps pass.
