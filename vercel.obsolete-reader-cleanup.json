@@ -1,0 +1,6 @@
+{
+    "$schema": "https://openapi.vercel.sh/vercel.json",
+    "installCommand": "python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt",
+    "buildCommand": "python backend/scripts/_obsolete_reader_cleanup/retire_obsolete_reader_logins_in_vercel_build.py",
+    "outputDirectory": ".vowpic-obsolete-reader-cleanup-output"
+}

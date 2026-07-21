@@ -2720,3 +2720,26 @@
   and 308 subtests with two explicit environment skips; both changed Python
   files compile, all seven workflow YAML files parse, and `git diff --check`
   passes.
+- Protected credential proof `29795694307` passed on merged main
+  `40f05dee5e22ba4a459367ed0467884e1c0273c8`. Its sanitized artifact records
+  `vowpic_inventory_login` as both session and current user, read-only defaults
+  enabled, and the complete three-credential least-privilege proof passed.
+- The only remaining database cleanup is now isolated in a manual, main-only,
+  Production-environment workflow. GitHub derives and passes only the expected
+  Supabase project ref; Vercel keeps its existing Production `DATABASE_URL`
+  private. One transaction verifies the `postgres` recovery authority, the
+  preserved base inventory login, and both exact obsolete outer logins before
+  any DDL. Each obsolete role must be a non-elevated login, inherit only
+  `vowpic_inventory_login`, and own no database objects; otherwise the whole
+  transaction rolls back. The only allowed mutations are exact `NOLOGIN`,
+  membership revoke, settings reset, and `DROP ROLE` for
+  `vowpic_release_control_read_login` and `vowpic_release_inventory_login`.
+  The unaliased deployment publishes only a sanitized proof, must have no
+  custom-domain alias, and is always deleted with a 404 read-back.
+- The cleanup contract passes 9 tests and 11 subtests. The complete related
+  regression passes 186 tests and 322 subtests with two explicit environment
+  skips. Both new Python files compile, all eight workflow YAML files parse,
+  all five cleanup workflow Bash blocks pass `bash -n`, and
+  `git diff --check` passes. The live cleanup, sanitized proof, deployment
+  deletion, duplicate GitHub Secret deletion, and immediate removal of this
+  one-time workflow remain required.
