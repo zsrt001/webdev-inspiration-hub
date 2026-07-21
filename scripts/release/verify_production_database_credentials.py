@@ -41,7 +41,8 @@ def validate_database_urls(urls: dict[str, str]) -> dict[str, dict[str, Any]]:
     if set(urls) != set(EXPECTED_SESSIONS):
         raise ValueError("Production database credential URL set is invalid")
     parsed_urls: dict[str, dict[str, Any]] = {}
-    targets: set[tuple[str, int, str]] = set()
+    project_refs: set[str] = set()
+    databases: set[str] = set()
     usernames: set[str] = set()
     for kind, expected_session in EXPECTED_SESSIONS.items():
         parsed = urlsplit(_sync_url(urls[kind]))
@@ -56,11 +57,12 @@ def validate_database_urls(urls: dict[str, str]) -> dict[str, dict[str, Any]]:
             raise ValueError(f"{kind} Production database URL has an invalid port")
         if parse_qs(parsed.query).get("sslmode") != ["require"]:
             raise ValueError(f"{kind} Production database URL must require TLS")
-        login = username.split(".", 1)[0]
-        if login != expected_session:
+        login, separator, project_ref = username.partition(".")
+        if login != expected_session or separator != "." or not project_ref:
             raise ValueError(f"{kind} Production database URL has an invalid login")
         usernames.add(username)
-        targets.add((host, int(parsed.port), database))
+        project_refs.add(project_ref)
+        databases.add(database)
         parsed_urls[kind] = {
             "login": login,
             "pooler_port": int(parsed.port),
@@ -68,7 +70,9 @@ def validate_database_urls(urls: dict[str, str]) -> dict[str, dict[str, Any]]:
         }
     if len(usernames) != len(EXPECTED_SESSIONS):
         raise ValueError("Production database URLs must use distinct logins")
-    if len(targets) != 1:
+    if len(project_refs) != 1:
+        raise ValueError("Production database URLs must target one Supabase project")
+    if len(databases) != 1:
         raise ValueError("Production database URLs must target one database")
     return parsed_urls
 

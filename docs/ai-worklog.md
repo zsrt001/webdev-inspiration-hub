@@ -2706,3 +2706,17 @@
   Python files compile, all seven workflow files parse, all 24 Bash blocks in
   the changed workflows pass `bash -n`, and `git diff --check` passes. No
   Subagent was used.
+- Merged-main credential proof `29795311274` failed before opening any database
+  connection because the verifier required all three credentials to share an
+  identical pooler host and port. The protected URLs instead use supported
+  distinct Supabase pooler coordinates for the same project; this is the exact
+  distinction already exercised successfully by SAFE_BASELINE.
+- URL validation now derives the project ref from each pooler username and
+  requires one project ref plus one database while independently preserving
+  the official pooler-host suffix, TLS, supported-port, expected-login, and
+  distinct-login checks. Regression coverage proves that one project may use
+  different supported pooler hosts/ports and that credentials from different
+  project refs still fail closed. The complete related suite passes 177 tests
+  and 308 subtests with two explicit environment skips; both changed Python
+  files compile, all seven workflow YAML files parse, and `git diff --check`
+  passes.
