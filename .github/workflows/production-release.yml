@@ -98,7 +98,6 @@ jobs:
       - name: Read inventory, resolve exact Preview, and reserve the release lease
         env:
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
-          PRODUCTION_CONTROL_READ_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           INVENTORY_HMAC_KEY: ${{ secrets.INVENTORY_HMAC_KEY }}
           RELEASE_PRIVATE_EVIDENCE_ROOT: ${{ secrets.RELEASE_PRIVATE_EVIDENCE_ROOT }}
@@ -112,14 +111,14 @@ jobs:
             --signature-output "$EVIDENCE_DIR/inventory.sig"
           python scripts/release/resolve_release_coordinates.py \
             --coordinate-kind safe-baseline \
-            --database-url-env PRODUCTION_CONTROL_READ_DATABASE_URL \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --private-evidence-root-env RELEASE_PRIVATE_EVIDENCE_ROOT \
             --output "$RUNNER_TEMP/safe-baseline.json" \
             --job-env "$GITHUB_ENV" \
             --env-prefix SAFE_BASELINE_
           python scripts/release/resolve_release_coordinates.py \
             --coordinate-kind preview-commercial-cleaned \
-            --database-url-env PRODUCTION_CONTROL_READ_DATABASE_URL \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --private-evidence-root-env RELEASE_PRIVATE_EVIDENCE_ROOT \
             --source-sha "$SOURCE_SHA" \
             --output "$RUNNER_TEMP/preview-resolution.json" \
@@ -400,7 +399,7 @@ jobs:
       - name: Resolve sealed coordinates and record schema 0020
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
-          PRODUCTION_CONTROL_READ_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_READ_DATABASE_URL }}
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
           DATA_MIGRATION_APPROVAL_ID: ${{ secrets.DATA_MIGRATION_APPROVAL_ID }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
@@ -409,7 +408,7 @@ jobs:
           mkdir -p "$EVIDENCE_DIR"
           python scripts/release/resolve_release_coordinates.py \
             --coordinate-kind commercial-7a --expected-phase MANIFEST_SEALED \
-            --database-url-env PRODUCTION_CONTROL_READ_DATABASE_URL \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/release.json" \
             --job-env "$GITHUB_ENV" --env-prefix RELEASE_
           python scripts/release/verify_safe_baseline_bridge.py \
