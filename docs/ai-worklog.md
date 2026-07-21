@@ -2823,3 +2823,23 @@
   parse, all five workflow Bash blocks pass Git Bash `bash -n`, and
   `git diff --check` passes. Live invocation, sanitized cleanup/deletion proof,
   and independent read-only absence proof remain required.
+- PR #106 merged as main `85ec86dfa576c84fd66b7ea3b6d14ecae3559b53`
+  after all nine required checks passed. Protected cleanup run `29798964265`
+  created a Production-targeted unaliased deployment, but its Vercel build
+  failed before the function was invoked. The disposable deployment was still
+  deleted with a confirmed 404, and the sanitized artifact remains `FAILED`;
+  no database transaction or formal-domain promotion occurred.
+- The failed deployment had used the whole SaaS repository as its Python build
+  context, including the full application dependency lock, even though the
+  cleanup function imports only `psycopg2`. The corrected workflow stages
+  exactly four files in a runner-private deployment root: the linked project
+  identity, the single function, the one-function Vercel config, and an exact
+  hash-pinned copy of the production `psycopg2-binary` requirement. It also
+  emits redacted Vercel build diagnostics on a future build failure and removes
+  the staging root after deployment deletion. This correction does not modify
+  the Production database, formal domain, Vercel environment variables, or
+  Proxifier. The focused cleanup contract passes 14 tests; the complete backend
+  suite passes 1,030 tests with 38 explicit environment/dependency skips.
+  Changed Python files compile, the workflow YAML parses, all five Bash blocks
+  pass `bash -n`, and `git diff --check` passes. Live merged-main execution and
+  proof are still required.

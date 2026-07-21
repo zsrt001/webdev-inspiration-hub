@@ -113,28 +113,65 @@ jobs:
           test -n "$VERCEL_PROJECT_ID"
           test -n "$VERCEL_ORG_ID"
           STATE_DIR="$RUNNER_TEMP/production-obsolete-reader-login-cleanup"
+          DEPLOY_ROOT="$STATE_DIR/deployment"
           test ! -e "$GITHUB_WORKSPACE/.vercel"
           "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
           rm -f -- "$GITHUB_WORKSPACE/.vercel/.env.production.local"
+          install -m 700 -d "$DEPLOY_ROOT/api" "$DEPLOY_ROOT/.vercel"
           install -m 600 \
             scripts/release/retire_obsolete_reader_logins_in_vercel_build.py \
-            api/index.py
+            "$DEPLOY_ROOT/api/index.py"
+          install -m 600 \
+            scripts/release/obsolete_reader_cleanup_requirements.txt \
+            "$DEPLOY_ROOT/requirements.txt"
+          install -m 600 \
+            vercel.obsolete-reader-cleanup.json \
+            "$DEPLOY_ROOT/vercel.json"
+          install -m 600 \
+            "$GITHUB_WORKSPACE/.vercel/project.json" \
+            "$DEPLOY_ROOT/.vercel/project.json"
+          DEPLOY_ROOT="$DEPLOY_ROOT" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["DEPLOY_ROOT"])
+          files = sorted(
+              path.relative_to(root).as_posix()
+              for path in root.rglob("*")
+              if path.is_file()
+          )
+          expected = [
+              ".vercel/project.json",
+              "api/index.py",
+              "requirements.txt",
+              "vercel.json",
+          ]
+          if files != expected:
+              raise SystemExit("private cleanup deployment staging is not minimal")
+          requirements = root.joinpath("requirements.txt").read_text(encoding="utf-8")
+          if not requirements.startswith("psycopg2-binary==2.9.12 \\\n"):
+              raise SystemExit("private cleanup dependency lock is invalid")
+          if requirements.count("--hash=sha256:") < 2:
+              raise SystemExit("private cleanup dependency lock is not hash-pinned")
+          PY
           TRIGGER_TOKEN="$(python -c 'import secrets; print(secrets.token_hex(32))')"
           echo "::add-mask::$TRIGGER_TOKEN"
           DEPLOYMENT_JSON="$STATE_DIR/deployment.json"
-          "$VERCEL_CLI" deploy . \
-            --prod \
-            --skip-domain \
-            --force \
-            --yes \
-            --no-wait \
-            --format=json \
-            --local-config vercel.obsolete-reader-cleanup.json \
-            --env "EXPECTED_SUPABASE_PROJECT_REF=$EXPECTED_SUPABASE_PROJECT_REF" \
-            --env "CLEANUP_TRIGGER_TOKEN=$TRIGGER_TOKEN" \
-            --meta "vowpic_obsolete_reader_cleanup_run_id=$GITHUB_RUN_ID" \
-            --token="$VERCEL_TOKEN" \
-            > "$DEPLOYMENT_JSON"
+          (
+            cd "$DEPLOY_ROOT"
+            "$VERCEL_CLI" deploy . \
+              --prod \
+              --skip-domain \
+              --force \
+              --yes \
+              --no-wait \
+              --format=json \
+              --local-config vercel.json \
+              --env "EXPECTED_SUPABASE_PROJECT_REF=$EXPECTED_SUPABASE_PROJECT_REF" \
+              --env "CLEANUP_TRIGGER_TOKEN=$TRIGGER_TOKEN" \
+              --meta "vowpic_obsolete_reader_cleanup_run_id=$GITHUB_RUN_ID" \
+              --token="$VERCEL_TOKEN"
+          ) > "$DEPLOYMENT_JSON"
           DEPLOYMENT_JSON="$DEPLOYMENT_JSON" python - <<'PY'
           import json
           import os
@@ -158,12 +195,32 @@ jobs:
           path.parent.joinpath("deployment-url.txt").write_text(deployment_url + "\n", encoding="utf-8")
           PY
           DEPLOYMENT_URL="$(cat "$STATE_DIR/deployment-url.txt")"
-          "$VERCEL_CLI" inspect "$DEPLOYMENT_URL" \
-            --wait \
-            --timeout 12m \
-            --format=json \
-            --token="$VERCEL_TOKEN" \
-            > "$STATE_DIR/deployment-inspect.json"
+          if ! "$VERCEL_CLI" inspect "$DEPLOYMENT_URL" \
+              --wait \
+              --timeout 12m \
+              --format=json \
+              --token="$VERCEL_TOKEN" \
+              > "$STATE_DIR/deployment-inspect.json"; then
+            "$VERCEL_CLI" inspect "$DEPLOYMENT_URL" \
+              --logs \
+              --token="$VERCEL_TOKEN" \
+              > "$STATE_DIR/build.log" 2>&1 || true
+            BUILD_LOG="$STATE_DIR/build.log" python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+
+          log_path = Path(os.environ["BUILD_LOG"])
+          raw = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+          lines = raw.splitlines()[-200:]
+          for line in lines:
+              line = re.sub(r"(?i)postgres(?:ql)?(?:\+\w+)?://\S+", "[REDACTED_DATABASE_URL]", line)
+              line = re.sub(r"(?i)(password|secret|token)=\S+", r"\1=[REDACTED]", line)
+              line = re.sub(r"\b[0-9a-fA-F]{64}\b", "[REDACTED_HEX64]", line)
+              print(line[:2000])
+          raise SystemExit("private cleanup deployment build failed")
+          PY
+          fi
           INSPECT_JSON="$STATE_DIR/deployment-inspect.json" python - <<'PY'
           import json
           import os
@@ -259,7 +316,7 @@ jobs:
               encoding="utf-8",
           )
           PY
-            rm -rf -- "$GITHUB_WORKSPACE/.vercel"
+            rm -rf -- "$GITHUB_WORKSPACE/.vercel" "$STATE_DIR/deployment"
             exit 0
           fi
           DEPLOYMENT_ID="$(cat "$STATE_DIR/deployment-id.txt")"
@@ -291,7 +348,7 @@ jobs:
               encoding="utf-8",
           )
           PY
-          rm -rf -- "$GITHUB_WORKSPACE/.vercel"
+          rm -rf -- "$GITHUB_WORKSPACE/.vercel" "$STATE_DIR/deployment"
       - name: Upload only sanitized cleanup evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

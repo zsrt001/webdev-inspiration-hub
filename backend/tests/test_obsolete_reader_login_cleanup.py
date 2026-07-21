@@ -11,6 +11,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "release" / "retire_obsolete_reader_logins_in_vercel_build.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "production-obsolete-reader-login-cleanup.yml"
 CONFIG = ROOT / "vercel.obsolete-reader-cleanup.json"
+CLEANUP_REQUIREMENTS = (
+    ROOT / "scripts" / "release" / "obsolete_reader_cleanup_requirements.txt"
+)
+PRODUCTION_REQUIREMENTS = ROOT / "requirements.txt"
 
 
 def _load_module():
@@ -214,7 +218,18 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         self.assertIn('pull --yes --environment=production', workflow)
         self.assertIn('test ! -e "$GITHUB_WORKSPACE/.vercel"', workflow)
         self.assertIn('rm -f -- "$GITHUB_WORKSPACE/.vercel/.env.production.local"', workflow)
-        self.assertIn('rm -rf -- "$GITHUB_WORKSPACE/.vercel"', workflow)
+        self.assertIn('DEPLOY_ROOT="$STATE_DIR/deployment"', workflow)
+        self.assertIn('install -m 700 -d "$DEPLOY_ROOT/api" "$DEPLOY_ROOT/.vercel"', workflow)
+        self.assertIn('"$DEPLOY_ROOT/api/index.py"', workflow)
+        self.assertIn('"$DEPLOY_ROOT/requirements.txt"', workflow)
+        self.assertIn('"$DEPLOY_ROOT/vercel.json"', workflow)
+        self.assertIn('"$DEPLOY_ROOT/.vercel/project.json"', workflow)
+        self.assertIn('cd "$DEPLOY_ROOT"', workflow)
+        self.assertIn('private cleanup deployment staging is not minimal', workflow)
+        self.assertIn('private cleanup dependency lock is not hash-pinned', workflow)
+        self.assertIn('--logs', workflow)
+        self.assertIn('private cleanup deployment build failed', workflow)
+        self.assertIn('rm -rf -- "$GITHUB_WORKSPACE/.vercel" "$STATE_DIR/deployment"', workflow)
         self.assertIn('python -c \'import secrets; print(secrets.token_hex(32))\'', workflow)
         self.assertIn('echo "::add-mask::$TRIGGER_TOKEN"', workflow)
         self.assertIn('--env "CLEANUP_TRIGGER_TOKEN=$TRIGGER_TOKEN"', workflow)
@@ -232,6 +247,16 @@ class ObsoleteReaderLoginCleanupTests(unittest.TestCase):
         self.assertIn("production-obsolete-reader-login-cleanup", workflow)
         self.assertNotIn("DROP OWNED", workflow)
         self.assertNotIn("REASSIGN OWNED", workflow)
+
+    def test_cleanup_dependency_lock_is_the_exact_hashed_production_pin(self) -> None:
+        production = PRODUCTION_REQUIREMENTS.read_text(encoding="utf-8")
+        start = production.index("psycopg2-binary==2.9.12 \\\n")
+        end = production.index("\n    # via", start)
+        expected = production[start:end] + "\n"
+        cleanup_requirements = CLEANUP_REQUIREMENTS.read_text(encoding="utf-8")
+        self.assertEqual(cleanup_requirements, expected)
+        self.assertEqual(cleanup_requirements.count("=="), 1)
+        self.assertGreater(cleanup_requirements.count("--hash=sha256:"), 1)
 
     def test_function_deployment_contains_only_the_cleanup_entrypoint(self) -> None:
         config = json.loads(CONFIG.read_text(encoding="utf-8"))
