@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import inspect
 import json
 from pathlib import Path
+import re
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -365,13 +367,13 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                     client=client,
                 )
 
-    def test_provider_fetch_verifier_blocks_unverified_before_http_and_redacts_token(self) -> None:
+    def test_provider_fetch_verifier_blocks_policy_drift_before_http_and_redacts_token(self) -> None:
         module = _load(
             "verify_provider_grant_fetch",
             "scripts/release/verify_provider_grant_fetch.py",
         )
-        contract = json.loads(
-            (ROOT / "release/provider-contracts.json").read_text(encoding="utf-8")
+        capabilities = json.loads(
+            (ROOT / "release/provider-capabilities.json").read_text(encoding="utf-8")
         )
         source_sha = "a" * 40
         grant_reference = {
@@ -412,9 +414,11 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             )
 
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-            with self.assertRaisesRegex(ValueError, "UNVERIFIED"):
+            invalid = json.loads(json.dumps(capabilities))
+            invalid["providers"]["evolink"]["ambiguous_submission_policy"] = "retry"
+            with self.assertRaisesRegex(ValueError, "ambiguous_submission_policy"):
                 module.verify_provider_fetch(
-                    contract_document=contract,
+                    capability_document=invalid,
                     grant_reference=grant_reference,
                     expected_source_sha=source_sha,
                     api_key="provider-key",
@@ -428,20 +432,6 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                 )
         self.assertEqual(requests, [])
 
-        verified = json.loads(json.dumps(contract))
-        verified_entry = verified["contracts"]["EVOLINK_SUBMISSION_RECONCILIATION"]
-        verified_entry.update(
-            {
-                "state": "VERIFIED",
-                "tested_source_sha": "c" * 40,
-                "official_contract_sha256": "e" * 64,
-                "test_evidence_sha256": "f" * 64,
-                "official_version": "2026-07-14",
-                "approval_ref": "contract-approval",
-                "correlation_semantics": "documented correlation semantics",
-                "idempotency_semantics": "documented idempotency semantics",
-            }
-        )
         usage_reads = iter(
             [
                 {
@@ -464,10 +454,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
             report = module.verify_provider_fetch(
-                contract_document=verified,
+                capability_document=capabilities,
                 grant_reference=grant_reference,
                 expected_source_sha=source_sha,
-                contract_tested_source_sha="c" * 40,
                 api_key="provider-key",
                 api_base_url="https://api.evolink.ai",
                 image_model="gemini-3-pro-image-preview",
@@ -486,10 +475,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
             with self.assertRaisesRegex(ValueError, "unused"):
                 module.verify_provider_fetch(
-                    contract_document=verified,
+                    capability_document=capabilities,
                     grant_reference=grant_reference,
                     expected_source_sha=source_sha,
-                    contract_tested_source_sha="c" * 40,
                     api_key="provider-key",
                     api_base_url="https://api.evolink.ai",
                     image_model="gemini-3-pro-image-preview",
@@ -685,6 +673,17 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "worker_deployment_id": worker_id,
             "worker_image_digest": digest,
         }
+        provider_capabilities = json.loads(
+            (ROOT / "release/provider-capabilities.json").read_text(encoding="utf-8")
+        )
+        provider_capabilities_hash = hashlib.sha256(
+            json.dumps(
+                provider_capabilities,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
         result = module.build_stage5_materialization(
             source_sha=source,
             gate_contract_sha256=gate_hash,
@@ -693,16 +692,12 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             identity_evidence=[evidence(case_id, identity_runtime) for case_id in identity_cases],
             identity_cleanup={"state": "CLEANED", "source_sha": source, "runtime_bundle_id": identity_runtime},
             activation=activation,
-            provider_contract={
-                "state": "VERIFIED",
-                "tested_source_sha": source,
-                "test_evidence_sha256": "6" * 64,
-            },
+            provider_capabilities=provider_capabilities,
             worker_heartbeat={"state": "RUNNING", "heartbeat": {**activation, "worker_image_digest": digest}},
             provider_fetch={
                 "passed": True,
                 **activation,
-                "provider_contract_evidence_sha256": "6" * 64,
+                "provider_capabilities_sha256": provider_capabilities_hash,
                 "provider_task_terminal_status": "completed",
                 "provider_fetch_count": 1,
             },
@@ -742,9 +737,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                 identity_evidence=[evidence(case_id, identity_runtime) for case_id in identity_cases],
                 identity_cleanup={"state": "CLEANED", "source_sha": source, "runtime_bundle_id": identity_runtime},
                 activation=activation,
-                provider_contract={"state": "VERIFIED", "tested_source_sha": source, "test_evidence_sha256": "6" * 64},
+                provider_capabilities=provider_capabilities,
                 worker_heartbeat={"state": "RUNNING", "heartbeat": {**activation, "worker_image_digest": digest}},
-                provider_fetch={"passed": True, **activation, "provider_contract_evidence_sha256": "6" * 64, "provider_task_terminal_status": "completed", "provider_fetch_count": 1},
+                provider_fetch={"passed": True, **activation, "provider_capabilities_sha256": provider_capabilities_hash, "provider_task_terminal_status": "completed", "provider_fetch_count": 1},
                 provider_case_cleanup={"state": "CLEANED", "activation_id": activation_id},
                 provider_origin_cleanup={"state": "REMOVED", "activation_id": activation_id},
                 worker_cleanup={"state": "STOPPED", "source_sha": source, "runtime_bundle_id": "rtb_" + "9" * 64, "api_deployment_id": api_id, "worker_deployment_id": worker_id, "worker_image_digest": digest, "heartbeat_state": "ABSENT"},
@@ -1257,7 +1252,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
         provider_job = workflow.index("Lease the exact Provider-grant origin")
         self.assertLess(
-            workflow.index("_validate_contract", provider_job),
+            workflow.index("verify_provider_capabilities.py", provider_job),
             workflow.index("configure_preview_provider_grant_origin.py add", provider_job),
         )
 
@@ -1478,8 +1473,17 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertTrue(path.exists(), "manual Production workflow is missing")
         workflow = path.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
-        for forbidden in ("push:", "pull_request:", "schedule:", "repository_dispatch:", "workflow_call:"):
-            self.assertNotIn(forbidden, workflow)
+        for forbidden in (
+            "push",
+            "pull_request",
+            "schedule",
+            "repository_dispatch",
+            "workflow_call",
+        ):
+            self.assertNotRegex(
+                workflow,
+                rf"(?m)^  {re.escape(forbidden)}:\s*$",
+            )
         for required in (
             "environment: production",
             "cancel-in-progress: false",
@@ -1502,7 +1506,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             workflow.index("register_bundle.py reserve"),
             workflow.index("secrets.VERCEL_TOKEN"),
         )
-        self.assertEqual(workflow.lower().count('"$vercel_cli" promote'), 2)
+        self.assertEqual(workflow.lower().count('"$vercel_cli" promote'), 1)
         self.assertLess(
             workflow.index("--phase TARGET_ACCEPTED"),
             workflow.lower().rindex('"$vercel_cli" promote'),

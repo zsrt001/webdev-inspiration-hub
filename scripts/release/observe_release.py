@@ -1045,7 +1045,7 @@ def _complete_recovery(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("observation recovery resolution or approval is invalid")
     _verify_hmac_report(
         worker,
-        expected_schema="vowpic.worker-host-adapter-report.v1",
+        expected_schema="vowpic.worker-host-report.v2",
         signing_key=os.environ.get(args.worker_signing_key_env, "").encode(),
         label="observation recovery Worker report",
     )
@@ -1056,16 +1056,16 @@ def _complete_recovery(args: argparse.Namespace) -> dict[str, Any]:
             "schema",
             "passed",
             "action",
+            "provider",
             "contract_sha256",
-            "request_sha256",
-            "host_response_sha256",
             "state",
             "coordinates",
             "observed_at",
             "signature",
         }
-        or worker.get("action") != "reconcile-failure"
-        or str(worker.get("state") or "").lower() != "stopped"
+        or worker.get("action") != "stop"
+        or worker.get("provider") != "railway"
+        or str(worker.get("state") or "").upper() != "STOPPED"
         or not isinstance(worker_coordinates, dict)
         or worker_coordinates.get("worker_deployment_id")
         != resolution["worker_deployment_id"]

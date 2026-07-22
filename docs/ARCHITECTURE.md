@@ -36,4 +36,4 @@ The migration credential must never be injected into the API or Worker. The runt
 3. Stage 6 exercises the real SaaS journey, payment, private delivery, account deletion, Partner Invite, visual, responsive, and accessibility cases.
 4. Production uses a manual protected staged deployment, explicit promotion, observation, rollback rehearsal, and post-contract cleanup.
 
-No layer may infer PASS from a lower layer. Current gate state is tracked in `release/gates.json`, `release/provider-contracts.json`, and `docs/PRODUCTION_ACCEPTANCE.md`.
+No layer may infer PASS from a lower layer. Current gate state is tracked in `release/gates.json` and `docs/PRODUCTION_ACCEPTANCE.md`. `release/provider-capabilities.json` records the adapter behavior implemented by the code; real provider behavior is proven separately in protected Preview.

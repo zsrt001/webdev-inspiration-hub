@@ -20,8 +20,8 @@ from uuid import UUID
 
 import httpx
 
+from scripts.release.verify_provider_capabilities import validate_provider_capabilities
 
-CONTRACT_KEY = "EVOLINK_SUBMISSION_RECONCILIATION"
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA64 = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME = re.compile(r"^rtb_[0-9a-f]{64}$")
@@ -35,60 +35,6 @@ _PROVIDER_HOST = re.compile(
 
 def _canonical(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-
-
-def _validate_contract(
-    document: dict[str, Any],
-    *,
-    expected_source_sha: str,
-    contract_tested_source_sha: str | None = None,
-) -> dict[str, Any]:
-    if (
-        not isinstance(document, dict)
-        or document.get("schema") != "vowpic.provider-contracts.v1"
-        or not isinstance(document.get("contracts"), dict)
-    ):
-        raise ValueError("Provider contract document is invalid")
-    entry = document["contracts"].get(CONTRACT_KEY)
-    if not isinstance(entry, dict) or entry.get("state") != "VERIFIED":
-        raise ValueError("Evolink Provider contract is UNVERIFIED; no HTTP request is allowed")
-    source = str(expected_source_sha or "").strip().lower()
-    tested_source = str(contract_tested_source_sha or source).strip().lower()
-    if (
-        not _SHA40.fullmatch(source)
-        or not _SHA40.fullmatch(tested_source)
-        or entry.get("tested_source_sha") != tested_source
-    ):
-        raise ValueError("Evolink Provider contract tested source SHA mismatch")
-    for field in ("official_contract_sha256", "test_evidence_sha256"):
-        if not _SHA64.fullmatch(str(entry.get(field) or "")):
-            raise ValueError(f"Evolink Provider contract {field} is invalid")
-    for field in (
-        "official_version", "approval_ref", "correlation_semantics", "idempotency_semantics"
-    ):
-        if not str(entry.get(field) or "").strip():
-            raise ValueError(f"Evolink Provider contract {field} is missing")
-    return entry
-
-
-def validate_contract_activation_lineage(
-    *,
-    runtime_source_sha: str,
-    tested_source_sha: str,
-    activation_parent_sha: str,
-    changed_paths: set[str],
-) -> None:
-    runtime = str(runtime_source_sha or "").strip().lower()
-    tested = str(tested_source_sha or "").strip().lower()
-    parent = str(activation_parent_sha or "").strip().lower()
-    if not all(_SHA40.fullmatch(value) for value in (runtime, tested, parent)):
-        raise ValueError("Provider activation lineage contains an invalid SHA")
-    if tested == runtime:
-        return
-    if parent != tested or changed_paths != {
-        "release/provider-contracts.json", "docs/ai-worklog.md"
-    }:
-        raise ValueError("Provider contract is not the direct evidence-only activation commit")
 
 
 def _validate_grant_reference(reference: dict[str, Any], *, expected_source_sha: str) -> None:
@@ -220,10 +166,9 @@ def _validate_usage(
 
 def verify_provider_fetch(
     *,
-    contract_document: dict[str, Any],
+    capability_document: dict[str, Any],
     grant_reference: dict[str, Any],
     expected_source_sha: str,
-    contract_tested_source_sha: str | None = None,
     api_key: str,
     api_base_url: str,
     image_model: str,
@@ -238,11 +183,9 @@ def verify_provider_fetch(
     terminal_poll_interval_seconds: float = 3.0,
 ) -> dict[str, Any]:
     source = str(expected_source_sha or "").strip().lower()
-    contract = _validate_contract(
-        contract_document,
-        expected_source_sha=source,
-        contract_tested_source_sha=contract_tested_source_sha,
-    )
+    if not _SHA40.fullmatch(source):
+        raise ValueError("Provider fetch source SHA is invalid")
+    validate_provider_capabilities(capability_document)
     _validate_grant_reference(grant_reference, expected_source_sha=source)
     if not str(api_key or "").strip():
         raise ValueError("Evolink API key is required")
@@ -327,8 +270,7 @@ def verify_provider_fetch(
         "provider_task_terminal_poll_count": terminal_poll_count,
         "network_submit_count": 1,
         "provider_fetch_count": used_count,
-        "provider_contract_sha256": hashlib.sha256(_canonical(contract_document)).hexdigest(),
-        "provider_contract_evidence_sha256": contract["test_evidence_sha256"],
+        "provider_capabilities_sha256": hashlib.sha256(_canonical(capability_document)).hexdigest(),
         "approval_ref": approval,
         "produced_at": current.astimezone(timezone.utc).isoformat(),
     }
@@ -400,37 +342,6 @@ def _git_head() -> str:
     return completed.stdout.strip().lower()
 
 
-def _git_activation_lineage(runtime_source_sha: str, tested_source_sha: str) -> None:
-    if tested_source_sha == runtime_source_sha:
-        validate_contract_activation_lineage(
-            runtime_source_sha=runtime_source_sha,
-            tested_source_sha=tested_source_sha,
-            activation_parent_sha=runtime_source_sha,
-            changed_paths=set(),
-        )
-        return
-    parent = subprocess.run(
-        ["git", "rev-parse", "HEAD^"],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    ).stdout.strip().lower()
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", parent, runtime_source_sha],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    ).stdout.splitlines()
-    validate_contract_activation_lineage(
-        runtime_source_sha=runtime_source_sha,
-        tested_source_sha=tested_source_sha,
-        activation_parent_sha=parent,
-        changed_paths={path.strip().replace("\\", "/") for path in changed if path.strip()},
-    )
-
-
 def _load_object(path: str) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -447,7 +358,7 @@ def _write_create_once(path: Path, payload: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--contract", default="release/provider-contracts.json")
+    parser.add_argument("--capabilities", default="release/provider-capabilities.json")
     parser.add_argument("--grant-reference", required=True)
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--database-url-env", default="PREVIEW_CONTROL_DATABASE_URL")
@@ -462,19 +373,8 @@ def main() -> int:
         source = args.expected_source_sha.strip().lower()
         if _git_head() != source:
             raise ValueError("Provider fetch source SHA is not the current checkout")
-        contract_document = _load_object(args.contract)
-        entry = _validate_contract(
-            contract_document,
-            expected_source_sha=source,
-            contract_tested_source_sha=str(
-                contract_document.get("contracts", {})
-                .get(CONTRACT_KEY, {})
-                .get("tested_source_sha")
-                or ""
-            ),
-        )
-        tested_source_sha = str(entry["tested_source_sha"])
-        _git_activation_lineage(source, tested_source_sha)
+        capability_document = _load_object(args.capabilities)
+        validate_provider_capabilities(capability_document)
         grant_reference = _load_object(args.grant_reference)
         database_url = os.environ.get(args.database_url_env, "")
         with httpx.Client(
@@ -484,10 +384,9 @@ def main() -> int:
         ) as client:
             try:
                 report = verify_provider_fetch(
-                    contract_document=contract_document,
+                    capability_document=capability_document,
                     grant_reference=grant_reference,
                     expected_source_sha=source,
-                    contract_tested_source_sha=tested_source_sha,
                     api_key=os.environ.get(args.api_key_env, ""),
                     api_base_url=os.environ.get(args.api_base_url_env, ""),
                     image_model=os.environ.get(args.image_model_env, ""),

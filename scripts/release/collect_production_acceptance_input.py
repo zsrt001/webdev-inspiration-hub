@@ -27,15 +27,9 @@ from scripts.release._acceptance_evidence import (
 )
 from scripts.release._acceptance_phase_facts import collect_commercial_before_delete
 from scripts.release._acceptance_subscription_facts import collect_subscription
-from scripts.release._acceptance_provider_facts import (
-    collect_commercial_finalize,
-    collect_provider_unknown_complete,
-    collect_provider_unknown_queue,
-)
+from scripts.release._acceptance_provider_facts import collect_commercial_finalize
 from scripts.release._acceptance_quality_facts import collect_quality
-from scripts.release.activate_provider_contracts import (
-    verify_activated_creem_evidence,
-)
+from scripts.release.verify_creem_test_evidence import verify_creem_test_evidence
 
 
 def _database_url(value: str) -> str:
@@ -66,12 +60,9 @@ def collect(
     auth_report_path: Path | None,
     database_url: str,
     key: bytes,
-    provider_contract_path: Path | None = None,
     creem_evidence_bundle_path: Path | None = None,
     provider_evidence_key: bytes | None = None,
     commercial_report_path: Path | None = None,
-    queued_report_path: Path | None = None,
-    provider_report_path: Path | None = None,
     storage_absence_report_path: Path | None = None,
     quality_review_request_path: Path | None = None,
     quality_review_path: Path | None = None,
@@ -160,8 +151,6 @@ def collect(
             elif phase == "subscription":
                 if auth_unsigned is None:
                     raise ValueError("subscription collection requires the signed auth report")
-                if provider_contract_path is None:
-                    raise ValueError("subscription collection requires Provider contracts")
                 if (
                     creem_evidence_bundle_path is None
                     or provider_evidence_key is None
@@ -169,49 +158,19 @@ def collect(
                     raise ValueError(
                         "subscription collection requires genuine Creem evidence"
                     )
-                provider_contracts = json.loads(
-                    provider_contract_path.read_text(encoding="utf-8")
-                )
                 creem_evidence = json.loads(
                     creem_evidence_bundle_path.read_text(encoding="utf-8")
                 )
-                evidence_hashes = verify_activated_creem_evidence(
-                    provider_contracts,
-                    evidence_bundle=creem_evidence,
-                    expected_tested_source_sha=str(browser_unsigned["source_sha"]),
+                evidence_hashes = verify_creem_test_evidence(
+                    creem_evidence,
+                    expected_source_sha=str(browser_unsigned["source_sha"]),
                     signing_key=provider_evidence_key,
                 )
                 payload, facts = collect_subscription(
                     cursor,
                     browser=browser_unsigned,
                     auth=auth_unsigned,
-                    provider_contracts=provider_contracts,
                     creem_evidence_hashes=evidence_hashes,
-                )
-            elif phase == "queue-provider-unknown-state":
-                if provider_contract_path is None:
-                    raise ValueError("Provider queue collection requires Provider contracts")
-                payload, facts = collect_provider_unknown_queue(
-                    cursor,
-                    browser=browser_unsigned,
-                    commercial=prior_report(
-                        commercial_report_path,
-                        report_phase="commercial-before-delete",
-                        label="signed commercial acceptance report",
-                    ),
-                    provider_contracts=json.loads(
-                        provider_contract_path.read_text(encoding="utf-8")
-                    ),
-                )
-            elif phase == "complete-provider-unknown-state":
-                payload, facts = collect_provider_unknown_complete(
-                    cursor,
-                    browser=browser_unsigned,
-                    queued_report=prior_report(
-                        queued_report_path,
-                        report_phase="queue-provider-unknown-state",
-                        label="signed queued Provider report",
-                    ),
                 )
             elif phase == "commercial-finalize-delete":
                 storage_absence = prior_report(
@@ -227,11 +186,6 @@ def collect(
                         commercial_report_path,
                         report_phase="commercial-before-delete",
                         label="signed commercial acceptance report",
-                    ),
-                    provider_report=prior_report(
-                        provider_report_path,
-                        report_phase="complete-provider-unknown-state",
-                        label="signed Provider completion report",
                     ),
                     storage_absence_report=storage_absence,
                 )
@@ -356,15 +310,12 @@ def main() -> int:
     parser.add_argument("--phase", required=True)
     parser.add_argument("--browser-report", required=True)
     parser.add_argument("--auth-report")
-    parser.add_argument("--provider-contract")
     parser.add_argument("--creem-evidence-bundle")
     parser.add_argument(
         "--provider-evidence-signing-key-env",
         default="PROVIDER_EVIDENCE_HMAC_KEY",
     )
     parser.add_argument("--commercial-report")
-    parser.add_argument("--queued-report")
-    parser.add_argument("--provider-report")
     parser.add_argument("--storage-absence-report")
     parser.add_argument("--quality-review-request")
     parser.add_argument("--quality-review")
@@ -387,9 +338,6 @@ def main() -> int:
             auth_report_path=Path(args.auth_report) if args.auth_report else None,
             database_url=os.environ.get(args.database_url_env, ""),
             key=signing_key(args.signing_key_env),
-            provider_contract_path=(
-                Path(args.provider_contract) if args.provider_contract else None
-            ),
             creem_evidence_bundle_path=(
                 Path(args.creem_evidence_bundle)
                 if args.creem_evidence_bundle
@@ -402,12 +350,6 @@ def main() -> int:
             ),
             commercial_report_path=(
                 Path(args.commercial_report) if args.commercial_report else None
-            ),
-            queued_report_path=(
-                Path(args.queued_report) if args.queued_report else None
-            ),
-            provider_report_path=(
-                Path(args.provider_report) if args.provider_report else None
             ),
             storage_absence_report_path=(
                 Path(args.storage_absence_report)

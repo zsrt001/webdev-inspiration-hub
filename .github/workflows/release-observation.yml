@@ -113,6 +113,7 @@ jobs:
           ref: ${{ needs.bootstrap.outputs.source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - name: Collect real incidents, database counters, Worker heartbeat, and cleanup
         env:
           OBSERVATION_READ_DATABASE_URL: ${{ secrets.OBSERVATION_READ_DATABASE_URL }}
@@ -121,6 +122,11 @@ jobs:
           PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
           OBSERVATION_SIGNING_KEY: ${{ secrets.OBSERVATION_SIGNING_KEY }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           GH_INCIDENT_TOKEN: ${{ github.token }}
@@ -130,12 +136,14 @@ jobs:
             --database-url-env OBSERVATION_READ_DATABASE_URL \
             --requested-observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
             --output "$RUNNER_TEMP/sample-resolution.json"
-          python scripts/release/run_approved_worker_host.py heartbeat \
+          python scripts/release/run_approved_worker_host.py status \
             --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/sample-resolution.json" \
-            --expected-runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
+            --source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
+            --runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
+            --api-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
+            --expected-deployment-id "${{ needs.bootstrap.outputs.worker_deployment_id }}" \
             --expected-image-digest "${{ needs.bootstrap.outputs.worker_image_digest }}" \
-            --require-dispatch-mode enabled --maximum-age-seconds 120 \
+            --api-base-url "$PRODUCTION_BASE_URL" \
             --output "$RUNNER_TEMP/worker-heartbeat.json"
           python scripts/release/ensure_observation_cleanup_cycle.py \
             --base-url "$PRODUCTION_BASE_URL" \
@@ -235,6 +243,7 @@ jobs:
           ref: ${{ needs.bootstrap.outputs.source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - name: Record failure, apply OFF-only policy, and disable the exact Worker
         id: reconcile
         env:
@@ -242,6 +251,11 @@ jobs:
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_READ_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_TOKEN }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
         run: |
           set -euo pipefail
           python scripts/release/observe_release.py fail \
@@ -254,10 +268,14 @@ jobs:
           test "$ACTION" = "FAIL_AND_SHUTDOWN" -o "$ACTION" = "RESUME_FINALIZATION" -o "$ACTION" = "ALREADY_PASSED"
           echo "action=$ACTION" >> "$GITHUB_OUTPUT"
           if test "$ACTION" = "FAIL_AND_SHUTDOWN"; then
-            python scripts/release/run_approved_worker_host.py reconcile-failure \
+            python scripts/release/run_approved_worker_host.py stop \
               --contract release/worker-host-contract.json \
-              --release-resolution-report "$RUNNER_TEMP/observation-failed.json" \
-              --desired-state stopped --output "$RUNNER_TEMP/worker-stopped.json"
+              --expected-deployment-id "${{ needs.bootstrap.outputs.worker_deployment_id }}" \
+              --source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
+              --runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
+              --api-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
+              --expected-image-digest "${{ needs.bootstrap.outputs.worker_image_digest }}" \
+              --output "$RUNNER_TEMP/worker-stopped.json"
           fi
 
   resume-finalization:
@@ -327,6 +345,7 @@ jobs:
           ref: ${{ needs.bootstrap.outputs.source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
@@ -339,6 +358,11 @@ jobs:
           PRODUCTION_RECOVERY_APPROVAL_ID: ${{ secrets.PRODUCTION_RECOVERY_APPROVAL_ID }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
@@ -355,10 +379,13 @@ jobs:
           . "$RUNNER_TEMP/recovery.env"
           set +a
           cat "$RUNNER_TEMP/recovery.env" >> "$GITHUB_ENV"
-          python scripts/release/run_approved_worker_host.py reconcile-failure \
+          python scripts/release/run_approved_worker_host.py stop \
             --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/recovery.json" \
-            --desired-state stopped \
+            --expected-deployment-id "$RECOVERY_WORKER_DEPLOYMENT_ID" \
+            --source-sha "$RECOVERY_SOURCE_SHA" \
+            --runtime-bundle-id "$RECOVERY_RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$RECOVERY_API_DEPLOYMENT_ID" \
+            --expected-image-digest "$RECOVERY_WORKER_IMAGE_DIGEST" \
             --output "$RUNNER_TEMP/recovery-worker-stopped.json"
           "$VERCEL_CLI" rollback "$RECOVERY_PRIVATE_COMPATIBLE_BASELINE_URL" --yes --token="$VERCEL_TOKEN"
           "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"

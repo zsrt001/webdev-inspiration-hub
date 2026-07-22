@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import importlib.util
 import importlib
-import hashlib
 from io import BytesIO
 import json
 import os
@@ -23,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "scripts" / "release" / "run_approved_worker_host.py"
 REGISTER = ROOT / "scripts" / "release" / "register_bundle.py"
 PRIVATE_STORE = ROOT / "scripts" / "release" / "private_evidence_store.py"
-PROVIDER_CANARY = ROOT / "scripts" / "release" / "prepare_provider_unknown_canary.py"
 AUTH_ORIGIN = ROOT / "scripts" / "release" / "configure_staged_auth_origin.py"
 BINDING_CLEANUP = ROOT / "scripts" / "release" / "cleanup_acceptance_bindings.py"
 ACTIVATION_PLAN = ROOT / "scripts" / "release" / "apply_activation_plan.py"
@@ -59,16 +60,6 @@ def _register_module():
 
 def _private_store_module():
     return importlib.import_module("scripts.release.private_evidence_store")
-
-
-def _provider_canary_module():
-    spec = importlib.util.spec_from_file_location(
-        "prepare_provider_unknown_canary", PROVIDER_CANARY
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _path_module(name: str, path: Path):
@@ -198,28 +189,44 @@ class WorkerHostContractTest(unittest.TestCase):
         if TMP.parent.exists() and not any(TMP.parent.iterdir()):
             TMP.parent.rmdir()
 
-    def test_committed_host_contract_is_complete_but_deliberately_unapproved(self) -> None:
+    def test_committed_host_contract_pins_the_official_railway_binary_and_worker_inputs(self) -> None:
         module = _module()
-        payload, digest = module.load_contract(CONTRACT, require_approved=False)
+        payload, digest = module.load_contract(CONTRACT)
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
-        self.assertFalse(payload["approved"])
-        self.assertEqual(payload["status"], "NOT_APPROVED")
-        self.assertEqual(set(payload["actions"]), set(module.ALLOWED_ACTIONS))
-        with self.assertRaises(module.WorkerHostNotRun):
-            module.load_contract(CONTRACT, require_approved=True)
+        self.assertEqual(payload["provider"], "railway")
+        self.assertEqual(payload["cli"]["version"], "5.27.2")
+        self.assertEqual(
+            payload["cli"]["archive_sha256"],
+            "a0bc1e684ec4ada394533c8bd374aa6e954a4b4c14cf85d637941a53b6eb6132",
+        )
+        self.assertEqual(
+            payload["cli"]["executable_sha256"],
+            "078c6b28362ea41905a0caf30a29fd00ad9933b7946a90533d495d7056e7d7cd",
+        )
+        self.assertEqual(
+            payload["deployment"]["image_repository"],
+            "ghcr.io/zsrt001/vowpic-worker",
+        )
+        self.assertEqual(
+            payload["deployment"]["dockerfile_path"], "backend/Dockerfile.worker"
+        )
+        self.assertNotIn("executable", payload)
+        self.assertNotIn("approved", payload)
 
-    def test_unapproved_contract_exits_not_run_without_external_process_or_report(self) -> None:
-        output = TMP / "worker-build.json"
-        env = {**os.environ, "RUNNER_TEMP": str(TMP)}
+    def test_missing_railway_coordinates_exit_not_run_without_external_process(self) -> None:
+        output = TMP / "worker-preflight.json"
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("RAILWAY_")
+        }
         completed = subprocess.run(
             [
                 PYTHON,
                 str(RUNNER),
-                "build-push",
+                "preflight",
                 "--contract",
                 str(CONTRACT),
-                "--source-sha",
-                "a" * 40,
                 "--output",
                 str(output),
             ],
@@ -232,82 +239,126 @@ class WorkerHostContractTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 3)
         self.assertIn("NOT_RUN", completed.stderr)
         self.assertFalse(output.exists())
-        self.assertEqual(list(TMP.glob("worker-host-*-request.json")), [])
 
-    def test_mutable_image_and_unlisted_arguments_are_rejected(self) -> None:
+    def test_secret_values_reach_railway_only_through_stdin(self) -> None:
         module = _module()
-        payload, _ = module.load_contract(CONTRACT, require_approved=False)
-        with self.assertRaisesRegex(ValueError, "immutable digest"):
-            module.validate_action_inputs(
-                payload,
-                "deploy-suspended",
-                {
-                    "source-sha": "a" * 40,
-                    "image-digest": "vowpic-worker:latest",
-                    "runtime-bundle-id": "rtb_" + "b" * 64,
-                },
-            )
-        with self.assertRaisesRegex(ValueError, "unexpected Worker host inputs"):
-            module.validate_action_inputs(
-                payload,
-                "build-push",
-                {"source-sha": "a" * 40, "shell-command": "echo"},
-            )
-
-    def test_only_secret_injection_receives_exact_runtime_environment_allowlist(self) -> None:
-        module = _module()
-        payload, _ = module.load_contract(CONTRACT, require_approved=False)
-        expected = {
-            "CONTROL_PLANE_DATABASE_URL",
-            "DATABASE_URL",
-            "EVOLINK_API_KEY",
-            "PRIVATE_BLOB_READ_WRITE_TOKEN",
-            "REDIS_URL",
-            "SECRET_KEY",
-            "WEBHOOK_BASE_URL",
-            "WENWEN_VISION_API_KEY",
+        context = {
+            "cli_path": "railway",
+            "token": "project-token-value",
+            "project": "project-1",
+            "environment": "production",
+            "service": "vowpic-worker",
+            "region": "us-east",
         }
-        self.assertEqual(
-            set(payload["actions"]["inject-secrets"]["environment_allowlist"]),
-            expected,
-        )
-        self.assertTrue(
-            all(
-                not specification["environment_allowlist"]
-                for action, specification in payload["actions"].items()
-                if action != "inject-secrets"
-            )
-        )
-        with patch.dict(os.environ, {name: f"value-for-{name}" for name in expected}):
-            injected = module._safe_environment(payload, action="inject-secrets")
-            build = module._safe_environment(payload, action="build-push")
-        self.assertTrue(expected.issubset(injected))
-        self.assertTrue(expected.isdisjoint(build))
+        with patch.object(module, "_run_cli", return_value="{}") as run_cli:
+            module._set_variable(context, "DATABASE_URL", "postgresql://private")
+        arguments = run_cli.call_args.args[1]
+        self.assertIn("DATABASE_URL", arguments)
+        self.assertNotIn("postgresql://private", arguments)
+        self.assertEqual(run_cli.call_args.kwargs["stdin_value"], "postgresql://private")
+        self.assertIn("--skip-deploys", arguments)
 
-    def test_host_response_must_be_exact_success_and_secret_free(self) -> None:
+    def test_deploy_binds_one_new_deployment_and_scales_it_to_zero(self) -> None:
         module = _module()
-        response = {
-            "schema": module.RESPONSE_SCHEMA,
-            "action": "build-push",
-            "passed": True,
-            "state": "BUILT",
-            "coordinates": {"worker_image_digest": "sha256:" + "b" * 64},
-            "observed_at": "2026-07-18T00:00:00+00:00",
+        payload, _ = module.load_contract(CONTRACT)
+        context = {
+            "cli_path": "railway",
+            "token": "project-token-value",
+            "project": "project-1",
+            "environment": "production",
+            "service": "vowpic-worker",
+            "region": "us-east",
         }
-        self.assertEqual(
-            module.validate_host_response(response, action="build-push")["state"],
-            "BUILT",
+        args = argparse.Namespace(
+            source_sha="a" * 40,
+            runtime_bundle_id="rtb_" + "b" * 64,
+            api_deployment_id="dpl_api_1",
+            image_ref=(
+                "ghcr.io/zsrt001/vowpic-worker@sha256:" + "c" * 64
+            ),
         )
-        with self.assertRaises(ValueError):
-            module.validate_host_response(
-                {**response, "coordinates": {"access_token": "secret"}},
-                action="build-push",
-            )
-        with self.assertRaises(ValueError):
-            module.validate_host_response(
-                {**response, "passed": False},
-                action="build-push",
-            )
+        with (
+            patch.object(module, "_set_variable") as set_variable,
+            patch.object(
+                module,
+                "_deployment_rows",
+                side_effect=[
+                    [{"id": "worker-old", "status": "SUCCESS"}],
+                    [
+                        {"id": "worker-new", "status": "SUCCESS"},
+                        {"id": "worker-old", "status": "SUCCESS"},
+                    ],
+                ],
+            ),
+            patch.object(module, "_run_cli", return_value="{}") as run_cli,
+            patch.object(module, "_scale") as scale,
+        ):
+            state, coordinates = module._deploy(payload, context, args)
+        self.assertEqual(state, "STAGED")
+        self.assertEqual(coordinates["worker_deployment_id"], "worker-new")
+        self.assertEqual(coordinates["worker_image_digest"], "sha256:" + "c" * 64)
+        self.assertEqual(scale.call_args.args, (context, 0))
+        self.assertGreaterEqual(set_variable.call_count, len(payload["runtime_secret_envs"]))
+        deploy_arguments = run_cli.call_args.args[1]
+        self.assertEqual(deploy_arguments[:3], ["service", "source", "connect"])
+        self.assertIn(args.image_ref, deploy_arguments)
+        self.assertNotIn("--new", deploy_arguments)
+        self.assertNotIn("--yes", deploy_arguments)
+
+    def test_status_requires_exact_api_readiness_and_runtime_version(self) -> None:
+        module = _module()
+        source_sha = "a" * 40
+        runtime = "rtb_" + "b" * 64
+        digest = "sha256:" + "c" * 64
+        api_deployment_id = "dpl_api_1"
+        payloads = {
+            "https://target.example/health/ready": {"ready": True},
+            "https://target.example/api/v1/version": {
+                "schema": "vowpic.runtime-bundle-report.v1",
+                "source_sha": source_sha,
+                "runtime_bundle_id": runtime,
+                "deployment_id": api_deployment_id,
+                "release_role": "COMMERCIAL_7A",
+                "runtime_environment": "production",
+                "worker_image_digest": digest,
+            },
+        }
+
+        class Response:
+            def __init__(self, url: str):
+                self.status = 200
+                self._url = url
+                self._raw = json.dumps(payloads[url]).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return self._url
+
+            def read(self, _limit):
+                return self._raw
+
+        class Opener:
+            def open(self, request, timeout):
+                self.timeout = timeout
+                return Response(request.full_url)
+
+        args = argparse.Namespace(
+            api_base_url="https://target.example",
+            api_ready_timeout_seconds=10,
+            source_sha=source_sha,
+            runtime_bundle_id=runtime,
+            api_deployment_id=api_deployment_id,
+            expected_image_digest=digest,
+        )
+        with patch.object(module.urllib.request, "build_opener", return_value=Opener()):
+            readiness_sha, version_sha = module._wait_for_api_runtime(args)
+        self.assertRegex(readiness_sha, r"^[0-9a-f]{64}$")
+        self.assertRegex(version_sha, r"^[0-9a-f]{64}$")
 
 
 class PrivateEvidenceStoreTest(unittest.TestCase):
@@ -368,15 +419,14 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         register = _register_module()
         expected = (
             "RESERVED",
-            "WORKER_STAGED",
-            "API_BASELINE_STAGED",
+            "ROLLBACK_BASELINE_VERIFIED",
             "API_TARGET_STAGED",
+            "WORKER_STAGED",
             "MANIFEST_SEALED",
             "SCHEMA_0020",
             "WORKER_RUNNING",
-            "BASELINE_PROMOTED",
             "DATA_SWITCHED",
-            "WORKER_DISPATCH_ENABLED",
+            "ACCEPTANCE_READY",
             "TARGET_ACCEPTED",
             "TARGET_PROMOTED",
             "PUBLIC_INVALIDATED",
@@ -391,7 +441,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             register.validate_production_phase_transition(
-                "COMMERCIAL_7A", "RESERVED", "API_BASELINE_STAGED"
+                "COMMERCIAL_7A", "RESERVED", "API_TARGET_STAGED"
             )
         with self.assertRaises(ValueError):
             register.validate_production_phase_transition(
@@ -459,15 +509,11 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "report_sha256": None,
         }
         evidence_hash = "e" * 64
-        bindings = {
-            "runtime_bundle_id": "rtb_" + "a" * 64,
-            "worker_deployment_id": "worker-7a-01",
-            "worker_image_digest": "sha256:" + "b" * 64,
-        }
+        bindings = {"runtime_bundle_id": "rtb_" + "a" * 64}
         decision = register.decide_production_phase_advance(
             row,
             expected_phase="RESERVED",
-            target_phase="WORKER_STAGED",
+            target_phase="ROLLBACK_BASELINE_VERIFIED",
             evidence_sha256=evidence_hash,
             bindings=bindings,
         )
@@ -479,7 +525,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         replay = register.decide_production_phase_advance(
             advanced,
             expected_phase="RESERVED",
-            target_phase="WORKER_STAGED",
+            target_phase="ROLLBACK_BASELINE_VERIFIED",
             evidence_sha256=evidence_hash,
             bindings=bindings,
         )
@@ -488,60 +534,78 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             register.decide_production_phase_advance(
                 advanced,
                 expected_phase="RESERVED",
-                target_phase="WORKER_STAGED",
+                target_phase="ROLLBACK_BASELINE_VERIFIED",
                 evidence_sha256="f" * 64,
                 bindings=bindings,
             )
 
-    def test_worker_stage_requires_secret_injection_bound_to_exact_deployment(self) -> None:
+    def test_worker_stage_requires_one_signed_exact_deployment_report(self) -> None:
         register = _register_module()
+        worker = _module()
         root = TMP / "worker-stage"
         root.mkdir(parents=True, exist_ok=True)
         digest = "sha256:" + "b" * 64
         runtime = "rtb_" + "c" * 64
         worker_id = "worker-7a-01"
+        source_sha = "a" * 40
+        api_deployment_id = "dpl_target"
+        signing_key = b"k" * 32
+        _contract, contract_sha256 = worker.load_contract(CONTRACT)
 
-        def write(name: str, action: str, coordinates: dict[str, str]) -> Path:
+        def write(name: str, coordinates: dict[str, str]) -> Path:
             target = root / f"{name}.json"
+            unsigned = {
+                "schema": "vowpic.worker-host-report.v2",
+                "action": "deploy",
+                "passed": True,
+                "provider": "railway",
+                "contract_sha256": contract_sha256,
+                "state": "STAGED",
+                "coordinates": coordinates,
+                "observed_at": "2026-07-19T00:00:00+00:00",
+            }
+            signature = hmac.new(
+                signing_key,
+                json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(),
+                hashlib.sha256,
+            ).hexdigest()
             target.write_text(
-                json.dumps(
-                    {
-                        "schema": "vowpic.worker-host-adapter-report.v1",
-                        "action": action,
-                        "passed": True,
-                        "state": "PROVEN",
-                        "coordinates": coordinates,
-                        "observed_at": "2026-07-19T00:00:00+00:00",
-                    }
-                ),
+                json.dumps({**unsigned, "signature": f"hmac-sha256:{signature}"}),
                 encoding="utf-8",
             )
             return target
 
-        build = write("build", "build-push", {"worker_image_digest": digest})
         deployment_coordinates = {
+            "provider": "railway",
+            "project": "project-1",
+            "environment": "production",
+            "service": "vowpic-worker",
+            "region": "us-east",
+            "source_sha": source_sha,
             "worker_image_digest": digest,
             "worker_deployment_id": worker_id,
             "runtime_bundle_id": runtime,
+            "api_deployment_id": api_deployment_id,
         }
-        deployment = write("deployment", "deploy-suspended", deployment_coordinates)
-        injection = write("injection", "inject-secrets", deployment_coordinates)
+        deployment = write("deployment", deployment_coordinates)
 
-        self.assertEqual(
-            register._worker_bindings(build, deployment, injection),
-            {
-                "worker_image_digest": digest,
-                "worker_deployment_id": worker_id,
-                "runtime_bundle_id": runtime,
-            },
-        )
-        drifted = write(
-            "drifted-injection",
-            "inject-secrets",
-            {**deployment_coordinates, "worker_deployment_id": "worker-other"},
-        )
-        with self.assertRaisesRegex(ValueError, "secret injection binding"):
-            register._worker_bindings(build, deployment, drifted)
+        with patch.dict(os.environ, {"WORKER_HOST_EVIDENCE_SIGNING_KEY": signing_key.decode()}):
+            self.assertEqual(
+                register._worker_bindings(deployment),
+                {
+                    "source_sha": source_sha,
+                    "worker_image_digest": digest,
+                    "worker_deployment_id": worker_id,
+                    "runtime_bundle_id": runtime,
+                    "api_deployment_id": api_deployment_id,
+                },
+            )
+            drifted = json.loads(deployment.read_text(encoding="utf-8"))
+            drifted["coordinates"]["worker_deployment_id"] = "worker-other"
+            drifted_path = root / "drifted.json"
+            drifted_path.write_text(json.dumps(drifted), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "signature"):
+                register._worker_bindings(drifted_path)
 
     def test_pre_schema_phase_reports_form_a_create_once_hash_chain(self) -> None:
         register = _register_module()
@@ -554,8 +618,8 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "report_sha256": None,
         }
         first_evidence = register.build_phase_evidence(
-            phase="WORKER_STAGED",
-            evidence={"worker-build-report": self._write_phase_report("worker-build")},
+            phase="ROLLBACK_BASELINE_VERIFIED",
+            evidence={"inspect-report": self._write_phase_report("baseline-inspect")},
             coordinates={"runtime_bundle_id": "rtb_" + "b" * 64},
         )
         first, first_raw, first_sha = register.build_chained_phase_report(
@@ -570,14 +634,14 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
 
         second_activation = {
             **activation,
-            "phase": "WORKER_STAGED",
+            "phase": "ROLLBACK_BASELINE_VERIFIED",
             "phase_rank": 1,
             "report_sha256": first_sha,
         }
         second_evidence = register.build_phase_evidence(
-            phase="API_BASELINE_STAGED",
-            evidence={"inspect-report": self._write_phase_report("baseline-inspect")},
-            coordinates={"deployment_id": "dpl_baseline"},
+            phase="API_TARGET_STAGED",
+            evidence={"inspect-report": self._write_phase_report("target-inspect")},
+            coordinates={"deployment_id": "dpl_target"},
         )
         second, _second_raw, _second_sha = register.build_chained_phase_report(
             activation=second_activation,
@@ -589,7 +653,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertEqual(second["evidence_chain"][0]["report_sha256"], first_sha)
         self.assertEqual(
             [item["phase"] for item in second["evidence_chain"]],
-            ["WORKER_STAGED", "API_BASELINE_STAGED"],
+            ["ROLLBACK_BASELINE_VERIFIED", "API_TARGET_STAGED"],
         )
 
     def test_migration_parent_is_exact_and_only_identical_retry_is_reusable(self) -> None:
@@ -621,171 +685,13 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
                 requested=record,
             )
 
-    def test_provider_response_drop_intent_is_deterministic_bounded_and_runtime_bound(self) -> None:
-        register = _register_module()
-        activation = {
-            "id": "00000000-0000-0000-0000-000000000071",
-            "environment": "production",
-            "kind": "COMMERCIAL_7A",
-            "source_sha": "a" * 40,
-            "runtime_bundle_id": "rtb_" + "b" * 64,
-            "worker_deployment_id": "worker-production-1",
-            "worker_image_digest": "sha256:" + "c" * 64,
-            "workflow_run_id": "12345",
-            "workflow_attempt": 2,
-            "phase": "WORKER_DISPATCH_ENABLED",
-        }
-        expires = datetime(2026, 7, 19, tzinfo=timezone.utc)
-        first = register.build_acceptance_fault_intent(
-            activation,
-            request_sha256="d" * 64,
-            max_provider_submits=1,
-            max_cost_minor_units=500,
-            expires_at=expires,
-        )
-        second = register.build_acceptance_fault_intent(
-            activation,
-            request_sha256="d" * 64,
-            max_provider_submits=1,
-            max_cost_minor_units=500,
-            expires_at=expires,
-        )
-        self.assertEqual(first, second)
-        self.assertRegex(first["fault_intent_id"], r"^afi_[0-9a-f]{32}$")
-        self.assertEqual(first["max_provider_submits"], 1)
-        with self.assertRaises(ValueError):
-            register.build_acceptance_fault_intent(
-                activation,
-                request_sha256="d" * 64,
-                max_provider_submits=2,
-                max_cost_minor_units=500,
-                expires_at=expires,
-            )
-
-        bound = {
-            **activation,
-            "acceptance_fault_intent_id": first["fault_intent_id"],
-        }
-        disarm = {
-            "schema": "vowpic.worker-host-adapter-report.v1",
-            "passed": True,
-            "action": "disarm-response-drop",
-            "state": "ABSENT",
-            "coordinates": {
-                "fault_intent_id": first["fault_intent_id"],
-                "runtime_bundle_id": activation["runtime_bundle_id"],
-                "worker_deployment_id": activation["worker_deployment_id"],
-                "rule_present": False,
-                "runtime_rule_count": 0,
-                "tombstone_persisted": True,
-            },
-        }
-        register._validate_worker_fault_report(
-            disarm,
-            action="disarm-response-drop",
-            activation=bound,
-            require_absence=True,
-            require_tombstone=True,
-        )
-        with self.assertRaisesRegex(ValueError, "absence"):
-            register._validate_worker_fault_report(
-                {
-                    **disarm,
-                    "coordinates": {**disarm["coordinates"], "rule_present": True},
-                },
-                action="disarm-response-drop",
-                activation=bound,
-                require_absence=True,
-                require_tombstone=True,
-            )
-
-    def test_provider_unknown_canary_is_bound_to_one_real_queued_attempt(self) -> None:
-        module = _provider_canary_module()
-        activation = {
-            "id": "00000000-0000-0000-0000-000000000071",
-            "source_sha": "a" * 40,
-            "runtime_bundle_id": "rtb_" + "b" * 64,
-            "manifest_sha256": "c" * 64,
-            "api_deployment_id": "dpl_target",
-            "worker_deployment_id": "worker-production-1",
-            "worker_image_digest": "sha256:" + "d" * 64,
-            "workflow_run_id": "12345",
-            "workflow_attempt": 2,
-        }
-        fault_id = "afi_" + hashlib.sha256(
-            (
-                f"{activation['id']}:{activation['workflow_run_id']}:"
-                f"{activation['workflow_attempt']}:provider-response-drop"
-            ).encode("utf-8")
-        ).hexdigest()[:32]
-        links = {
-            "order_id": "00000000-0000-4000-8000-000000000081",
-            "reservation_id": "00000000-0000-4000-8000-000000000082",
-            "job_id": "00000000-0000-4000-8000-000000000083",
-            "attempt_id": "00000000-0000-4000-8000-000000000084",
-            "fault_intent_id": fault_id,
-            "client_correlation_id": "00000000-0000-4000-8000-000000000085",
-        }
-        queued = {
-            "links": links,
-            "cost_cap_minor_units": 500,
-        }
-        facts = {
-            "order_id": links["order_id"],
-            "reservation_id": links["reservation_id"],
-            "job_id": links["job_id"],
-            "attempt_id": links["attempt_id"],
-            "submission_correlation_id": links["client_correlation_id"],
-            "api_deployment_id": activation["api_deployment_id"],
-            "runtime_bundle_id": activation["runtime_bundle_id"],
-            "expected_worker_image_digest": activation["worker_image_digest"],
-            "order_status": "QUEUED",
-            "job_status": "QUEUED",
-            "attempt_status": "PREPARED",
-            "provider_job_id": None,
-            "submission_accounting_state": "NOT_CAPTURED",
-            "client_request_id": links["client_correlation_id"],
-        }
-        dispatch = {
-            "schema": "vowpic.worker-host-adapter-report.v1",
-            "action": "set-dispatch",
-            "passed": True,
-            "coordinates": {
-                "runtime_bundle_id": activation["runtime_bundle_id"],
-                "worker_deployment_id": activation["worker_deployment_id"],
-                "dispatch_mode": "disabled",
-            },
-        }
-        report = module.build_canary_report(
-            activation=activation,
-            queued_report=queued,
-            queued_report_sha256="e" * 64,
-            dispatch_report=dispatch,
-            facts=facts,
-            manifest_sha256=activation["manifest_sha256"],
-            signing_key=b"provider-canary-test-signing-key-32bytes",
-            produced_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
-        )
-        self.assertTrue(report["passed"])
-        self.assertEqual(report["fault_intent_id"], fault_id)
-        with self.assertRaisesRegex(ValueError, "pre-submit"):
-            module.build_canary_report(
-                activation=activation,
-                queued_report=queued,
-                queued_report_sha256="e" * 64,
-                dispatch_report=dispatch,
-                facts={**facts, "provider_job_id": "provider-task"},
-                manifest_sha256=activation["manifest_sha256"],
-                signing_key=b"provider-canary-test-signing-key-32bytes",
-            )
-
     def test_staged_auth_origin_state_is_deterministic_and_exactly_restorable(self) -> None:
         module = _path_module("configure_staged_auth_origin", AUTH_ORIGIN)
         activation = {
             "id": "00000000-0000-0000-0000-000000000071",
             "environment": "production",
             "kind": "COMMERCIAL_7A",
-            "phase": "WORKER_DISPATCH_ENABLED",
+            "phase": "ACCEPTANCE_READY",
             "source_sha": "a" * 40,
             "runtime_bundle_id": "rtb_" + "b" * 64,
             "api_deployment_id": "dpl_target",
@@ -926,26 +832,35 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "true",
         )
         for forbidden in (
-            "push:",
-            "pull_request:",
-            "schedule:",
-            "repository_dispatch:",
-            "workflow_call:",
+            "\n  push:\n",
+            "\n  pull_request:",
+            "\n  schedule:",
+            "\n  repository_dispatch:",
+            "\n  workflow_call:",
         ):
             self.assertNotIn(forbidden, workflow)
         self.assertIn("group: vowpic-production-release", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
-        self.assertEqual(workflow.count("vars.PRODUCTION_BASE_URL"), 7)
+        self.assertEqual(workflow.count("vars.PRODUCTION_BASE_URL"), 12)
         self.assertNotIn("secrets.PRODUCTION_BASE_URL", workflow)
-        self.assertIn("run_approved_worker_host.py build-push", workflow)
-        self.assertIn("verify_commercial_provider_readiness.py", workflow)
+        self.assertIn("docker/build-push-action@", workflow)
+        self.assertIn("verify_provider_capabilities.py", workflow)
+        self.assertNotIn("provider-reconciliation-contract", workflow)
+        for forbidden_fault_action in (
+            "arm-response-drop-once",
+            "inspect-response-drop",
+            "disarm-response-drop",
+            "provider-fault-cleanup",
+            "provider-unknown-intent",
+        ):
+            self.assertNotIn(forbidden_fault_action, workflow)
         self.assertNotIn("inputs.worker_image_digest", workflow)
         self.assertLess(
-            workflow.index("verify_commercial_provider_readiness.py"),
-            workflow.index("run_approved_worker_host.py build-push"),
+            workflow.index("verify_provider_capabilities.py"),
+            workflow.index("docker/build-push-action@"),
         )
         self.assertLess(
-            workflow.index("run_approved_worker_host.py build-push"),
+            workflow.index("docker/build-push-action@"),
             workflow.index("build_runtime_bundle_id.py"),
         )
 
@@ -1012,31 +927,23 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             json.dumps(final_job, sort_keys=True),
         )
         self.assertNotIn("PRODUCTION_QUALITY_REVIEW_BASE64", workflow)
-        self.assertIn("--reason quality-human-review", prepare_run)
-        self.assertLess(
-            prepare_run.index("--reason quality-human-review"),
-            prepare_run.index("quality-review-handoff"),
-        )
-        self.assertIn("--reason quality-human-review-complete", final_run)
-        self.assertLess(
-            final_run.index("run_quality_acceptance.mjs"),
-            final_run.index("--reason quality-human-review-complete"),
-        )
+        self.assertNotIn("set-dispatch", prepare_run)
+        self.assertNotIn("set-dispatch", final_run)
+        self.assertIn("run_quality_acceptance.mjs", final_run)
 
     def test_workflow_persists_every_commercial_phase_in_order(self) -> None:
         workflow = (ROOT / ".github/workflows/production-release.yml").read_text(
             encoding="utf-8"
         )
         phase_markers = [
-            "--phase WORKER_STAGED",
-            "--phase API_BASELINE_STAGED",
+            "--phase ROLLBACK_BASELINE_VERIFIED",
             "--phase API_TARGET_STAGED",
+            "--phase WORKER_STAGED",
             "--phase MANIFEST_SEALED",
             "--phase SCHEMA_0020",
             "--phase WORKER_RUNNING",
-            "--phase BASELINE_PROMOTED",
             "--phase DATA_SWITCHED",
-            "--phase WORKER_DISPATCH_ENABLED",
+            "--phase ACCEPTANCE_READY",
             "--phase TARGET_ACCEPTED",
             "--phase TARGET_PROMOTED",
             "--phase PUBLIC_INVALIDATED",
@@ -1046,9 +953,86 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         positions = [workflow.index(marker) for marker in phase_markers]
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(workflow.count('"$VERCEL_CLI" build --prod'), 1)
-        self.assertEqual(workflow.count("deploy --prebuilt --prod --skip-domain"), 2)
-        self.assertEqual(workflow.lower().count('"$vercel_cli" promote'), 2)
+        self.assertEqual(workflow.count("deploy --prebuilt --prod --skip-domain"), 1)
+        self.assertEqual(workflow.lower().count('"$vercel_cli" promote'), 1)
         self.assertIn('"$vercel_cli" rollback', workflow.lower())
+
+    def test_runtime_preflight_follows_reservation_and_precedes_external_deployment(self) -> None:
+        workflow_path = ROOT / ".github" / "workflows" / "production-release.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        payload = yaml.load(workflow, Loader=yaml.BaseLoader)
+
+        reserve_steps = payload["jobs"]["reserve-stage-seal"]["steps"]
+        preflight = next(
+            step
+            for step in reserve_steps
+            if step.get("name")
+            == "Validate the complete immutable Production runtime before external deployment"
+        )
+        preflight_run = preflight["run"]
+        self.assertIn("validate_production_runtime_environment.py", preflight_run)
+        self.assertGreater(
+            workflow.index("validate_production_runtime_environment.py"),
+            workflow.index("register_bundle.py reserve"),
+        )
+        self.assertLess(
+            workflow.index("validate_production_runtime_environment.py"),
+            workflow.index("docker/build-push-action@"),
+        )
+        for name in (
+            "PRODUCTION_RUNTIME_DATABASE_URL",
+            "PRODUCTION_CONTROL_PLANE_DATABASE_URL",
+            "PRODUCTION_REDIS_URL",
+            "PRODUCTION_SECRET_KEY",
+            "ACCEPTANCE_IDENTITY_HMAC_KEY",
+            "PRIVATE_BLOB_READ_WRITE_TOKEN",
+            "EVOLINK_API_KEY",
+            "PRODUCTION_WENWEN_VISION_API_KEY",
+            "CREEM_API_KEY",
+            "CREEM_WEBHOOK_SECRET",
+            "CLEANUP_CRON_TOKEN",
+            "PRODUCTION_SUPABASE_URL",
+            "PRODUCTION_SUPABASE_ANON_KEY",
+            "PRODUCTION_SUPPORT_MONITORED",
+            "PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR",
+        ):
+            self.assertIn(name, json.dumps(preflight, sort_keys=True))
+
+        coordinate_step = next(
+            step
+            for step in reserve_steps
+            if step.get("name")
+            == "Read inventory, resolve exact Preview, and reserve the release lease"
+        )
+        self.assertEqual(coordinate_step["env"]["GITHUB_TOKEN"], "${{ github.token }}")
+        self.assertNotIn("RELEASE_PRIVATE_EVIDENCE_ROOT", workflow)
+        self.assertNotIn("--private-evidence-root-env", coordinate_step["run"])
+
+        deploy_step = next(
+            step
+            for step in reserve_steps
+            if step.get("name")
+            == "Build once, deploy one staged target, and bind the suspended Worker"
+        )
+        deploy_run = deploy_step["run"]
+        self.assertEqual(deploy_run.count("${DEPLOY_ENV_ARGS[@]}"), 1)
+        self.assertEqual(deploy_run.count("${DEPLOY_META_ARGS[@]}"), 1)
+        for binding in (
+            'RUNTIME_ENVIRONMENT=production',
+            'RELEASE_ROLE=COMMERCIAL_7A',
+            'DATABASE_URL=$DATABASE_URL',
+            'CONTROL_PLANE_DATABASE_URL=$CONTROL_PLANE_DATABASE_URL',
+            'REDIS_URL=$REDIS_URL',
+            'TASK_EXECUTION_MODE=arq',
+            'STORAGE_PROVIDER=vercel',
+            'EVOLINK_API_KEY=$EVOLINK_API_KEY',
+            'WENWEN_VISION_API_KEY=$WENWEN_VISION_API_KEY',
+            'CREEM_API_KEY=$CREEM_API_KEY',
+            'SUPABASE_URL=$SUPABASE_URL',
+            'SUPPORT_MONITORED=$SUPPORT_MONITORED',
+            'CRON_SECRET=$CLEANUP_CRON_TOKEN',
+        ):
+            self.assertIn(binding, deploy_run)
 
     def test_migrations_cleanup_reconciliation_and_observation_are_separate(self) -> None:
         workflow = (ROOT / ".github/workflows/production-release.yml").read_text(
@@ -1057,7 +1041,8 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/data-migration.yml", workflow)
         self.assertIn("expected_media_delete_dry_sha256", workflow)
         self.assertIn("if: ${{ failure() || cancelled() }}", workflow)
-        self.assertIn("if: ${{ always() }}", workflow)
+        self.assertIn("reconcile-failure:", workflow)
+        self.assertNotIn("provider-fault-cleanup:", workflow)
         self.assertIn("observe_release.py start", workflow)
         self.assertNotRegex(workflow, r"(?i)(sleep|timeout).*24\s*(h|hour)")
         observation = ROOT / ".github" / "workflows" / "release-observation.yml"
@@ -1134,7 +1119,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
                 effective_env = {**job_env, **(step.get("env") or {})}
                 self.assertIn("PRIVATE_EVIDENCE_STORE_ID", effective_env)
                 self.assertIn("PRIVATE_EVIDENCE_WRITE_TOKEN", effective_env)
-        self.assertEqual(found, 12)
+        self.assertEqual(found, 10)
 
     def test_every_python_release_job_installs_the_hash_locked_runtime(self) -> None:
         for relative_path in (

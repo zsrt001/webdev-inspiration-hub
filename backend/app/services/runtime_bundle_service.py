@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_CONTRACT = ROOT / "release" / "runtime-contracts.json"
 SAFE_BASELINE_CONTRACT = ROOT / "release" / "safe-baseline-contract.json"
 ACTIVATION_CONTRACT = ROOT / "release" / "activation-plan.json"
-PROVIDER_CONTRACT = ROOT / "release" / "provider-contracts.json"
+PROVIDER_CAPABILITIES = ROOT / "release" / "provider-capabilities.json"
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ def public_runtime_bundle(settings_obj: Settings | None = None) -> PublicRuntime
         job_payload_min=payload_version,
         job_payload_max=payload_version,
         worker_image_digest=active_settings.worker_image_digest.strip().lower(),
-        provider_policy_hash=_file_sha256(PROVIDER_CONTRACT),
+        provider_policy_hash=_file_sha256(PROVIDER_CAPABILITIES),
         flag_contract_hash=_file_sha256(ACTIVATION_CONTRACT),
     )
 

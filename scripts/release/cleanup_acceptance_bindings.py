@@ -37,7 +37,7 @@ def validate_activation(
     if any(str(activation.get(key)) != str(value) for key, value in expected.items()):
         raise ValueError("acceptance binding cleanup activation coordinates are invalid")
     if activation.get("phase") not in {
-        "WORKER_DISPATCH_ENABLED",
+        "ACCEPTANCE_READY",
         "TARGET_ACCEPTED",
         "TARGET_PROMOTED",
         "PUBLIC_INVALIDATED",

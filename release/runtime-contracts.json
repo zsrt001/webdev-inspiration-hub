@@ -13,9 +13,15 @@
     "backend/app/services/outbox_service.py": "6f701fcc6f2d20139f5b24b8fcaba0a1228cc3cd209f7893ec080c27df964a31",
     "backend/app/services/job_lease_service.py": "e90e471bf7002f78d84e4df6539e5f8dd0fec4b684d6f4d941726676f591eef0",
     "backend/app/services/qa_pipeline.py": "06249e77cece17096f84dee8b767f3afebb167cdade7f4b101d4159fd83af3e5",
-    "backend/app/core/provider_contracts.py": "8aacd560d72ff1b3ddb443682b997350ead9ce125c2679fe01fe84a8bbb6b639",
+    "backend/app/services/generation_attempt_service.py": "2aa1743ef5baf84537881898bc67c76205fa50f84b2e5e5ae1d831ef5d3b36df",
+    "backend/app/services/evolink_service.py": "ded76cb99b855df0ae4ac9a0c594fe21e927d7038e283465155eb08670826c21",
+    "backend/app/services/evolink_reconciliation_service.py": "4ba3084c7c9595f4ddd2d6a80237bc0ec38e9b1ce6d94c9478fec58c81e39f1f",
+    "backend/app/services/subscription_service.py": "a647a2a6eae190eb4fc6a33f7bab7a38d28e95ccf11c8ba70121ab23cdf990d3",
+    "backend/app/services/creem_event_service.py": "3ab4add31da8d0f10b89653f3611a9a0823e99c9205b89d252b5ae25717efce4",
+    "backend/app/services/payment_service.py": "f2726a0d5f2a9f38b29c06fffd8493724ecb8c69868639876730c02953bdaf4c",
+    "backend/app/services/feature_flag_service.py": "56327d0f21e74749181fe90fb5f4e1e4471b3d074fdd0b0fae7a9ac5155f1601",
     "backend/app/core/security_headers.py": "c808e456c0772506bcf3e1ab26f1593ecb7dcd288843d12b24cf95c685dc447a",
-    "backend/app/core/runtime_checks.py": "f2e6c3d3f6c238450af1167624b130ae188c252a82c9ea9b6f64f175115e9b82",
+    "backend/app/core/runtime_checks.py": "ac1595da722ccfdbdf3eee214be68b279464d343921fd510ae93f104565922d4",
     "backend/app/services/media_asset_service.py": "3dfede5e9cd5082c848810c658e31c5f42243462a5a3bc91a747f6f72cce8279"
   }
 }

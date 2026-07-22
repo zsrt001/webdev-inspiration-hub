@@ -3042,3 +3042,50 @@
   No Production action was substituted for that missing local proof; the real
   PostgreSQL CI job remains the required execution evidence before merge.
 - Proxifier was not modified or restarted.
+
+## 2026-07-22 - Replace pseudo-provider gates with a deployable Worker release
+
+### Root cause and correction
+
+- The previous COMMERCIAL_7A workflow treated ordinary EvoLink and Creem API
+  behavior as private provider contracts that had to be separately granted,
+  activated, fault-injected, and reconciled before release. Those contracts do
+  not exist in either provider's public integration model and made the release
+  path non-executable even though the application integrations already had the
+  required safety boundaries.
+- EvoLink submission now relies only on the implemented application boundary:
+  persist `SUBMITTING` before the request, bind the provider task from the
+  response or signed callback, query only when a task ID exists, and never
+  blindly replay an ambiguous image-generation POST.
+- Creem uses its documented scheduled cancellation request
+  (`mode=scheduled`, `onExecute=cancel`). Refunds remain an operator action in
+  Creem, while the signed `refund.created` webhook is the authoritative local
+  reversal signal. The removed release gate is replaced by signed sandbox
+  evidence for checkout, paid renewal, scheduled cancellation, and refund
+  confirmation.
+- The placeholder Worker host actions were replaced by a pinned Railway CLI
+  adapter. It targets an existing project/environment/service, writes secrets
+  only through stdin, connects an immutable public GHCR digest while scaled to
+  zero, accepts exactly one successful deployment, starts or stops by explicit
+  scale, and proves the exact Worker through the API heartbeat before release
+  progression.
+- The release now builds one API target and one Worker image, keeps the existing
+  SAFE_BASELINE as rollback, promotes the accepted target once, and removes the
+  obsolete baseline re-deploy/re-promote and provider-fault phases.
+
+### Verification
+
+- Complete backend regression: `1008 tests passed, 38 skipped` with
+  `PYTHONPATH=backend`.
+- Focused release/provider/payment/Worker regression: `133 tests passed`;
+  release and observation regression: `38 tests passed`.
+- Frontend unit regression passed `5 files / 21 tests`; `vue-tsc --noEmit` and
+  the Web build passed.
+- OpenAPI client generation was deterministic: the generated type file SHA-256
+  was unchanged after regeneration.
+- Python compilation, workflow/action YAML parsing, obsolete-contract searches,
+  secret-literal review, and `git diff --check` passed.
+- Live Railway coordinates and credentials, Creem sandbox evidence, the first
+  Preview-to-Production execution, and formal-domain acceptance remain external
+  execution steps. No live deployment is claimed by this entry.
+- Proxifier was not modified or restarted.

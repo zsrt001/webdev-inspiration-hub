@@ -6,11 +6,6 @@ from datetime import datetime, timezone
 import unittest
 import uuid
 
-from app.core.provider_contracts import (
-    CREEM_SUBSCRIPTION_PAID_TRANSACTION,
-    CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION,
-    ProviderContractState,
-)
 from app.models.subscription_cancel_intent import (
     CancelIntentState,
     SubscriptionCancelIntent,
@@ -89,21 +84,6 @@ class SubscriptionLifecycleTest(unittest.TestCase):
                 cancel_replay_or_raise(
                     SubscriptionCancelIntent(id=uuid.uuid4(), state=state)
                 )
-
-    def test_external_subscription_contracts_stay_closed_without_test_mode_proof(self) -> None:
-        self.assertEqual(
-            CREEM_SUBSCRIPTION_PAID_TRANSACTION.state,
-            ProviderContractState.UNVERIFIED,
-        )
-        self.assertIsNotNone(CREEM_SUBSCRIPTION_PAID_TRANSACTION.endpoint_schema_sha256)
-        self.assertIsNone(CREEM_SUBSCRIPTION_PAID_TRANSACTION.test_evidence_sha256)
-        self.assertEqual(
-            CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION.state,
-            ProviderContractState.UNVERIFIED,
-        )
-        self.assertIsNotNone(
-            CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION.endpoint_schema_sha256
-        )
 
 
 if __name__ == "__main__":

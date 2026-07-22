@@ -6,6 +6,8 @@
 >
 > 实施状态：尚未开始修改生产代码。
 
+> 2026-07-22 执行修订：上面的实施状态是 2026-07-10 的历史快照，当前实现状态以代码、`docs/ai-worklog.md` 和生产证据为准。Evolink 只作为普通生图 API 使用；VowPic 通过提交前持久化、`SUBMITTING/UNKNOWN` 状态和回调关联避免盲目重提，不再要求供应商提供幂等/关联查询合同，也不在真实 Worker 注入丢包。Creem 退款由 Dashboard/支持发起并以签名沙箱事件和交易事实验收，不虚构公开退款创建 API。生产发布只构建一个 Worker 镜像和一个 staged Vercel 目标，使用已验证的 SAFE_BASELINE 作为回滚基线，验收后对同一目标 Promote 一次。旧文中与本修订冲突的双部署、Provider 合同激活、Worker 网络故障注入和伪 dispatch 动作均已废止。
+
 ## 1. 决策摘要
 
 VowPic 的目标产品是面向海外用户的 Web SaaS，不是微信产品，也不包含微信小程序。此次工作采用“保留现有架构、分阶段加固、最终一次生产验收”的方案：继续使用 FastAPI、Vue 3/Uni-app Web（其编译目标 token 为 `h5`）、Supabase/PostgreSQL、Redis/ARQ、Creem、Evolink 和对象存储，不建立 `/v2`，不重写技术栈，也不引入新的 UI 框架。
@@ -153,7 +155,7 @@ Vercel 只承载 Web 静态产物和短时 API。生成、轮询、QA、修复�
 
 部署后才封存不可回写的 manifest/report。`PREVIEW_IDENTITY` 与 `PREVIEW_COMMERCIAL` 各自生成 role-tagged、create-once 的 Preview activation report，CAS 绑定 exact source/runtime/API deployment，commercial variant 还绑定 ephemeral Worker digest/run；它们只授权 `environment=preview` 的短期 cohort，cleanup 后进入不可逆 `CLEANED`，禁止被 Production resolver、Promote 或 release acceptance 接受。Production final manifest 至少包含 Production runtime ID、final source SHA、可重复 prebuilt checksum、对应 Preview evidence hash、真实 API/Worker deployment ID、7a 的不同 private-compatible baseline/staged target、schema contract、payload compatibility、Provider/model/catalog/flag contract、pre-activation OFF snapshot 和预期最终 snapshot。manifest 采用 canonical JSON、content-addressed create-once Private evidence object；`ReleaseActivation` 以 CAS 绑定 runtime ID、manifest/report SHA、角色/部署 ID 和阶段。未注册或不匹配部署只能暴露 liveness/version/运维 readiness，所有非 OFF 副作用 fail-closed。实时 flag、migration、验收、观察和 final decision 是绑定 manifest hash 的 append-only evidence entry，不冒充制品，也不回写 manifest。
 
-任何只应执行一次、成功后可能丢失响应且不能仅凭调用方 workspace 恢复的外部效果，都必须先持久化 create-once intent，再以稳定 intent ID 执行并由新 runner 查询/核对/清理。Production 的 Evolink one-shot response-drop 规则尤其必须在 arm 前绑定 exact correlation、deployment、runtime、Worker digest、成本上限、短 TTL 和 workflow run；cleanup 必须只凭 ReleaseActivation 与 Private evidence 即可 CAS-claim intent，并在 host control plane 以同一 intent ID 写入不可复用 tombstone 后查询/解除已 arm、已消费、正在并发 arm 或响应未知的规则，不能依赖 arm 命令的本地输出。tombstone 必须晚于规则 TTL 失效，确保 cleanup 之后的迟到 arm 无法复活故障规则。
+任何只应执行一次、成功后可能丢失响应且不能仅凭调用方 workspace 恢复的外部效果，都必须先持久化 create-once intent，再以稳定 intent ID 执行并由新 runner 查询/核对/清理。常规托管 Worker 不具备安全、精确地丢弃某一次第三方 TLS 响应的宿主机原语，因此 Production 禁止创建 response-drop 规则、fault intent 或 tombstone。Evolink 响应丢失恢复必须在隔离的 Preview/Sandbox 中以真实请求完成，测试传输边界只丢弃调用方响应，并由签名回调、关联查询和数据库事实证明同一 Provider task、单次 submit、单次 capture；Production 只接受与 exact source SHA 绑定的 VERIFIED Provider contract evidence。
 
 允许职责：构建、测试、Preview 集成、staged Production 验收、无重建 Promote、生产探针、人工成片复核和成套回滚。
 
@@ -898,7 +900,7 @@ URL 盘点必须先分类：用户 source/candidate/final 等 private asset 才�
 | Credits | 并发 reservation、allocation、capture/release/expiry/refund/debt | Creem test grant 与订单/entitlement/ledger 串联 | linked flow balance/ledger before-after；新购买抵债 |
 | Credit packs/Creem | 验签、catalog/product/amount、重复/乱序、refund/dispute 双事实和 reversal cap | Test mode checkout、webhook、全额/部分异常、争议胜负 | 经批准的真实低额 pack purchase/refund 和访问撤销 |
 | Subscriptions | 单一未终止约束、catalog mismatch、paid transaction 双重唯一、首付/续费只 grant 一次、past-due recovery、cancel Creem failure、invoice reversal | Creem test 首付/续费、重复/乱序、past-due→恢复、scheduled cancel、全额 invoice refund、部分异常和争议胜负 | 经批准的真实 Starter purchase/grant、Creem-confirmed period-end cancel、全额 invoice refund/reversal；任一未执行为 NOT_RUN |
-| Jobs | commit/enqueue 崩溃、重复 outbox、lease/fencing、SUBMITTING/UNKNOWN、DLQ | 真实 Redis/ARQ Worker death/restart 和对账 | Worker image digest/heartbeat、真实 Provider unknown-state canary |
+| Jobs | commit/enqueue 崩溃、重复 outbox、lease/fencing、SUBMITTING/UNKNOWN、DLQ | 真实 Redis/ARQ Worker death/restart 和对账 | Worker image digest/heartbeat、隔离 Preview/Sandbox 的真实 Provider unknown-state contract |
 | Generation | Provider contract、无 fallback、错误分类 | 单人/双人/Partner sandbox 或受控生成 | 固定六 case 全部 READY：单人模板/文本/户外、本地双人、金婚、Partner Invite |
 | QA/repair | 严格 schema、vision outage 不 READY、两次修复上限、退款 | 真实 QA/embedding runtime；所有 attempts 留痕 | 授权源图对照；hard gates 100% 通过，不挑选性验收 |
 | Delivery | 水印失败不泄漏、master/六 variants 技术 QA、ownership | trial preview、order entitlement、paid private download | linked flow 水印→解锁→下载→退款撤权 |

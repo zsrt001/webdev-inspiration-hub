@@ -165,6 +165,65 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
                 maximum_gap_minutes=15,
             )
 
+    def test_observation_accepts_only_signed_running_worker_status(self) -> None:
+        module = importlib.import_module("scripts.release.collect_observation_metrics")
+        key = b"w" * 32
+        source_sha = "a" * 40
+        runtime = "rtb_" + "b" * 64
+        api_deployment = "dpl_api_1"
+        worker_deployment = "worker-1"
+        image_digest = "sha256:" + "c" * 64
+        unsigned = {
+            "schema": "vowpic.worker-host-report.v2",
+            "passed": True,
+            "action": "status",
+            "provider": "railway",
+            "contract_sha256": "d" * 64,
+            "state": "RUNNING",
+            "coordinates": {
+                "provider": "railway",
+                "project": "project-1",
+                "environment": "production",
+                "service": "vowpic-worker",
+                "region": "us-east",
+                "source_sha": source_sha,
+                "runtime_bundle_id": runtime,
+                "api_deployment_id": api_deployment,
+                "worker_deployment_id": worker_deployment,
+                "worker_image_digest": image_digest,
+                "api_readiness_sha256": "e" * 64,
+                "api_version_sha256": "f" * 64,
+            },
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        signature = hmac.new(
+            key,
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        report = {**unsigned, "signature": f"hmac-sha256:{signature}"}
+        age = module._validate_worker_report(
+            report,
+            signing_key=key,
+            expected_source_sha=source_sha,
+            expected_runtime_bundle_id=runtime,
+            expected_api_deployment_id=api_deployment,
+            expected_worker_deployment_id=worker_deployment,
+            expected_worker_image_digest=image_digest,
+        )
+        self.assertGreaterEqual(age, 0)
+        report["state"] = "SUCCESS"
+        with self.assertRaisesRegex(ValueError, "signature|status coordinates"):
+            module._validate_worker_report(
+                report,
+                signing_key=key,
+                expected_source_sha=source_sha,
+                expected_runtime_bundle_id=runtime,
+                expected_api_deployment_id=api_deployment,
+                expected_worker_deployment_id=worker_deployment,
+                expected_worker_image_digest=image_digest,
+            )
+
     def test_final_documents_recompute_24_hour_gap_and_bind_index(self) -> None:
         module = self._module()
         run = self._run()

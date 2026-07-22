@@ -15,35 +15,21 @@ from scripts.release._acceptance_phase_facts import (
 
 
 REQUIRED_PROVIDER_CONTRACTS = (
-    "CREEM_REFUND_CREATION",
+    "CREEM_DASHBOARD_REFUND_CONFIRMATION",
     "CREEM_SUBSCRIPTION_PAID_TRANSACTION",
     "CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION",
 )
 
 
-def _verified_contract_hashes(
-    document: dict[str, Any],
-    source_sha: str,
-) -> dict[str, str]:
-    if (
-        not isinstance(document, dict)
-        or document.get("schema") != "vowpic.provider-contracts.v1"
-        or not isinstance(document.get("contracts"), dict)
-    ):
-        raise ValueError("subscription Provider contract document is invalid")
-    hashes: dict[str, str] = {}
-    for name in REQUIRED_PROVIDER_CONTRACTS:
-        entry = document["contracts"].get(name)
-        if (
-            not isinstance(entry, dict)
-            or entry.get("state") != "VERIFIED"
-            or entry.get("tested_source_sha") != source_sha
-            or not isinstance(entry.get("test_evidence_sha256"), str)
-            or len(entry["test_evidence_sha256"]) != 64
+def _validated_evidence_hashes(values: dict[str, str]) -> dict[str, str]:
+    if not isinstance(values, dict) or set(values) != set(REQUIRED_PROVIDER_CONTRACTS):
+        raise ValueError("Creem test evidence set is incomplete")
+    for name, value in values.items():
+        if not isinstance(value, str) or len(value) != 64 or any(
+            character not in "0123456789abcdef" for character in value
         ):
-            raise ValueError(f"subscription Provider contract is not VERIFIED: {name}")
-        hashes[name] = entry["test_evidence_sha256"]
-    return hashes
+            raise ValueError(f"Creem test evidence hash is invalid: {name}")
+    return dict(values)
 
 
 def collect_subscription(
@@ -51,7 +37,6 @@ def collect_subscription(
     *,
     browser: dict[str, Any],
     auth: dict[str, Any],
-    provider_contracts: dict[str, Any],
     creem_evidence_hashes: dict[str, str],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     public_links = browser.get("links")
@@ -79,15 +64,7 @@ def collect_subscription(
     for name in AUTH_ASSERTIONS:
         if auth.get("assertions", {}).get(name) is not True:
             raise ValueError(f"signed auth chain failed {name}")
-    contract_hashes = _verified_contract_hashes(
-        provider_contracts,
-        str(browser["source_sha"]),
-    )
-    if (
-        set(creem_evidence_hashes) != set(REQUIRED_PROVIDER_CONTRACTS)
-        or creem_evidence_hashes != contract_hashes
-    ):
-        raise ValueError("Creem evidence does not match the activated contracts")
+    contract_hashes = _validated_evidence_hashes(creem_evidence_hashes)
 
     subscription = _one(
         cursor,
@@ -210,7 +187,7 @@ def collect_subscription(
         "cancel_event_id": _coordinate(cancel["id"], "cancel intent"),
         "provider_refund_evidence_id": _derived_coordinate(
             "creem-refund-evidence",
-            contract_hashes["CREEM_REFUND_CREATION"],
+            contract_hashes["CREEM_DASHBOARD_REFUND_CONFIRMATION"],
         ),
         "provider_renewal_evidence_id": _derived_coordinate(
             "creem-renewal-evidence",
@@ -253,7 +230,7 @@ def collect_subscription(
         "initial_invoice": initial,
         "order": order,
         "cancel": cancel,
-        "provider_contract_evidence": contract_hashes,
+        "creem_test_evidence": contract_hashes,
     }
     return {
         "schema": "vowpic.subscription-acceptance-input.v1",

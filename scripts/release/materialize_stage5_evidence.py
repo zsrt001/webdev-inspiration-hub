@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.release.aggregate_gates import validate_evidence_path  # noqa: E402
-from scripts.release.verify_provider_grant_fetch import _git_activation_lineage  # noqa: E402
+from scripts.release.verify_provider_capabilities import validate_provider_capabilities  # noqa: E402
 
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -144,7 +144,7 @@ def build_stage5_materialization(
     identity_evidence: Sequence[dict[str, Any]],
     identity_cleanup: dict[str, Any],
     activation: dict[str, Any],
-    provider_contract: dict[str, Any],
+    provider_capabilities: dict[str, Any],
     worker_heartbeat: dict[str, Any],
     provider_fetch: dict[str, Any],
     provider_case_cleanup: dict[str, Any],
@@ -152,7 +152,6 @@ def build_stage5_materialization(
     worker_cleanup: dict[str, Any],
     commercial_cleanup: dict[str, Any],
     now: datetime | None = None,
-    allowed_provider_tested_source_shas: set[str] | None = None,
 ) -> dict[str, Any]:
     source = _exact_sha40(source_sha, label="Stage-5 source SHA")
     contract_hash = _exact_sha64(gate_contract_sha256, label="gate contract SHA-256")
@@ -208,15 +207,15 @@ def build_stage5_materialization(
         raise ValueError("Worker heartbeat report is not RUNNING")
     _require_coordinates(heartbeat_payload, runtime_coordinates, label="Worker heartbeat")
 
-    tested_source = _exact_sha40(
-        provider_contract.get("tested_source_sha"), label="Provider tested source SHA"
-    )
-    allowed_tested = allowed_provider_tested_source_shas or {source}
-    provider_evidence_hash = _exact_sha64(
-        provider_contract.get("test_evidence_sha256"), label="Provider evidence SHA-256"
-    )
-    if provider_contract.get("state") != "VERIFIED" or tested_source not in allowed_tested:
-        raise ValueError("Provider sandbox contract is not verified for this source lineage")
+    validate_provider_capabilities(provider_capabilities)
+    provider_capabilities_hash = hashlib.sha256(
+        json.dumps(
+            provider_capabilities,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
     if provider_fetch.get("passed") is not True:
         raise ValueError("Provider fetch report is not PASS")
     _require_coordinates(
@@ -225,7 +224,7 @@ def build_stage5_materialization(
         label="Provider fetch",
     )
     if (
-        provider_fetch.get("provider_contract_evidence_sha256") != provider_evidence_hash
+        provider_fetch.get("provider_capabilities_sha256") != provider_capabilities_hash
         or provider_fetch.get("provider_fetch_count") != 1
         or provider_fetch.get("provider_task_terminal_status") not in {"completed", "failed"}
     ):
@@ -342,7 +341,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--gate-contract", default="release/gates.json")
-    parser.add_argument("--provider-contract", default="release/provider-contracts.json")
+    parser.add_argument("--provider-capabilities", default="release/provider-capabilities.json")
     parser.add_argument("--pr-root", required=True)
     parser.add_argument("--identity-root", required=True)
     parser.add_argument("--identity-cleanup-report", required=True)
@@ -355,10 +354,8 @@ def main() -> int:
         gate = _load(gate_path)
         cases = {str(case["id"]): case for case in gate.get("cases", []) if isinstance(case, dict)}
         pr_ids = {case_id for case_id in gate["profiles"]["stage5_foundation"] if cases[case_id]["runtime_scope"] == "pr"}
-        provider_document = _load(Path(args.provider_contract))
-        provider_contract = provider_document["contracts"]["EVOLINK_SUBMISSION_RECONCILIATION"]
-        tested_source = str(provider_contract.get("tested_source_sha") or "")
-        _git_activation_lineage(args.source_sha, tested_source)
+        provider_capabilities = _load(Path(args.provider_capabilities))
+        validate_provider_capabilities(provider_capabilities)
         commercial_root = Path(args.commercial_root)
         result = build_stage5_materialization(
             source_sha=args.source_sha,
@@ -368,14 +365,13 @@ def main() -> int:
             identity_evidence=_case_rows(Path(args.identity_root), set(IDENTITY_CASE_IDS)),
             identity_cleanup=_load(Path(args.identity_cleanup_report)),
             activation=_load(commercial_root / "activation-report.json"),
-            provider_contract=provider_contract,
+            provider_capabilities=provider_capabilities,
             worker_heartbeat=_load(commercial_root / "worker-heartbeat.json"),
             provider_fetch=_load(commercial_root / "provider-fetch.json"),
             provider_case_cleanup=_load(commercial_root / "provider-case-cleanup.json"),
             provider_origin_cleanup=_load(commercial_root / "provider-origin-removed.json"),
             worker_cleanup=_load(commercial_root / "worker-stopped.json"),
             commercial_cleanup=_load(commercial_root / "cleanup-report.json"),
-            allowed_provider_tested_source_shas={tested_source},
         )
         output = Path(args.output_base)
         for row in _case_rows(Path(args.pr_root), pr_ids):

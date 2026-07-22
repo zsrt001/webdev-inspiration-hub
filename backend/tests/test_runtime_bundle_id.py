@@ -194,7 +194,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "--worker-image-digest", "sha256:" + "b" * 64,
             "--runtime-contract", str(ROOT / "release" / "runtime-contracts.json"),
             "--preview-contract", str(ROOT / "release" / "preview-runtime-contract.json"),
-            "--provider-contract", str(ROOT / "release" / "provider-contracts.json"),
+            "--provider-contract", str(ROOT / "release" / "provider-capabilities.json"),
             "--catalog-contract", str(catalog),
             "--flag-contract", str(ROOT / "release" / "gates.json"),
             "--activation-plan", str(ROOT / "release" / "activation-plan.json"),

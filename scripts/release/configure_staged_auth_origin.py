@@ -35,7 +35,7 @@ MANAGEMENT_API = "https://api.supabase.com"
 STATE_SCHEMA = "vowpic.production-auth-origin-state.v1"
 SHA64 = re.compile(r"^[0-9a-f]{64}$")
 REMOVABLE_PHASES = (
-    "WORKER_DISPATCH_ENABLED",
+    "ACCEPTANCE_READY",
     "TARGET_ACCEPTED",
     "TARGET_PROMOTED",
     "PUBLIC_INVALIDATED",
@@ -113,7 +113,7 @@ def build_state(
     if (
         activation.get("environment") != "production"
         or activation.get("kind") != "COMMERCIAL_7A"
-        or activation.get("phase") != "WORKER_DISPATCH_ENABLED"
+        or activation.get("phase") != "ACCEPTANCE_READY"
         or not SHA64.fullmatch(str(manifest_sha256 or ""))
         or manifest_sha256 != activation.get("manifest_sha256")
     ):

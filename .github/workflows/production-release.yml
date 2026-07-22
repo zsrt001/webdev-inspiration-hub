@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   actions: read
+  packages: write
 
 concurrency:
   group: vowpic-production-release
@@ -29,6 +30,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - name: Verify exact clean reviewed main source
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -44,23 +46,27 @@ jobs:
             --expected-sha "$SOURCE_SHA" \
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/trusted-main.json"
-      - name: Require the reviewed host contract and prove no partial release exists
+      - name: Verify provider capabilities and the exact Railway Worker target
         env:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
+          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          python scripts/release/verify_commercial_provider_readiness.py \
-            --contract release/provider-contracts.json \
+          python scripts/release/verify_provider_capabilities.py \
+            --capabilities release/provider-capabilities.json \
             --expected-source-sha "$SOURCE_SHA" \
             --output "$RUNNER_TEMP/provider-readiness.json"
-          python scripts/release/run_approved_worker_host.py verify-no-release \
+          python scripts/release/run_approved_worker_host.py preflight \
             --contract release/worker-host-contract.json \
-            --source-sha "$SOURCE_SHA" \
-            --release-kind commercial-7a \
             --output "$RUNNER_TEMP/worker-entry.json"
 
   reserve-stage-seal:
-    name: Reserve, build Worker, build API once, stage two deployments, and seal
+    name: Reserve, build Worker and API once, stage one target, and seal
     needs: authorize
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -81,6 +87,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
@@ -97,10 +104,10 @@ jobs:
           mkdir -p "$EVIDENCE_DIR"
       - name: Read inventory, resolve exact Preview, and reserve the release lease
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           INVENTORY_HMAC_KEY: ${{ secrets.INVENTORY_HMAC_KEY }}
-          RELEASE_PRIVATE_EVIDENCE_ROOT: ${{ secrets.RELEASE_PRIVATE_EVIDENCE_ROOT }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
         run: |
           set -euo pipefail
@@ -112,14 +119,12 @@ jobs:
           python scripts/release/resolve_release_coordinates.py \
             --coordinate-kind safe-baseline \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
-            --private-evidence-root-env RELEASE_PRIVATE_EVIDENCE_ROOT \
             --output "$RUNNER_TEMP/safe-baseline.json" \
             --job-env "$GITHUB_ENV" \
             --env-prefix SAFE_BASELINE_
           python scripts/release/resolve_release_coordinates.py \
             --coordinate-kind preview-commercial-cleaned \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
-            --private-evidence-root-env RELEASE_PRIVATE_EVIDENCE_ROOT \
             --source-sha "$SOURCE_SHA" \
             --output "$RUNNER_TEMP/preview-resolution.json" \
             --job-env "$GITHUB_ENV" \
@@ -134,33 +139,87 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$EVIDENCE_DIR/release-reserved.json"
-      - name: Build and push the immutable Worker, then stage it suspended
+      - name: Validate the complete immutable Production runtime before external deployment
         env:
-          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
-          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
-          PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
-          PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
+          RUNTIME_ENVIRONMENT: production
+          RELEASE_ROLE: COMMERCIAL_7A
+          TASK_EXECUTION_MODE: arq
+          STORAGE_PROVIDER: vercel
+          GENERATION_ENGINE: evolink
+          LLM_PROVIDER: wenwen
+          PAYMENT_PROVIDER: creem
+          RATE_LIMIT_ENABLED: "true"
+          QA_REQUIRE_VISION: "true"
+          GATEKEEPER_ALLOW_WITHOUT_PILLOW: "false"
+          QA_ALLOW_WITHOUT_PILLOW: "false"
+          ALLOW_MEMORY_FALLBACK: "false"
           DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
           CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
           REDIS_URL: ${{ secrets.PRODUCTION_REDIS_URL }}
           SECRET_KEY: ${{ secrets.PRODUCTION_SECRET_KEY }}
-          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_BLOB_READ_WRITE_TOKEN }}
-          WEBHOOK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
+          EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
+          EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
           WENWEN_VISION_API_KEY: ${{ secrets.PRODUCTION_WENWEN_VISION_API_KEY }}
+          WENWEN_API_BASE_URL: https://breakout.wenwen-ai.com/v1
+          CREEM_API_KEY: ${{ secrets.CREEM_API_KEY }}
+          CREEM_WEBHOOK_SECRET: ${{ secrets.CREEM_WEBHOOK_SECRET }}
+          SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.PRODUCTION_SUPABASE_ANON_KEY }}
+          SUPPORT_EMAIL: ${{ vars.PRODUCTION_SUPPORT_EMAIL }}
+          SUPPORT_URL: ${{ vars.PRODUCTION_SUPPORT_URL }}
+          SUPPORT_MONITORED: ${{ vars.PRODUCTION_SUPPORT_MONITORED }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          FRONTEND_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          WEBHOOK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          CORS_ALLOW_ORIGINS: ${{ vars.PRODUCTION_BASE_URL }}
+          EVOLINK_IMAGE_QUALITY: "2K"
+          EVOLINK_IMAGE_SIZE: "3:4"
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
+          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
+          PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR: ${{ vars.PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR }}
         run: |
           set -euo pipefail
-          python scripts/release/run_approved_worker_host.py build-push \
-            --contract release/worker-host-contract.json \
-            --source-sha "$SOURCE_SHA" \
-            --output "$EVIDENCE_DIR/worker-build.json" \
-            --job-env "$RUNNER_TEMP/worker-build.env" \
-            --env-prefix WORKER_
-          set -a
-          . "$RUNNER_TEMP/worker-build.env"
-          set +a
-          cat "$RUNNER_TEMP/worker-build.env" >> "$GITHUB_ENV"
+          python scripts/release/validate_production_runtime_environment.py \
+            --source-sha "$SOURCE_SHA"
+      - name: Authenticate to the repository-bound public container registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Setup the pinned Worker image builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and publish the immutable Worker image
+        id: worker-image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.worker
+          push: true
+          tags: ghcr.io/zsrt001/vowpic-worker:${{ inputs.required_source_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/zsrt001/webdev-inspiration-hub
+            org.opencontainers.image.revision=${{ inputs.required_source_sha }}
+          provenance: true
+          sbom: true
+      - name: Prove the public immutable Worker image and derive the runtime bundle
+        env:
+          WORKER_IMAGE_DIGEST: ${{ steps.worker-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test "$(printf '%s' "$WORKER_IMAGE_DIGEST" | grep -Ec '^sha256:[0-9a-f]{64}$')" -eq 1
+          WORKER_IMAGE_REF="ghcr.io/zsrt001/vowpic-worker@$WORKER_IMAGE_DIGEST"
+          docker logout ghcr.io
+          docker buildx imagetools inspect "$WORKER_IMAGE_REF" > "$EVIDENCE_DIR/worker-public-image.txt"
+          echo "WORKER_IMAGE_DIGEST=$WORKER_IMAGE_DIGEST" >> "$GITHUB_ENV"
+          echo "WORKER_IMAGE_REF=$WORKER_IMAGE_REF" >> "$GITHUB_ENV"
           python scripts/release/build_runtime_bundle_id.py \
             --release-role "$RELEASE_ROLE" \
             --source-sha "$SOURCE_SHA" \
@@ -176,7 +235,7 @@ jobs:
             --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
             --worker-image-digest "$WORKER_IMAGE_DIGEST" \
             --runtime-contract release/runtime-contracts.json \
-            --provider-contract release/provider-contracts.json \
+            --provider-contract release/provider-capabilities.json \
             --catalog-contract release/catalog/catalog-2026-07-10.json \
             --flag-contract release/gates.json \
             --activation-plan release/activation-plan.json \
@@ -186,31 +245,7 @@ jobs:
             --output "$RUNNER_TEMP/runtime-bundle-id.txt"
           RUNTIME_BUNDLE_ID="$(tr -d '\r\n' < "$RUNNER_TEMP/runtime-bundle-id.txt")"
           echo "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" >> "$GITHUB_ENV"
-          python scripts/release/run_approved_worker_host.py deploy-suspended \
-            --contract release/worker-host-contract.json \
-            --source-sha "$SOURCE_SHA" \
-            --image-digest "$WORKER_IMAGE_DIGEST" \
-            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
-            --output "$EVIDENCE_DIR/worker-suspended.json" \
-            --job-env "$GITHUB_ENV" \
-            --env-prefix WORKER_
-          python scripts/release/run_approved_worker_host.py inject-secrets \
-            --contract release/worker-host-contract.json \
-            --deployment-report "$EVIDENCE_DIR/worker-suspended.json" \
-            --output "$EVIDENCE_DIR/worker-secret-injection.json"
-          python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A \
-            --expected-phase RESERVED \
-            --phase WORKER_STAGED \
-            --source-sha "$SOURCE_SHA" \
-            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
-            --worker-build-report "$EVIDENCE_DIR/worker-build.json" \
-            --worker-deployment-report "$EVIDENCE_DIR/worker-suspended.json" \
-            --worker-secret-report "$EVIDENCE_DIR/worker-secret-injection.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$EVIDENCE_DIR/phase-worker-staged.json"
-      - name: Build once and create distinct private baseline and staged target
+      - name: Build once, deploy one staged target, and bind the suspended Worker
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -219,6 +254,28 @@ jobs:
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
+          REDIS_URL: ${{ secrets.PRODUCTION_REDIS_URL }}
+          SECRET_KEY: ${{ secrets.PRODUCTION_SECRET_KEY }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_BLOB_READ_WRITE_TOKEN }}
+          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
+          EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
+          EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
+          WENWEN_VISION_API_KEY: ${{ secrets.PRODUCTION_WENWEN_VISION_API_KEY }}
+          WENWEN_API_BASE_URL: https://breakout.wenwen-ai.com/v1
+          CREEM_API_KEY: ${{ secrets.CREEM_API_KEY }}
+          CREEM_WEBHOOK_SECRET: ${{ secrets.CREEM_WEBHOOK_SECRET }}
+          SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.PRODUCTION_SUPABASE_ANON_KEY }}
+          SUPPORT_EMAIL: ${{ vars.PRODUCTION_SUPPORT_EMAIL }}
+          SUPPORT_URL: ${{ vars.PRODUCTION_SUPPORT_URL }}
+          SUPPORT_MONITORED: ${{ vars.PRODUCTION_SUPPORT_MONITORED }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          FRONTEND_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          WEBHOOK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          CORS_ALLOW_ORIGINS: ${{ vars.PRODUCTION_BASE_URL }}
         run: |
           set -euo pipefail
           "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
@@ -226,29 +283,100 @@ jobs:
           test -d .vercel/output
           API_BUILD_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
           echo "API_BUILD_SHA256=$API_BUILD_SHA256" >> "$GITHUB_ENV"
-          PRIVATE_BASELINE_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" --env "RELEASE_ROLE=COMMERCIAL_7A" --env "WORKER_IMAGE_DIGEST=$WORKER_IMAGE_DIGEST" --token="$VERCEL_TOKEN")"
+          DEPLOY_ENV_ARGS=(
+            --env "RUNTIME_ENVIRONMENT=production"
+            --env "RELEASE_ROLE=COMMERCIAL_7A"
+            --env "SOURCE_SHA=$SOURCE_SHA"
+            --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA"
+            --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID"
+            --env "WORKER_IMAGE_DIGEST=$WORKER_IMAGE_DIGEST"
+            --env "DATABASE_URL=$DATABASE_URL"
+            --env "CONTROL_PLANE_DATABASE_URL=$CONTROL_PLANE_DATABASE_URL"
+            --env "REDIS_URL=$REDIS_URL"
+            --env "TASK_EXECUTION_MODE=arq"
+            --env "SECRET_KEY=$SECRET_KEY"
+            --env "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY"
+            --env "STORAGE_PROVIDER=vercel"
+            --env "PRIVATE_BLOB_READ_WRITE_TOKEN=$PRIVATE_BLOB_READ_WRITE_TOKEN"
+            --env "FRONTEND_BASE_URL=$FRONTEND_BASE_URL"
+            --env "WEBHOOK_BASE_URL=$WEBHOOK_BASE_URL"
+            --env "CORS_ALLOW_ORIGINS=$CORS_ALLOW_ORIGINS"
+            --env "GENERATION_ENGINE=evolink"
+            --env "EVOLINK_API_KEY=$EVOLINK_API_KEY"
+            --env "EVOLINK_API_BASE_URL=$EVOLINK_API_BASE_URL"
+            --env "EVOLINK_IMAGE_MODEL=$EVOLINK_IMAGE_MODEL"
+            --env "EVOLINK_IMAGE_QUALITY=2K"
+            --env "EVOLINK_IMAGE_SIZE=3:4"
+            --env "LLM_PROVIDER=wenwen"
+            --env "WENWEN_VISION_API_KEY=$WENWEN_VISION_API_KEY"
+            --env "WENWEN_API_BASE_URL=$WENWEN_API_BASE_URL"
+            --env "PAYMENT_PROVIDER=creem"
+            --env "CREEM_API_KEY=$CREEM_API_KEY"
+            --env "CREEM_WEBHOOK_SECRET=$CREEM_WEBHOOK_SECRET"
+            --env "SUPABASE_URL=$SUPABASE_URL"
+            --env "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
+            --env "SUPPORT_EMAIL=$SUPPORT_EMAIL"
+            --env "SUPPORT_URL=$SUPPORT_URL"
+            --env "SUPPORT_MONITORED=$SUPPORT_MONITORED"
+            --env "RATE_LIMIT_ENABLED=true"
+            --env "QA_REQUIRE_VISION=true"
+            --env "GATEKEEPER_ALLOW_WITHOUT_PILLOW=false"
+            --env "QA_ALLOW_WITHOUT_PILLOW=false"
+            --env "ALLOW_MEMORY_FALLBACK=false"
+            --env "CLEANUP_CRON_TOKEN=$CLEANUP_CRON_TOKEN"
+            --env "CRON_SECRET=$CLEANUP_CRON_TOKEN"
+          )
+          DEPLOY_META_ARGS=(
+            --meta "vowpicSourceSha=$SOURCE_SHA"
+            --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID"
+            --meta "vowpicBuildSha256=$API_BUILD_SHA256"
+            --meta "vowpicReleaseRole=COMMERCIAL_7A"
+            --meta "vowpicRuntimeIdentityContract=vowpic-runtime-identity-v1"
+          )
+          PRIVATE_BASELINE_URL="$SAFE_BASELINE_API_DEPLOYMENT_URL"
+          test -n "$PRIVATE_BASELINE_URL"
           "$VERCEL_CLI" inspect "$PRIVATE_BASELINE_URL" --token="$VERCEL_TOKEN" > "$EVIDENCE_DIR/private-baseline-inspect.txt"
+          STAGED_TARGET_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain "${DEPLOY_ENV_ARGS[@]}" "${DEPLOY_META_ARGS[@]}" --token="$VERCEL_TOKEN")"
+          test "$PRIVATE_BASELINE_URL" != "$STAGED_TARGET_URL"
+          "$VERCEL_CLI" inspect "$STAGED_TARGET_URL" --token="$VERCEL_TOKEN" > "$EVIDENCE_DIR/staged-target-inspect.txt"
+          PRIVATE_BASELINE_ID="$(python -c 'import re; p=open("artifacts/production-release/private-baseline-inspect.txt", encoding="utf-8").read(); v=set(re.findall(r"\bdpl_[A-Za-z0-9_-]{3,156}\b", p)); assert len(v)==1; print(v.pop())')"
+          STAGED_TARGET_ID="$(python -c 'import re; p=open("artifacts/production-release/staged-target-inspect.txt", encoding="utf-8").read(); v=set(re.findall(r"\bdpl_[A-Za-z0-9_-]{3,156}\b", p)); assert len(v)==1; print(v.pop())')"
+          test "$PRIVATE_BASELINE_ID" = "$SAFE_BASELINE_API_DEPLOYMENT_ID"
+          python scripts/release/run_approved_worker_host.py deploy \
+            --contract release/worker-host-contract.json \
+            --source-sha "$SOURCE_SHA" \
+            --image-ref "$WORKER_IMAGE_REF" \
+            --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$STAGED_TARGET_ID" \
+            --output "$EVIDENCE_DIR/worker-suspended.json" \
+            --job-env "$GITHUB_ENV"
           python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase WORKER_STAGED --phase API_BASELINE_STAGED \
+            --kind COMMERCIAL_7A --expected-phase RESERVED --phase ROLLBACK_BASELINE_VERIFIED \
             --source-sha "$SOURCE_SHA" --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
             --deployment-url "$PRIVATE_BASELINE_URL" --deployment-role private-compatible-baseline \
-            --build-output .vercel/output --inspect-report "$EVIDENCE_DIR/private-baseline-inspect.txt" \
+            --inspect-report "$EVIDENCE_DIR/private-baseline-inspect.txt" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$EVIDENCE_DIR/phase-api-baseline.json"
-          STAGED_TARGET_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" --env "RELEASE_ROLE=COMMERCIAL_7A" --env "WORKER_IMAGE_DIGEST=$WORKER_IMAGE_DIGEST" --token="$VERCEL_TOKEN")"
-          test "$PRIVATE_BASELINE_URL" != "$STAGED_TARGET_URL"
-          "$VERCEL_CLI" inspect "$STAGED_TARGET_URL" --token="$VERCEL_TOKEN" > "$EVIDENCE_DIR/staged-target-inspect.txt"
           python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase API_BASELINE_STAGED --phase API_TARGET_STAGED \
+            --kind COMMERCIAL_7A --expected-phase ROLLBACK_BASELINE_VERIFIED --phase API_TARGET_STAGED \
             --source-sha "$SOURCE_SHA" --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
             --deployment-url "$STAGED_TARGET_URL" --deployment-role staged-target \
             --build-output .vercel/output --inspect-report "$EVIDENCE_DIR/staged-target-inspect.txt" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$EVIDENCE_DIR/phase-api-target.json"
+          python scripts/release/register_bundle.py advance \
+            --kind COMMERCIAL_7A --expected-phase API_TARGET_STAGED --phase WORKER_STAGED \
+            --source-sha "$SOURCE_SHA" --runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --worker-deployment-report "$EVIDENCE_DIR/worker-suspended.json" \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+            --output "$EVIDENCE_DIR/phase-worker-staged.json"
           echo "PRIVATE_BASELINE_URL=$PRIVATE_BASELINE_URL" >> "$GITHUB_ENV"
           echo "STAGED_TARGET_URL=$STAGED_TARGET_URL" >> "$GITHUB_ENV"
+          echo "PRIVATE_BASELINE_ID=$PRIVATE_BASELINE_ID" >> "$GITHUB_ENV"
+          echo "STAGED_TARGET_ID=$STAGED_TARGET_ID" >> "$GITHUB_ENV"
       - name: Build and seal the immutable COMMERCIAL_7A manifest
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
@@ -257,10 +385,6 @@ jobs:
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
         run: |
           set -euo pipefail
-          PRIVATE_BASELINE_ID="$(python -c 'import re; p=open("artifacts/production-release/private-baseline-inspect.txt", encoding="utf-8").read(); v=set(re.findall(r"\bdpl_[A-Za-z0-9_-]{3,156}\b", p)); assert len(v)==1; print(v.pop())')"
-          STAGED_TARGET_ID="$(python -c 'import re; p=open("artifacts/production-release/staged-target-inspect.txt", encoding="utf-8").read(); v=set(re.findall(r"\bdpl_[A-Za-z0-9_-]{3,156}\b", p)); assert len(v)==1; print(v.pop())')"
-          echo "PRIVATE_BASELINE_ID=$PRIVATE_BASELINE_ID" >> "$GITHUB_ENV"
-          echo "STAGED_TARGET_ID=$STAGED_TARGET_ID" >> "$GITHUB_ENV"
           python - <<'PY'
           import hashlib, json, os
           from pathlib import Path
@@ -285,7 +409,7 @@ jobs:
               "job_payload_min": "generation-job.v1",
               "job_payload_max": "generation-job.v1",
               "contract_hashes": {
-                  "provider": digest("release/provider-contracts.json"),
+                  "provider": digest("release/provider-capabilities.json"),
                   "model": digest("release/quality-cases.json"),
                   "policy": digest("release/quality-rubric.json"),
                   "catalog": digest("release/catalog/catalog-2026-07-10.json"),
@@ -309,7 +433,7 @@ jobs:
           RELEASE_MANIFEST_SHA256="$(sha256sum "$EVIDENCE_DIR/release-manifest.json" | cut -d' ' -f1)"
           echo "RELEASE_MANIFEST_SHA256=$RELEASE_MANIFEST_SHA256" >> "$GITHUB_ENV"
           python scripts/release/register_bundle.py seal \
-            --kind COMMERCIAL_7A --expected-phase API_TARGET_STAGED --phase MANIFEST_SEALED \
+            --kind COMMERCIAL_7A --expected-phase WORKER_STAGED --phase MANIFEST_SEALED \
             --source-sha "$SOURCE_SHA" \
             --manifest "$EVIDENCE_DIR/release-manifest.json" \
             --expected-manifest-sha256 "$RELEASE_MANIFEST_SHA256" \
@@ -382,7 +506,7 @@ jobs:
     secrets: inherit
 
   schema-record-worker-baseline:
-    name: Record schema, start disabled Worker, and Promote private baseline
+    name: Record schema, start the bound Worker, and verify the rollback baseline
     needs: [reserve-stage-seal, schema-write]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -396,6 +520,7 @@ jobs:
           ref: ${{ inputs.required_source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - name: Resolve sealed coordinates and record schema 0020
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
@@ -427,8 +552,13 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env DATA_MIGRATION_APPROVAL_ID \
             --output "$EVIDENCE_DIR/phase-schema-0020.json"
-      - name: Start the exact Worker with dispatch disabled
+      - name: Start and verify the exact bound Worker
         env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
@@ -438,59 +568,28 @@ jobs:
           set -euo pipefail
           python scripts/release/run_approved_worker_host.py start \
             --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
+            --source-sha "$SOURCE_SHA" \
             --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --dispatch-mode disabled \
-            --output "$EVIDENCE_DIR/worker-start-disabled.json"
-          python scripts/release/run_approved_worker_host.py heartbeat \
+            --api-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
+            --expected-deployment-id "$RELEASE_WORKER_DEPLOYMENT_ID" \
+            --output "$EVIDENCE_DIR/worker-start.json"
+          python scripts/release/run_approved_worker_host.py status \
             --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
+            --expected-deployment-id "$RELEASE_WORKER_DEPLOYMENT_ID" \
             --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --require-dispatch-mode disabled \
-            --output "$EVIDENCE_DIR/worker-version-disabled.json"
+            --api-base-url "$RELEASE_STAGED_TARGET_DEPLOYMENT_URL" \
+            --output "$EVIDENCE_DIR/worker-status.json"
           python scripts/release/register_bundle.py advance \
             --kind COMMERCIAL_7A --expected-phase SCHEMA_0020 --phase WORKER_RUNNING \
             --source-sha "$SOURCE_SHA" \
-            --worker-start-report "$EVIDENCE_DIR/worker-start-disabled.json" \
-            --worker-heartbeat-report "$EVIDENCE_DIR/worker-version-disabled.json" \
+            --worker-start-report "$EVIDENCE_DIR/worker-start.json" \
+            --worker-heartbeat-report "$EVIDENCE_DIR/worker-status.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$EVIDENCE_DIR/phase-worker-running.json"
-      - name: Promote the rollback-compatible baseline exactly once
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
-          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
-          PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
-          PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
-          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          npm ci --prefix scripts/release-tools --ignore-scripts
-          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
-          PRIVATE_BASELINE_URL="$(python -c 'import json; print(json.load(open("'$RUNNER_TEMP'/release.json"))["private_compatible_baseline_deployment_url"])')"
-          "$VERCEL_CLI" promote "$PRIVATE_BASELINE_URL" --yes --token="$VERCEL_TOKEN"
-          python scripts/release/collect_runtime_report.py \
-            --base-url "$PRODUCTION_BASE_URL" \
-            --expected-deployment-id "$RELEASE_PRIVATE_COMPATIBLE_BASELINE_DEPLOYMENT_ID" \
-            --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --expected-source-sha "$SOURCE_SHA" \
-            --expected-schema 20260710_0020 \
-            --expected-release-role COMMERCIAL_7A \
-            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
-            --output "$EVIDENCE_DIR/private-baseline-promoted.json"
-          python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase WORKER_RUNNING --phase BASELINE_PROMOTED \
-            --source-sha "$SOURCE_SHA" --deployment-url "$PRIVATE_BASELINE_URL" \
-            --formal-base-url "$PRODUCTION_BASE_URL" \
-            --promotion-report "$EVIDENCE_DIR/private-baseline-promoted.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$EVIDENCE_DIR/phase-baseline-promoted.json"
-
   identities-dry:
     needs: [reserve-stage-seal, schema-record-worker-baseline]
     uses: ./.github/workflows/data-migration.yml
@@ -611,7 +710,7 @@ jobs:
       expected_manifest_sha256: ${{ needs.reserve-stage-seal.outputs.manifest_sha256 }}
     secrets: inherit
 
-  record-data-switch-and-enable-worker:
+  record-data-switch-and-ready-worker:
     name: Reconcile migrated facts and enable exact Worker dispatch
     needs: [reserve-stage-seal, media-copy-write]
     runs-on: ubuntu-24.04
@@ -623,6 +722,7 @@ jobs:
           ref: ${{ inputs.required_source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: data-migration-*-identities-write
@@ -657,7 +757,7 @@ jobs:
           test -s artifacts/migration/generation/report.json
           test -s artifacts/migration/media/report.json
           python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase BASELINE_PROMOTED --phase DATA_SWITCHED \
+            --kind COMMERCIAL_7A --expected-phase WORKER_RUNNING --phase DATA_SWITCHED \
             --source-sha "$SOURCE_SHA" \
             --migration-parent-run-id "${{ needs.reserve-stage-seal.outputs.migration_parent_run_id }}" \
             --identity-report artifacts/migration/identities/report.json \
@@ -667,9 +767,14 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env DATA_MIGRATION_APPROVAL_ID \
             --output artifacts/production-release/phase-data-switched.json
-      - name: Enable dispatch only for the recorded runtime and verify heartbeat
+      - name: Verify the bound Worker is ready for staged acceptance
         env:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
@@ -685,28 +790,26 @@ jobs:
           . "$RUNNER_TEMP/release.env"
           set +a
           cat "$RUNNER_TEMP/release.env" >> "$GITHUB_ENV"
-          python scripts/release/run_approved_worker_host.py set-dispatch \
-            --contract release/worker-host-contract.json --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" --mode enabled \
-            --output "$RUNNER_TEMP/worker-dispatch-enabled.json"
-          python scripts/release/run_approved_worker_host.py heartbeat \
-            --contract release/worker-host-contract.json --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --require-dispatch-mode enabled --output "$RUNNER_TEMP/worker-heartbeat-enabled.json"
-          python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase DATA_SWITCHED --phase WORKER_DISPATCH_ENABLED \
+          python scripts/release/run_approved_worker_host.py status \
+            --contract release/worker-host-contract.json \
             --source-sha "$SOURCE_SHA" \
-            --worker-dispatch-report "$RUNNER_TEMP/worker-dispatch-enabled.json" \
-            --worker-heartbeat-report "$RUNNER_TEMP/worker-heartbeat-enabled.json" \
+            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
+            --expected-deployment-id "$RELEASE_WORKER_DEPLOYMENT_ID" \
+            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
+            --api-base-url "$RELEASE_STAGED_TARGET_DEPLOYMENT_URL" \
+            --output "$RUNNER_TEMP/worker-acceptance-ready.json"
+          python scripts/release/register_bundle.py advance \
+            --kind COMMERCIAL_7A --expected-phase DATA_SWITCHED --phase ACCEPTANCE_READY \
+            --source-sha "$SOURCE_SHA" \
+            --worker-heartbeat-report "$RUNNER_TEMP/worker-acceptance-ready.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$RUNNER_TEMP/phase-worker-dispatch.json"
 
   linked-production-acceptance-prepare:
     name: Run ordinary-user auth, money, Provider recovery, and prepare quality review
-    needs: [reserve-stage-seal, record-data-switch-and-enable-worker]
+    needs: [reserve-stage-seal, record-data-switch-and-ready-worker]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: production
@@ -731,7 +834,7 @@ jobs:
           PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64 }}
           PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
           LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64: ${{ secrets.LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64 }}
-          CREEM_ACTIVATION_EVIDENCE_BASE64: ${{ secrets.CREEM_ACTIVATION_EVIDENCE_BASE64 }}
+          CREEM_TEST_EVIDENCE_BASE64: ${{ secrets.CREEM_TEST_EVIDENCE_BASE64 }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
@@ -751,7 +854,7 @@ jobs:
           set -euo pipefail
           npm ci --prefix frontend --ignore-scripts
           python scripts/release/resolve_release_coordinates.py --coordinate-kind commercial-7a \
-            --expected-phase WORKER_DISPATCH_ENABLED --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --expected-phase ACCEPTANCE_READY --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --source-sha "$SOURCE_SHA" --manifest-output "$RUNNER_TEMP/release-manifest.json" \
             --output "$RUNNER_TEMP/release.json" \
             --job-env "$RUNNER_TEMP/release.env" --env-prefix RELEASE_
@@ -794,8 +897,8 @@ jobs:
           chmod 600 "$RUNNER_TEMP/google-partner-state.json"
           printf '%s' "$LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64" | base64 --decode > "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
           chmod 600 "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
-          printf '%s' "$CREEM_ACTIVATION_EVIDENCE_BASE64" | base64 --decode > "$RUNNER_TEMP/creem-activation-evidence.json"
-          chmod 600 "$RUNNER_TEMP/creem-activation-evidence.json"
+          printf '%s' "$CREEM_TEST_EVIDENCE_BASE64" | base64 --decode > "$RUNNER_TEMP/creem-test-evidence.json"
+          chmod 600 "$RUNNER_TEMP/creem-test-evidence.json"
           python scripts/release/extract_linked_acceptance_bundle.py \
             --archive "$RUNNER_TEMP/linked-acceptance-actions.tar.gz" \
             --output-directory "$RUNNER_TEMP/linked-acceptance-actions" \
@@ -831,7 +934,7 @@ jobs:
           printf '%s' "$PRODUCTION_PROVIDER_GRANT_REFERENCE_B64" | base64 --decode > "$RUNNER_TEMP/provider-grant-reference.json"
           chmod 600 "$RUNNER_TEMP/provider-grant-reference.json"
           python scripts/release/verify_provider_grant_fetch.py \
-            --contract release/provider-contracts.json \
+            --capabilities release/provider-capabilities.json \
             --grant-reference "$RUNNER_TEMP/provider-grant-reference.json" \
             --expected-source-sha "$SOURCE_SHA" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
@@ -870,108 +973,12 @@ jobs:
             --phase subscription \
             --browser-report "$RUNNER_TEMP/subscription-browser.json" \
             --auth-report "$RUNNER_TEMP/auth-security.json" \
-            --provider-contract release/provider-contracts.json \
-            --creem-evidence-bundle "$RUNNER_TEMP/creem-activation-evidence.json" \
+            --creem-evidence-bundle "$RUNNER_TEMP/creem-test-evidence.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --output "$RUNNER_TEMP/subscription-input.json"
           SUBSCRIPTION_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/subscription-input.json" \
             node scripts/release/run_subscription_acceptance.mjs \
               --base-url "$PRODUCTION_BASE_URL" --output "$RUNNER_TEMP/subscription-chain.json"
-          python scripts/release/run_approved_worker_host.py set-dispatch \
-            --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" --mode disabled \
-            --reason provider-unknown-canary-arm \
-            --output "$RUNNER_TEMP/provider-unknown-pause.json"
-          export LINKED_ACCEPTANCE_PHASE=provider-queue
-          export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/provider-unknown-queue-browser.json"
-          export LINKED_ACCEPTANCE_COMMERCIAL_REPORT="$RUNNER_TEMP/commercial-before-delete.json"
-          npm --prefix frontend run test:e2e -- e2e/linked-production-flow.spec.ts
-          python scripts/release/collect_production_acceptance_input.py \
-            --phase queue-provider-unknown-state \
-            --browser-report "$RUNNER_TEMP/provider-unknown-queue-browser.json" \
-            --commercial-report "$RUNNER_TEMP/commercial-before-delete.json" \
-            --provider-contract release/provider-contracts.json \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --output "$RUNNER_TEMP/provider-unknown-queue-input.json"
-          COMMERCIAL_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/provider-unknown-queue-input.json" \
-            node scripts/release/run_linked_commercial_acceptance.mjs \
-              --phase queue-provider-unknown-state --base-url "$PRODUCTION_BASE_URL" \
-              --commercial-report "$RUNNER_TEMP/commercial-before-delete.json" \
-              --require-worker-dispatch-report "$RUNNER_TEMP/provider-unknown-pause.json" \
-              --output "$RUNNER_TEMP/provider-unknown-order.json"
-          python scripts/release/prepare_provider_unknown_canary.py \
-            --order-report "$RUNNER_TEMP/provider-unknown-order.json" \
-            --worker-dispatch-report "$RUNNER_TEMP/provider-unknown-pause.json" \
-            --manifest "$RUNNER_TEMP/release-manifest.json" \
-            --expected-manifest-sha256 "$RELEASE_MANIFEST_SHA256" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
-            --output "$RUNNER_TEMP/provider-unknown-prepare.json"
-          python scripts/release/register_bundle.py prepare-acceptance-fault \
-            --kind COMMERCIAL_7A --expected-phase WORKER_DISPATCH_ENABLED \
-            --request-report "$RUNNER_TEMP/provider-unknown-prepare.json" \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --max-provider-submits 1 \
-            --max-cost-minor-units "${{ vars.PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR }}" \
-            --expires-in-seconds 300 \
-            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
-            --private-evidence-token-env PRIVATE_EVIDENCE_WRITE_TOKEN \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$RUNNER_TEMP/provider-unknown-intent.json"
-          python scripts/release/run_approved_worker_host.py arm-response-drop-once \
-            --contract release/worker-host-contract.json \
-            --fault-intent-report "$RUNNER_TEMP/provider-unknown-intent.json" \
-            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --output "$RUNNER_TEMP/provider-unknown-fault.json"
-          python scripts/release/register_bundle.py confirm-acceptance-fault \
-            --kind COMMERCIAL_7A --expected-phase WORKER_DISPATCH_ENABLED \
-            --fault-intent-report "$RUNNER_TEMP/provider-unknown-intent.json" \
-            --fault-report "$RUNNER_TEMP/provider-unknown-fault.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$RUNNER_TEMP/provider-unknown-armed.json"
-          python scripts/release/run_approved_worker_host.py set-dispatch \
-            --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" --mode enabled \
-            --required-fault-intent-report "$RUNNER_TEMP/provider-unknown-intent.json" \
-            --required-fault-report "$RUNNER_TEMP/provider-unknown-fault.json" \
-            --output "$RUNNER_TEMP/provider-unknown-resume.json"
-          export LINKED_ACCEPTANCE_PHASE=provider-complete
-          export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/provider-unknown-complete-browser.json"
-          export LINKED_ACCEPTANCE_QUEUED_REPORT="$RUNNER_TEMP/provider-unknown-order.json"
-          npm --prefix frontend run test:e2e -- e2e/linked-production-flow.spec.ts
-          python scripts/release/collect_production_acceptance_input.py \
-            --phase complete-provider-unknown-state \
-            --browser-report "$RUNNER_TEMP/provider-unknown-complete-browser.json" \
-            --queued-report "$RUNNER_TEMP/provider-unknown-order.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --output "$RUNNER_TEMP/provider-unknown-complete-input.json"
-          COMMERCIAL_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/provider-unknown-complete-input.json" \
-            node scripts/release/run_linked_commercial_acceptance.mjs \
-              --phase complete-provider-unknown-state --base-url "$PRODUCTION_BASE_URL" \
-              --prepare-report "$RUNNER_TEMP/provider-unknown-prepare.json" \
-              --fault-intent-report "$RUNNER_TEMP/provider-unknown-intent.json" \
-              --fault-report "$RUNNER_TEMP/provider-unknown-fault.json" \
-              --output "$RUNNER_TEMP/provider-unknown-state.json"
-          python scripts/release/run_approved_worker_host.py disarm-response-drop \
-            --contract release/worker-host-contract.json \
-            --fault-intent-report "$RUNNER_TEMP/provider-unknown-intent.json" \
-            --fault-report "$RUNNER_TEMP/provider-unknown-fault.json" \
-            --allow-already-consumed --require-absent --require-none-for-runtime \
-            --output "$RUNNER_TEMP/provider-unknown-disarm.json"
-          python scripts/release/register_bundle.py complete-acceptance-fault \
-            --kind COMMERCIAL_7A --expected-phase WORKER_DISPATCH_ENABLED \
-            --fault-intent-report "$RUNNER_TEMP/provider-unknown-intent.json" \
-            --disarm-report "$RUNNER_TEMP/provider-unknown-disarm.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$RUNNER_TEMP/provider-unknown-complete.json"
           export LINKED_ACCEPTANCE_PHASE=quality
           export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/quality-browser.json"
           npm --prefix frontend run test:e2e -- e2e/linked-production-flow.spec.ts
@@ -982,20 +989,12 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --output "$RUNNER_TEMP/quality-review-request.json" \
             --draft-output "$RUNNER_TEMP/quality-review-draft.json"
-          python scripts/release/run_approved_worker_host.py set-dispatch \
-            --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" --mode disabled \
-            --reason quality-human-review \
-            --output "$RUNNER_TEMP/quality-review-pause.json"
           HANDOFF="$RUNNER_TEMP/quality-review-handoff"
           install -d -m 700 "$HANDOFF"
           for name in \
             release-manifest release auth-origin-add auth-security \
-            commercial-before-delete subscription-chain provider-unknown-pause \
-            provider-unknown-resume provider-unknown-intent provider-unknown-state \
-            provider-unknown-disarm provider-grant quality-browser quality-review-pause \
+            commercial-before-delete subscription-chain provider-grant \
+            quality-browser \
             quality-review-request quality-review-draft; do
             install -m 600 "$RUNNER_TEMP/$name.json" "$HANDOFF/$name.json"
           done
@@ -1090,7 +1089,7 @@ jobs:
           HANDOFF="$RUNNER_TEMP/quality-review-handoff"
           chmod 600 "$HANDOFF"/*.json
           python scripts/release/resolve_release_coordinates.py --coordinate-kind commercial-7a \
-            --expected-phase WORKER_DISPATCH_ENABLED --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --expected-phase ACCEPTANCE_READY --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --source-sha "$SOURCE_SHA" --manifest-output "$RUNNER_TEMP/release-manifest.json" \
             --output "$RUNNER_TEMP/release.json" \
             --job-env "$RUNNER_TEMP/release.env" --env-prefix RELEASE_
@@ -1129,13 +1128,6 @@ jobs:
             node scripts/release/run_quality_acceptance.mjs \
               --base-url "$PRODUCTION_BASE_URL" --cases release/quality-cases.json \
               --rubric release/quality-rubric.json --output "$RUNNER_TEMP/quality-cases.json"
-          python scripts/release/run_approved_worker_host.py set-dispatch \
-            --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
-            --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" --mode enabled \
-            --reason quality-human-review-complete \
-            --output "$RUNNER_TEMP/quality-review-resume.json"
           export LINKED_ACCEPTANCE_PHASE=account-finalize
           export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/account-finalize-browser.json"
           export LINKED_ACCEPTANCE_COMMERCIAL_REPORT="$HANDOFF/commercial-before-delete.json"
@@ -1153,7 +1145,6 @@ jobs:
             --phase commercial-finalize-delete \
             --browser-report "$RUNNER_TEMP/account-finalize-browser.json" \
             --commercial-report "$HANDOFF/commercial-before-delete.json" \
-            --provider-report "$HANDOFF/provider-unknown-state.json" \
             --storage-absence-report "$RUNNER_TEMP/account-media-absence.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --output "$RUNNER_TEMP/commercial-finalize-input.json"
@@ -1161,8 +1152,6 @@ jobs:
             node scripts/release/run_linked_commercial_acceptance.mjs \
               --phase commercial-finalize-delete --base-url "$PRODUCTION_BASE_URL" \
               --commercial-report "$HANDOFF/commercial-before-delete.json" \
-              --provider-unknown-state-report "$HANDOFF/provider-unknown-state.json" \
-              --provider-unknown-disarm-report "$HANDOFF/provider-unknown-disarm.json" \
               --output "$RUNNER_TEMP/commercial-chain.json"
           python scripts/release/configure_staged_auth_origin.py remove \
             --manifest "$RUNNER_TEMP/release-manifest.json" \
@@ -1176,16 +1165,11 @@ jobs:
             --require-exact-formal-callback --require-no-wildcard --require-no-staged-residue \
             --output "$RUNNER_TEMP/auth-origin-remove.json"
           python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase WORKER_DISPATCH_ENABLED --phase TARGET_ACCEPTED \
+            --kind COMMERCIAL_7A --expected-phase ACCEPTANCE_READY --phase TARGET_ACCEPTED \
             --source-sha "$SOURCE_SHA" \
             --auth-security-report "$HANDOFF/auth-security.json" \
             --staged-acceptance-report "$RUNNER_TEMP/commercial-chain.json" \
             --subscription-acceptance-report "$HANDOFF/subscription-chain.json" \
-            --provider-unknown-pause-report "$HANDOFF/provider-unknown-pause.json" \
-            --provider-unknown-resume-report "$HANDOFF/provider-unknown-resume.json" \
-            --provider-unknown-intent-report "$HANDOFF/provider-unknown-intent.json" \
-            --provider-unknown-state-report "$HANDOFF/provider-unknown-state.json" \
-            --provider-unknown-disarm-report "$HANDOFF/provider-unknown-disarm.json" \
             --quality-report "$RUNNER_TEMP/quality-cases.json" \
             --required-provider-grant-report "$HANDOFF/provider-grant.json" \
             --auth-origin-add-report "$HANDOFF/auth-origin-add.json" \
@@ -1206,6 +1190,7 @@ jobs:
           ref: ${{ inputs.required_source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - name: Promote exact target and verify the formal domain
         env:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
@@ -1213,6 +1198,11 @@ jobs:
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
@@ -1234,12 +1224,14 @@ jobs:
             --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
             --expected-source-sha "$SOURCE_SHA" --expected-schema 20260710_0020 \
             --output "$RUNNER_TEMP/formal-target.json"
-          python scripts/release/run_approved_worker_host.py heartbeat \
+          python scripts/release/run_approved_worker_host.py status \
             --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release.json" \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
+            --expected-deployment-id "$RELEASE_WORKER_DEPLOYMENT_ID" \
             --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --require-dispatch-mode enabled --maximum-age-seconds 120 \
+            --api-base-url "$PRODUCTION_BASE_URL" \
             --output "$RUNNER_TEMP/worker-target.json"
           python scripts/release/register_bundle.py advance \
             --kind COMMERCIAL_7A --expected-phase TARGET_ACCEPTED --phase TARGET_PROMOTED \
@@ -1324,6 +1316,7 @@ jobs:
           ref: ${{ inputs.required_source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
@@ -1412,17 +1405,24 @@ jobs:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
         run: |
           set -euo pipefail
-          python scripts/release/run_approved_worker_host.py heartbeat \
+          python scripts/release/run_approved_worker_host.py status \
             --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release-public-invalidated.json" \
+            --source-sha "$SOURCE_SHA" \
+            --runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
+            --api-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
+            --expected-deployment-id "$RELEASE_WORKER_DEPLOYMENT_ID" \
             --expected-image-digest "$RELEASE_WORKER_IMAGE_DIGEST" \
-            --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --require-dispatch-mode enabled --maximum-age-seconds 120 \
+            --api-base-url "${{ vars.PRODUCTION_BASE_URL }}" \
             --output "$RUNNER_TEMP/worker-observation-start.json"
           python scripts/release/observe_release.py start \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
@@ -1438,74 +1438,13 @@ jobs:
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$RUNNER_TEMP/phase-observing.json"
 
-  provider-fault-cleanup:
-    name: Cancel-safe Provider response-drop tombstone cleanup
-    if: ${{ always() }}
-    needs: [record-data-switch-and-enable-worker, linked-production-acceptance]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment: production
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.required_source_sha }}
-          persist-credentials: false
-      - uses: ./.github/actions/setup-release-python
-      - name: Resolve durable intent, disable dispatch, tombstone, and prove absence
-        env:
-          SOURCE_SHA: ${{ inputs.required_source_sha }}
-          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
-          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
-          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          python scripts/release/register_bundle.py claim-acceptance-fault-cleanup \
-            --kind COMMERCIAL_7A --source-sha "$SOURCE_SHA" \
-            --workflow-run-id "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$RUNNER_TEMP/fault-cleanup-claim.json"
-          DISPOSITION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["disposition"])' "$RUNNER_TEMP/fault-cleanup-claim.json")"
-          if [ "$DISPOSITION" = "NO_INTENT" ]; then
-            exit 0
-          fi
-          test "$DISPOSITION" = "INTENT_PRESENT"
-          python scripts/release/run_approved_worker_host.py set-dispatch \
-            --contract release/worker-host-contract.json \
-            --fault-cleanup-claim-report "$RUNNER_TEMP/fault-cleanup-claim.json" \
-            --mode disabled --reason provider-fault-cleanup \
-            --output "$RUNNER_TEMP/fault-cleanup-dispatch.json"
-          python scripts/release/run_approved_worker_host.py inspect-response-drop \
-            --contract release/worker-host-contract.json \
-            --fault-cleanup-claim-report "$RUNNER_TEMP/fault-cleanup-claim.json" \
-            --allow-absent --output "$RUNNER_TEMP/fault-before-cleanup.json"
-          python scripts/release/run_approved_worker_host.py disarm-response-drop \
-            --contract release/worker-host-contract.json \
-            --fault-cleanup-claim-report "$RUNNER_TEMP/fault-cleanup-claim.json" \
-            --persist-intent-tombstone --allow-not-armed --allow-already-consumed --require-absent \
-            --output "$RUNNER_TEMP/fault-cleanup-disarm.json"
-          python scripts/release/run_approved_worker_host.py inspect-response-drop \
-            --contract release/worker-host-contract.json \
-            --fault-cleanup-claim-report "$RUNNER_TEMP/fault-cleanup-claim.json" \
-            --wait-control-plane-convergence --require-absent --require-none-for-runtime \
-            --output "$RUNNER_TEMP/fault-after-cleanup.json"
-          python scripts/release/register_bundle.py complete-acceptance-fault \
-            --kind COMMERCIAL_7A \
-            --cleanup-claim-report "$RUNNER_TEMP/fault-cleanup-claim.json" \
-            --dispatch-report "$RUNNER_TEMP/fault-cleanup-dispatch.json" \
-            --disarm-report "$RUNNER_TEMP/fault-cleanup-disarm.json" \
-            --absence-report "$RUNNER_TEMP/fault-after-cleanup.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$RUNNER_TEMP/fault-cleanup-complete.json"
-
   reconcile-failure:
     name: Fail closed, disable Worker, and rollback to exact private baseline
     if: ${{ failure() || cancelled() }}
     needs:
       - reserve-stage-seal
       - schema-record-worker-baseline
-      - record-data-switch-and-enable-worker
+      - record-data-switch-and-ready-worker
       - linked-production-acceptance
       - promote-target
       - invalidate-activate-observe
@@ -1518,6 +1457,7 @@ jobs:
           ref: ${{ inputs.required_source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
+      - uses: ./.github/actions/setup-railway-cli
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
@@ -1532,6 +1472,11 @@ jobs:
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_AUTH_CONFIG_TOKEN: ${{ secrets.SUPABASE_AUTH_CONFIG_TOKEN }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
+          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
+          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
@@ -1576,10 +1521,9 @@ jobs:
               --output "$RUNNER_TEMP/failure-auth-origin-cleanup.json" \
               || ACCEPTANCE_CLEANUP_STATUS=$?
           fi
-          python scripts/release/run_approved_worker_host.py reconcile-failure \
+          python scripts/release/run_approved_worker_host.py stop \
             --contract release/worker-host-contract.json \
-            --release-resolution-report "$RUNNER_TEMP/release-failure.json" \
-            --desired-state stopped --allow-absent \
+            --expected-deployment-id "${FAILURE_WORKER_DEPLOYMENT_ID:-}" \
             --output "$RUNNER_TEMP/worker-reconciled.json"
           "$VERCEL_CLI" rollback "$FAILURE_PRIVATE_COMPATIBLE_BASELINE_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
           "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"

@@ -24,6 +24,7 @@ for location in (ROOT, BACKEND):
 
 from scripts.release.build_manifest import canonical_manifest_bytes, validate_manifest
 from scripts.release.private_evidence_store import PrivateBlobEvidenceStore
+from scripts.release.run_approved_worker_host import verify_report as verify_worker_host_report
 from scripts.release.verify_inventory_signature import verify_inventory_evidence
 
 
@@ -47,15 +48,14 @@ _PREVIEW_RESOLUTION_KEYS = {
 
 COMMERCIAL_7A_PHASES = (
     "RESERVED",
-    "WORKER_STAGED",
-    "API_BASELINE_STAGED",
+    "ROLLBACK_BASELINE_VERIFIED",
     "API_TARGET_STAGED",
+    "WORKER_STAGED",
     "MANIFEST_SEALED",
     "SCHEMA_0020",
     "WORKER_RUNNING",
-    "BASELINE_PROMOTED",
     "DATA_SWITCHED",
-    "WORKER_DISPATCH_ENABLED",
+    "ACCEPTANCE_READY",
     "TARGET_ACCEPTED",
     "TARGET_PROMOTED",
     "PUBLIC_INVALIDATED",
@@ -749,32 +749,22 @@ def bind_migration_parent_cas(
 
 
 _PHASE_EVIDENCE_ARGUMENTS = {
-    "WORKER_STAGED": (
-        "worker_build_report",
-        "worker_deployment_report",
-        "worker_secret_report",
-    ),
-    "API_BASELINE_STAGED": ("build_output", "inspect_report"),
+    "WORKER_STAGED": ("worker_deployment_report",),
+    "ROLLBACK_BASELINE_VERIFIED": ("inspect_report",),
     "API_TARGET_STAGED": ("build_output", "inspect_report"),
     "SCHEMA_0020": ("migration_report", "replay_report"),
     "WORKER_RUNNING": ("worker_start_report", "worker_heartbeat_report"),
-    "BASELINE_PROMOTED": ("promotion_report",),
     "DATA_SWITCHED": (
         "identity_report",
         "commercial_report",
         "generation_report",
         "media_report",
     ),
-    "WORKER_DISPATCH_ENABLED": ("worker_dispatch_report", "worker_heartbeat_report"),
+    "ACCEPTANCE_READY": ("worker_heartbeat_report",),
     "TARGET_ACCEPTED": (
         "auth_security_report",
         "staged_acceptance_report",
         "subscription_acceptance_report",
-        "provider_unknown_pause_report",
-        "provider_unknown_resume_report",
-        "provider_unknown_intent_report",
-        "provider_unknown_state_report",
-        "provider_unknown_disarm_report",
         "quality_report",
         "required_provider_grant_report",
         "auth_origin_add_report",
@@ -795,50 +785,33 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _worker_bindings(
-    build_report: Path,
-    deployment_report: Path,
-    secret_report: Path,
-) -> dict[str, str]:
-    build = _load_json_object(build_report, label="Worker build report")
+def _worker_bindings(deployment_report: Path) -> dict[str, str]:
     deployment = _load_json_object(deployment_report, label="Worker deployment report")
-    secret_injection = _load_json_object(
-        secret_report,
-        label="Worker secret injection report",
+    deployment = verify_worker_host_report(
+        deployment,
+        action="deploy",
+        signing_key=os.environ.get("WORKER_HOST_EVIDENCE_SIGNING_KEY", "").encode(
+            "utf-8"
+        ),
     )
-    for payload, action in (
-        (build, "build-push"),
-        (deployment, "deploy-suspended"),
-        (secret_injection, "inject-secrets"),
-    ):
-        if (
-            payload.get("schema") != "vowpic.worker-host-adapter-report.v1"
-            or payload.get("action") != action
-            or payload.get("passed") is not True
-            or not isinstance(payload.get("coordinates"), dict)
-        ):
-            raise ValueError(f"approved Worker {action} report is invalid")
-    build_coordinates = build["coordinates"]
     deployment_coordinates = deployment["coordinates"]
-    secret_coordinates = secret_injection["coordinates"]
-    digest = str(build_coordinates.get("worker_image_digest") or "").lower()
-    deployment_digest = str(deployment_coordinates.get("worker_image_digest") or "").lower()
+    digest = str(deployment_coordinates.get("worker_image_digest") or "").lower()
     worker_id = str(deployment_coordinates.get("worker_deployment_id") or "")
     runtime = str(deployment_coordinates.get("runtime_bundle_id") or "").lower()
-    if not _IMAGE_DIGEST.fullmatch(digest) or digest != deployment_digest:
-        raise ValueError("Worker build/deployment digest binding is invalid")
+    api_deployment_id = str(deployment_coordinates.get("api_deployment_id") or "")
+    source_sha = str(deployment_coordinates.get("source_sha") or "").lower()
+    if not _IMAGE_DIGEST.fullmatch(digest):
+        raise ValueError("Worker deployment digest binding is invalid")
     if not _COORDINATE.fullmatch(worker_id):
         raise ValueError("Worker deployment ID is invalid")
     if not _RUNTIME_ID.fullmatch(runtime):
         raise ValueError("Worker deployment runtime bundle ID is invalid")
-    if (
-        str(secret_coordinates.get("worker_deployment_id") or "") != worker_id
-        or str(secret_coordinates.get("runtime_bundle_id") or "").lower() != runtime
-        or str(secret_coordinates.get("worker_image_digest") or "").lower() != digest
-    ):
-        raise ValueError("Worker secret injection binding is invalid")
+    if not _COORDINATE.fullmatch(api_deployment_id) or not _SOURCE_SHA.fullmatch(source_sha):
+        raise ValueError("Worker API/source binding is invalid")
     return {
+        "source_sha": source_sha,
         "runtime_bundle_id": runtime,
+        "api_deployment_id": api_deployment_id,
         "worker_deployment_id": worker_id,
         "worker_image_digest": digest,
     }
@@ -870,664 +843,6 @@ def _deployment_id_from_report(path: Path) -> str:
     if not _COORDINATE.fullmatch(deployment_id):
         raise ValueError("deployment ID is invalid")
     return deployment_id
-
-
-def _canonical_report_bytes(payload: dict[str, Any]) -> bytes:
-    return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8") + b"\n"
-
-
-def _read_report_with_hash(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
-    raw = path.read_bytes()
-    if not raw or len(raw) > 1_000_000 or path.is_symlink() or not path.is_file():
-        raise ValueError(f"{label} must be one bounded regular file")
-    payload = json.loads(raw.decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    _validate_evidence_payload(payload, label=label)
-    return payload, hashlib.sha256(raw).hexdigest()
-
-
-def _validate_resolution_for_fault(
-    payload: dict[str, Any], activation: dict[str, Any]
-) -> None:
-    expected = {
-        "activation_id": str(activation["id"]),
-        "environment": "production",
-        "kind": "COMMERCIAL_7A",
-        "source_sha": activation["source_sha"],
-        "runtime_bundle_id": activation["runtime_bundle_id"],
-        "worker_deployment_id": activation["worker_deployment_id"],
-        "worker_image_digest": activation["worker_image_digest"],
-        "phase": "WORKER_DISPATCH_ENABLED",
-    }
-    for key, value in expected.items():
-        if str(payload.get(key)) != str(value):
-            raise ValueError(f"fault release resolution {key} mismatch")
-
-
-def build_acceptance_fault_intent(
-    activation: dict[str, Any],
-    *,
-    request_sha256: str,
-    max_provider_submits: int,
-    max_cost_minor_units: int,
-    expires_at: datetime,
-) -> dict[str, Any]:
-    if (
-        activation.get("environment") != "production"
-        or activation.get("kind") != "COMMERCIAL_7A"
-        or activation.get("phase") != "WORKER_DISPATCH_ENABLED"
-        or not _SHA64.fullmatch(str(request_sha256 or ""))
-        or max_provider_submits != 1
-        or not isinstance(max_cost_minor_units, int)
-        or isinstance(max_cost_minor_units, bool)
-        or max_cost_minor_units < 1
-    ):
-        raise ValueError("acceptance fault intent coordinates are invalid")
-    runtime = str(activation.get("runtime_bundle_id") or "")
-    worker_id = str(activation.get("worker_deployment_id") or "")
-    worker_digest = str(activation.get("worker_image_digest") or "")
-    if (
-        not _RUNTIME_ID.fullmatch(runtime)
-        or not _COORDINATE.fullmatch(worker_id)
-        or not _IMAGE_DIGEST.fullmatch(worker_digest)
-    ):
-        raise ValueError("acceptance fault Worker binding is incomplete")
-    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
-        raise ValueError("acceptance fault expiry must be timezone-aware")
-    identity = (
-        f"{activation['id']}:{activation['workflow_run_id']}:"
-        f"{activation['workflow_attempt']}:provider-response-drop"
-    )
-    intent_id = "afi_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
-    payload = {
-        "schema": "vowpic.acceptance-fault-intent.v1",
-        "passed": True,
-        "state": "PREPARED",
-        "activation_id": str(activation["id"]),
-        "source_sha": activation["source_sha"],
-        "runtime_bundle_id": runtime,
-        "worker_deployment_id": worker_id,
-        "worker_image_digest": worker_digest,
-        "fault_intent_id": intent_id,
-        "request_sha256": request_sha256,
-        "max_provider_submits": 1,
-        "max_cost_minor_units": max_cost_minor_units,
-        "expires_at": expires_at.astimezone(timezone.utc).isoformat(),
-    }
-    _reject_sensitive_evidence(payload)
-    return payload
-
-
-def _validate_fault_intent_report(
-    payload: dict[str, Any], activation: dict[str, Any]
-) -> None:
-    expected = {
-        "schema": "vowpic.acceptance-fault-intent.v1",
-        "passed": True,
-        "state": "PREPARED",
-        "activation_id": str(activation["id"]),
-        "source_sha": activation["source_sha"],
-        "runtime_bundle_id": activation["runtime_bundle_id"],
-        "worker_deployment_id": activation["worker_deployment_id"],
-        "worker_image_digest": activation["worker_image_digest"],
-        "max_provider_submits": 1,
-    }
-    for key, value in expected.items():
-        if payload.get(key) != value:
-            raise ValueError(f"acceptance fault intent {key} mismatch")
-    if (
-        payload.get("fault_intent_id") != activation.get("acceptance_fault_intent_id")
-        or not _SHA64.fullmatch(str(payload.get("request_sha256") or ""))
-        or not isinstance(payload.get("max_cost_minor_units"), int)
-        or payload["max_cost_minor_units"] < 1
-    ):
-        raise ValueError("acceptance fault intent immutable binding mismatch")
-    expiry = _aware_timestamp(payload.get("expires_at"))
-    if expiry != _aware_timestamp(activation.get("acceptance_fault_expires_at")):
-        raise ValueError("acceptance fault intent expiry mismatch")
-
-
-def _validate_worker_fault_report(
-    payload: dict[str, Any],
-    *,
-    action: str,
-    activation: dict[str, Any],
-    require_absence: bool = False,
-    require_tombstone: bool = False,
-) -> None:
-    coordinates = payload.get("coordinates")
-    if (
-        payload.get("schema") != "vowpic.worker-host-adapter-report.v1"
-        or payload.get("passed") is not True
-        or payload.get("action") != action
-        or not isinstance(coordinates, dict)
-        or coordinates.get("fault_intent_id")
-        != activation.get("acceptance_fault_intent_id")
-        or coordinates.get("runtime_bundle_id") != activation.get("runtime_bundle_id")
-        or coordinates.get("worker_deployment_id")
-        != activation.get("worker_deployment_id")
-    ):
-        raise ValueError(f"Worker fault {action} report binding mismatch")
-    if require_absence and (
-        coordinates.get("rule_present") is not False
-        or coordinates.get("runtime_rule_count") != 0
-    ):
-        raise ValueError("Worker fault rule absence was not proven")
-    if require_tombstone and coordinates.get("tombstone_persisted") is not True:
-        raise ValueError("Worker fault cleanup tombstone was not proven")
-
-
-def _validate_worker_dispatch_report(
-    payload: dict[str, Any], *, activation: dict[str, Any], expected_mode: str
-) -> None:
-    coordinates = payload.get("coordinates")
-    if (
-        payload.get("schema") != "vowpic.worker-host-adapter-report.v1"
-        or payload.get("passed") is not True
-        or payload.get("action") != "set-dispatch"
-        or not isinstance(coordinates, dict)
-        or coordinates.get("runtime_bundle_id") != activation.get("runtime_bundle_id")
-        or coordinates.get("worker_deployment_id")
-        != activation.get("worker_deployment_id")
-        or coordinates.get("dispatch_mode") != expected_mode
-    ):
-        raise ValueError("Worker dispatch report binding mismatch")
-
-
-def prepare_acceptance_fault_cas(
-    database_url: str,
-    *,
-    activation_id: str,
-    intent: dict[str, Any],
-    intent_sha256: str,
-    approval: str,
-) -> dict[str, Any]:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    if not _SHA64.fullmatch(intent_sha256):
-        raise ValueError("acceptance fault intent hash is invalid")
-    clean_approval = str(approval or "").strip()
-    if not clean_approval or len(clean_approval) > 160:
-        raise ValueError("acceptance fault approval is required")
-    with psycopg2.connect(_database_url(database_url)) as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                ("vowpic-production-release",),
-            )
-            cursor.execute(
-                "SELECT * FROM release_activations WHERE id = %s FOR UPDATE",
-                (activation_id,),
-            )
-            row = cursor.fetchone()
-            if row is None or row["phase"] != "WORKER_DISPATCH_ENABLED":
-                raise ValueError("acceptance fault release is unavailable")
-            row = dict(row)
-            if row.get("acceptance_fault_state") is not None:
-                if (
-                    row.get("acceptance_fault_intent_id") != intent["fault_intent_id"]
-                    or row.get("acceptance_fault_intent_sha256") != intent_sha256
-                    or _aware_timestamp(row.get("acceptance_fault_expires_at"))
-                    != _aware_timestamp(intent["expires_at"])
-                ):
-                    raise ValueError("existing acceptance fault intent drift")
-                return row
-            cursor.execute(
-                """
-                UPDATE release_activations
-                SET acceptance_fault_intent_id = %s,
-                    acceptance_fault_intent_sha256 = %s,
-                    acceptance_fault_state = 'PREPARED',
-                    acceptance_fault_expires_at = %s,
-                    version = version + 1
-                WHERE id = %s AND version = %s
-                  AND phase = 'WORKER_DISPATCH_ENABLED'
-                  AND acceptance_fault_state IS NULL
-                RETURNING *
-                """,
-                (
-                    intent["fault_intent_id"],
-                    intent_sha256,
-                    intent["expires_at"],
-                    row["id"],
-                    row["version"],
-                ),
-            )
-            updated = cursor.fetchone()
-            if updated is None:
-                raise ValueError("acceptance fault prepare CAS lost its fence")
-            return dict(updated)
-
-
-def transition_acceptance_fault_cas(
-    database_url: str,
-    *,
-    activation_id: str,
-    expected_states: tuple[str, ...],
-    target_state: str,
-    intent_id: str,
-    approval: str,
-) -> dict[str, Any]:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    if target_state not in {"ARMED", "CLEANUP_CLAIMED", "DISARMED"}:
-        raise ValueError("acceptance fault target state is invalid")
-    if not str(approval or "").strip():
-        raise ValueError("acceptance fault transition approval is required")
-    with psycopg2.connect(_database_url(database_url)) as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                ("vowpic-production-release",),
-            )
-            cursor.execute(
-                "SELECT * FROM release_activations WHERE id = %s FOR UPDATE",
-                (activation_id,),
-            )
-            row = cursor.fetchone()
-            if row is None or row["acceptance_fault_intent_id"] != intent_id:
-                raise ValueError("acceptance fault intent does not match the release")
-            row = dict(row)
-            if row["acceptance_fault_state"] == target_state:
-                return row
-            if row["acceptance_fault_state"] not in expected_states:
-                raise ValueError("acceptance fault state transition is invalid")
-            cursor.execute(
-                """
-                UPDATE release_activations
-                SET acceptance_fault_state = %s, version = version + 1
-                WHERE id = %s AND version = %s AND acceptance_fault_state = %s
-                RETURNING *
-                """,
-                (
-                    target_state,
-                    row["id"],
-                    row["version"],
-                    row["acceptance_fault_state"],
-                ),
-            )
-            updated = cursor.fetchone()
-            if updated is None:
-                raise ValueError("acceptance fault transition CAS lost its fence")
-            return dict(updated)
-
-
-def claim_acceptance_fault_cleanup_cas(
-    database_url: str,
-    *,
-    source_sha: str,
-    workflow_run_id: str,
-    workflow_attempt: int,
-    approval: str,
-) -> dict[str, Any] | None:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    if not _SOURCE_SHA.fullmatch(source_sha) or not _RUN_ID.fullmatch(workflow_run_id):
-        raise ValueError("fault cleanup workflow coordinates are invalid")
-    if workflow_attempt < 1 or not str(approval or "").strip():
-        raise ValueError("fault cleanup approval or attempt is invalid")
-    with psycopg2.connect(_database_url(database_url)) as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                ("vowpic-production-release",),
-            )
-            cursor.execute(
-                """
-                SELECT * FROM release_activations
-                WHERE environment = 'production' AND kind = 'COMMERCIAL_7A'
-                  AND source_sha = %s AND workflow_run_id = %s
-                  AND workflow_attempt = %s
-                ORDER BY updated_at DESC
-                LIMIT 2
-                FOR UPDATE
-                """,
-                (source_sha, workflow_run_id, workflow_attempt),
-            )
-            rows = [dict(row) for row in cursor.fetchall()]
-            if not rows:
-                return None
-            if len(rows) != 1:
-                raise ValueError("fault cleanup release state is ambiguous")
-            row = rows[0]
-            state = row.get("acceptance_fault_state")
-            if state in {None, "DISARMED"}:
-                return None
-            if state == "CLEANUP_CLAIMED":
-                return row
-            if state not in {"PREPARED", "ARMED"}:
-                raise ValueError("fault cleanup intent state is invalid")
-            claim_id = "afc_" + hashlib.sha256(
-                f"{row['acceptance_fault_intent_id']}:cleanup".encode("utf-8")
-            ).hexdigest()[:32]
-            fencing = int(row.get("acceptance_fault_cleanup_fencing_token") or 0) + 1
-            cursor.execute(
-                """
-                UPDATE release_activations
-                SET acceptance_fault_state = 'CLEANUP_CLAIMED',
-                    acceptance_fault_cleanup_claim_id = %s,
-                    acceptance_fault_cleanup_fencing_token = %s,
-                    version = version + 1
-                WHERE id = %s AND version = %s AND acceptance_fault_state = %s
-                RETURNING *
-                """,
-                (claim_id, fencing, row["id"], row["version"], state),
-            )
-            updated = cursor.fetchone()
-            if updated is None:
-                raise ValueError("fault cleanup claim CAS lost its fence")
-            return dict(updated)
-
-
-def _prepare_acceptance_fault_main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Prepare one durable Provider response-drop intent")
-    parser.add_argument("--kind", required=True, choices=("COMMERCIAL_7A",))
-    parser.add_argument("--expected-phase", required=True, choices=("WORKER_DISPATCH_ENABLED",))
-    parser.add_argument("--request-report", required=True)
-    parser.add_argument("--release-resolution-report", required=True)
-    parser.add_argument("--max-provider-submits", required=True, type=int)
-    parser.add_argument("--max-cost-minor-units", required=True, type=int)
-    parser.add_argument("--expires-in-seconds", required=True, type=int)
-    parser.add_argument("--private-evidence-store-id-env", default="PRIVATE_EVIDENCE_STORE_ID")
-    parser.add_argument("--private-evidence-token-env", default="PRIVATE_EVIDENCE_WRITE_TOKEN")
-    parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
-    parser.add_argument("--approval-id-env", default="PRODUCTION_ACCEPTANCE_APPROVAL_ID")
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args(argv)
-    try:
-        if args.expires_in_seconds < 1 or args.expires_in_seconds > 300:
-            raise ValueError("acceptance fault TTL must be between 1 and 300 seconds")
-        request, request_sha = _read_report_with_hash(
-            Path(args.request_report), label="Provider unknown request report"
-        )
-        resolution, _ = _read_report_with_hash(
-            Path(args.release_resolution_report), label="release resolution report"
-        )
-        source_sha = str(request.get("source_sha") or "").strip().lower()
-        activation = read_production_activation_exact(
-            os.environ.get(args.database_url_env, ""),
-            kind=args.kind,
-            source_sha=source_sha,
-            phase=args.expected_phase,
-        )
-        _validate_resolution_for_fault(resolution, activation)
-        expected_request = {
-            "schema": "vowpic.provider-unknown-canary.v1",
-            "passed": True,
-            "source_sha": activation["source_sha"],
-            "runtime_bundle_id": activation["runtime_bundle_id"],
-            "worker_deployment_id": activation["worker_deployment_id"],
-            "worker_image_digest": activation["worker_image_digest"],
-        }
-        for key, value in expected_request.items():
-            if request.get(key) != value:
-                raise ValueError(f"Provider unknown request {key} mismatch")
-        prefix = str(activation.get("private_evidence_prefix") or "").strip().strip("/\\")
-        provisional = build_acceptance_fault_intent(
-            activation,
-            request_sha256=request_sha,
-            max_provider_submits=args.max_provider_submits,
-            max_cost_minor_units=args.max_cost_minor_units,
-            expires_at=datetime.now(timezone.utc)
-            + timedelta(seconds=args.expires_in_seconds),
-        )
-        if request.get("fault_intent_id") != provisional["fault_intent_id"]:
-            raise ValueError("Provider unknown request fault intent ID mismatch")
-        object_key = f"{prefix}/fault-intents/{provisional['fault_intent_id']}.json"
-        store = PrivateBlobEvidenceStore(
-            store_id=os.environ.get(args.private_evidence_store_id_env, ""),
-            token=os.environ.get(args.private_evidence_token_env, ""),
-        )
-        try:
-            raw = store.read(object_key)
-            intent = json.loads(raw.decode("utf-8"))
-            if not isinstance(intent, dict) or _canonical_report_bytes(intent) != raw:
-                raise ValueError("stored acceptance fault intent is not canonical")
-            for key, value in provisional.items():
-                if key != "expires_at" and intent.get(key) != value:
-                    raise ValueError(f"stored acceptance fault intent {key} drift")
-            expiry = _aware_timestamp(intent.get("expires_at"))
-            current = datetime.now(timezone.utc)
-            if expiry <= current or expiry > current + timedelta(seconds=300):
-                raise ValueError("stored acceptance fault intent has expired or exceeds its TTL")
-        except FileNotFoundError:
-            intent = provisional
-            raw = _canonical_report_bytes(intent)
-            store.put_create_once(object_key, raw)
-        intent_sha = hashlib.sha256(raw).hexdigest()
-        updated = prepare_acceptance_fault_cas(
-            os.environ.get(args.database_url_env, ""),
-            activation_id=str(activation["id"]),
-            intent=intent,
-            intent_sha256=intent_sha,
-            approval=os.environ.get(args.approval_id_env, ""),
-        )
-        if updated.get("acceptance_fault_intent_sha256") != intent_sha:
-            raise ValueError("prepared acceptance fault intent hash drift")
-        _write_create_once(Path(args.output), intent)
-        return 0
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-
-def _confirm_acceptance_fault_main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Confirm one armed Provider response-drop intent")
-    parser.add_argument("--kind", required=True, choices=("COMMERCIAL_7A",))
-    parser.add_argument("--expected-phase", required=True, choices=("WORKER_DISPATCH_ENABLED",))
-    parser.add_argument("--fault-intent-report", required=True)
-    parser.add_argument("--fault-report", required=True)
-    parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
-    parser.add_argument("--approval-id-env", default="PRODUCTION_ACCEPTANCE_APPROVAL_ID")
-    parser.add_argument("--output")
-    args = parser.parse_args(argv)
-    try:
-        intent, intent_sha = _read_report_with_hash(
-            Path(args.fault_intent_report), label="fault intent report"
-        )
-        activation = read_production_activation_exact(
-            os.environ.get(args.database_url_env, ""),
-            kind=args.kind,
-            source_sha=str(intent.get("source_sha") or ""),
-            phase=args.expected_phase,
-        )
-        if intent_sha != activation.get("acceptance_fault_intent_sha256"):
-            raise ValueError("fault intent report hash mismatch")
-        _validate_fault_intent_report(intent, activation)
-        fault, _ = _read_report_with_hash(Path(args.fault_report), label="fault arm report")
-        _validate_worker_fault_report(
-            fault, action="arm-response-drop-once", activation=activation
-        )
-        updated = transition_acceptance_fault_cas(
-            os.environ.get(args.database_url_env, ""),
-            activation_id=str(activation["id"]),
-            expected_states=("PREPARED",),
-            target_state="ARMED",
-            intent_id=intent["fault_intent_id"],
-            approval=os.environ.get(args.approval_id_env, ""),
-        )
-        result = {
-            "schema": "vowpic.acceptance-fault-transition.v1",
-            "passed": True,
-            "activation_id": str(updated["id"]),
-            "fault_intent_id": intent["fault_intent_id"],
-            "state": "ARMED",
-        }
-        if args.output:
-            _write_create_once(Path(args.output), result)
-        else:
-            print(json.dumps(result, sort_keys=True, separators=(",", ":")))
-        return 0
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-
-def _claim_acceptance_fault_cleanup_main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Claim cancel-safe fault cleanup")
-    parser.add_argument("--kind", required=True, choices=("COMMERCIAL_7A",))
-    parser.add_argument("--source-sha", required=True)
-    parser.add_argument("--workflow-run-id", required=True)
-    parser.add_argument("--workflow-attempt", required=True, type=int)
-    parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
-    parser.add_argument("--approval-id-env", default="PRODUCTION_ACCEPTANCE_APPROVAL_ID")
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args(argv)
-    try:
-        row = claim_acceptance_fault_cleanup_cas(
-            os.environ.get(args.database_url_env, ""),
-            source_sha=args.source_sha,
-            workflow_run_id=args.workflow_run_id,
-            workflow_attempt=args.workflow_attempt,
-            approval=os.environ.get(args.approval_id_env, ""),
-        )
-        if row is None:
-            report = {
-                "schema": "vowpic.acceptance-fault-cleanup-claim.v1",
-                "passed": True,
-                "disposition": "NO_INTENT",
-                "source_sha": args.source_sha,
-                "workflow_run_id": args.workflow_run_id,
-                "workflow_attempt": args.workflow_attempt,
-            }
-        else:
-            report = {
-                "schema": "vowpic.acceptance-fault-cleanup-claim.v1",
-                "passed": True,
-                "disposition": "INTENT_PRESENT",
-                "activation_id": str(row["id"]),
-                "source_sha": row["source_sha"],
-                "runtime_bundle_id": row["runtime_bundle_id"],
-                "worker_deployment_id": row["worker_deployment_id"],
-                "worker_image_digest": row["worker_image_digest"],
-                "fault_intent_id": row["acceptance_fault_intent_id"],
-                "fault_intent_sha256": row["acceptance_fault_intent_sha256"],
-                "cleanup_claim_id": row["acceptance_fault_cleanup_claim_id"],
-                "cleanup_fencing_token": row["acceptance_fault_cleanup_fencing_token"],
-            }
-        _write_create_once(Path(args.output), report)
-        return 0
-    except (OSError, ValueError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-
-def _complete_acceptance_fault_main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Complete normal or cleanup fault disarm")
-    parser.add_argument("--kind", required=True, choices=("COMMERCIAL_7A",))
-    parser.add_argument("--expected-phase", default="WORKER_DISPATCH_ENABLED")
-    parser.add_argument("--fault-intent-report")
-    parser.add_argument("--cleanup-claim-report")
-    parser.add_argument("--dispatch-report")
-    parser.add_argument("--disarm-report", required=True)
-    parser.add_argument("--absence-report")
-    parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
-    parser.add_argument("--approval-id-env", default="PRODUCTION_ACCEPTANCE_APPROVAL_ID")
-    parser.add_argument("--output")
-    args = parser.parse_args(argv)
-    try:
-        if bool(args.fault_intent_report) == bool(args.cleanup_claim_report):
-            raise ValueError("exactly one fault intent or cleanup claim report is required")
-        cleanup = bool(args.cleanup_claim_report)
-        source_report, _ = _read_report_with_hash(
-            Path(args.cleanup_claim_report or args.fault_intent_report),
-            label="fault completion source report",
-        )
-        activation_id = str(source_report.get("activation_id") or "")
-        source_sha = str(source_report.get("source_sha") or "")
-        activation = read_production_activation_exact(
-            os.environ.get(args.database_url_env, ""),
-            kind=args.kind,
-            source_sha=source_sha,
-            phase=args.expected_phase,
-        )
-        if activation_id != str(activation["id"]):
-            raise ValueError("fault completion activation mismatch")
-        if cleanup:
-            expected_claim = {
-                "schema": "vowpic.acceptance-fault-cleanup-claim.v1",
-                "passed": True,
-                "disposition": "INTENT_PRESENT",
-                "activation_id": str(activation["id"]),
-                "source_sha": activation["source_sha"],
-                "runtime_bundle_id": activation["runtime_bundle_id"],
-                "worker_deployment_id": activation["worker_deployment_id"],
-                "worker_image_digest": activation["worker_image_digest"],
-                "fault_intent_id": activation["acceptance_fault_intent_id"],
-                "fault_intent_sha256": activation["acceptance_fault_intent_sha256"],
-                "cleanup_claim_id": activation["acceptance_fault_cleanup_claim_id"],
-                "cleanup_fencing_token": activation[
-                    "acceptance_fault_cleanup_fencing_token"
-                ],
-            }
-            if any(source_report.get(key) != value for key, value in expected_claim.items()):
-                raise ValueError("fault cleanup claim report binding mismatch")
-            if not args.dispatch_report:
-                raise ValueError("fault cleanup dispatch report is required")
-            dispatch, _ = _read_report_with_hash(
-                Path(args.dispatch_report), label="fault cleanup dispatch report"
-            )
-            _validate_worker_dispatch_report(
-                dispatch, activation=activation, expected_mode="disabled"
-            )
-        intent_id = str(
-            source_report.get("fault_intent_id")
-            or activation.get("acceptance_fault_intent_id")
-            or ""
-        )
-        disarm, _ = _read_report_with_hash(
-            Path(args.disarm_report), label="fault disarm report"
-        )
-        _validate_worker_fault_report(
-            disarm,
-            action="disarm-response-drop",
-            activation=activation,
-            require_absence=True,
-            require_tombstone=cleanup,
-        )
-        if args.absence_report:
-            absence, _ = _read_report_with_hash(
-                Path(args.absence_report), label="fault absence report"
-            )
-            _validate_worker_fault_report(
-                absence,
-                action="inspect-response-drop",
-                activation=activation,
-                require_absence=True,
-                require_tombstone=cleanup,
-            )
-        updated = transition_acceptance_fault_cas(
-            os.environ.get(args.database_url_env, ""),
-            activation_id=str(activation["id"]),
-            expected_states=("ARMED", "CLEANUP_CLAIMED"),
-            target_state="DISARMED",
-            intent_id=intent_id,
-            approval=os.environ.get(args.approval_id_env, ""),
-        )
-        result = {
-            "schema": "vowpic.acceptance-fault-transition.v1",
-            "passed": True,
-            "activation_id": str(updated["id"]),
-            "fault_intent_id": intent_id,
-            "state": "DISARMED",
-            "cleanup": cleanup,
-        }
-        if args.output:
-            _write_create_once(Path(args.output), result)
-        else:
-            print(json.dumps(result, sort_keys=True, separators=(",", ":")))
-        return 0
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-
 def _advance_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Advance one COMMERCIAL_7A phase by CAS")
     parser.add_argument("--kind", required=True, choices=("COMMERCIAL_7A",))
@@ -1584,18 +899,16 @@ def _advance_main(argv: list[str]) -> int:
         bindings: dict[str, Any] = {}
         if args.phase == "WORKER_STAGED":
             bindings.update(
-                _worker_bindings(
-                    Path(args.worker_build_report),
-                    Path(args.worker_deployment_report),
-                    Path(args.worker_secret_report),
-                )
+                _worker_bindings(Path(args.worker_deployment_report))
             )
+            if source_sha != bindings["source_sha"]:
+                raise ValueError("Worker source argument/report mismatch")
             if args.runtime_bundle_id and args.runtime_bundle_id != bindings["runtime_bundle_id"]:
                 raise ValueError("Worker runtime bundle argument/report mismatch")
-        elif args.phase in {"API_BASELINE_STAGED", "API_TARGET_STAGED"}:
+        elif args.phase in {"ROLLBACK_BASELINE_VERIFIED", "API_TARGET_STAGED"}:
             expected_role = (
                 "private-compatible-baseline"
-                if args.phase == "API_BASELINE_STAGED"
+                if args.phase == "ROLLBACK_BASELINE_VERIFIED"
                 else "staged-target"
             )
             if args.deployment_role != expected_role:
@@ -1682,7 +995,7 @@ def _advance_main(argv: list[str]) -> int:
 def _seal_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Seal one immutable COMMERCIAL_7A manifest")
     parser.add_argument("--kind", required=True, choices=("COMMERCIAL_7A",))
-    parser.add_argument("--expected-phase", required=True, choices=("API_TARGET_STAGED",))
+    parser.add_argument("--expected-phase", required=True, choices=("WORKER_STAGED",))
     parser.add_argument("--phase", required=True, choices=("MANIFEST_SEALED",))
     parser.add_argument("--source-sha")
     parser.add_argument("--manifest", required=True)
@@ -1769,7 +1082,7 @@ def _seal_main(argv: list[str]) -> int:
                 raise ValueError("stored manifest phase report hash drift")
             phase_report = json.loads(report_raw.decode("utf-8"))
         else:
-            previous_key = phase_object_key(prefix, "API_TARGET_STAGED")
+            previous_key = phase_object_key(prefix, "WORKER_STAGED")
             previous_raw = store.read(previous_key)
             if hashlib.sha256(previous_raw).hexdigest() != activation.get("report_sha256"):
                 raise ValueError("staged target phase report hash drift")
@@ -2393,14 +1706,6 @@ def main() -> int:
     argv = sys.argv[1:]
     if argv[:1] == ["reserve"]:
         return _reserve_main(argv[1:])
-    if argv[:1] == ["prepare-acceptance-fault"]:
-        return _prepare_acceptance_fault_main(argv[1:])
-    if argv[:1] == ["confirm-acceptance-fault"]:
-        return _confirm_acceptance_fault_main(argv[1:])
-    if argv[:1] == ["claim-acceptance-fault-cleanup"]:
-        return _claim_acceptance_fault_cleanup_main(argv[1:])
-    if argv[:1] == ["complete-acceptance-fault"]:
-        return _complete_acceptance_fault_main(argv[1:])
     if argv[:1] == ["advance"]:
         return _advance_main(argv[1:])
     if argv[:1] == ["seal"]:

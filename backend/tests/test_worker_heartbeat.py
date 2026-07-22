@@ -210,6 +210,11 @@ class WorkerHeartbeatTest(unittest.IsolatedAsyncioTestCase):
             dockerfile,
         )
         self.assertIn(
+            'LABEL org.opencontainers.image.source="https://github.com/'
+            'zsrt001/webdev-inspiration-hub"',
+            dockerfile,
+        )
+        self.assertIn(
             "sed -i 's|http://deb.debian.org|https://deb.debian.org|g'",
             dockerfile,
         )

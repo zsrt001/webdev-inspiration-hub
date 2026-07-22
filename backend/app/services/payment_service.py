@@ -15,7 +15,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.provider_contracts import CREEM_REFUND_CREATION, ProviderContractState
 from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
 from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus, PurchaseIntentState
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
@@ -1210,18 +1209,12 @@ class PaymentService:
         await db.commit()
         return result
 
-    async def initiate_refund(self, *args, **kwargs) -> None:
-        del args, kwargs
-        if CREEM_REFUND_CREATION.state is not ProviderContractState.VERIFIED:
-            raise PaymentError(
-                code="provider_refund_creation_unverified",
-                message="Provider refund creation is not enabled for this release.",
-                status_code=503,
-            )
+    async def request_refund_review(self) -> None:
+        """Preserve the legacy route without pretending Creem exposes a refund API."""
         raise PaymentError(
-            code="provider_refund_creation_unimplemented",
-            message="Provider refund creation is unavailable.",
-            status_code=503,
+            code="refund_requires_support",
+            message="Refunds require support review and confirmation through Creem.",
+            status_code=409,
         )
 
 
