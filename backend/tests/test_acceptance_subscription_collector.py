@@ -1,4 +1,4 @@
-"""Subscription acceptance may pass only from linked DB and verified Provider facts."""
+"""Subscription acceptance may pass only from linked browser and database facts."""
 
 from __future__ import annotations
 
@@ -83,17 +83,6 @@ def _auth() -> dict:
         **_binding(),
         "assertions": {name: True for name in AUTH_ASSERTIONS},
         "links": {"user_id": "user-subscription"},
-    }
-
-
-def _evidence_hashes() -> dict[str, str]:
-    return {
-        name: character * 64
-        for name, character in (
-            ("CREEM_DASHBOARD_REFUND_CONFIRMATION", "1"),
-            ("CREEM_SUBSCRIPTION_PAID_TRANSACTION", "2"),
-            ("CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION", "3"),
-        )
     }
 
 
@@ -192,7 +181,6 @@ class AcceptanceSubscriptionCollectorTest(unittest.TestCase):
             _Cursor(_rows()),
             browser=_browser(),
             auth=_auth(),
-            creem_evidence_hashes=_evidence_hashes(),
         )
         sealed = seal_collected_input(
             payload,
@@ -228,25 +216,11 @@ class AcceptanceSubscriptionCollectorTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(output_path.read_text(encoding="utf-8"))
-        self.assertTrue(
-            report["assertions"]["test_mode_past_due_recovery_verified"]
+        self.assertTrue(report["assertions"]["period_end_cancel_confirmed"])
+        self.assertEqual(report["links"]["cancel_event_id"], "cancel-intent-01")
+        self.assertFalse(
+            any(name.startswith("test_mode_") for name in report["assertions"])
         )
-        self.assertTrue(
-            report["links"]["provider_renewal_evidence_id"].startswith(
-                "creem-renewal-evidence:"
-            )
-        )
-
-    def test_incomplete_creem_test_evidence_keeps_subscription_not_run(self) -> None:
-        with self.assertRaisesRegex(ValueError, "incomplete"):
-            collect_subscription(
-                _Cursor(_rows()),
-                browser=_browser(),
-                auth=_auth(),
-                creem_evidence_hashes={
-                    "CREEM_SUBSCRIPTION_PAID_TRANSACTION": "2" * 64
-                },
-            )
 
     def test_production_does_not_manufacture_renewal_or_chargeback_rows(self) -> None:
         rows = _rows()
@@ -265,7 +239,6 @@ class AcceptanceSubscriptionCollectorTest(unittest.TestCase):
                 _Cursor(rows),
                 browser=_browser(),
                 auth=_auth(),
-                creem_evidence_hashes=_evidence_hashes(),
             )
 
 

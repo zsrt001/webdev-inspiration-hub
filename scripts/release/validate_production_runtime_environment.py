@@ -57,13 +57,13 @@ def _validate_expected_values(environ: dict[str, str]) -> list[str]:
 
 
 def _validate_positive_cost_cap(environ: dict[str, str]) -> list[str]:
-    raw = str(environ.get("PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR", "")).strip()
+    raw = str(environ.get("PRODUCTION_CANARY_MAX_COST_MINOR", "")).strip()
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return ["PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR must be a positive integer"]
+        return ["PRODUCTION_CANARY_MAX_COST_MINOR must be a positive integer"]
     if value < 1:
-        return ["PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR must be a positive integer"]
+        return ["PRODUCTION_CANARY_MAX_COST_MINOR must be a positive integer"]
     return []
 
 

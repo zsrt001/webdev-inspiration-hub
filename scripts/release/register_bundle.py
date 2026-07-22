@@ -766,7 +766,6 @@ _PHASE_EVIDENCE_ARGUMENTS = {
         "staged_acceptance_report",
         "subscription_acceptance_report",
         "quality_report",
-        "required_provider_grant_report",
         "auth_origin_add_report",
         "auth_origin_remove_report",
     ),

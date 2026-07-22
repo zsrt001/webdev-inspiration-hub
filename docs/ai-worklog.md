@@ -3089,3 +3089,43 @@
   Preview-to-Production execution, and formal-domain acceptance remain external
   execution steps. No live deployment is claimed by this entry.
 - Proxifier was not modified or restarted.
+
+## 2026-07-22 - Remove pre-provisioned run-time evidence from Production release
+
+### Root cause and correction
+
+- The Production workflow still required three reusable Secrets whose payloads
+  could exist only after the current run created its source-bound payment,
+  generation, and six-case quality coordinates. This made a fresh release
+  deterministically fail or consume stale evidence; adding provider settings
+  could not repair that ordering defect.
+- Removed the production-only EvoLink grant-reference gate. The linked
+  ordinary-user generation flow remains the real proof that the staged API,
+  Worker, private asset grant, provider submission, callback/polling, QA, and
+  final asset chain complete together. The separate Preview grant security
+  test remains intact.
+- Removed the Creem evidence-hash bundle and every derived assertion that
+  claimed renewal, refund, dispute, or replay outcomes without current
+  database facts. Production subscription acceptance now records only the
+  observed checkout, signed initial payment, single invoice/grant, generated
+  order, scheduled period-end cancellation, and continuing access facts.
+- Replaced the reusable quality-review Secret with
+  `production-quality-review.yml`. A reviewer submits a completed draft only
+  after the exact run has generated all six cases; the protected workflow
+  binds and signs that draft, while the release waits for and imports only the
+  exact run/attempt artifact. No environment approval or Secret replacement is
+  part of the handoff.
+- Renamed the obsolete provider-unknown canary cost variable to the generic
+  `PRODUCTION_CANARY_MAX_COST_MINOR` and added static regression assertions
+  that reject all three pre-provisioned dynamic-evidence names.
+
+### Verification
+
+- Complete backend regression passed: `967 passed, 38 skipped, 1222 subtests`.
+- Frontend unit regression passed: `5 files / 21 tests`; typecheck and Web
+  build passed.
+- Python and Node syntax checks, all workflow YAML parsing, obsolete-evidence
+  searches, and `git diff --check` passed.
+- No Production deployment, real payment, refund, provider submission, account
+  permission change, or domain change was performed by this local correction.
+- Proxifier was not modified or restarted.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production subscription facts plus source-bound Creem test-mode evidence."""
+"""Production subscription facts observed from the linked Creem lifecycle."""
 
 from __future__ import annotations
 
@@ -14,30 +14,11 @@ from scripts.release._acceptance_phase_facts import (
 )
 
 
-REQUIRED_PROVIDER_CONTRACTS = (
-    "CREEM_DASHBOARD_REFUND_CONFIRMATION",
-    "CREEM_SUBSCRIPTION_PAID_TRANSACTION",
-    "CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION",
-)
-
-
-def _validated_evidence_hashes(values: dict[str, str]) -> dict[str, str]:
-    if not isinstance(values, dict) or set(values) != set(REQUIRED_PROVIDER_CONTRACTS):
-        raise ValueError("Creem test evidence set is incomplete")
-    for name, value in values.items():
-        if not isinstance(value, str) or len(value) != 64 or any(
-            character not in "0123456789abcdef" for character in value
-        ):
-            raise ValueError(f"Creem test evidence hash is invalid: {name}")
-    return dict(values)
-
-
 def collect_subscription(
     cursor,
     *,
     browser: dict[str, Any],
     auth: dict[str, Any],
-    creem_evidence_hashes: dict[str, str],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     public_links = browser.get("links")
     if not isinstance(public_links, dict) or set(public_links) != {
@@ -64,8 +45,6 @@ def collect_subscription(
     for name in AUTH_ASSERTIONS:
         if auth.get("assertions", {}).get(name) is not True:
             raise ValueError(f"signed auth chain failed {name}")
-    contract_hashes = _validated_evidence_hashes(creem_evidence_hashes)
-
     subscription = _one(
         cursor,
         """
@@ -185,18 +164,6 @@ def collect_subscription(
         "initial_grant_id": _coordinate(initial["credit_grant_id"], "initial grant"),
         "initial_order_id": _coordinate(order["order_id"], "initial order"),
         "cancel_event_id": _coordinate(cancel["id"], "cancel intent"),
-        "provider_refund_evidence_id": _derived_coordinate(
-            "creem-refund-evidence",
-            contract_hashes["CREEM_DASHBOARD_REFUND_CONFIRMATION"],
-        ),
-        "provider_renewal_evidence_id": _derived_coordinate(
-            "creem-renewal-evidence",
-            contract_hashes["CREEM_SUBSCRIPTION_PAID_TRANSACTION"],
-        ),
-        "provider_cancel_evidence_id": _derived_coordinate(
-            "creem-cancel-evidence",
-            contract_hashes["CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION"],
-        ),
         "access_snapshot_id": _derived_coordinate(
             "access-snapshot",
             [order["order_id"], order["entitlement_status"], initial["grant_lot_id"]],
@@ -211,17 +178,6 @@ def collect_subscription(
         "paid_order_snapshot_180_days": True,
         "period_end_cancel_confirmed": True,
         "cancel_remains_active_until_period_end": True,
-        "test_mode_signed_renewal_paid_event": True,
-        "test_mode_renewal_transaction_unique": True,
-        "test_mode_renewal_invoice_unique": True,
-        "test_mode_full_invoice_refund_verified": True,
-        "test_mode_refund_reversal_and_debt": True,
-        "test_mode_access_revoked_after_refund": True,
-        "test_mode_duplicate_event_deduped": True,
-        "test_mode_out_of_order_event_reconciled": True,
-        "test_mode_past_due_recovery_verified": True,
-        "test_mode_partial_refund_anomaly_quarantined": True,
-        "test_mode_dispute_outcome_verified": True,
         "no_real_chargeback_manufactured": True,
         "no_admin_or_test_bypass": True,
     }
@@ -230,7 +186,6 @@ def collect_subscription(
         "initial_invoice": initial,
         "order": order,
         "cancel": cancel,
-        "creem_test_evidence": contract_hashes,
     }
     return {
         "schema": "vowpic.subscription-acceptance-input.v1",

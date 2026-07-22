@@ -66,7 +66,7 @@ def _valid_environment() -> dict[str, str]:
         "FRONTEND_BASE_URL": "https://www.vowpic.com",
         "WEBHOOK_BASE_URL": "https://www.vowpic.com",
         "CORS_ALLOW_ORIGINS": "https://www.vowpic.com",
-        "PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR": "500",
+        "PRODUCTION_CANARY_MAX_COST_MINOR": "500",
     }
 
 
@@ -104,12 +104,12 @@ class ProductionRuntimePreflightTest(unittest.TestCase):
 
     def test_cost_cap_and_source_sha_fail_closed(self) -> None:
         environment = _valid_environment()
-        environment["PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR"] = "0"
+        environment["PRODUCTION_CANARY_MAX_COST_MINOR"] = "0"
 
         errors = self.module.validate_environment(environment, source_sha="not-a-sha")
 
         self.assertIn(
-            "PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR must be a positive integer",
+            "PRODUCTION_CANARY_MAX_COST_MINOR must be a positive integer",
             errors,
         )
         self.assertIn(

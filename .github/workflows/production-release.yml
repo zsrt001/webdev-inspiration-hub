@@ -183,7 +183,7 @@ jobs:
           RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
           RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-          PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR: ${{ vars.PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR }}
+          PRODUCTION_CANARY_MAX_COST_MINOR: ${{ vars.PRODUCTION_CANARY_MAX_COST_MINOR }}
         run: |
           set -euo pipefail
           python scripts/release/validate_production_runtime_environment.py \
@@ -808,7 +808,7 @@ jobs:
             --output "$RUNNER_TEMP/phase-worker-dispatch.json"
 
   linked-production-acceptance-prepare:
-    name: Run ordinary-user auth, money, Provider recovery, and prepare quality review
+    name: Run ordinary-user auth, money, generation, and prepare quality review
     needs: [reserve-stage-seal, record-data-switch-and-ready-worker]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -834,13 +834,10 @@ jobs:
           PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64 }}
           PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
           LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64: ${{ secrets.LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64 }}
-          CREEM_TEST_EVIDENCE_BASE64: ${{ secrets.CREEM_TEST_EVIDENCE_BASE64 }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
-          PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-          PRODUCTION_PROVIDER_GRANT_REFERENCE_B64: ${{ secrets.PRODUCTION_PROVIDER_GRANT_REFERENCE_B64 }}
           EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
           EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
           EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
@@ -897,8 +894,6 @@ jobs:
           chmod 600 "$RUNNER_TEMP/google-partner-state.json"
           printf '%s' "$LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64" | base64 --decode > "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
           chmod 600 "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
-          printf '%s' "$CREEM_TEST_EVIDENCE_BASE64" | base64 --decode > "$RUNNER_TEMP/creem-test-evidence.json"
-          chmod 600 "$RUNNER_TEMP/creem-test-evidence.json"
           python scripts/release/extract_linked_acceptance_bundle.py \
             --archive "$RUNNER_TEMP/linked-acceptance-actions.tar.gz" \
             --output-directory "$RUNNER_TEMP/linked-acceptance-actions" \
@@ -931,25 +926,12 @@ jobs:
             --output "$RUNNER_TEMP/auth-partner-security.json"
           export PRODUCTION_GOOGLE_EMAIL="$PRIMARY_GOOGLE_EMAIL"
           export PRODUCTION_GOOGLE_STORAGE_STATE_PATH="$RUNNER_TEMP/google-state.json"
-          printf '%s' "$PRODUCTION_PROVIDER_GRANT_REFERENCE_B64" | base64 --decode > "$RUNNER_TEMP/provider-grant-reference.json"
-          chmod 600 "$RUNNER_TEMP/provider-grant-reference.json"
-          python scripts/release/verify_provider_grant_fetch.py \
-            --capabilities release/provider-capabilities.json \
-            --grant-reference "$RUNNER_TEMP/provider-grant-reference.json" \
-            --expected-source-sha "$SOURCE_SHA" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --api-key-env EVOLINK_API_KEY --api-base-url-env EVOLINK_API_BASE_URL \
-            --image-model-env EVOLINK_IMAGE_MODEL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --signing-key-env PROVIDER_EVIDENCE_HMAC_KEY \
-            --output "$RUNNER_TEMP/provider-grant.json"
           python scripts/release/apply_activation_plan.py \
             --phase staged-user-cohort --activation-plan release/activation-plan.json \
             --manifest "$RUNNER_TEMP/release-manifest.json" \
             --deployment-id "$RELEASE_STAGED_TARGET_DEPLOYMENT_ID" \
             --canonical-users-report "$RUNNER_TEMP/auth-security.json" \
             --additional-canonical-users-report "$RUNNER_TEMP/auth-partner-security.json" \
-            --required-provider-grant-report "$RUNNER_TEMP/provider-grant.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$RUNNER_TEMP/staged-user-cohort.json"
@@ -973,7 +955,6 @@ jobs:
             --phase subscription \
             --browser-report "$RUNNER_TEMP/subscription-browser.json" \
             --auth-report "$RUNNER_TEMP/auth-security.json" \
-            --creem-evidence-bundle "$RUNNER_TEMP/creem-test-evidence.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --output "$RUNNER_TEMP/subscription-input.json"
           SUBSCRIPTION_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/subscription-input.json" \
@@ -993,7 +974,7 @@ jobs:
           install -d -m 700 "$HANDOFF"
           for name in \
             release-manifest release auth-origin-add auth-security \
-            commercial-before-delete subscription-chain provider-grant \
+            commercial-before-delete subscription-chain \
             quality-browser \
             quality-review-request quality-review-draft; do
             install -m 600 "$RUNNER_TEMP/$name.json" "$HANDOFF/$name.json"
@@ -1006,38 +987,38 @@ jobs:
           retention-days: 7
 
   quality-human-review:
-    name: Await the exact six-case human review without regenerating cases
+    name: Await the exact run-bound six-case review without regenerating cases
     needs: linked-production-acceptance-prepare
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    environment: production-quality-review
+    timeout-minutes: 130
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.required_source_sha }}
-          persist-credentials: false
-      - uses: ./.github/actions/setup-release-python
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: commercial-7a-quality-review-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/quality-review-handoff
-      - name: Bind and sign the independently completed review
+      - name: Wait for the separately submitted review artifact
+        id: wait-review
         env:
-          PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64: ${{ secrets.PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64 }}
-          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
-          QUALITY_REVIEW_SIGNING_KEY: ${{ secrets.QUALITY_REVIEW_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_ARTIFACT_NAME: commercial-7a-reviewed-quality-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          test -s "$RUNNER_TEMP/quality-review-handoff/quality-review-request.json"
-          test -s "$RUNNER_TEMP/quality-review-handoff/quality-review-draft.json"
-          printf '%s' "$PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64" | base64 --decode \
-            > "$RUNNER_TEMP/quality-review-handoff/quality-review-completed-draft.json"
-          chmod 600 "$RUNNER_TEMP/quality-review-handoff/quality-review-completed-draft.json"
-          python scripts/release/quality_review_handoff.py sign \
-            --request "$RUNNER_TEMP/quality-review-handoff/quality-review-request.json" \
-            --draft "$RUNNER_TEMP/quality-review-handoff/quality-review-completed-draft.json" \
-            --quality-rubric release/quality-rubric.json \
-            --output "$RUNNER_TEMP/quality-review-handoff/quality-human-review.json"
+          review_run_id=""
+          for attempt in $(seq 1 240); do
+            review_run_id="$(gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+              -f "name=$REVIEW_ARTIFACT_NAME" -f per_page=100 \
+              --jq ".artifacts | map(select(.expired == false and .name == \"$REVIEW_ARTIFACT_NAME\")) | sort_by(.created_at) | last | .workflow_run.id // empty")"
+            if [[ "$review_run_id" =~ ^[1-9][0-9]*$ ]]; then
+              break
+            fi
+            sleep 30
+          done
+          test "$review_run_id" != ""
+          echo "review_run_id=$review_run_id" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: commercial-7a-reviewed-quality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/quality-review-handoff
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.wait-review.outputs.review_run_id }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commercial-7a-reviewed-quality-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1171,7 +1152,6 @@ jobs:
             --staged-acceptance-report "$RUNNER_TEMP/commercial-chain.json" \
             --subscription-acceptance-report "$HANDOFF/subscription-chain.json" \
             --quality-report "$RUNNER_TEMP/quality-cases.json" \
-            --required-provider-grant-report "$HANDOFF/provider-grant.json" \
             --auth-origin-add-report "$HANDOFF/auth-origin-add.json" \
             --auth-origin-remove-report "$RUNNER_TEMP/auth-origin-remove.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \

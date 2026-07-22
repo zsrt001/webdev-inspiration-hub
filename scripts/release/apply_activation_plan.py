@@ -179,26 +179,6 @@ def _cohort_user(
     return UUID(str(links.get("user_id") or "")), report
 
 
-def _provider_report(path: str, *, activation: dict[str, Any]) -> dict[str, Any]:
-    report = _load_object(path)
-    if (
-        report.get("schema") not in {
-            "vowpic.preview-provider-fetch-report.v1",
-            "vowpic.provider-fetch-report.v1",
-        }
-        or report.get("passed") is not True
-        or report.get("source_sha") != activation["source_sha"]
-        or report.get("runtime_bundle_id") != activation["runtime_bundle_id"]
-        or report.get("api_deployment_id") != activation["api_deployment_id"]
-        or report.get("worker_deployment_id") != activation["worker_deployment_id"]
-        or report.get("worker_image_digest") != activation["worker_image_digest"]
-        or report.get("network_submit_count") != 1
-        or report.get("provider_fetch_count") != 1
-    ):
-        raise ValueError("required Provider grant report is invalid")
-    return report
-
-
 def _desired_row(
     *,
     capability: str,
@@ -560,7 +540,6 @@ def main() -> int:
         action="append",
         default=[],
     )
-    parser.add_argument("--required-provider-grant-report")
     parser.add_argument("--release-resolution-report")
     parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
     parser.add_argument("--approval-id-env", default="PRODUCTION_ACCEPTANCE_APPROVAL_ID")
@@ -604,8 +583,8 @@ def main() -> int:
             # after obtaining the exact deployment coordinates.
             pass
         if args.phase in {"staged-user-cohort", "formal-cohort"}:
-            if not args.canonical_users_report or not args.required_provider_grant_report:
-                raise ValueError("full cohort requires user and Provider reports")
+            if not args.canonical_users_report:
+                raise ValueError("full cohort requires a canonical user report")
 
         # Read the exact activation once for report validation without granting authority.
         import psycopg2
@@ -642,7 +621,6 @@ def main() -> int:
             )
             if len(set(cohort_user_ids)) != len(cohort_user_ids):
                 raise ValueError("canonical user reports must identify distinct users")
-            _provider_report(args.required_provider_grant_report, activation=activation)
 
         report = apply_phase(
             database_url,
