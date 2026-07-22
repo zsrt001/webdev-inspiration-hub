@@ -95,7 +95,7 @@ def _post_json(
 def run(
     *,
     base_url: str,
-    commercial_report_path: Path,
+    identity_report_path: Path,
     output_path: Path,
     cron_token: str,
     key: bytes,
@@ -105,19 +105,19 @@ def run(
     if len(cron_token.encode("utf-8")) < 24:
         raise ValueError("account cleanup cron token is missing or too short")
     bounded_attempts = max(1, min(30, int(attempts)))
-    commercial, _raw = read_private_json(
-        commercial_report_path,
-        label="signed commercial acceptance report",
+    identity, _raw = read_private_json(
+        identity_report_path,
+        label="signed identity acceptance report",
     )
     unsigned = verify_signed_report(
-        commercial,
+        identity,
         key=key,
         expected={
             "schema": "vowpic.linked-commercial-acceptance.v1",
-            "phase": "commercial-before-delete",
+            "phase": "first-login-and-auth-security",
             "passed": True,
         },
-        label="signed commercial acceptance report",
+        label="signed identity acceptance report",
     )
     validate_release_binding(unsigned)
     user_id = str(UUID(str(unsigned.get("links", {}).get("user_id") or "")))
@@ -212,7 +212,7 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
-    parser.add_argument("--commercial-report", required=True)
+    parser.add_argument("--identity-report", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--cron-token-env",
@@ -227,7 +227,7 @@ def main() -> int:
     try:
         run(
             base_url=args.base_url,
-            commercial_report_path=Path(args.commercial_report),
+            identity_report_path=Path(args.identity_report),
             output_path=Path(args.output),
             cron_token=os.environ.get(args.cron_token_env, ""),
             key=signing_key(args.signing_key_env),

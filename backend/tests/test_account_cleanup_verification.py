@@ -32,10 +32,10 @@ BINDING = {
 }
 
 
-def _commercial() -> dict:
+def _identity() -> dict:
     report = {
         "schema": "vowpic.linked-commercial-acceptance.v1",
-        "phase": "commercial-before-delete",
+        "phase": "first-login-and-auth-security",
         "passed": True,
         **BINDING,
         "links": {"user_id": "00000000-0000-4000-8000-000000000001"},
@@ -52,12 +52,12 @@ class AccountCleanupVerificationTest(unittest.TestCase):
     def setUp(self) -> None:
         shutil.rmtree(TMP, ignore_errors=True)
         TMP.mkdir(parents=True)
-        self.commercial_path = TMP / "commercial.json"
-        self.commercial_path.write_text(
-            canonical(_commercial()) + "\n",
+        self.identity_path = TMP / "identity.json"
+        self.identity_path.write_text(
+            canonical(_identity()) + "\n",
             encoding="utf-8",
         )
-        os.chmod(self.commercial_path, 0o600)
+        os.chmod(self.identity_path, 0o600)
 
     def tearDown(self) -> None:
         shutil.rmtree(TMP, ignore_errors=True)
@@ -89,7 +89,7 @@ class AccountCleanupVerificationTest(unittest.TestCase):
         ):
             report = run(
                 base_url="https://staged.example",
-                commercial_report_path=self.commercial_path,
+                identity_report_path=self.identity_path,
                 output_path=TMP / "absence.json",
                 cron_token="x" * 32,
                 key=KEY,
@@ -118,7 +118,7 @@ class AccountCleanupVerificationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "response is invalid"):
                 run(
                     base_url="https://staged.example",
-                    commercial_report_path=self.commercial_path,
+                    identity_report_path=self.identity_path,
                     output_path=TMP / "absence.json",
                     cron_token="x" * 32,
                     key=KEY,

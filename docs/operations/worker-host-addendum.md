@@ -57,6 +57,19 @@ the signed `refund.created` event drives the existing immutable credit reversal
 and entitlement logic. Missing sandbox evidence blocks only the affected
 commercial activation, not Worker deployment or use of Evolink.
 
+Production CI must never receive a raw card number, expiry, CVC, or reusable
+payment instrument. The automated release gate verifies the configured live
+products, signed-webhook boundary, checkout creation, and non-payment SaaS
+chain without completing a charge. After the exact target is promoted, one
+controlled low-value acceptance is completed on Creem's hosted checkout: the
+operator enters payment details only on the Creem origin, VowPic verifies the
+signed initial-payment projection, requests period-end cancellation through
+the application, and verifies the scheduled-cancel state. A refund is then
+initiated in the Creem Dashboard/support workflow and is accepted only after
+the signed `refund.created` event produces the matching immutable reversal.
+Until those facts exist, payment acceptance remains `NOT_RUN`; code deployment
+and EvoLink image generation are not blocked by a reusable payment credential.
+
 ## Current release effect
 
 Repository implementation and static tests may proceed. Production acceptance

@@ -15,9 +15,6 @@ from typing import Any
 
 
 PHASES = (
-    "commercial",
-    "subscription",
-    "provider_unknown",
     "quality",
     "account_finalize",
 )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provider-contract-bound final account-deletion acceptance facts."""
+"""Identity-bound final account-deletion acceptance facts."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def collect_commercial_finalize(
     cursor,
     *,
     browser: dict[str, Any],
-    commercial_report: dict[str, Any],
+    identity_report: dict[str, Any],
     storage_absence_report: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     observations = browser.get("observations")
@@ -35,7 +35,7 @@ def collect_commercial_finalize(
         raise ValueError("account finalization browser links are not exact")
     user_id = _coordinate(links["user_id"], "closed user")
     if (
-        commercial_report.get("links", {}).get("user_id") != user_id
+        identity_report.get("links", {}).get("user_id") != user_id
         or storage_absence_report.get("passed") is not True
         or storage_absence_report.get("user_subject_hmac_sha256")
         != browser.get("user_subject_hmac_sha256")
@@ -94,7 +94,7 @@ def collect_commercial_finalize(
         "cost_minor_units": 0,
         "cost_cap_minor_units": cost_cap,
         "assertions": {
-            "prior_commercial_chain_passed": True,
+            "prior_identity_chain_passed": True,
             "account_closed": True,
             "sessions_revoked": True,
             "private_objects_deleted": True,
@@ -110,8 +110,8 @@ def collect_commercial_finalize(
     }
     return payload, {
         "closed": closed,
-        "commercial_report_sha256": _derived_coordinate(
-            "commercial-report", commercial_report
+        "identity_report_sha256": _derived_coordinate(
+            "identity-report", identity_report
         ),
         "storage_absence_report_sha256": _derived_coordinate(
             "storage-absence-report", storage_absence_report

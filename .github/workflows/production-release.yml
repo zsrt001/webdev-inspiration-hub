@@ -808,7 +808,7 @@ jobs:
             --output "$RUNNER_TEMP/phase-worker-dispatch.json"
 
   linked-production-acceptance-prepare:
-    name: Run ordinary-user auth, money, generation, and prepare quality review
+    name: Run ordinary-user auth and generation, then prepare quality review
     needs: [reserve-stage-seal, record-data-switch-and-ready-worker]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -838,9 +838,6 @@ jobs:
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
-          EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
-          EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_AUTH_CONFIG_TOKEN: ${{ secrets.SUPABASE_AUTH_CONFIG_TOKEN }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
@@ -935,31 +932,6 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$RUNNER_TEMP/staged-user-cohort.json"
-          export LINKED_ACCEPTANCE_PHASE=commercial
-          export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/commercial-browser.json"
-          npm --prefix frontend run test:e2e -- e2e/linked-production-flow.spec.ts
-          python scripts/release/collect_production_acceptance_input.py \
-            --phase commercial-before-delete \
-            --browser-report "$RUNNER_TEMP/commercial-browser.json" \
-            --auth-report "$RUNNER_TEMP/auth-security.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --output "$RUNNER_TEMP/commercial-input.json"
-          COMMERCIAL_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/commercial-input.json" \
-            node scripts/release/run_linked_commercial_acceptance.mjs \
-              --phase commercial-before-delete --base-url "$PRODUCTION_BASE_URL" \
-              --output "$RUNNER_TEMP/commercial-before-delete.json"
-          export LINKED_ACCEPTANCE_PHASE=subscription
-          export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/subscription-browser.json"
-          npm --prefix frontend run test:e2e -- e2e/linked-production-flow.spec.ts
-          python scripts/release/collect_production_acceptance_input.py \
-            --phase subscription \
-            --browser-report "$RUNNER_TEMP/subscription-browser.json" \
-            --auth-report "$RUNNER_TEMP/auth-security.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --output "$RUNNER_TEMP/subscription-input.json"
-          SUBSCRIPTION_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/subscription-input.json" \
-            node scripts/release/run_subscription_acceptance.mjs \
-              --base-url "$PRODUCTION_BASE_URL" --output "$RUNNER_TEMP/subscription-chain.json"
           export LINKED_ACCEPTANCE_PHASE=quality
           export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/quality-browser.json"
           npm --prefix frontend run test:e2e -- e2e/linked-production-flow.spec.ts
@@ -974,7 +946,6 @@ jobs:
           install -d -m 700 "$HANDOFF"
           for name in \
             release-manifest release auth-origin-add auth-security \
-            commercial-before-delete subscription-chain \
             quality-browser \
             quality-review-request quality-review-draft; do
             install -m 600 "$RUNNER_TEMP/$name.json" "$HANDOFF/$name.json"
@@ -1109,9 +1080,8 @@ jobs:
             node scripts/release/run_quality_acceptance.mjs \
               --base-url "$PRODUCTION_BASE_URL" --cases release/quality-cases.json \
               --rubric release/quality-rubric.json --output "$RUNNER_TEMP/quality-cases.json"
-          export LINKED_ACCEPTANCE_PHASE=account-finalize
+          export LINKED_ACCEPTANCE_PHASE=account_finalize
           export LINKED_ACCEPTANCE_BROWSER_REPORT="$RUNNER_TEMP/account-finalize-browser.json"
-          export LINKED_ACCEPTANCE_COMMERCIAL_REPORT="$HANDOFF/commercial-before-delete.json"
           npm --prefix frontend run test:e2e -- e2e/linked-production-flow.spec.ts
           python scripts/release/cleanup_acceptance_bindings.py \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
@@ -1120,19 +1090,19 @@ jobs:
             --require-zero-unused --output "$RUNNER_TEMP/identity-binding-cleanup.json"
           python scripts/release/run_account_cleanup_verification.py \
             --base-url "$PRODUCTION_BASE_URL" \
-            --commercial-report "$HANDOFF/commercial-before-delete.json" \
+            --identity-report "$HANDOFF/auth-security.json" \
             --output "$RUNNER_TEMP/account-media-absence.json"
           python scripts/release/collect_production_acceptance_input.py \
             --phase commercial-finalize-delete \
             --browser-report "$RUNNER_TEMP/account-finalize-browser.json" \
-            --commercial-report "$HANDOFF/commercial-before-delete.json" \
+            --auth-report "$HANDOFF/auth-security.json" \
             --storage-absence-report "$RUNNER_TEMP/account-media-absence.json" \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --output "$RUNNER_TEMP/commercial-finalize-input.json"
           COMMERCIAL_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/commercial-finalize-input.json" \
             node scripts/release/run_linked_commercial_acceptance.mjs \
               --phase commercial-finalize-delete --base-url "$PRODUCTION_BASE_URL" \
-              --commercial-report "$HANDOFF/commercial-before-delete.json" \
+              --identity-report "$HANDOFF/auth-security.json" \
               --output "$RUNNER_TEMP/commercial-chain.json"
           python scripts/release/configure_staged_auth_origin.py remove \
             --manifest "$RUNNER_TEMP/release-manifest.json" \
@@ -1149,8 +1119,7 @@ jobs:
             --kind COMMERCIAL_7A --expected-phase ACCEPTANCE_READY --phase TARGET_ACCEPTED \
             --source-sha "$SOURCE_SHA" \
             --auth-security-report "$HANDOFF/auth-security.json" \
-            --staged-acceptance-report "$RUNNER_TEMP/commercial-chain.json" \
-            --subscription-acceptance-report "$HANDOFF/subscription-chain.json" \
+            --account-cleanup-report "$RUNNER_TEMP/commercial-chain.json" \
             --quality-report "$RUNNER_TEMP/quality-cases.json" \
             --auth-origin-add-report "$HANDOFF/auth-origin-add.json" \
             --auth-origin-remove-report "$RUNNER_TEMP/auth-origin-remove.json" \
