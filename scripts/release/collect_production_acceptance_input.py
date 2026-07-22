@@ -59,7 +59,6 @@ def collect(
     auth_report_path: Path | None,
     database_url: str,
     key: bytes,
-    commercial_report_path: Path | None = None,
     storage_absence_report_path: Path | None = None,
     quality_review_request_path: Path | None = None,
     quality_review_path: Path | None = None,
@@ -154,6 +153,10 @@ def collect(
                     auth=auth_unsigned,
                 )
             elif phase == "commercial-finalize-delete":
+                if auth_unsigned is None:
+                    raise ValueError(
+                        "account finalization requires the signed identity report"
+                    )
                 storage_absence = prior_report(
                     storage_absence_report_path,
                     report_phase="account-media-absence",
@@ -163,11 +166,7 @@ def collect(
                 payload, facts = collect_commercial_finalize(
                     cursor,
                     browser=browser_unsigned,
-                    commercial_report=prior_report(
-                        commercial_report_path,
-                        report_phase="commercial-before-delete",
-                        label="signed commercial acceptance report",
-                    ),
+                    identity_report=auth_unsigned,
                     storage_absence_report=storage_absence,
                 )
             elif phase == "quality":
@@ -291,7 +290,6 @@ def main() -> int:
     parser.add_argument("--phase", required=True)
     parser.add_argument("--browser-report", required=True)
     parser.add_argument("--auth-report")
-    parser.add_argument("--commercial-report")
     parser.add_argument("--storage-absence-report")
     parser.add_argument("--quality-review-request")
     parser.add_argument("--quality-review")
@@ -314,9 +312,6 @@ def main() -> int:
             auth_report_path=Path(args.auth_report) if args.auth_report else None,
             database_url=os.environ.get(args.database_url_env, ""),
             key=signing_key(args.signing_key_env),
-            commercial_report_path=(
-                Path(args.commercial_report) if args.commercial_report else None
-            ),
             storage_absence_report_path=(
                 Path(args.storage_absence_report)
                 if args.storage_absence_report

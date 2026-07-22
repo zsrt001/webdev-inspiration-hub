@@ -763,8 +763,7 @@ _PHASE_EVIDENCE_ARGUMENTS = {
     "ACCEPTANCE_READY": ("worker_heartbeat_report",),
     "TARGET_ACCEPTED": (
         "auth_security_report",
-        "staged_acceptance_report",
-        "subscription_acceptance_report",
+        "account_cleanup_report",
         "quality_report",
         "auth_origin_add_report",
         "auth_origin_remove_report",

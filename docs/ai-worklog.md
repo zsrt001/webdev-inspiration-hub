@@ -3129,3 +3129,37 @@
 - No Production deployment, real payment, refund, provider submission, account
   permission change, or domain change was performed by this local correction.
 - Proxifier was not modified or restarted.
+
+## 2026-07-22 - Remove raw payment credentials from Production CI
+
+### Root cause and correction
+
+- The linked Production acceptance bundle still admitted `commercial` and
+  `subscription` actions containing a reusable payment instrument. The GitHub
+  runner attempted a real Creem charge and then waited for a Dashboard refund.
+  That design was both unsafe and non-deterministic, and it was the actual
+  reason the release could not progress; EvoLink does not require a separate
+  submission-reconciliation contract.
+- The protected action bundle is now restricted to the six generation/quality
+  cases and final account cleanup. The release no longer consumes card data,
+  performs a charge, or waits for a refund. The dead hosted-checkout card
+  automation was deleted.
+- Final account cleanup is chained to the already signed ordinary-user identity
+  report instead of a prior paid-purchase report. The action phase spelling is
+  normalized to `account_finalize`, and `TARGET_ACCEPTED` now requires the
+  signed account-cleanup report rather than removed payment/subscription
+  artifacts.
+- Creem acceptance is an explicit post-promotion controlled check: payment
+  details are entered only on Creem's hosted origin, period-end cancellation is
+  requested through VowPic, and the operator-initiated Dashboard refund is
+  accepted only from the signed `refund.created` projection. It does not block
+  code deployment or normal EvoLink API use.
+
+### Verification
+
+- Focused release/account-cleanup regression passed: `45 passed`.
+- Complete backend regression passed: `968 passed, 38 skipped, 1222 subtests`.
+- Frontend unit regression passed: `5 files / 21 tests`; typecheck and Web
+  build passed. Python/Node syntax and all workflow YAML parsing passed.
+- No Production payment or deployment is claimed by this entry.
+- Proxifier was not modified or restarted.

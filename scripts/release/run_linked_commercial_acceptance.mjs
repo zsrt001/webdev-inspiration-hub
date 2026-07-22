@@ -63,7 +63,7 @@ const PHASE_ASSERTIONS = {
     "no_admin_or_test_bypass",
   ],
   "commercial-finalize-delete": [
-    "prior_commercial_chain_passed",
+    "prior_identity_chain_passed",
     "account_closed",
     "sessions_revoked",
     "private_objects_deleted",
@@ -212,10 +212,10 @@ async function main() {
   }
   const { payload, inputSha256 } = await readPrivateInput(inputPath);
   const unsigned = validateCommercialInput(payload, args.phase);
-  if (args.commercial_report) {
-    await readSignedReport(args.commercial_report, {
+  if (args.identity_report) {
+    await readSignedReport(args.identity_report, {
       schema: "vowpic.linked-commercial-acceptance.v1",
-      phase: "commercial-before-delete",
+      phase: "first-login-and-auth-security",
       passed: true,
       source_sha: unsigned.source_sha,
       runtime_bundle_id: unsigned.runtime_bundle_id,

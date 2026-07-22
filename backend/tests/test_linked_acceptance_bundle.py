@@ -77,6 +77,7 @@ class LinkedAcceptanceBundleTest(unittest.TestCase):
 
     def test_extracts_only_fixed_phase_actions_and_private_assets(self) -> None:
         module = _module()
+        self.assertEqual(module.PHASES, ("quality", "account_finalize"))
         archive = self._archive("valid.tar.gz")
         destination = TMP / "actions"
         with patch.dict(os.environ, {"RUNNER_TEMP": str(TMP)}):
@@ -136,8 +137,8 @@ class LinkedAcceptanceBundleTest(unittest.TestCase):
                 ]
             with tarfile.open(archive, "w:gz") as target:
                 for member, raw in members:
-                    if member.name == "commercial.json":
-                        raw = self._action_bytes("subscription")
+                    if member.name == "quality.json":
+                        raw = self._action_bytes("commercial")
                     member.size = len(raw)
                     target.addfile(member, BytesIO(raw))
             with self.assertRaisesRegex(ValueError, "identity is invalid"):

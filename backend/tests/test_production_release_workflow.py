@@ -946,6 +946,31 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertNotIn("set-dispatch", final_run)
         self.assertIn("run_quality_acceptance.mjs", final_run)
 
+    def test_release_never_collects_or_uses_payment_credentials(self) -> None:
+        workflow = PRODUCTION_RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        linked_flow = (ROOT / "frontend/e2e/linked-production-flow.spec.ts").read_text(
+            encoding="utf-8"
+        )
+        extractor = _path_module(
+            "extract_linked_acceptance_bundle_no_payment",
+            ROOT / "scripts/release/extract_linked_acceptance_bundle.py",
+        )
+        self.assertEqual(extractor.PHASES, ("quality", "account_finalize"))
+        for forbidden in (
+            "LINKED_ACCEPTANCE_PHASE=commercial",
+            "LINKED_ACCEPTANCE_PHASE=subscription",
+            "--staged-acceptance-report",
+            "--subscription-acceptance-report",
+            "payment_instrument",
+            "card_number",
+            "cvc",
+            "completeCreemCheckout",
+        ):
+            self.assertNotIn(forbidden, workflow + linked_flow)
+        self.assertIn("LINKED_ACCEPTANCE_PHASE=account_finalize", workflow)
+        self.assertIn('--account-cleanup-report "$RUNNER_TEMP/commercial-chain.json"', workflow)
+        self.assertIn('--identity-report "$HANDOFF/auth-security.json"', workflow)
+
     def test_workflow_persists_every_commercial_phase_in_order(self) -> None:
         workflow = (ROOT / ".github/workflows/production-release.yml").read_text(
             encoding="utf-8"

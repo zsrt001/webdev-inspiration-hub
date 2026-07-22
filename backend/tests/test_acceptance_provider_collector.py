@@ -73,7 +73,7 @@ class AcceptanceProviderCollectorTest(unittest.TestCase):
         finalized, facts = collect_commercial_finalize(
             _Cursor(_rows()),
             browser=browser,
-            commercial_report={"links": {"user_id": "user-01"}},
+            identity_report={"links": {"user_id": "user-01"}},
             storage_absence_report={
                 "passed": True,
                 "user_subject_hmac_sha256": "d" * 64,
@@ -91,7 +91,7 @@ class AcceptanceProviderCollectorTest(unittest.TestCase):
             collect_commercial_finalize(
                 _Cursor(rows),
                 browser=browser,
-                commercial_report={"links": {"user_id": "user-01"}},
+                identity_report={"links": {"user_id": "user-01"}},
                 storage_absence_report={
                     "passed": True,
                     "user_subject_hmac_sha256": "d" * 64,
