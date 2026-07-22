@@ -1,0 +1,86 @@
+name: Submit one run-bound Production quality review
+
+on:
+  workflow_dispatch:
+    inputs:
+      required_source_sha:
+        description: Exact reviewed 40-character main commit
+        required: true
+        type: string
+      release_run_id:
+        description: Production release workflow run ID that created the cases
+        required: true
+        type: string
+      release_run_attempt:
+        description: Production release workflow attempt that created the cases
+        required: true
+        type: string
+      completed_review_draft_base64:
+        description: Base64 JSON completed from that run's review draft
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vowpic-production-quality-review-${{ inputs.release_run_id }}-${{ inputs.release_run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  submit-review:
+    name: Bind the completed review to the exact generated cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.required_source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-release-python
+      - name: Verify exact source and release coordinates
+        env:
+          SOURCE_SHA: ${{ inputs.required_source_sha }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RELEASE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: commercial-7a-quality-review-${{ inputs.release_run_id }}-${{ inputs.release_run_attempt }}
+          path: ${{ runner.temp }}/quality-review-handoff
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.release_run_id }}
+      - name: Sign the independently completed run-bound review
+        env:
+          COMPLETED_REVIEW_DRAFT_BASE64: ${{ inputs.completed_review_draft_base64 }}
+          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
+          QUALITY_REVIEW_SIGNING_KEY: ${{ secrets.QUALITY_REVIEW_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          HANDOFF="$RUNNER_TEMP/quality-review-handoff"
+          test -s "$HANDOFF/quality-review-request.json"
+          test -s "$HANDOFF/quality-review-draft.json"
+          printf '%s' "$COMPLETED_REVIEW_DRAFT_BASE64" | base64 --decode \
+            > "$HANDOFF/quality-review-completed-draft.json"
+          chmod 600 "$HANDOFF"/*.json
+          python scripts/release/quality_review_handoff.py sign \
+            --request "$HANDOFF/quality-review-request.json" \
+            --draft "$HANDOFF/quality-review-completed-draft.json" \
+            --quality-rubric release/quality-rubric.json \
+            --output "$HANDOFF/quality-human-review.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: commercial-7a-reviewed-quality-${{ inputs.release_run_id }}-${{ inputs.release_run_attempt }}
+          path: ${{ runner.temp }}/quality-review-handoff
+          if-no-files-found: error
+          retention-days: 7

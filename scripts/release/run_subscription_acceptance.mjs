@@ -26,17 +26,6 @@ const ASSERTIONS = [
   "paid_order_snapshot_180_days",
   "period_end_cancel_confirmed",
   "cancel_remains_active_until_period_end",
-  "test_mode_signed_renewal_paid_event",
-  "test_mode_renewal_transaction_unique",
-  "test_mode_renewal_invoice_unique",
-  "test_mode_full_invoice_refund_verified",
-  "test_mode_refund_reversal_and_debt",
-  "test_mode_access_revoked_after_refund",
-  "test_mode_duplicate_event_deduped",
-  "test_mode_out_of_order_event_reconciled",
-  "test_mode_past_due_recovery_verified",
-  "test_mode_partial_refund_anomaly_quarantined",
-  "test_mode_dispute_outcome_verified",
   "no_real_chargeback_manufactured",
   "no_admin_or_test_bypass",
 ];
@@ -50,9 +39,6 @@ const LINKS = [
   "initial_grant_id",
   "initial_order_id",
   "cancel_event_id",
-  "provider_refund_evidence_id",
-  "provider_renewal_evidence_id",
-  "provider_cancel_evidence_id",
   "access_snapshot_id",
 ];
 

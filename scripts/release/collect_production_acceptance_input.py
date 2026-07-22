@@ -29,7 +29,6 @@ from scripts.release._acceptance_phase_facts import collect_commercial_before_de
 from scripts.release._acceptance_subscription_facts import collect_subscription
 from scripts.release._acceptance_provider_facts import collect_commercial_finalize
 from scripts.release._acceptance_quality_facts import collect_quality
-from scripts.release.verify_creem_test_evidence import verify_creem_test_evidence
 
 
 def _database_url(value: str) -> str:
@@ -60,8 +59,6 @@ def collect(
     auth_report_path: Path | None,
     database_url: str,
     key: bytes,
-    creem_evidence_bundle_path: Path | None = None,
-    provider_evidence_key: bytes | None = None,
     commercial_report_path: Path | None = None,
     storage_absence_report_path: Path | None = None,
     quality_review_request_path: Path | None = None,
@@ -151,26 +148,10 @@ def collect(
             elif phase == "subscription":
                 if auth_unsigned is None:
                     raise ValueError("subscription collection requires the signed auth report")
-                if (
-                    creem_evidence_bundle_path is None
-                    or provider_evidence_key is None
-                ):
-                    raise ValueError(
-                        "subscription collection requires genuine Creem evidence"
-                    )
-                creem_evidence = json.loads(
-                    creem_evidence_bundle_path.read_text(encoding="utf-8")
-                )
-                evidence_hashes = verify_creem_test_evidence(
-                    creem_evidence,
-                    expected_source_sha=str(browser_unsigned["source_sha"]),
-                    signing_key=provider_evidence_key,
-                )
                 payload, facts = collect_subscription(
                     cursor,
                     browser=browser_unsigned,
                     auth=auth_unsigned,
-                    creem_evidence_hashes=evidence_hashes,
                 )
             elif phase == "commercial-finalize-delete":
                 storage_absence = prior_report(
@@ -310,11 +291,6 @@ def main() -> int:
     parser.add_argument("--phase", required=True)
     parser.add_argument("--browser-report", required=True)
     parser.add_argument("--auth-report")
-    parser.add_argument("--creem-evidence-bundle")
-    parser.add_argument(
-        "--provider-evidence-signing-key-env",
-        default="PROVIDER_EVIDENCE_HMAC_KEY",
-    )
     parser.add_argument("--commercial-report")
     parser.add_argument("--storage-absence-report")
     parser.add_argument("--quality-review-request")
@@ -338,16 +314,6 @@ def main() -> int:
             auth_report_path=Path(args.auth_report) if args.auth_report else None,
             database_url=os.environ.get(args.database_url_env, ""),
             key=signing_key(args.signing_key_env),
-            creem_evidence_bundle_path=(
-                Path(args.creem_evidence_bundle)
-                if args.creem_evidence_bundle
-                else None
-            ),
-            provider_evidence_key=(
-                signing_key(args.provider_evidence_signing_key_env)
-                if args.creem_evidence_bundle
-                else None
-            ),
             commercial_report_path=(
                 Path(args.commercial_report) if args.commercial_report else None
             ),

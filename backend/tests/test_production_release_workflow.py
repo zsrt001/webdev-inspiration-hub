@@ -843,8 +843,15 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertEqual(workflow.count("vars.PRODUCTION_BASE_URL"), 12)
         self.assertNotIn("secrets.PRODUCTION_BASE_URL", workflow)
+        for impossible_preprovisioned_evidence in (
+            "CREEM_TEST_EVIDENCE_BASE64",
+            "PRODUCTION_PROVIDER_GRANT_REFERENCE_B64",
+            "PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64",
+        ):
+            self.assertNotIn(impossible_preprovisioned_evidence, workflow)
         self.assertIn("docker/build-push-action@", workflow)
         self.assertIn("verify_provider_capabilities.py", workflow)
+        self.assertNotIn("verify_provider_grant_fetch.py", workflow)
         self.assertNotIn("provider-reconciliation-contract", workflow)
         for forbidden_fault_action in (
             "arm-response-drop-once",
@@ -864,14 +871,13 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             workflow.index("build_runtime_bundle_id.py"),
         )
 
-    def test_quality_review_is_a_bound_two_stage_human_gate(self) -> None:
+    def test_quality_review_is_submitted_after_the_exact_cases_exist(self) -> None:
         workflow_path = ROOT / ".github/workflows/production-release.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
         parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
-        self.assertEqual(
-            parsed["jobs"]["quality-human-review"]["environment"],
-            "production-quality-review",
-        )
+        review_workflow_path = ROOT / ".github/workflows/production-quality-review.yml"
+        review_workflow = review_workflow_path.read_text(encoding="utf-8")
+        review_parsed = yaml.load(review_workflow, Loader=yaml.BaseLoader)
         self.assertEqual(
             parsed["jobs"]["quality-human-review"]["needs"],
             "linked-production-acceptance-prepare",
@@ -884,32 +890,45 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertIn("--quality-review-request", workflow)
         self.assertLess(
             workflow.index("quality_review_handoff.py prepare"),
-            workflow.index("environment: production-quality-review"),
+            workflow.index("Wait for the separately submitted review artifact"),
         )
         self.assertLess(
-            workflow.index("environment: production-quality-review"),
+            workflow.index("Wait for the separately submitted review artifact"),
             workflow.index("--phase TARGET_ACCEPTED"),
         )
         prepare_job = parsed["jobs"]["linked-production-acceptance-prepare"]
-        review_job = parsed["jobs"]["quality-human-review"]
+        wait_job = parsed["jobs"]["quality-human-review"]
         final_job = parsed["jobs"]["linked-production-acceptance"]
         prepare_run = "\n".join(
             (step.get("run") or "") for step in prepare_job["steps"]
         )
-        review_serialized = json.dumps(review_job, sort_keys=True)
+        wait_serialized = json.dumps(wait_job, sort_keys=True)
+        review_serialized = json.dumps(
+            review_parsed["jobs"]["submit-review"], sort_keys=True
+        )
         final_run = "\n".join(
             (step.get("run") or "") for step in final_job["steps"]
         )
-        self.assertNotIn(
-            "PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64",
-            json.dumps(prepare_job, sort_keys=True),
+        self.assertNotIn("PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64", workflow)
+        self.assertNotIn("QUALITY_REVIEW_SIGNING_KEY", wait_serialized)
+        self.assertIn("gh api --method GET", wait_serialized)
+        self.assertIn("review_run_id", wait_serialized)
+        self.assertIn("github-token", wait_serialized)
+        self.assertEqual(
+            set(review_parsed["on"]["workflow_dispatch"]["inputs"]),
+            {
+                "required_source_sha",
+                "release_run_id",
+                "release_run_attempt",
+                "completed_review_draft_base64",
+            },
         )
-        self.assertNotIn(
-            "QUALITY_REVIEW_SIGNING_KEY",
-            json.dumps(prepare_job, sort_keys=True),
+        self.assertEqual(
+            review_parsed["jobs"]["submit-review"]["environment"],
+            "production",
         )
         self.assertIn(
-            "${{ secrets.PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64 }}",
+            "${{ inputs.completed_review_draft_base64 }}",
             review_serialized,
         )
         self.assertIn(
@@ -922,11 +941,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         )
         self.assertIn("quality_review_handoff.py sign", review_serialized)
         self.assertIn("quality-review-completed-draft.json", review_serialized)
-        self.assertNotIn(
-            "PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64",
-            json.dumps(final_job, sort_keys=True),
-        )
-        self.assertNotIn("PRODUCTION_QUALITY_REVIEW_BASE64", workflow)
+        self.assertNotIn("PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64", review_workflow)
         self.assertNotIn("set-dispatch", prepare_run)
         self.assertNotIn("set-dispatch", final_run)
         self.assertIn("run_quality_acceptance.mjs", final_run)
@@ -994,7 +1009,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "PRODUCTION_SUPABASE_URL",
             "PRODUCTION_SUPABASE_ANON_KEY",
             "PRODUCTION_SUPPORT_MONITORED",
-            "PROVIDER_UNKNOWN_CANARY_MAX_COST_MINOR",
+            "PRODUCTION_CANARY_MAX_COST_MINOR",
         ):
             self.assertIn(name, json.dumps(preflight, sort_keys=True))
 
