@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from app.core.provider_contracts import ProviderContract, ProviderContractState
 from app.models.credit_grant_lot import CreditGrantLot
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
 from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
@@ -39,16 +38,6 @@ from app.services.subscription_service import (
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
 PERIOD_END = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
-
-
-def _verified_contract(capability: str) -> ProviderContract:
-    return ProviderContract(
-        provider="creem",
-        capability=capability,
-        state=ProviderContractState.VERIFIED,
-        endpoint_schema_sha256="a" * 64,
-        test_evidence_sha256="b" * 64,
-    )
 
 
 def _selection(code: str, credits: int, price: int, retention_tier: str) -> CheckoutCatalogSelection:
@@ -175,10 +164,6 @@ class SubscriptionBillingServiceTest(unittest.IsolatedAsyncioTestCase):
                 event = _paid_event(selection)
                 with (
                     patch(
-                        "app.services.subscription_service.CREEM_SUBSCRIPTION_PAID_TRANSACTION",
-                        _verified_contract("subscription_paid_transaction"),
-                    ),
-                    patch(
                         "app.services.subscription_service.require_subscription_catalog_product",
                         new=AsyncMock(return_value=selection),
                     ),
@@ -215,10 +200,6 @@ class SubscriptionBillingServiceTest(unittest.IsolatedAsyncioTestCase):
         credit = UserCredit(user_id=subscription.user_id, balance=-50, reserved_balance=0)
         db = _GrantDb(subscription, credit)
         with (
-            patch(
-                "app.services.subscription_service.CREEM_SUBSCRIPTION_PAID_TRANSACTION",
-                _verified_contract("subscription_paid_transaction"),
-            ),
             patch(
                 "app.services.subscription_service.require_subscription_catalog_product",
                 new=AsyncMock(return_value=selection),
@@ -563,22 +544,18 @@ class SubscriptionCancellationTest(unittest.IsolatedAsyncioTestCase):
         service = _CancelService(
             response={"id": "sub_1", "status": "scheduled_cancel"}
         )
-        with patch(
-            "app.services.subscription_service.CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION",
-            _verified_contract("subscription_period_end_cancellation"),
-        ):
-            first = await service.request_period_end_cancellation(
-                db,
-                user_id=subscription.user_id,
-                subscription_id=subscription.id,
-                idempotency_key="cancel-1",
-            )
-            second = await service.request_period_end_cancellation(
-                db,
-                user_id=subscription.user_id,
-                subscription_id=subscription.id,
-                idempotency_key="cancel-1",
-            )
+        first = await service.request_period_end_cancellation(
+            db,
+            user_id=subscription.user_id,
+            subscription_id=subscription.id,
+            idempotency_key="cancel-1",
+        )
+        second = await service.request_period_end_cancellation(
+            db,
+            user_id=subscription.user_id,
+            subscription_id=subscription.id,
+            idempotency_key="cancel-1",
+        )
         self.assertEqual(first, second)
         self.assertEqual(len(service.calls), 1)
         self.assertEqual(db.intent.state, CancelIntentState.CONFIRMED)
@@ -590,41 +567,22 @@ class SubscriptionCancellationTest(unittest.IsolatedAsyncioTestCase):
         request = httpx.Request("POST", "https://api.creem.io/v1/subscriptions/sub_1/cancel")
         service = _CancelService(error=httpx.ReadTimeout("timeout", request=request))
         db = _CancelDb(subscription)
-        with patch(
-            "app.services.subscription_service.CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION",
-            _verified_contract("subscription_period_end_cancellation"),
-        ):
-            with self.assertRaises(CancellationReconciliationPending):
-                await service.request_period_end_cancellation(
-                    db,
-                    user_id=subscription.user_id,
-                    subscription_id=subscription.id,
-                    idempotency_key="cancel-timeout",
-                )
-            self.assertEqual(db.intent.state, CancelIntentState.UNKNOWN)
-            with self.assertRaises(CancellationReconciliationPending):
-                await service.request_period_end_cancellation(
-                    db,
-                    user_id=subscription.user_id,
-                    subscription_id=subscription.id,
-                    idempotency_key="cancel-timeout",
-                )
-        self.assertEqual(len(service.calls), 1)
-
-    async def test_unverified_cancel_has_no_local_or_provider_side_effect(self) -> None:
-        subscription = _subscription()
-        db = _CancelDb(subscription)
-        service = _CancelService(response={})
-        with self.assertRaises(SubscriptionError) as raised:
+        with self.assertRaises(CancellationReconciliationPending):
             await service.request_period_end_cancellation(
                 db,
                 user_id=subscription.user_id,
                 subscription_id=subscription.id,
-                idempotency_key="cancel-closed",
+                idempotency_key="cancel-timeout",
             )
-        self.assertEqual(raised.exception.code, "subscription_period_end_cancel_unverified")
-        self.assertIsNone(db.intent)
-        self.assertEqual(service.calls, [])
+        self.assertEqual(db.intent.state, CancelIntentState.UNKNOWN)
+        with self.assertRaises(CancellationReconciliationPending):
+            await service.request_period_end_cancellation(
+                db,
+                user_id=subscription.user_id,
+                subscription_id=subscription.id,
+                idempotency_key="cancel-timeout",
+            )
+        self.assertEqual(len(service.calls), 1)
 
 
 class SubscriptionRouteContractTest(unittest.TestCase):

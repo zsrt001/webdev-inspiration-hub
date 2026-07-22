@@ -1,0 +1,37 @@
+{
+  "schema": "vowpic.provider-capabilities.v1",
+  "providers": {
+    "evolink": {
+      "submit_endpoint": "/v1/images/generations",
+      "task_query_endpoint": "/v1/tasks/{task_id}",
+      "ambiguous_submission_policy": "hold_without_resubmit",
+      "official_sources": [
+        "https://docs.evolink.ai/en/api-manual/image-series/gpt-image-2/gpt-image-2-image-generation",
+        "https://docs.evolink.ai/en/api-manual/task-management/get-task-detail"
+      ],
+      "implemented_by": [
+        "backend/app/services/evolink_service.py",
+        "backend/app/services/generation_attempt_service.py",
+        "backend/app/services/evolink_reconciliation_service.py"
+      ]
+    },
+    "creem": {
+      "cancel_endpoint": "/v1/subscriptions/{subscription_id}/cancel",
+      "refund_confirmation": "refund.created_webhook",
+      "subscription_events": [
+        "subscription.paid",
+        "subscription.scheduled_cancel"
+      ],
+      "official_sources": [
+        "https://docs.creem.io/code/webhooks",
+        "https://docs.creem.io/api-reference/endpoint/cancel-subscription",
+        "https://docs.creem.io/features/subscriptions/refunds-and-cancellations"
+      ],
+      "implemented_by": [
+        "backend/app/services/creem_event_service.py",
+        "backend/app/services/payment_service.py",
+        "backend/app/services/subscription_service.py"
+      ]
+    }
+  }
+}

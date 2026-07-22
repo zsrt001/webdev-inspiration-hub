@@ -101,15 +101,14 @@ async def creem_webhook(
         _raise_payment_error(exc)
 
 
-@router.post("/{purchase_id}/refund")
+@router.post("/{purchase_id}/refund", status_code=409, response_model=None)
 async def initiate_refund(
     purchase_id: str,
     current_user: User = Depends(get_session_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, bool]:
+) -> None:
     del purchase_id, current_user, db
     try:
-        await payment_service.initiate_refund()
+        await payment_service.request_refund_review()
     except PaymentError as exc:
         _raise_payment_error(exc)
-    return {"accepted": True}

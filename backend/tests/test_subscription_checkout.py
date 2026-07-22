@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import httpx
 
-from app.core.provider_contracts import ProviderContract, ProviderContractState
 from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
 from app.models.subscription_checkout_intent import (
     SubscriptionCheckoutIntent,
@@ -33,16 +32,6 @@ NOW = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
 USER_ID = uuid.UUID("00000000-0000-4000-8000-000000000101")
 PLAN_ID = uuid.UUID("00000000-0000-4000-8000-000000000102")
 CATALOG_ID = uuid.UUID("00000000-0000-4000-8000-000000000103")
-
-
-def _verified_contract() -> ProviderContract:
-    return ProviderContract(
-        provider="creem",
-        capability="subscription_paid_transaction",
-        state=ProviderContractState.VERIFIED,
-        endpoint_schema_sha256="a" * 64,
-        test_evidence_sha256="b" * 64,
-    )
 
 
 def _selection(code: str = "starter_monthly") -> CheckoutCatalogSelection:
@@ -145,10 +134,6 @@ class SubscriptionCheckoutTest(unittest.IsolatedAsyncioTestCase):
         service = _CheckoutService()
         with (
             patch(
-                "app.services.subscription_service.CREEM_SUBSCRIPTION_PAID_TRANSACTION",
-                _verified_contract(),
-            ),
-            patch(
                 "app.services.subscription_service.require_subscription_checkout_catalog_product",
                 return_value=_selection(),
             ),
@@ -182,10 +167,6 @@ class SubscriptionCheckoutTest(unittest.IsolatedAsyncioTestCase):
         db = _CheckoutDb()
         with (
             patch(
-                "app.services.subscription_service.CREEM_SUBSCRIPTION_PAID_TRANSACTION",
-                _verified_contract(),
-            ),
-            patch(
                 "app.services.subscription_service.require_subscription_checkout_catalog_product",
                 return_value=_selection(),
             ),
@@ -217,10 +198,6 @@ class SubscriptionCheckoutTest(unittest.IsolatedAsyncioTestCase):
         service = _CheckoutService()
         with (
             patch(
-                "app.services.subscription_service.CREEM_SUBSCRIPTION_PAID_TRANSACTION",
-                _verified_contract(),
-            ),
-            patch(
                 "app.services.subscription_service.require_subscription_checkout_catalog_product",
                 side_effect=[_selection(), _selection("creator_monthly")],
             ),
@@ -242,24 +219,6 @@ class SubscriptionCheckoutTest(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(raised.exception.code, "idempotency_payload_mismatch")
         self.assertEqual(len(service.calls), 1)
-
-    async def test_unverified_contract_creates_no_intent_and_calls_no_provider(self) -> None:
-        db = _CheckoutDb()
-        service = _CheckoutService()
-        with self.assertRaises(SubscriptionError) as raised:
-            await service.create_checkout(
-                db,
-                user_id=USER_ID,
-                plan_code="starter_monthly",
-                return_url=None,
-                idempotency_key="subscription-checkout-closed",
-            )
-        self.assertEqual(
-            raised.exception.code,
-            "subscription_paid_transaction_unverified",
-        )
-        self.assertEqual(db.intents, [])
-        self.assertEqual(service.calls, [])
 
     async def test_signed_paid_event_correlates_intent_and_creates_projection(self) -> None:
         db = _CheckoutDb()

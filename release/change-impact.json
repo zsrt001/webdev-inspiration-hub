@@ -2,7 +2,7 @@
   "schema": "vowpic.change-impact.v1",
   "unknown_or_unparseable": "FULL_QUALITY",
   "full_quality_globs": [
-    "backend/app/core/provider_contracts.py",
+    "release/provider-capabilities.json",
     "backend/app/services/evolink*.py",
     "backend/app/services/generation_*.py",
     "backend/app/services/photometric_qa_service.py",

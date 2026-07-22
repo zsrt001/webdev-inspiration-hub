@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import secrets
 import time
 from datetime import datetime, timezone
@@ -75,6 +76,28 @@ def _worker_heartbeat_required() -> bool:
     return bool(settings.worker_image_digest.strip())
 
 
+def _validate_queue_redis_url(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return "REDIS_URL is required when TASK_EXECUTION_MODE=arq"
+    try:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").strip().lower()
+    except (TypeError, ValueError):
+        return "REDIS_URL must be a valid redis(s) URL"
+    if parsed.scheme.lower() not in {"redis", "rediss"} or not host:
+        return "REDIS_URL must be a valid redis(s) URL"
+    if host == "localhost" or host.endswith(".local"):
+        return "REDIS_URL must not target a local host outside development"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if address.is_loopback or address.is_unspecified:
+        return "REDIS_URL must not target a local host outside development"
+    return None
+
+
 def validate_commercial_config_values() -> list[str]:
     errors: list[str] = []
     provider = settings.effective_storage_provider
@@ -126,6 +149,14 @@ def validate_commercial_config_values() -> list[str]:
         errors.append("RATE_LIMIT_ENABLED must be true")
     if settings.release_role.strip() in _SUPPORT_REQUIRED_RELEASE_ROLES:
         errors.extend(settings.support_contact_config_errors)
+        if not settings.supabase_oauth_enabled:
+            errors.append(
+                "SUPABASE_URL and SUPABASE_ANON_KEY are required for commercial OAuth"
+            )
+    if settings.runtime_environment != "development" and settings.using_background_queue:
+        redis_url_error = _validate_queue_redis_url(settings.redis_url)
+        if redis_url_error:
+            errors.append(redis_url_error)
     if not settings.effective_cleanup_cron_token:
         errors.append("CLEANUP_CRON_TOKEN or CRON_SECRET is required for automatic image deletion")
     if not settings.cors_origins and not settings.is_vercel_runtime:
@@ -179,19 +210,6 @@ def validate_commercial_config_values() -> list[str]:
             errors.append("CREEM_API_KEY is required when PAYMENT_PROVIDER=creem")
         if not settings.creem_webhook_secret:
             errors.append("CREEM_WEBHOOK_SECRET is required when PAYMENT_PROVIDER=creem")
-        if not settings.creem_product_pack_50:
-            errors.append("CREEM_PRODUCT_PACK_50 is required when PAYMENT_PROVIDER=creem")
-        if not settings.creem_product_pack_120:
-            errors.append("CREEM_PRODUCT_PACK_120 is required when PAYMENT_PROVIDER=creem")
-        if not settings.creem_product_pack_300:
-            errors.append("CREEM_PRODUCT_PACK_300 is required when PAYMENT_PROVIDER=creem")
-        if settings.subscription_billing_enabled:
-            if not settings.creem_subscription_starter_product_id:
-                errors.append("CREEM_SUBSCRIPTION_STARTER_PRODUCT_ID is required when SUBSCRIPTION_BILLING_ENABLED=true")
-            if not settings.creem_subscription_creator_product_id:
-                errors.append("CREEM_SUBSCRIPTION_CREATOR_PRODUCT_ID is required when SUBSCRIPTION_BILLING_ENABLED=true")
-            if not settings.creem_subscription_studio_product_id:
-                errors.append("CREEM_SUBSCRIPTION_STUDIO_PRODUCT_ID is required when SUBSCRIPTION_BILLING_ENABLED=true")
 
     return errors
 
@@ -357,19 +375,6 @@ def _check_payments_config() -> tuple[bool, str]:
         missing.append("CREEM_API_KEY")
     if not settings.creem_webhook_secret:
         missing.append("CREEM_WEBHOOK_SECRET")
-    if not settings.creem_product_pack_50:
-        missing.append("CREEM_PRODUCT_PACK_50")
-    if not settings.creem_product_pack_120:
-        missing.append("CREEM_PRODUCT_PACK_120")
-    if not settings.creem_product_pack_300:
-        missing.append("CREEM_PRODUCT_PACK_300")
-    if settings.subscription_billing_enabled:
-        if not settings.creem_subscription_starter_product_id:
-            missing.append("CREEM_SUBSCRIPTION_STARTER_PRODUCT_ID")
-        if not settings.creem_subscription_creator_product_id:
-            missing.append("CREEM_SUBSCRIPTION_CREATOR_PRODUCT_ID")
-        if not settings.creem_subscription_studio_product_id:
-            missing.append("CREEM_SUBSCRIPTION_STUDIO_PRODUCT_ID")
 
     if missing:
         raise RuntimeError(f"missing payment config: {', '.join(missing)}")

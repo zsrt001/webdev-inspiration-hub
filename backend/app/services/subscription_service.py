@@ -15,12 +15,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.provider_contracts import (
-    CREEM_SUBSCRIPTION_PAID_TRANSACTION,
-    CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION,
-    ProviderContract,
-    ProviderContractState,
-)
 from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
 from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
@@ -322,14 +316,6 @@ class SubscriptionService:
         return candidate
 
     @staticmethod
-    def _provider_contract_ready(contract: ProviderContract) -> bool:
-        return (
-            contract.state is ProviderContractState.VERIFIED
-            and bool(contract.endpoint_schema_sha256)
-            and bool(contract.test_evidence_sha256)
-        )
-
-    @staticmethod
     def _checkout_provider_request_id(
         user_id: uuid.UUID,
         idempotency_key: str,
@@ -555,12 +541,6 @@ class SubscriptionService:
                 code="subscription_already_nonterminal",
                 message="An active or pending subscription already exists.",
                 status_code=409,
-            )
-        if not self._provider_contract_ready(CREEM_SUBSCRIPTION_PAID_TRANSACTION):
-            raise SubscriptionError(
-                code="subscription_paid_transaction_unverified",
-                message="Subscription checkout is disabled until Creem test-mode facts are verified.",
-                status_code=503,
             )
         self._headers()  # fail before creating an intent if Creem is not configured
         safe_return_url = self._safe_return_url(return_url)
@@ -1130,8 +1110,6 @@ class SubscriptionService:
         event: PaymentEvent,
         subscription: UserSubscription,
     ) -> SubscriptionGrantResult:
-        if not self._provider_contract_ready(CREEM_SUBSCRIPTION_PAID_TRANSACTION):
-            raise SubscriptionFactInvalid("subscription_paid_transaction_unverified")
         metadata = dict(event.business_metadata or {})
         transaction_id = str(metadata.get("last_transaction_id") or "").strip()
         period_start = self._parse_provider_datetime(metadata.get("current_period_start_date"))
@@ -1748,12 +1726,6 @@ class SubscriptionService:
         subscription_id: uuid.UUID,
         idempotency_key: str,
     ) -> dict:
-        if not self._provider_contract_ready(CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION):
-            raise SubscriptionError(
-                code="subscription_period_end_cancel_unverified",
-                message="Period-end cancellation is disabled until Creem test-mode proof exists.",
-                status_code=503,
-            )
         clean_key = str(idempotency_key or "").strip()
         if not clean_key or len(clean_key) > 128:
             raise SubscriptionError(

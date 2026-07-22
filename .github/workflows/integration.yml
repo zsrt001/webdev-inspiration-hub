@@ -716,7 +716,7 @@ jobs:
           echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
           python -m unittest \
             backend.tests.test_preview_identity_workflow \
-            backend.tests.test_provider_contract_activation \
+            backend.tests.test_provider_capabilities \
             backend.tests.test_provider_asset_grants \
             backend.tests.test_worker_heartbeat \
             backend.tests.test_release_coordinate_resolver -v
@@ -755,7 +755,7 @@ jobs:
             --worker-image-digest "$PREVIEW_WORKER_IMAGE_DIGEST" \
             --runtime-contract release/runtime-contracts.json \
             --preview-contract release/preview-runtime-contract.json \
-            --provider-contract release/provider-contracts.json \
+            --provider-contract release/provider-capabilities.json \
             --catalog-contract release/catalog/catalog-2026-07-10.json \
             --flag-contract release/gates.json \
             --activation-plan release/activation-plan.json \
@@ -1001,16 +1001,10 @@ jobs:
           export VERCEL_DEPLOYMENT_ID="$COMMERCIAL_API_DEPLOYMENT_ID"
           export WORKER_IMAGE_DIGEST="$PREVIEW_WORKER_IMAGE_DIGEST"
           export PROVIDER_GRANT_ORIGIN="$PREVIEW_PROVIDER_GRANT_ORIGIN"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          from scripts.release.verify_provider_grant_fetch import _git_activation_lineage, _validate_contract
-          document = json.loads(Path("release/provider-contracts.json").read_text())
-          raw = document.get("contracts", {}).get("EVOLINK_SUBMISSION_RECONCILIATION", {})
-          tested = str(raw.get("tested_source_sha") or "")
-          _validate_contract(document, expected_source_sha=os.environ["SOURCE_SHA"], contract_tested_source_sha=tested)
-          _git_activation_lineage(os.environ["SOURCE_SHA"], tested)
-          PY
+          python scripts/release/verify_provider_capabilities.py \
+            --capabilities release/provider-capabilities.json \
+            --expected-source-sha "$SOURCE_SHA" \
+            --output "$COMMERCIAL_EVIDENCE_DIR/provider-capabilities.json"
           python scripts/release/prepare_preview_provider_case.py \
             --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
@@ -1028,7 +1022,7 @@ jobs:
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
             --output "$RUNNER_TEMP/provider-grant-reference.json"
           python scripts/release/verify_provider_grant_fetch.py \
-            --contract release/provider-contracts.json \
+            --capabilities release/provider-capabilities.json \
             --grant-reference "$RUNNER_TEMP/provider-grant-reference.json" \
             --expected-source-sha "$SOURCE_SHA" \
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \

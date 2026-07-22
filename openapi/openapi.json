@@ -9091,16 +9091,10 @@
           }
         ],
         "responses": {
-          "200": {
+          "409": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "boolean"
-                  },
-                  "title": "Response Initiate Refund Api V1 Payments  Purchase Id  Refund Post",
-                  "type": "object"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"

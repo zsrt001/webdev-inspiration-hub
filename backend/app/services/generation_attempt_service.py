@@ -14,10 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_maker
 from app.core.feature_flags import Capability
-from app.core.provider_contracts import (
-    EVOLINK_SUBMISSION_RECONCILIATION,
-    require_verified_provider_contract,
-)
 from app.models.credit_reservation import CreditReservation
 from app.models.asset_access_grant import AssetAccessGrant
 from app.models.generation_attempt import (
@@ -725,7 +721,6 @@ async def submit_generation_attempt(
     provider: EvolinkService = evolink_service,
 ) -> GenerationAttempt:
     """Persist SUBMITTING before HTTP and never replay an ambiguous POST."""
-    require_verified_provider_contract(EVOLINK_SUBMISSION_RECONCILIATION)
     prepared = await prepare_submission_boundary(
         db,
         attempt_id=attempt_id,

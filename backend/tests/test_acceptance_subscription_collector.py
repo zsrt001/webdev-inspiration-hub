@@ -86,28 +86,14 @@ def _auth() -> dict:
     }
 
 
-def _contracts() -> dict:
-    return {
-        "schema": "vowpic.provider-contracts.v1",
-        "contracts": {
-            name: {
-                "state": "VERIFIED",
-                "tested_source_sha": "a" * 40,
-                "test_evidence_sha256": character * 64,
-            }
-            for name, character in (
-                ("CREEM_REFUND_CREATION", "1"),
-                ("CREEM_SUBSCRIPTION_PAID_TRANSACTION", "2"),
-                ("CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION", "3"),
-            )
-        },
-    }
-
-
 def _evidence_hashes() -> dict[str, str]:
     return {
-        name: entry["test_evidence_sha256"]
-        for name, entry in _contracts()["contracts"].items()
+        name: character * 64
+        for name, character in (
+            ("CREEM_DASHBOARD_REFUND_CONFIRMATION", "1"),
+            ("CREEM_SUBSCRIPTION_PAID_TRANSACTION", "2"),
+            ("CREEM_SUBSCRIPTION_PERIOD_END_CANCELLATION", "3"),
+        )
     }
 
 
@@ -206,7 +192,6 @@ class AcceptanceSubscriptionCollectorTest(unittest.TestCase):
             _Cursor(_rows()),
             browser=_browser(),
             auth=_auth(),
-            provider_contracts=_contracts(),
             creem_evidence_hashes=_evidence_hashes(),
         )
         sealed = seal_collected_input(
@@ -252,17 +237,15 @@ class AcceptanceSubscriptionCollectorTest(unittest.TestCase):
             )
         )
 
-    def test_current_unverified_contract_document_keeps_subscription_not_run(self) -> None:
-        current = json.loads(
-            (ROOT / "release/provider-contracts.json").read_text(encoding="utf-8")
-        )
-        with self.assertRaisesRegex(ValueError, "not VERIFIED"):
+    def test_incomplete_creem_test_evidence_keeps_subscription_not_run(self) -> None:
+        with self.assertRaisesRegex(ValueError, "incomplete"):
             collect_subscription(
                 _Cursor(_rows()),
                 browser=_browser(),
                 auth=_auth(),
-                provider_contracts=current,
-                creem_evidence_hashes=_evidence_hashes(),
+                creem_evidence_hashes={
+                    "CREEM_SUBSCRIPTION_PAID_TRANSACTION": "2" * 64
+                },
             )
 
     def test_production_does_not_manufacture_renewal_or_chargeback_rows(self) -> None:
@@ -282,7 +265,6 @@ class AcceptanceSubscriptionCollectorTest(unittest.TestCase):
                 _Cursor(rows),
                 browser=_browser(),
                 auth=_auth(),
-                provider_contracts=_contracts(),
                 creem_evidence_hashes=_evidence_hashes(),
             )
 

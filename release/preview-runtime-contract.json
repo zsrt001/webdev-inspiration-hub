@@ -56,7 +56,7 @@
       "host": "protected-ephemeral-preview-runner",
       "heartbeat_max_age_seconds": 120
     },
-    "provider_contract_authority": "release/provider-contracts.json",
+    "provider_capability_policy": "release/provider-capabilities.json",
     "provider_grant_origin": "exact-temporary-vercel-alias",
     "provider_grant_route": "GET /api/v1/media/grants/{token}",
     "provider_runtime_probe": "authenticated GET /api/v1/version with an independent app secret",

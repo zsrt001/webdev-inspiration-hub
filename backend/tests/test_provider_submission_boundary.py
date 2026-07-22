@@ -135,9 +135,6 @@ class ProviderSubmissionBoundaryTest(unittest.IsolatedAsyncioTestCase):
                 "app.services.generation_attempt_service.require_current_generation_fence",
                 AsyncMock(),
             ),
-            patch(
-                "app.services.generation_attempt_service.require_verified_provider_contract"
-            ),
         ):
             result = await submit_generation_attempt(
                 db,
@@ -196,9 +193,6 @@ class ProviderSubmissionBoundaryTest(unittest.IsolatedAsyncioTestCase):
                 "app.services.generation_attempt_service.mark_submission_unknown",
                 AsyncMock(),
             ) as mark_unknown,
-            patch(
-                "app.services.generation_attempt_service.require_verified_provider_contract"
-            ),
         ):
             result = await submit_generation_attempt(
                 db,
@@ -392,9 +386,6 @@ class ProviderSubmissionBoundaryTest(unittest.IsolatedAsyncioTestCase):
                 "app.services.generation_attempt_service.capture_initial_submission",
                 AsyncMock(),
             ) as capture_initial,
-            patch(
-                "app.services.generation_attempt_service.require_verified_provider_contract"
-            ),
         ):
             result = await submit_generation_attempt(
                 db,
@@ -441,9 +432,6 @@ class ProviderSubmissionBoundaryTest(unittest.IsolatedAsyncioTestCase):
                 "app.services.generation_attempt_service.mark_submission_unknown",
                 new=AsyncMock(return_value=unknown),
             ) as mark_unknown,
-            patch(
-                "app.services.generation_attempt_service.require_verified_provider_contract"
-            ),
         ):
             first = await submit_generation_attempt(
                 db,
@@ -500,9 +488,6 @@ class ProviderSubmissionBoundaryTest(unittest.IsolatedAsyncioTestCase):
                 "app.services.generation_attempt_service.capture_initial_submission",
                 new=AsyncMock(),
             ) as capture,
-            patch(
-                "app.services.generation_attempt_service.require_verified_provider_contract"
-            ),
         ):
             with self.assertRaises(StaleWorkerFence):
                 await submit_generation_attempt(

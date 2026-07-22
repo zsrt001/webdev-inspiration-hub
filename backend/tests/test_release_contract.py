@@ -279,7 +279,7 @@ class ReleaseAggregationTest(unittest.TestCase):
         impact = json.loads((RELEASE / "change-impact.json").read_text(encoding="utf-8"))
         for paths in (
             ["backend/app/services/evolink_service.py"],
-            ["backend/app/core/provider_contracts.py"],
+            ["release/provider-capabilities.json"],
             ["frontend/src/pages/index/index.vue", None],
         ):
             with self.subTest(paths=paths):

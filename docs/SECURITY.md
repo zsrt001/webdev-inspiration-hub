@@ -36,4 +36,4 @@ VowPic is an overseas Web SaaS. Security claims require code, test, and runtime 
 - Secrets are supplied only by protected environments. Secret plaintext must not be printed, committed, copied into artifacts, or moved between environments by automation.
 - Release evidence is sanitized, content-addressed, source/runtime/deployment bound, create-once, and independently resolved.
 
-The current Provider contracts are authoritative in `release/provider-contracts.json`. Any `UNVERIFIED` contract keeps the affected capability OFF and the corresponding live case `NOT_RUN`.
+Provider safety is enforced by request signing, idempotent local intents, exact task correlation, and the no-resubmit policy for ambiguous EvoLink submissions. `release/provider-capabilities.json` records these implemented behaviors; protected Preview must still prove the real EvoLink and Creem paths before Production activation.

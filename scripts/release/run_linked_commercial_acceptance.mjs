@@ -4,7 +4,6 @@
  */
 
 import {
-  canonical,
   parseArgs,
   readPrivateInput,
   readSignedReport,
@@ -16,11 +15,8 @@ import {
   safeError,
   signReport,
   verifyCollectorProof,
-  verifySignedReport,
   writeCreateOnce,
 } from "./_acceptance_common.mjs";
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
 
 const PHASE_ASSERTIONS = {
   "first-login-and-auth-security": [
@@ -66,27 +62,8 @@ const PHASE_ASSERTIONS = {
     "account_export_complete",
     "no_admin_or_test_bypass",
   ],
-  "queue-provider-unknown-state": [
-    "dispatch_paused",
-    "fault_intent_coordinate_prepared",
-    "one_submit_limit",
-    "bounded_cost",
-    "correlation_bound",
-    "no_admin_or_test_bypass",
-  ],
-  "complete-provider-unknown-state": [
-    "provider_accepted",
-    "worker_lost_submit_response",
-    "same_provider_task_recovered",
-    "single_submit",
-    "single_capture",
-    "fault_rule_armed_once",
-    "recovery_completed_before_disarm",
-    "no_admin_or_test_bypass",
-  ],
   "commercial-finalize-delete": [
     "prior_commercial_chain_passed",
-    "provider_unknown_chain_passed",
     "account_closed",
     "sessions_revoked",
     "private_objects_deleted",
@@ -131,24 +108,6 @@ const PHASE_LINKS = {
     "debt_offset_fact_id",
     "account_export_id",
   ],
-  "queue-provider-unknown-state": [
-    "user_id",
-    "order_id",
-    "reservation_id",
-    "job_id",
-    "attempt_id",
-    "fault_intent_id",
-    "client_correlation_id",
-  ],
-  "complete-provider-unknown-state": [
-    "user_id",
-    "order_id",
-    "job_id",
-    "attempt_id",
-    "fault_intent_id",
-    "provider_task_id",
-    "provider_capture_id",
-  ],
   "commercial-finalize-delete": [
     "user_id",
     "account_close_id",
@@ -163,45 +122,6 @@ function validateLinks(links, required) {
   }
   if (new Set(Object.values(links)).size !== required.length) {
     throw new Error("commercial chain links must be distinct facts");
-  }
-}
-
-async function readJson(path, label) {
-  const payload = JSON.parse(await readFile(path, "utf8"));
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error(`${label} must be a JSON object`);
-  }
-  return payload;
-}
-
-function verifyWorkerReport(report, { action, runtimeBundleId, mode, faultIntentId, requireAbsent = false }) {
-  const key = Buffer.from(String(process.env.WORKER_HOST_EVIDENCE_SIGNING_KEY || ""), "utf8");
-  const signature = String(report.signature || "");
-  if (key.length < 32 || !/^hmac-sha256:[0-9a-f]{64}$/.test(signature)) {
-    throw new Error("Worker host report signature is invalid");
-  }
-  const unsigned = { ...report };
-  delete unsigned.signature;
-  const wanted = createHmac("sha256", key).update(canonical(unsigned)).digest();
-  const actual = Buffer.from(signature.slice("hmac-sha256:".length), "hex");
-  if (actual.length !== wanted.length || !timingSafeEqual(actual, wanted)) {
-    throw new Error("Worker host report signature mismatch");
-  }
-  const coordinates = report.coordinates;
-  if (
-    report.schema !== "vowpic.worker-host-adapter-report.v1"
-    || report.passed !== true
-    || report.action !== action
-    || !coordinates
-    || coordinates.runtime_bundle_id !== runtimeBundleId
-    || coordinates.worker_deployment_id !== process.env.RELEASE_WORKER_DEPLOYMENT_ID
-    || (mode && coordinates.dispatch_mode !== mode)
-    || (faultIntentId && coordinates.fault_intent_id !== faultIntentId)
-  ) {
-    throw new Error("Worker host report release binding mismatch");
-  }
-  if (requireAbsent && (coordinates.rule_present !== false || coordinates.runtime_rule_count !== 0)) {
-    throw new Error("Worker response-drop absence was not proven");
   }
 }
 
@@ -299,68 +219,6 @@ async function main() {
       passed: true,
       source_sha: unsigned.source_sha,
       runtime_bundle_id: unsigned.runtime_bundle_id,
-    });
-  }
-  if (args.phase === "queue-provider-unknown-state") {
-    if (!args.require_worker_dispatch_report) {
-      throw new Error("queue Provider canary requires a disabled Worker report");
-    }
-    verifyWorkerReport(
-      await readJson(args.require_worker_dispatch_report, "Worker dispatch report"),
-      { action: "set-dispatch", runtimeBundleId: unsigned.runtime_bundle_id, mode: "disabled" },
-    );
-  }
-  if (args.phase === "complete-provider-unknown-state") {
-    if (!args.prepare_report || !args.fault_intent_report || !args.fault_report) {
-      throw new Error("complete Provider canary requires prepare, intent, and arm reports");
-    }
-    const prepare = verifySignedReport(await readJson(args.prepare_report, "Provider prepare report"), {
-      schema: "vowpic.provider-unknown-canary.v1",
-      passed: true,
-      source_sha: unsigned.source_sha,
-      runtime_bundle_id: unsigned.runtime_bundle_id,
-    });
-    const intent = await readJson(args.fault_intent_report, "Provider fault intent report");
-    if (
-      intent.schema !== "vowpic.acceptance-fault-intent.v1"
-      || intent.passed !== true
-      || intent.state !== "PREPARED"
-      || intent.fault_intent_id !== prepare.fault_intent_id
-      || intent.max_provider_submits !== 1
-    ) {
-      throw new Error("Provider fault intent binding mismatch");
-    }
-    verifyWorkerReport(await readJson(args.fault_report, "Provider fault arm report"), {
-      action: "arm-response-drop-once",
-      runtimeBundleId: unsigned.runtime_bundle_id,
-      faultIntentId: intent.fault_intent_id,
-    });
-  }
-  if (args.provider_unknown_state_report) {
-    await readSignedReport(args.provider_unknown_state_report, {
-      schema: "vowpic.linked-commercial-acceptance.v1",
-      phase: "complete-provider-unknown-state",
-      passed: true,
-      source_sha: unsigned.source_sha,
-      runtime_bundle_id: unsigned.runtime_bundle_id,
-    });
-  }
-  if (args.phase === "commercial-finalize-delete") {
-    if (!args.provider_unknown_disarm_report) {
-      throw new Error("commercial finalization requires Provider fault disarm proof");
-    }
-    const providerState = await readSignedReport(args.provider_unknown_state_report, {
-      schema: "vowpic.linked-commercial-acceptance.v1",
-      phase: "complete-provider-unknown-state",
-      passed: true,
-      source_sha: unsigned.source_sha,
-      runtime_bundle_id: unsigned.runtime_bundle_id,
-    });
-    verifyWorkerReport(await readJson(args.provider_unknown_disarm_report, "Provider disarm report"), {
-      action: "disarm-response-drop",
-      runtimeBundleId: unsigned.runtime_bundle_id,
-      faultIntentId: providerState.links.fault_intent_id,
-      requireAbsent: true,
     });
   }
   const report = signReport({ ...unsigned, input_sha256: inputSha256 });

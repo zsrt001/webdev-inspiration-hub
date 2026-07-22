@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
-import hmac
 import json
 import os
 from pathlib import Path
@@ -26,6 +25,7 @@ from scripts.release.ensure_observation_cleanup_cycle import (  # noqa: E402
     validate_cleanup_report,
 )
 from scripts.release.observe_release import validate_metric_values  # noqa: E402
+from scripts.release.run_approved_worker_host import verify_report as verify_worker_host_report  # noqa: E402
 
 
 DATABASE_METRIC_FIELDS = {
@@ -38,18 +38,6 @@ DATABASE_METRIC_FIELDS = {
     "legacy_identity_fallback_count",
     "flag_bundle_drift",
 }
-WORKER_REPORT_FIELDS = {
-    "schema",
-    "passed",
-    "action",
-    "contract_sha256",
-    "request_sha256",
-    "host_response_sha256",
-    "state",
-    "coordinates",
-    "observed_at",
-    "signature",
-}
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BLOCKING_LABELS = {
     "p0",
@@ -59,10 +47,6 @@ BLOCKING_LABELS = {
     "severity:p0",
     "severity:p1",
 }
-
-
-def _canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
 def _database_url(value: str) -> str:
@@ -178,31 +162,25 @@ def _validate_worker_report(
     payload: dict[str, Any],
     *,
     signing_key: bytes,
+    expected_source_sha: str,
     expected_runtime_bundle_id: str,
+    expected_api_deployment_id: str,
     expected_worker_deployment_id: str,
     expected_worker_image_digest: str,
 ) -> float:
-    coordinates = payload.get("coordinates")
+    payload = verify_worker_host_report(
+        payload, action="status", signing_key=signing_key
+    )
+    coordinates = payload["coordinates"]
     if (
-        set(payload) != WORKER_REPORT_FIELDS
-        or payload.get("schema") != "vowpic.worker-host-adapter-report.v1"
-        or payload.get("passed") is not True
-        or payload.get("action") != "heartbeat"
-        or not isinstance(coordinates, dict)
+        str(payload.get("state") or "").upper() != "RUNNING"
+        or coordinates.get("source_sha") != expected_source_sha
         or coordinates.get("runtime_bundle_id") != expected_runtime_bundle_id
+        or coordinates.get("api_deployment_id") != expected_api_deployment_id
         or coordinates.get("worker_deployment_id") != expected_worker_deployment_id
         or coordinates.get("worker_image_digest") != expected_worker_image_digest
-        or len(signing_key) < 32
     ):
-        raise ValueError("observation Worker heartbeat coordinates are invalid")
-    unsigned = dict(payload)
-    signature = str(unsigned.pop("signature"))
-    wanted = hmac.new(signing_key, _canonical(unsigned), hashlib.sha256).hexdigest()
-    if (
-        not signature.startswith("hmac-sha256:")
-        or not hmac.compare_digest(signature.removeprefix("hmac-sha256:"), wanted)
-    ):
-        raise ValueError("observation Worker heartbeat signature is invalid")
+        raise ValueError("observation Worker status coordinates are invalid")
     observed = datetime.fromisoformat(
         str(payload["observed_at"]).replace("Z", "+00:00")
     )
@@ -233,7 +211,9 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     worker_age = _validate_worker_report(
         worker,
         signing_key=os.environ.get(args.worker_signing_key_env, "").encode(),
+        expected_source_sha=args.expected_source_sha,
         expected_runtime_bundle_id=args.expected_runtime_bundle_id,
+        expected_api_deployment_id=args.expected_api_deployment_id,
         expected_worker_deployment_id=args.expected_worker_deployment_id,
         expected_worker_image_digest=args.expected_worker_image_digest,
     )

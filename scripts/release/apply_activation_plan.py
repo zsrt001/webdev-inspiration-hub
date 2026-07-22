@@ -270,7 +270,7 @@ def apply_phase(
                 approval=approval,
             )
             if phase != "emergency-off" and activation.get("phase") not in {
-                "WORKER_DISPATCH_ENABLED",
+                "ACCEPTANCE_READY",
                 "TARGET_ACCEPTED",
                 "TARGET_PROMOTED",
                 "PUBLIC_INVALIDATED",

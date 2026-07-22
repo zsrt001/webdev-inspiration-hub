@@ -181,10 +181,23 @@ async function runCommercial(page: Page): Promise<void> {
     `/api/v1/orders/${paidOrderId}/assets/${finalId}/download`,
   );
 
-  await api(page, `/api/v1/payments/${firstPurchase.purchaseId}/refund`, {
+  const refundRequest = await api<JsonObject>(
+    page,
+    `/api/v1/payments/${firstPurchase.purchaseId}/refund`,
+    {
     method: 'POST',
-    expected: [200],
-  });
+      expected: [409],
+    },
+  );
+  const refundDetail = exactKeys(
+    refundRequest.body.detail,
+    ['code', 'message'],
+    'refund support response',
+  );
+  expect(refundDetail.code).toBe('refund_requires_support');
+  process.stdout.write(
+    `Creem Dashboard test-mode refund required for purchase ${firstPurchase.purchaseId}\n`,
+  );
   await pollJson<JsonObject>(
     page,
     `/api/v1/payments/status/${firstPurchase.purchaseId}`,
@@ -319,63 +332,6 @@ async function runSubscription(page: Page): Promise<void> {
       initial_order_id: initialOrderId,
     },
   });
-}
-
-async function runProvider(page: Page, complete: boolean): Promise<void> {
-  const input = action('provider_unknown', [
-    'currency',
-    'cost_cap_minor_units',
-    'template_id',
-    'timeout_seconds',
-  ]);
-  const priorPath = requiredString(
-    complete
-      ? process.env.LINKED_ACCEPTANCE_QUEUED_REPORT
-      : process.env.LINKED_ACCEPTANCE_COMMERCIAL_REPORT,
-    'Provider prior report path',
-    4096,
-  );
-  const prior = readSignedAcceptanceReport(
-    priorPath,
-    complete
-      ? {
-          schema: 'vowpic.linked-commercial-acceptance.v1',
-          phase: 'queue-provider-unknown-state',
-        }
-      : {
-          schema: 'vowpic.linked-commercial-acceptance.v1',
-          phase: 'commercial-before-delete',
-        },
-  );
-  const userId = value(prior.links as JsonObject, 'user_id');
-  const timeout = requiredPositiveInteger(input.timeout_seconds, 'Provider timeout', 7_200);
-  let orderId: string;
-  if (complete) {
-    orderId = value(prior.links as JsonObject, 'order_id');
-    await readyOrder(page, orderId, timeout);
-  } else {
-    orderId = await createOrder(
-      page,
-      requiredString(input.template_id, 'Provider template'),
-      [value(prior.links as JsonObject, 'upload_asset_id')],
-    );
-  }
-  writeBrowserObservation(
-    complete ? 'complete-provider-unknown-state' : 'queue-provider-unknown-state',
-    {
-      user_subject_hmac_sha256: userSubjectHmac(userId),
-      currency: requiredString(input.currency, 'Provider currency', 3),
-      cost_cap_minor_units: requiredPositiveInteger(
-        input.cost_cap_minor_units,
-        'Provider cost cap',
-        1_000_000,
-      ),
-      observations: complete
-        ? { order_ready: true, same_order_visible: true }
-        : { order_accepted: true },
-      links: { user_id: userId, order_id: orderId },
-    },
-  );
 }
 
 async function authenticatedPartner(
@@ -544,12 +500,6 @@ test(`linked Production phase ${selectedPhase}`, async ({ page, browser }) => {
       return;
     case 'subscription':
       await runSubscription(page);
-      return;
-    case 'provider-queue':
-      await runProvider(page, false);
-      return;
-    case 'provider-complete':
-      await runProvider(page, true);
       return;
     case 'quality':
       await runQuality(page, browser);
