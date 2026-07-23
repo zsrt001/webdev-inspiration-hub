@@ -14,8 +14,8 @@ VowPic is an overseas Web SaaS. This document describes the current repository a
 ## External services
 
 - Supabase Auth provides Google OAuth and the PostgreSQL project boundary. The application issues its own HttpOnly session after validating the short-lived Supabase token.
-- EvoLink is the only image-generation Provider. Generation remains OFF while lost-submit-response reconciliation is `UNVERIFIED`.
-- Creem supplies signed payment and subscription facts. Refund and subscription lifecycle contracts remain OFF until official contract and sandbox evidence are verified.
+- EvoLink is the only image-generation Provider. VowPic persists a local `SUBMITTING` attempt before Provider I/O; an ambiguous response becomes `UNKNOWN` and is never submitted again automatically. EvoLink-specific idempotency or client-correlation lookup is not a deployment prerequisite, while the configured key, submit/task-query flow, callback, and private-input fetch still require protected live verification.
+- Creem supplies signed payment and subscription facts. Missing live checkout, scheduled-cancel, or refund evidence keeps only the affected billing capability OFF; it does not block code deployment or EvoLink generation.
 - Vercel hosts Web/API deployments. Automatic Preview is browse-only; protected Preview workflows build exact deployment/runtime evidence.
 
 ## Runtime roles

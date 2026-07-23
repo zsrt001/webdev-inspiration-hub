@@ -1,22 +1,22 @@
 # VowPic Operations Runbook
 
-VowPic is an overseas Web SaaS. This runbook coordinates existing scripts and protected workflows; it does not authorize Production changes. A missing approval, credential, isolated resource, or external contract is `NOT_RUN` and stops the sequence.
+VowPic is an overseas Web SaaS. This runbook coordinates existing scripts and protected workflows; it does not authorize Production changes. A missing approval, credential, isolated resource, or required live observation is `NOT_RUN` for the affected capability.
 
 ## Normal verification order
 
 1. Start from a clean commit on `main` and run PR CI.
 2. Confirm all high-risk capabilities remain OFF.
 3. Run the protected identity Preview against isolated PostgreSQL roles and private storage; verify Google login, owner read, cross-user denial, deletion, and cleanup.
-4. Run the protected commercial Preview against isolated PostgreSQL, Redis, private storage, EvoLink, and an ephemeral Worker; verify heartbeat, Provider contract/fetch, and cleanup.
+4. Run the protected commercial Preview against isolated PostgreSQL, Redis, private storage, EvoLink, and an ephemeral Worker; verify heartbeat, the implemented submit/task-query/callback and private-input-fetch paths, and cleanup.
 5. Run Stage 6 only after Stage 5 is bound to the same exact source/runtime and CLEANED.
-6. Start the manual Production workflow only after approvals, Worker-host contract, Provider/payment contracts, migration inventory, rollback material, and exact final SHA are all verified.
+6. Start the manual Production workflow only after approvals, the Worker-host target, required Provider/payment configuration, migration inventory, rollback material, and exact final SHA are all verified. Missing post-deployment payment lifecycle evidence keeps billing OFF but does not block the deployment itself.
 
 The protected workflow entrypoints are `.github/workflows/integration.yml`, `.github/workflows/safe-baseline-release.yml`, and `.github/workflows/production-release.yml`. Do not replace them with dashboard clicks, deploy hooks, or automatic main-to-production assignment.
 
 ## Feature-off and readiness response
 
 - If public runtime configuration is missing or invalid, every high-risk frontend surface stays hidden and the API returns a fail-closed readiness result.
-- If the Worker heartbeat, Redis lease, Provider contract, private storage, billing contract, or database role check fails, keep the related capability OFF.
+- If the Worker heartbeat, Redis lease, Provider adapter/task-query/fetch path, private storage, billing configuration, or database role check fails, keep only the related capability OFF.
 - Do not restore service by reusing a migration credential, Production database, shared Preview Redis, public bucket, mock Provider response, or seeded payment fact.
 
 ## Migrations and Worker operations
