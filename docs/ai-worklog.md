@@ -3163,3 +3163,33 @@
   build passed. Python/Node syntax and all workflow YAML parsing passed.
 - No Production payment or deployment is claimed by this entry.
 - Proxifier was not modified or restarted.
+
+## 2026-07-22 - Version privacy-safe acceptance fixtures with the release
+
+### Root cause and correction
+
+- The remaining action-bundle Secret design was still impossible: GitHub
+  rejected the approximately 8.4 MiB base64 payload because environment Secrets
+  are bounded far below real image-fixture size. The rejected write did not
+  create or replace a Secret.
+- Added four fictional adult source portraits for the single, couple, remote
+  partner, and golden-anniversary cases. They were generated without real-user
+  identity, resized to reviewed 768 by 960 JPEG fixtures, and contain no payment
+  data or account secrets.
+- Versioned those assets and the two allowlisted `quality` / `account_finalize`
+  actions under `release/linked-acceptance-actions/`. The exact main source SHA
+  now reviews and binds the inputs directly; Production no longer decodes a
+  large action bundle from a GitHub Secret.
+- Removed the obsolete tar extractor and its archive-only tests. The workflow
+  contract now validates exact action phases, exact six-case IDs, exact four
+  assets, JPEG format/dimensions, bounded size, and absence of payment fields.
+
+### Verification
+
+- Focused release regression passed: `39 passed`.
+- Complete backend regression passed: `965 passed, 38 skipped, 1222 subtests`.
+- Frontend unit regression passed: `5 files / 21 tests`; typecheck and Web
+  build passed. Fixture JSON, image dimensions, workflow YAML, and
+  `git diff --check` passed.
+- No Production deployment, payment, provider call, or Proxifier change is
+  claimed by this entry.

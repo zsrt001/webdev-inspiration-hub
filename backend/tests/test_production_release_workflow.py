@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import patch
 import uuid
 import yaml
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -951,11 +952,56 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         linked_flow = (ROOT / "frontend/e2e/linked-production-flow.spec.ts").read_text(
             encoding="utf-8"
         )
-        extractor = _path_module(
-            "extract_linked_acceptance_bundle_no_payment",
-            ROOT / "scripts/release/extract_linked_acceptance_bundle.py",
+        action_root = ROOT / "release/linked-acceptance-actions"
+        quality = json.loads((action_root / "quality.json").read_text(encoding="utf-8"))
+        account_finalize = json.loads(
+            (action_root / "account_finalize.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(extractor.PHASES, ("quality", "account_finalize"))
+        fixture_text = json.dumps([quality, account_finalize], sort_keys=True)
+        cases_contract = json.loads(
+            (ROOT / "release/quality-cases.json").read_text(encoding="utf-8")
+        )["cases"]
+        expected_ids = [item["id"] for item in cases_contract]
+        self.assertEqual(quality["schema"], "vowpic.linked-production-action.v1")
+        self.assertEqual(quality["phase"], "quality")
+        self.assertEqual([item["id"] for item in quality["cases"]], expected_ids)
+        expected_subjects = {item["id"]: item["subjects"] for item in cases_contract}
+        for item in quality["cases"]:
+            self.assertEqual(
+                set(item), {"id", "template_id", "asset_paths", "style_text"}
+            )
+            self.assertEqual(len(item["asset_paths"]), expected_subjects[item["id"]])
+            self.assertTrue(item["template_id"])
+            self.assertTrue(item["style_text"])
+        self.assertEqual(
+            account_finalize,
+            {
+                "schema": "vowpic.linked-production-action.v1",
+                "phase": "account_finalize",
+                "currency": "USD",
+                "cost_cap_minor_units": 1,
+            },
+        )
+        asset_paths = {
+            relative
+            for item in quality["cases"]
+            for relative in item["asset_paths"]
+        }
+        self.assertEqual(
+            asset_paths,
+            {
+                "assets/primary_woman.jpg",
+                "assets/partner_man.jpg",
+                "assets/golden_woman.jpg",
+                "assets/golden_man.jpg",
+            },
+        )
+        for relative in asset_paths:
+            asset = action_root / relative
+            self.assertLess(asset.stat().st_size, 1_000_000)
+            with Image.open(asset) as image:
+                self.assertEqual(image.format, "JPEG")
+                self.assertEqual(image.size, (768, 960))
         for forbidden in (
             "LINKED_ACCEPTANCE_PHASE=commercial",
             "LINKED_ACCEPTANCE_PHASE=subscription",
@@ -965,8 +1011,16 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "card_number",
             "cvc",
             "completeCreemCheckout",
+            "LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64",
+            "extract_linked_acceptance_bundle.py",
         ):
-            self.assertNotIn(forbidden, workflow + linked_flow)
+            self.assertNotIn(forbidden, workflow + linked_flow + fixture_text)
+        self.assertEqual(
+            workflow.count(
+                'LINKED_ACCEPTANCE_ACTION_ROOT="$GITHUB_WORKSPACE/release/linked-acceptance-actions"'
+            ),
+            2,
+        )
         self.assertIn("LINKED_ACCEPTANCE_PHASE=account_finalize", workflow)
         self.assertIn('--account-cleanup-report "$RUNNER_TEMP/commercial-chain.json"', workflow)
         self.assertIn('--identity-report "$HANDOFF/auth-security.json"', workflow)

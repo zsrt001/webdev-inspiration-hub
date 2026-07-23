@@ -833,7 +833,6 @@ jobs:
           PRODUCTION_GOOGLE_PARTNER_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_EMAIL }}
           PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64 }}
           PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
-          LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64: ${{ secrets.LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64 }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
@@ -889,19 +888,13 @@ jobs:
           chmod 600 "$RUNNER_TEMP/google-state.json"
           printf '%s' "$PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64" | base64 --decode > "$RUNNER_TEMP/google-partner-state.json"
           chmod 600 "$RUNNER_TEMP/google-partner-state.json"
-          printf '%s' "$LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64" | base64 --decode > "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
-          chmod 600 "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
-          python scripts/release/extract_linked_acceptance_bundle.py \
-            --archive "$RUNNER_TEMP/linked-acceptance-actions.tar.gz" \
-            --output-directory "$RUNNER_TEMP/linked-acceptance-actions" \
-            --output "$RUNNER_TEMP/linked-acceptance-action-extraction.json"
           FORMAL_BASE_URL="$PRODUCTION_BASE_URL"
           export RUN_PRODUCTION_E2E=1
           export PRODUCTION_BASE_URL="$RELEASE_STAGED_TARGET_DEPLOYMENT_URL"
           export PRODUCTION_GOOGLE_STORAGE_STATE_PATH="$RUNNER_TEMP/google-state.json"
           export PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_PATH="$RUNNER_TEMP/google-partner-state.json"
           export PRODUCTION_GOOGLE_PARTNER_EMAIL
-          export LINKED_ACCEPTANCE_ACTION_ROOT="$RUNNER_TEMP/linked-acceptance-actions"
+          export LINKED_ACCEPTANCE_ACTION_ROOT="$GITHUB_WORKSPACE/release/linked-acceptance-actions"
           export PRODUCTION_SOURCE_SHA="$SOURCE_SHA"
           export PRODUCTION_RUNTIME_BUNDLE_ID="$RELEASE_RUNTIME_BUNDLE_ID"
           export PRODUCTION_DEPLOYMENT_ID="$RELEASE_API_DEPLOYMENT_ID"
@@ -1024,7 +1017,6 @@ jobs:
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           PRODUCTION_GOOGLE_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_EMAIL }}
           PRODUCTION_GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_STORAGE_STATE_BASE64 }}
-          LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64: ${{ secrets.LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64 }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           QUALITY_REVIEW_SIGNING_KEY: ${{ secrets.QUALITY_REVIEW_SIGNING_KEY }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
@@ -1051,17 +1043,11 @@ jobs:
           cmp "$RUNNER_TEMP/release-manifest.json" "$HANDOFF/release-manifest.json"
           printf '%s' "$PRODUCTION_GOOGLE_STORAGE_STATE_BASE64" | base64 --decode > "$RUNNER_TEMP/google-state.json"
           chmod 600 "$RUNNER_TEMP/google-state.json"
-          printf '%s' "$LINKED_ACCEPTANCE_ACTION_BUNDLE_BASE64" | base64 --decode > "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
-          chmod 600 "$RUNNER_TEMP/linked-acceptance-actions.tar.gz"
-          python scripts/release/extract_linked_acceptance_bundle.py \
-            --archive "$RUNNER_TEMP/linked-acceptance-actions.tar.gz" \
-            --output-directory "$RUNNER_TEMP/linked-acceptance-actions" \
-            --output "$RUNNER_TEMP/linked-acceptance-action-extraction.json"
           export RUN_PRODUCTION_E2E=1
           FORMAL_BASE_URL="$PRODUCTION_BASE_URL"
           export PRODUCTION_BASE_URL="$RELEASE_STAGED_TARGET_DEPLOYMENT_URL"
           export PRODUCTION_GOOGLE_STORAGE_STATE_PATH="$RUNNER_TEMP/google-state.json"
-          export LINKED_ACCEPTANCE_ACTION_ROOT="$RUNNER_TEMP/linked-acceptance-actions"
+          export LINKED_ACCEPTANCE_ACTION_ROOT="$GITHUB_WORKSPACE/release/linked-acceptance-actions"
           export PRODUCTION_SOURCE_SHA="$SOURCE_SHA"
           export PRODUCTION_RUNTIME_BUNDLE_ID="$RELEASE_RUNTIME_BUNDLE_ID"
           export PRODUCTION_DEPLOYMENT_ID="$RELEASE_API_DEPLOYMENT_ID"
