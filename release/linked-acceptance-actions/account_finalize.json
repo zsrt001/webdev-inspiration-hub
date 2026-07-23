@@ -1,0 +1,6 @@
+{
+  "schema": "vowpic.linked-production-action.v1",
+  "phase": "account_finalize",
+  "currency": "USD",
+  "cost_cap_minor_units": 1
+}

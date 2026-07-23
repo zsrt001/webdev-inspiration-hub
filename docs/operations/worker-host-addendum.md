@@ -69,6 +69,10 @@ initiated in the Creem Dashboard/support workflow and is accepted only after
 the signed `refund.created` event produces the matching immutable reversal.
 Until those facts exist, payment acceptance remains `NOT_RUN`; code deployment
 and EvoLink image generation are not blocked by a reusable payment credential.
+The non-payment acceptance inputs are versioned with the reviewed source under
+`release/linked-acceptance-actions/`. They contain only fictional adult test
+portraits and fixed generation/account-cleanup actions, so no user portrait or
+oversized binary payload is stored in a GitHub Secret.
 
 ## Current release effect
 

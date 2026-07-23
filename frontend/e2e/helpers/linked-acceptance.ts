@@ -108,13 +108,31 @@ function privatePath(candidate: string, label: string, mustExist: boolean): stri
   return resolved;
 }
 
-export function readProtectedAction(phase: string): JsonObject {
-  const root = privatePath(
-    requiredString(process.env.LINKED_ACCEPTANCE_ACTION_ROOT, 'LINKED_ACCEPTANCE_ACTION_ROOT', 4096),
-    'linked acceptance action root',
-    true,
+function linkedActionRoot(): string {
+  const workspace = realpathSync(
+    requiredString(process.env.GITHUB_WORKSPACE, 'GITHUB_WORKSPACE', 4096),
   );
-  const candidate = privatePath(path.join(root, `${phase}.json`), `${phase} action`, true);
+  const expected = realpathSync(path.join(workspace, 'release', 'linked-acceptance-actions'));
+  const supplied = realpathSync(
+    requiredString(process.env.LINKED_ACCEPTANCE_ACTION_ROOT, 'LINKED_ACCEPTANCE_ACTION_ROOT', 4096),
+  );
+  if (supplied !== expected) {
+    throw new Error('linked acceptance action root must be the reviewed release fixture');
+  }
+  return supplied;
+}
+
+function linkedActionPath(root: string, relative: string, label: string): string {
+  const resolved = realpathSync(path.join(root, relative));
+  if (!resolved.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`${label} escaped the reviewed release fixture`);
+  }
+  return resolved;
+}
+
+export function readProtectedAction(phase: string): JsonObject {
+  const root = linkedActionRoot();
+  const candidate = linkedActionPath(root, `${phase}.json`, `${phase} action`);
   const stat = lstatSync(candidate);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 2 || stat.size > 1_000_000) {
     throw new Error(`${phase} action must be one bounded regular file`);
@@ -176,12 +194,8 @@ export function resolveProtectedAsset(relative: unknown): string {
   if (!/^assets\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)) {
     throw new Error('acceptance asset path is not allowlisted');
   }
-  const root = privatePath(
-    requiredString(process.env.LINKED_ACCEPTANCE_ACTION_ROOT, 'LINKED_ACCEPTANCE_ACTION_ROOT', 4096),
-    'linked acceptance action root',
-    true,
-  );
-  const resolved = privatePath(path.join(root, ...name.split('/')), 'acceptance asset', true);
+  const root = linkedActionRoot();
+  const resolved = linkedActionPath(root, name, 'acceptance asset');
   const stat = lstatSync(resolved);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > 15 * 1024 * 1024) {
     throw new Error('acceptance asset must be one bounded regular file');

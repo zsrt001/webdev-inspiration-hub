@@ -1,0 +1,43 @@
+{
+  "schema": "vowpic.linked-production-action.v1",
+  "phase": "quality",
+  "timeout_seconds": 1800,
+  "cases": [
+    {
+      "id": "single_template",
+      "template_id": "solo_royal_castle",
+      "asset_paths": ["assets/primary_woman.jpg"],
+      "style_text": "A refined full-length royal bridal studio portrait with a warm natural expression and clear facial identity."
+    },
+    {
+      "id": "single_text",
+      "template_id": "solo_korean_minimal",
+      "asset_paths": ["assets/primary_woman.jpg"],
+      "style_text": "Minimalist white bridal editorial in a bright contemporary gallery, clean lines, soft daylight, natural skin texture."
+    },
+    {
+      "id": "single_outdoor_text",
+      "template_id": "solo_old_money",
+      "asset_paths": ["assets/primary_woman.jpg"],
+      "style_text": "Elegant outdoor estate wedding portrait in a quiet European garden at golden hour, understated luxury and realistic detail."
+    },
+    {
+      "id": "local_couple",
+      "template_id": "royal_castle",
+      "asset_paths": ["assets/primary_woman.jpg", "assets/partner_man.jpg"],
+      "style_text": "Connected full-length couple portrait in an indoor castle-inspired bridal studio, both faces clear and naturally expressive."
+    },
+    {
+      "id": "golden_anniversary",
+      "template_id": "golden_vintage_studio_8090",
+      "asset_paths": ["assets/golden_woman.jpg", "assets/golden_man.jpg"],
+      "style_text": "Respectful golden-anniversary portrait in an authentic 1980s to 1990s wedding studio, preserving age, wrinkles, and dignified expressions."
+    },
+    {
+      "id": "partner_invite_remote_couple",
+      "template_id": "classic_bw",
+      "asset_paths": ["assets/primary_woman.jpg", "assets/partner_man.jpg"],
+      "style_text": "Timeless black-and-white editorial wedding portrait, balanced couple spacing, both faces near-frontal and identity-consistent."
+    }
+  ]
+}
