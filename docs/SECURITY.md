@@ -26,7 +26,7 @@ VowPic is an overseas Web SaaS. Security claims require code, test, and runtime 
 ## Generation and payment
 
 - EvoLink output and task state are untrusted external data and must pass schema, lineage, status, cost, and QA validation.
-- A submission with a lost response stays UNKNOWN and cannot be charged or resubmitted unless the verified Provider contract supports safe reconciliation.
+- A submission with a lost response stays `UNKNOWN`, is not charged as accepted, and is never resubmitted automatically. A known Provider task ID may be queried; an independently established task may be attached only through the audited recovery path.
 - Creem webhooks require signature verification, event uniqueness, transaction lineage, and idempotent projection. Redirect state alone never proves payment.
 - Credits use reservations, immutable allocations, capture/release/reversal facts, and duplicate-submit protection.
 
