@@ -7,6 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 _MINIMUM_SCHEMA_REVISION = "20260712_0014"
+# Only schema heads tied to an approved runtime bundle are accepted. Intermediate
+# Alembic revisions are migration states, not deployable runtime contracts.
+_RUNTIME_COMPATIBLE_SCHEMA_REVISIONS = frozenset(
+    {
+        _MINIMUM_SCHEMA_REVISION,
+        "20260710_0020",
+    }
+)
 _REQUIRED_TABLES = frozenset(
     {
         "users",
@@ -143,9 +151,14 @@ async def validate_runtime_schema(db: AsyncSession) -> None:
     click_stats_columns = {str(value) for value in click_stats_column_result.scalars().all()}
 
     problems: list[str] = []
-    if not revisions or max(revisions) < _MINIMUM_SCHEMA_REVISION:
+    if (
+        len(revisions) != 1
+        or revisions[0] not in _RUNTIME_COMPATIBLE_SCHEMA_REVISIONS
+    ):
         problems.append(
-            f"revision must be at least {_MINIMUM_SCHEMA_REVISION}; found {', '.join(revisions) or 'none'}"
+            "revision must be on the runtime-compatible Alembic chain from "
+            f"{_MINIMUM_SCHEMA_REVISION}; found "
+            f"{', '.join(revisions) or 'none'}"
         )
     missing_tables = sorted(_REQUIRED_TABLES - tables)
     if missing_tables:

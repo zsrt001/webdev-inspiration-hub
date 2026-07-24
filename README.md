@@ -15,7 +15,7 @@ VowPic 是面向海外用户的响应式 Web SaaS，用于生成、购买和私�
 ## 技术结构
 
 - `frontend/`：Vue 3 + Uni-app 的浏览器前端。
-- `backend/`：FastAPI API、PostgreSQL/Alembic、积分账本、Creem 支付、Redis/ARQ Worker、生成与质量检查服务。
+- `backend/`：FastAPI 网站后端、PostgreSQL/Alembic、积分账本、Creem 支付、EvoLink 生成与质量检查服务。
 - `docs/`：当前 PRD、获批设计、分阶段实施计划、运行手册和工程留痕。
 
 `frontend/package.json` 中的 `uni -p h5` 是 Uni-app 固定的 Web 编译目标标识，不代表产品定位为“H5 项目”，也不引入独立移动端产品。
@@ -23,7 +23,7 @@ VowPic 是面向海外用户的响应式 Web SaaS，用于生成、购买和私�
 ## 权威文档
 
 - 当前产品需求：`docs/PRD.md`
-- 获批商业闭环设计：`docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md`
+- 当前生产收口计划：`docs/operations/vowpic-finite-production-closure-plan.md`
 - 分阶段实施计划：`docs/superpowers/plans/2026-07-10-vowpic-commercial-closure-implementation.md`
 - 当前架构：`docs/ARCHITECTURE.md`
 - 安全边界：`docs/SECURITY.md`
@@ -31,7 +31,7 @@ VowPic 是面向海外用户的响应式 Web SaaS，用于生成、购买和私�
 - 风险锁定运行手册：`docs/operations/risk-lockdown-runbook.md`
 - 工程留痕：`docs/ai-worklog.md`
 
-旧版 PRD、部署说明和历史工作日志只用于追溯，不得覆盖上述当前合同。
+2026-07-10 商业闭环设计、旧版 PRD、部署说明和历史工作日志只用于追溯，不得覆盖上述当前合同。
 
 ## 本地验证
 
@@ -62,4 +62,4 @@ Vitest 单元/组件测试和基于真实 Web 构建的 Playwright 无障碍测�
 - 生产验收状态与未达门槛：`docs/PRODUCTION_ACCEPTANCE.md`
 - 安全部署与回滚步骤：`docs/operations/risk-lockdown-runbook.md`
 
-不要仅凭本地 `.env`、构建产物或历史部署记录推断正式环境状态；生产结论必须绑定精确 source SHA、部署、数据库 revision、Worker 制品和验收证据。
+不要仅凭本地 `.env`、构建产物或历史部署记录推断正式环境状态；生产结论必须绑定精确 source SHA、网站后端部署、数据库 revision 和验收证据。

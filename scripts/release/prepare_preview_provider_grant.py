@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create one real Preview Provider grant from an existing runtime-bound test journey."""
+"""Create one Preview Provider grant from a backend-bound test journey."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from app.services.media_asset_service import IssuedAssetGrant, create_provider_g
 
 INPUT_KEYS = {
     "schema", "activation_id", "case_id", "source_sha", "runtime_bundle_id", "api_deployment_id",
-    "worker_deployment_id", "worker_image_digest", "job_id", "attempt_id", "asset_id",
+    "backend_executor_digest", "job_id", "attempt_id", "asset_id",
 }
 _SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 _RUNTIME_ID = re.compile(r"^rtb_[0-9a-f]{64}$")
@@ -57,11 +57,10 @@ def validate_input_reference(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Preview Provider input source SHA is invalid")
     if not _RUNTIME_ID.fullmatch(str(payload.get("runtime_bundle_id") or "")):
         raise ValueError("Preview Provider input runtime ID is invalid")
-    for field in ("api_deployment_id", "worker_deployment_id"):
-        if not _DEPLOYMENT.fullmatch(str(payload.get(field) or "")):
-            raise ValueError(f"Preview Provider input {field} is invalid")
-    if not _DIGEST.fullmatch(str(payload.get("worker_image_digest") or "")):
-        raise ValueError("Preview Provider input Worker digest is invalid")
+    if not _DEPLOYMENT.fullmatch(str(payload.get("api_deployment_id") or "")):
+        raise ValueError("Preview Provider input API deployment ID is invalid")
+    if not _DIGEST.fullmatch(str(payload.get("backend_executor_digest") or "")):
+        raise ValueError("Preview Provider input backend executor digest is invalid")
     return dict(payload)
 
 
@@ -98,8 +97,7 @@ def build_grant_reference(
         "source_sha": normalized["source_sha"],
         "runtime_bundle_id": normalized["runtime_bundle_id"],
         "api_deployment_id": normalized["api_deployment_id"],
-        "worker_deployment_id": normalized["worker_deployment_id"],
-        "worker_image_digest": normalized["worker_image_digest"],
+        "backend_executor_digest": normalized["backend_executor_digest"],
         "grant_id": str(issued.grant.id),
         "asset_id": normalized["asset_id"],
         "job_id": normalized["job_id"],
@@ -116,7 +114,7 @@ def _runtime_matches(reference: dict[str, Any]) -> bool:
         and settings.source_sha == reference["source_sha"]
         and settings.runtime_bundle_id.strip() == reference["runtime_bundle_id"]
         and settings.deployment_id == reference["api_deployment_id"]
-        and settings.worker_image_digest.strip() == reference["worker_image_digest"]
+        and settings.backend_executor_digest == reference["backend_executor_digest"]
         and settings.effective_provider_grant_origin.startswith("https://vowpic-provider-")
     )
 
@@ -149,8 +147,9 @@ async def prepare_grant(
                     "source_sha": normalized["source_sha"],
                     "runtime_bundle_id": normalized["runtime_bundle_id"],
                     "api_deployment_id": normalized["api_deployment_id"],
-                    "worker_deployment_id": normalized["worker_deployment_id"],
-                    "worker_image_digest": normalized["worker_image_digest"],
+                    "worker_deployment_id": None,
+                    "worker_role": None,
+                    "worker_image_digest": None,
                 }
                 if (
                     activation is None
@@ -173,7 +172,7 @@ async def prepare_grant(
                     not in {GenerationJobStatus.QUEUED, GenerationJobStatus.ACTIVE}
                     or job.runtime_bundle_id != normalized["runtime_bundle_id"]
                     or job.api_deployment_id != normalized["api_deployment_id"]
-                    or job.expected_worker_image_digest != normalized["worker_image_digest"]
+                    or job.expected_worker_image_digest != normalized["backend_executor_digest"]
                 ):
                     raise ValueError("Preview Provider generation job binding mismatch")
                 attempt = await db.scalar(

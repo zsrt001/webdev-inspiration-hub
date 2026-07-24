@@ -69,7 +69,6 @@ def build_private_media_verdict(
     *,
     inventory: dict[str, Any],
     migration_report: dict[str, Any],
-    runtime_drain_report: dict[str, Any] | None = None,
     probe_reports: list[dict[str, Any]] | None = None,
     live_probe: dict[str, Any] | None = None,
     now: datetime | None = None,
@@ -100,8 +99,6 @@ def build_private_media_verdict(
         raise ValueError("media migration mode is unsupported")
     if reconciled != eligible:
         raise ValueError("media migration counts do not reconcile")
-    if runtime_drain_report is not None and runtime_drain_report.get("passed") is not True:
-        raise ValueError("runtime drain report did not PASS")
     probe_locations: list[str] = []
     probe_hmac_sets: list[set[str]] = []
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -203,7 +200,6 @@ def build_private_media_verdict(
         "reconciled_count": reconciled,
         "inventory_url_set_sha256": inventory["url_inventory_hmac_sha256"],
         "probe_locations": sorted(probe_locations),
-        "runtime_drain_verified": runtime_drain_report is not None,
         "live_private_compatible_probe": live_probe is not None,
         "verified_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -220,7 +216,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", required=True)
     parser.add_argument("--migration-report", required=True)
-    parser.add_argument("--runtime-drain-report")
     parser.add_argument("--probe-report", action="append", default=[])
     parser.add_argument("--api-base-url")
     parser.add_argument("--require-private-read-all", action="store_true")
@@ -229,11 +224,6 @@ def main() -> int:
     try:
         inventory, inventory_sha = _load(Path(args.inventory))
         migration, migration_sha = _load(Path(args.migration_report))
-        drain = (
-            _load(Path(args.runtime_drain_report))[0]
-            if args.runtime_drain_report
-            else None
-        )
         probes = [_load(Path(path))[0] for path in args.probe_report]
         live_probe = None
         if args.api_base_url:
@@ -250,7 +240,6 @@ def main() -> int:
         verdict = build_private_media_verdict(
             inventory=inventory,
             migration_report=migration,
-            runtime_drain_report=drain,
             probe_reports=probes,
             live_probe=live_probe,
         )

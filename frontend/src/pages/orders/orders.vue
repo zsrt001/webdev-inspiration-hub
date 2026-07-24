@@ -67,34 +67,26 @@
 import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
+import {
+  type OrderRead,
+  displayAsset,
+  isOrderDeliverable,
+  isOrderInProgress,
+  isOrderManualOrFailed,
+} from '../../contracts/order';
 import { useI18nStore } from '../../stores/i18n';
 import { useOpsStore } from '../../stores/ops';
 import { getLocalizedTemplateTitle, useTemplateStore } from '../../stores/template';
 import { get, resolvePublicUrl } from '../../utils/api';
 import { resolveOrderLoadFailure } from './orderLoadState';
 
-interface Order {
-  id: string;
-  template_id: string | null;
-  preview_image_urls: Record<string, string> | null;
-  final_image_urls: Record<string, string> | null;
-  preview_master_image_url?: string | null;
-  final_master_image_url?: string | null;
-  created_at: string;
-  status: string;
-  error_message?: string | null;
-  failure_code?: string | null;
-}
-
 interface DisplayOrder {
   id: string;
   styleName: string;
-  status: string;
+  status: OrderRead['status'];
   previewUrl: string;
   createdAt: string;
 }
-
-type OrdersResponse = Order[] | { value?: Order[]; items?: Order[]; results?: Order[]; orders?: Order[] };
 
 const orders = ref<DisplayOrder[]>([]);
 const loading = ref(true);
@@ -118,8 +110,8 @@ const templateTitleMap = computed(() => {
 });
 
 const orderStats = computed(() => {
-  const completed = orders.value.filter((order) => order.status === 'COMPLETED').length;
-  const generating = orders.value.filter((order) => ['CREATED', 'CHECKING', 'GENERATING'].includes(order.status)).length;
+  const completed = orders.value.filter((order) => isOrderDeliverable(order.status)).length;
+  const generating = orders.value.filter((order) => isOrderInProgress(order.status)).length;
   return [
     { key: 'total', label: tr('总作品', 'Total'), value: orders.value.length },
     { key: 'completed', label: tr('已交付', 'Delivered'), value: completed },
@@ -127,25 +119,9 @@ const orderStats = computed(() => {
   ];
 });
 
-const deliveryVariantSuffixes = ['portrait_2x3', 'print_3x2', 'xhs_3x4', 'portrait_4x5', 'wallpaper_9x16', 'square_1x1'];
-function pickPrimaryFromMap(urls: Record<string, string> | null): string | null {
-  if (!urls) return null;
-  if (urls.image_1) return urls.image_1;
-  const master = Object.entries(urls).find(([key]) => !deliveryVariantSuffixes.some((suffix) => key.includes(suffix)));
-  if (master?.[1]) return master[1];
-  return Object.values(urls)[0] || null;
-}
-
-function pickPrimaryImage(order: Order): string {
-  if (order.final_master_image_url) return resolvePublicUrl(order.final_master_image_url);
-  if (order.preview_master_image_url) return resolvePublicUrl(order.preview_master_image_url);
-
-  const final = pickPrimaryFromMap(order.final_image_urls);
-  if (final) return resolvePublicUrl(final);
-
-  const preview = pickPrimaryFromMap(order.preview_image_urls);
-  if (preview) return resolvePublicUrl(preview);
-
+function pickPrimaryImage(order: OrderRead): string {
+  const asset = displayAsset(order);
+  if (asset) return resolvePublicUrl(asset.download_path);
   return resolvePublicUrl('/style-previews/royal_castle.jpg');
 }
 
@@ -171,21 +147,12 @@ function formatDate(isoString: string): string {
   });
 }
 
-function resolveStyleName(order: Order): string {
+function resolveStyleName(order: OrderRead): string {
   if (order.template_id && templateTitleMap.value.has(order.template_id)) {
     return templateTitleMap.value.get(order.template_id) || t('orders.custom');
   }
   if (order.template_id) return order.template_id;
   return t('orders.custom');
-}
-
-function normalizeOrderRows(response: OrdersResponse): Order[] {
-  if (Array.isArray(response)) return response;
-  if (Array.isArray(response?.value)) return response.value;
-  if (Array.isArray(response?.items)) return response.items;
-  if (Array.isArray(response?.results)) return response.results;
-  if (Array.isArray(response?.orders)) return response.orders;
-  return [];
 }
 
 async function fetchOrders() {
@@ -197,12 +164,11 @@ async function fetchOrders() {
     if (!templateStore.templates.length) {
       await templateStore.fetchTemplates();
     }
-    const response = await get<OrdersResponse>('/orders', { showLoading: false, showError: false });
-    const rows = normalizeOrderRows(response);
+    const rows = await get<OrderRead[]>('/orders', { showLoading: false, showError: false });
     orders.value = rows.map((order) => ({
       id: order.id,
       styleName: resolveStyleName(order),
-      status: order.error_message || order.failure_code ? 'FAILED' : String(order.status || '').toUpperCase(),
+      status: order.status,
       previewUrl: pickPrimaryImage(order),
       createdAt: formatDate(order.created_at),
     }));
@@ -216,22 +182,28 @@ async function fetchOrders() {
   }
 }
 
-function getStatusText(status: string): string {
+function getStatusText(status: OrderRead['status']): string {
   const statusMap: Record<string, string> = {
     CREATED: t('orders.status_created'),
     CHECKING: t('orders.status_checking'),
+    QUEUED: tr('已排队', 'Queued'),
     GENERATING: t('orders.status_generating'),
+    QA_PENDING: tr('质检中', 'Quality checking'),
+    REPAIRING: tr('修复中', 'Repairing'),
+    READY: t('orders.status_completed'),
     COMPLETED: t('orders.status_completed'),
     FAILED: t('orders.status_failed'),
-    REFUNDED: t('orders.status_refunded'),
+    CANCELLED: tr('已取消', 'Cancelled'),
+    UNKNOWN_EXTERNAL_STATE: tr('等待人工对账', 'Manual reconciliation'),
+    CONSENT_REVIEW_REQUIRED: tr('等待授权复核', 'Consent review'),
+    DELETED: tr('已删除', 'Deleted'),
   };
   return statusMap[status] || status;
 }
 
-function badgeClass(status: string): string {
-  const normalized = String(status || '').toLowerCase();
-  if (normalized === 'completed') return 'completed';
-  if (normalized === 'failed' || normalized === 'refunded') return 'failed';
+function badgeClass(status: OrderRead['status']): string {
+  if (isOrderDeliverable(status)) return 'completed';
+  if (isOrderManualOrFailed(status)) return 'failed';
   return 'pending';
 }
 

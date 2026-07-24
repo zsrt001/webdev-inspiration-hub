@@ -15,7 +15,6 @@ from app.core.config import get_settings
 from app.models.generation_job import GenerationJob
 from app.models.media_asset import MediaAsset, MediaAssetRole, MediaAssetStatus
 from app.models.order import Order, OrderStatus
-from app.models.outbox_event import OutboxEvent, OutboxEventStatus
 from app.schemas.order import AcceptedOrder
 from app.services.credit_reservation_service import (
     CreditFundingLock,
@@ -67,7 +66,7 @@ class OrderPolicySnapshot(BaseModel):
 class RuntimeExecutionStamp:
     api_deployment_id: str
     runtime_bundle_id: str
-    worker_image_digest: str
+    backend_executor_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,23 +88,22 @@ class OrderTransactionGraph:
     order: Order | None
     reservation: object | None
     job: GenerationJob | None
-    outbox: OutboxEvent | None
 
 
 def require_server_runtime_execution_stamp() -> RuntimeExecutionStamp:
     deployment_id = str(settings.vercel_deployment_id or "").strip()
     runtime_bundle_id = str(settings.runtime_bundle_id or "").strip().lower()
-    worker_digest = str(settings.worker_image_digest or "").strip().lower()
+    backend_executor_digest = settings.backend_executor_digest
     if not deployment_id or len(deployment_id) > 128:
         raise OrderTransactionError("api_deployment_id_missing", status_code=503)
     if not re.fullmatch(r"rtb_[0-9a-f]{64}", runtime_bundle_id):
         raise OrderTransactionError("runtime_bundle_id_invalid", status_code=503)
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", worker_digest):
-        raise OrderTransactionError("worker_image_digest_invalid", status_code=503)
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", backend_executor_digest):
+        raise OrderTransactionError("backend_executor_digest_invalid", status_code=503)
     return RuntimeExecutionStamp(
         api_deployment_id=deployment_id,
         runtime_bundle_id=runtime_bundle_id,
-        worker_image_digest=worker_digest,
+        backend_executor_digest=backend_executor_digest,
     )
 
 
@@ -199,7 +197,6 @@ async def create_order_transaction_graph(
                 order=None,
                 reservation=None,
                 job=None,
-                outbox=None,
             )
         raise OrderTransactionError("order_idempotency_in_progress")
     runtime = require_server_runtime_execution_stamp()
@@ -243,26 +240,14 @@ async def create_order_transaction_graph(
         submission_correlation_id=uuid.uuid4(),
         api_deployment_id=runtime.api_deployment_id,
         runtime_bundle_id=runtime.runtime_bundle_id,
-        expected_worker_image_digest=runtime.worker_image_digest,
+        # Deployed schema compatibility: this legacy column now carries the
+        # website API executor digest, never a separate Worker image.
+        expected_worker_image_digest=runtime.backend_executor_digest,
     )
     db.add(job)
     await db.flush()
     order.reservation_id = reservation.id
     order.generation_job_id = job.id
-    outbox = OutboxEvent(
-        id=uuid.uuid4(),
-        aggregate_type="generation_job",
-        aggregate_id=job.id,
-        event_type="GENERATION_JOB_CREATED",
-        dedupe_key=f"generation:v1:{job.id}",
-        payload_version="generation-job.v1",
-        payload_json={"job_id": str(job.id), "payload_version": "generation-job.v1"},
-        status=OutboxEventStatus.PENDING,
-        attempt_count=0,
-        next_attempt_at=current,
-        fencing_token=0,
-    )
-    db.add(outbox)
     accepted = AcceptedOrder(
         order_id=order.id,
         status="QUEUED",
@@ -280,7 +265,6 @@ async def create_order_transaction_graph(
         order=order,
         reservation=reservation,
         job=job,
-        outbox=outbox,
     )
 
 

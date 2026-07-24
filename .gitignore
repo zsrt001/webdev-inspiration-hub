@@ -76,3 +76,6 @@ backend/app/_vendor_path.txt
 
 .vercel
 backend/.private-storage/
+
+# Task-local disposable release and database proof scratch
+/.tmp/

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
+import os
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from app.models.credit_grant_lot import CreditGrantLot
 from app.models.credit_reservation import (
@@ -23,6 +26,7 @@ from app.models.welcome_grant_claim import WelcomeGrantClaim
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "backend/alembic/versions/20260710_0016_commercial_ledger.py"
 GENERATION_MIGRATION = ROOT / "backend/alembic/versions/20260710_0019_generation_jobs.py"
+GUARD_REPAIR = ROOT / "scripts/release/repair_commercial_guard_row_shapes.py"
 
 
 class CommercialLedgerMigrationTest(unittest.TestCase):
@@ -91,6 +95,79 @@ class CommercialLedgerMigrationTest(unittest.TestCase):
 
         self.assertEqual(source.count("CAST(:id AS uuid)"), 2)
         self.assertIn("CAST(:catalog_id AS uuid)", source)
+
+    def test_cross_table_guards_dispatch_before_accessing_table_specific_fields(
+        self,
+    ) -> None:
+        migration = MIGRATION.read_text(encoding="utf-8")
+        repair = GUARD_REPAIR.read_text(encoding="utf-8")
+        for source in (migration, repair):
+            self.assertNotIn("target_id := CASE", source)
+            self.assertIn(
+                "IF TG_TABLE_NAME = 'credit_reservations' THEN",
+                source,
+            )
+            self.assertIn(
+                "ELSIF TG_TABLE_NAME = 'credit_reservation_allocations' THEN",
+                source,
+            )
+            self.assertIn(
+                "IF TG_TABLE_NAME = 'order_entitlements' THEN",
+                source,
+            )
+            self.assertIn(
+                "ELSIF TG_TABLE_NAME = 'order_entitlement_fundings' THEN",
+                source,
+            )
+        self.assertIn('TARGET_REVISION = "20260710_0020"', repair)
+        self.assertEqual(repair.count("SECURITY DEFINER"), 2)
+        self.assertGreaterEqual(
+            repair.count("SET search_path = pg_catalog, public"),
+            2,
+        )
+        self.assertIn("owner_and_acl_preserved", repair)
+        self.assertIn('"owner_sha256"', repair)
+        self.assertNotIn('"owner":', repair)
+        self.assertIn("SET LOCAL lock_timeout = '5s'", repair)
+        self.assertIn("SET LOCAL statement_timeout = '1800s'", repair)
+        self.assertIn("Production must use ", repair)
+        self.assertIn('"apply_additive_migrations.py"', repair)
+        self.assertNotIn('"--database-url-env"', repair)
+        self.assertIn("GITHUB_WORKFLOW_REF", repair)
+        self.assertIn("prove_preview_database_isolation", repair)
+
+    def test_preview_guard_repair_requires_the_exact_authenticated_workflow(
+        self,
+    ) -> None:
+        repair = importlib.import_module(
+            "scripts.release.repair_commercial_guard_row_shapes"
+        )
+        valid = {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": "zsrt001/webdev-inspiration-hub",
+            "GITHUB_WORKFLOW_REF": (
+                "zsrt001/webdev-inspiration-hub/"
+                ".github/workflows/integration.yml@refs/heads/main"
+            ),
+            "GITHUB_RUN_ID": "123",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        with patch.dict(os.environ, valid, clear=True):
+            self.assertEqual(
+                repair._require_trusted_preview_workflow(),
+                valid["GITHUB_WORKFLOW_REF"],
+            )
+        invalid = dict(valid)
+        invalid["GITHUB_WORKFLOW_REF"] = (
+            "zsrt001/webdev-inspiration-hub/"
+            ".github/workflows/production-release.yml@refs/heads/main"
+        )
+        with patch.dict(os.environ, invalid, clear=True):
+            with self.assertRaisesRegex(
+                ValueError,
+                "authenticated integration workflow",
+            ):
+                repair._require_trusted_preview_workflow()
 
 
 if __name__ == "__main__":

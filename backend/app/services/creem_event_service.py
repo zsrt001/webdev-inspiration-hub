@@ -13,7 +13,6 @@ from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.outbox_event import OutboxEvent, OutboxEventStatus
 from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
 from app.schemas.payment import AcceptedPaymentEvent, NormalizedPaymentEvent
 
@@ -403,21 +402,6 @@ async def ingest_verified_creem_event(
         processing_state=initial_state,
     )
     db.add(event)
-    db.add(
-        OutboxEvent(
-            id=uuid.uuid4(),
-            aggregate_type="payment_event",
-            aggregate_id=event_id,
-            event_type="payment.event.received",
-            dedupe_key=f"payment-event:{event_id}",
-            payload_version="vowpic.payment-event.v1",
-            payload_json={"payment_event_id": str(event_id)},
-            status=OutboxEventStatus.PENDING,
-            attempt_count=0,
-            next_attempt_at=datetime.now(timezone.utc),
-            fencing_token=0,
-        )
-    )
     await db.flush()
     await db.commit()
     return AcceptedPaymentEvent(

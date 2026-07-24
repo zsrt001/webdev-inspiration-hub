@@ -3,7 +3,7 @@
 const args = process.argv.slice(2);
 let baseUrl = 'https://www.vowpic.com';
 let readinessTimeoutSec = 180;
-let skipQueueProbe = false;
+let skipGenerationBackendProbe = false;
 
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
@@ -13,8 +13,8 @@ for (let index = 0; index < args.length; index += 1) {
   } else if (arg === '--readiness-timeout-sec' && args[index + 1]) {
     readinessTimeoutSec = Number(args[index + 1]) || readinessTimeoutSec;
     index += 1;
-  } else if (arg === '--skip-queue-probe') {
-    skipQueueProbe = true;
+  } else if (arg === '--skip-generation-backend-probe') {
+    skipGenerationBackendProbe = true;
   }
 }
 
@@ -59,7 +59,7 @@ const health = await fetchJson('/health', 30);
 assert(['healthy', 'ok'].includes(health.status), `Health check failed: ${JSON.stringify(health)}`);
 
 let readinessPath = '/api/v1/ops/readiness?probe_storage=true';
-if (!skipQueueProbe) readinessPath += '&probe_generation_queue=true';
+if (!skipGenerationBackendProbe) readinessPath += '&probe_generation_backend=true';
 const readiness = await fetchJson(readinessPath, readinessTimeoutSec);
 assert(
   readiness.commercial_ready === true,
@@ -89,7 +89,9 @@ const summary = {
   home_banner_image: homeImage,
   template_count: templates.length,
   storage_probe: readiness?.checks?.storage_rw_probe?.ok ?? null,
-  generation_queue_probe: skipQueueProbe ? 'skipped' : readiness?.checks?.generation_queue_probe?.ok ?? null,
+  generation_backend_probe: skipGenerationBackendProbe
+    ? 'skipped'
+    : readiness?.checks?.generation_backend_probe?.ok ?? null,
 };
 
 console.log('Production smoke passed.');

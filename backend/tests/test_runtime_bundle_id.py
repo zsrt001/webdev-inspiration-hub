@@ -12,7 +12,12 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "release" / "build_runtime_bundle_id.py"
+SCRIPT = (
+    ROOT
+    / "scripts"
+    / "release"
+    / "build_runtime_bundle_id.py"
+)
 
 
 def _module():
@@ -22,6 +27,7 @@ def _module():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.ROOT = ROOT
     return module
 
 
@@ -92,7 +98,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 "PREVIEW_IDENTITY", {**payload, "worker_image_digest": "sha256:" + "1" * 64}
             )
 
-    def test_worker_roles_require_digest_and_reject_live_coordinates(self) -> None:
+    def test_backend_roles_reject_worker_and_live_coordinates(self) -> None:
         module = _module()
         base = {
             "source_sha": "1" * 40,
@@ -119,7 +125,6 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 role_payload["contract_hashes"]["preview"] = "e" * 64
             if role in {"COMMERCIAL_7A", "CONTRACT_7B"}:
                 role_payload["builder_contract_version"] = role.lower() + ".v1"
-                role_payload["contract_hashes"]["worker_host"] = "f" * 64
             if role == "CONTRACT_7B":
                 role_payload.update({
                     "schema_before": "20260710_0020",
@@ -127,24 +132,27 @@ class RuntimeBundleIdTest(unittest.TestCase):
                     "contract_migration_sha256": "a" * 64,
                     "compatibility_version": "contract-7b.pre0021.v1",
                 })
-            with self.subTest(role=role), self.assertRaises(ValueError):
-                module.compute_runtime_bundle_id(role, role_payload)
-            result = module.compute_runtime_bundle_id(
-                role, {**role_payload, "worker_image_digest": "sha256:" + "9" * 64}
-            )
+            result = module.compute_runtime_bundle_id(role, role_payload)
             self.assertRegex(result, r"^rtb_[0-9a-f]{64}$")
+            with self.subTest(role=role), self.assertRaises(ValueError):
+                module.compute_runtime_bundle_id(
+                    role,
+                    {
+                        **role_payload,
+                        "worker_image_digest": "sha256:" + "9" * 64,
+                    },
+                )
         with self.assertRaises(ValueError):
             module.compute_runtime_bundle_id(
                 "COMMERCIAL_7A",
                 {
                     **base,
                     "builder_contract_version": "commercial-7a.v1",
-                    "worker_image_digest": "sha256:" + "9" * 64,
                     "deployment_id": "dpl",
                 },
             )
 
-    def test_preview_and_production_domains_differ_with_identical_source_and_worker_digest(self) -> None:
+    def test_preview_and_production_domains_differ_with_identical_backend_inputs(self) -> None:
         module = _module()
         base = {
             "source_sha": "1" * 40,
@@ -164,7 +172,6 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 "database_roles": "e" * 64,
             },
             "tool_version": "vowpic-release-tools.v1",
-            "worker_image_digest": "sha256:" + "9" * 64,
         }
         preview = module.compute_runtime_bundle_id("PREVIEW_COMMERCIAL", base)
         production = module.compute_runtime_bundle_id(
@@ -173,8 +180,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
                 **base,
                 "contract_hashes": {
                     key: value for key, value in base["contract_hashes"].items() if key != "preview"
-                }
-                | {"worker_host": "f" * 64},
+                },
                 "builder_contract_version": "commercial-7a.v1",
             },
         )
@@ -191,12 +197,17 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "--migration", "20260710_0020=" + str(
                 ROOT / "backend" / "alembic" / "versions" / "20260710_0020_partner_consent.py"
             ),
-            "--worker-image-digest", "sha256:" + "b" * 64,
-            "--runtime-contract", str(ROOT / "release" / "runtime-contracts.json"),
-            "--preview-contract", str(ROOT / "release" / "preview-runtime-contract.json"),
+            "--runtime-contract", str(
+                ROOT / "backend" / "contracts" / "runtime-contracts.json"
+            ),
+            "--preview-contract", str(
+                ROOT / "release" / "preview-runtime-contract.json"
+            ),
             "--provider-contract", str(ROOT / "release" / "provider-capabilities.json"),
             "--catalog-contract", str(catalog),
-            "--flag-contract", str(ROOT / "release" / "gates.json"),
+            "--flag-contract", str(
+                ROOT / "release" / "gates.json"
+            ),
             "--activation-plan", str(ROOT / "release" / "activation-plan.json"),
             "--database-role-contract", str(
                 ROOT / "release" / "commercial-7a-database-role-contract.json"
@@ -229,7 +240,9 @@ class RuntimeBundleIdTest(unittest.TestCase):
 
     def test_runtime_contract_rejects_a_stale_source_digest(self) -> None:
         module = _module()
-        contract_path = ROOT / "release" / "runtime-contracts.json"
+        contract_path = (
+                ROOT / "backend" / "contracts" / "runtime-contracts.json"
+        )
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
         contract["source_sha256"]["backend/app/core/config.py"] = "0" * 64
         with tempfile.NamedTemporaryFile(

@@ -178,8 +178,8 @@ def resolve_records(
     if coordinate_kind in commercial_kinds:
         required = (
             *required,
-            "manifest_sha256", "api_role", "worker_deployment_id", "worker_role",
-            "worker_image_digest", "private_evidence_prefix", "workflow_run_id", "workflow_attempt",
+            "manifest_sha256", "api_role", "private_evidence_prefix",
+            "workflow_run_id", "workflow_attempt",
         )
     missing = [key for key in required if not activation.get(key)]
     if missing:
@@ -196,8 +196,11 @@ def resolve_records(
             raise ValueError("COMMERCIAL_7A coordinates are not sealed yet")
         if activation.get("api_role") != "COMMERCIAL_7A_API":
             raise ValueError("COMMERCIAL_7A API role binding mismatch")
-        if activation.get("worker_role") != "COMMERCIAL_7A_WORKER":
-            raise ValueError("COMMERCIAL_7A Worker role binding mismatch")
+        if any(
+            activation.get(field) is not None
+            for field in ("worker_deployment_id", "worker_role", "worker_image_digest")
+        ):
+            raise ValueError("COMMERCIAL_7A backend release contains Worker coordinates")
         report_hash = report.get("_content_sha256") or report.get("sha256")
         if report_hash != activation["report_sha256"]:
             raise ValueError("COMMERCIAL_7A current phase report hash mismatch")
@@ -211,8 +214,6 @@ def resolve_records(
             "manifest_sha256": activation["manifest_sha256"],
             "staged_target_deployment_id": activation["api_deployment_id"],
             "staged_target_deployment_url": activation["api_deployment_url"],
-            "worker_deployment_id": activation["worker_deployment_id"],
-            "worker_image_digest": activation["worker_image_digest"],
         }
         for key, expected in expected_manifest_coordinates.items():
             if manifest_coordinates.get(key) != expected:
@@ -236,6 +237,9 @@ def resolve_records(
         }
         resolved.update(
             {
+                "worker_deployment_id": None,
+                "worker_role": None,
+                "worker_image_digest": None,
                 "private_compatible_baseline_deployment_id": baseline_id,
                 "private_compatible_baseline_deployment_url": baseline_url,
                 "staged_target_deployment_id": target_id,
@@ -279,6 +283,14 @@ def resolve_records(
         for key in OUTPUT_KEYS
         if key != "activation_id" and activation.get(key) is not None
     }
+    if coordinate_kind in commercial_kinds:
+        resolved.update(
+            {
+                "worker_deployment_id": None,
+                "worker_role": None,
+                "worker_image_digest": None,
+            }
+        )
     if activation.get("id") is not None:
         resolved["activation_id"] = str(activation["id"])
     return resolved

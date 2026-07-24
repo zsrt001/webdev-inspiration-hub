@@ -105,6 +105,7 @@ def _route_supabase_direct_to_pooler(raw: str) -> str:
 
 def _ssl_context(*, host: str) -> ssl.SSLContext:
     root_cert_raw = os.environ.get("PGSSLROOTCERT", "").strip()
+    uses_bundled_supabase_root = not root_cert_raw and _is_supabase_host(host)
     root_cert = (
         Path(root_cert_raw)
         if root_cert_raw
@@ -116,6 +117,14 @@ def _ssl_context(*, host: str) -> ssl.SSLContext:
     context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
     if root_cert is not None:
         context.load_verify_locations(cafile=str(root_cert))
+    if uses_bundled_supabase_root and hasattr(ssl, "VERIFY_X509_STRICT"):
+        # Python 3.13 enables VERIFY_X509_STRICT by default. Supabase's
+        # dashboard-provided prod-ca-2021 root predates the RFC 5280 Key Usage
+        # requirement enforced by that flag, while still being the pinned CA
+        # Supabase documents for verify-full connections. Keep certificate and
+        # hostname verification enabled, but allow that exact bundled legacy
+        # root to build its otherwise valid chain.
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     return context

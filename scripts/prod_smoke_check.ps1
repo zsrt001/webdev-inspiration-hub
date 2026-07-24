@@ -1,7 +1,7 @@
 param(
     [string]$BaseUrl = "https://www.vowpic.com",
     [int]$ReadinessTimeoutSec = 180,
-    [switch]$SkipQueueProbe
+    [switch]$SkipGenerationBackendProbe
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,8 +17,8 @@ $nodeArgs = @(
     "--readiness-timeout-sec",
     [string]$ReadinessTimeoutSec
 )
-if ($SkipQueueProbe) {
-    $nodeArgs += "--skip-queue-probe"
+if ($SkipGenerationBackendProbe) {
+    $nodeArgs += "--skip-generation-backend-probe"
 }
 
 & $node.Source @nodeArgs

@@ -14,17 +14,15 @@ from app.models.generation_attempt import (
     GenerationAttemptKind,
     GenerationAttemptStatus,
 )
-from app.models.generation_job import GenerationJob
+from app.models.generation_job import GENERATION_JOB_PAYLOAD_VERSION, GenerationJob
 from app.models.qa_verdict import QaDecision, QaVerdict
 from app.services.generation_repair_service import (
     GENERATION_ATTEMPT_PAYLOAD_VERSION,
     RepairInvariantError,
     build_repair_attempt,
-    build_repair_outbox_event,
     decide_next_generation_action,
     validate_repair_capture_provenance,
 )
-from app.services.outbox_service import generation_message_from_event
 from app.services.job_lease_service import JobLease
 from app.services.generation_attempt_service import _build_repair_request
 
@@ -104,24 +102,16 @@ class GenerationRepairTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TARGETED REPAIR 1", request.prompt)
         self.assertNotIn("https://", request.prompt)
 
-    def test_repair_has_unique_verdict_lineage_and_ids_only_outbox(self) -> None:
+    def test_repair_has_unique_verdict_lineage_without_queue_handoff(self) -> None:
         job = _job()
         initial = _initial(job)
         verdict = _verdict(job, initial)
 
         repair = build_repair_attempt(job=job, verdict=verdict)
-        event = build_repair_outbox_event(repair=repair, now=NOW)
-        message = generation_message_from_event(event)
 
         self.assertEqual(repair.kind, GenerationAttemptKind.REPAIR)
         self.assertEqual(repair.source_verdict_id, verdict.id)
         self.assertEqual(repair.submission_accounting_state, "NOT_CAPTURED")
-        self.assertEqual(event.payload_json, {
-            "attempt_id": str(repair.id),
-            "payload_version": GENERATION_ATTEMPT_PAYLOAD_VERSION,
-        })
-        self.assertEqual(message.attempt_id, repair.id)
-        self.assertEqual(message.redis_job_id, f"generation-attempt:v1:{repair.id}")
 
     def test_third_candidate_producing_repair_is_refused(self) -> None:
         job = _job(repair_count=2)
@@ -224,7 +214,7 @@ class GenerationRepairTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.active_attempt_id, created.attempt_id)
         self.assertEqual(order.status, "REPAIRING")
         self.assertIsNone(job.lease_owner)
-        self.assertEqual(db.add.call_count, 2)
+        self.assertEqual(db.add.call_count, 1)
 
         existing = SimpleNamespace(
             id=created.attempt_id,
@@ -258,7 +248,7 @@ class GenerationRepairTest(unittest.IsolatedAsyncioTestCase):
         replay_db.add.assert_not_called()
 
     async def test_worker_submits_only_the_persisted_repair_attempt_id(self) -> None:
-        from app import worker_tasks
+        from app.services import generation_executor_service as executor
 
         job = _job(repair_count=1)
         job.status = "ACTIVE"
@@ -281,25 +271,33 @@ class GenerationRepairTest(unittest.IsolatedAsyncioTestCase):
             lease_expires_at=NOW.replace(minute=2),
         )
         execute = AsyncMock()
+        reconcile = AsyncMock()
 
         async def run_now(_lease, operation):
             await operation
 
         with (
             patch(
-                "app.worker_tasks._load_attempt_capability_context",
+                "app.services.generation_executor_service._load_attempt_capability_context",
                 AsyncMock(return_value=(job, repair, user_id)),
             ),
             patch(
-                "app.worker_tasks.claim_generation_job",
+                "app.services.generation_executor_service.claim_generation_job",
                 AsyncMock(return_value=lease),
             ),
             patch(
-                "app.worker_tasks._execute_claimed_generation_attempt",
+                "app.services.generation_executor_service._execute_claimed_generation_attempt",
                 execute,
             ),
-            patch("app.worker_tasks._run_with_heartbeat", side_effect=run_now),
-            patch("app.worker_tasks.async_session_maker") as sessions,
+            patch(
+                "app.services.generation_executor_service._run_with_heartbeat",
+                side_effect=run_now,
+            ),
+            patch(
+                "app.services.generation_executor_service.reconcile_generation_v1",
+                reconcile,
+            ),
+            patch("app.services.generation_executor_service.async_session_maker") as sessions,
         ):
             session = SimpleNamespace(commit=AsyncMock())
 
@@ -311,13 +309,18 @@ class GenerationRepairTest(unittest.IsolatedAsyncioTestCase):
                     return False
 
             sessions.return_value = SessionContext()
-            await worker_tasks.generate_attempt_v1(
+            await executor.generate_attempt_v1(
                 {"worker_id": "worker-a"},
                 str(repair.id),
                 GENERATION_ATTEMPT_PAYLOAD_VERSION,
             )
 
         execute.assert_awaited_once_with(lease, user_id, repair.id)
+        reconcile.assert_awaited_once_with(
+            {"worker_id": "worker-a"},
+            str(job.id),
+            GENERATION_JOB_PAYLOAD_VERSION,
+        )
 
     async def test_attempt_executor_never_prepares_a_replacement_row(self) -> None:
         from app.services import generation_attempt_service as service

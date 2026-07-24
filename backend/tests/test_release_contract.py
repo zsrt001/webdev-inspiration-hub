@@ -354,7 +354,11 @@ class ReleaseRegistryTest(unittest.TestCase):
         self.assertTrue(all(state == "ON" for state in activation["target_snapshot"].values()))
         self.assertTrue(all(state == "OFF" for state in activation["rollback_snapshot"].values()))
 
-        runtime = json.loads((RELEASE / "runtime-contracts.json").read_text(encoding="utf-8"))
+        runtime = json.loads(
+            (ROOT / "backend/contracts/runtime-contracts.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual(runtime["schema_revision"], "20260710_0020")
         self.assertEqual(runtime["job_payload_version"], "generation-job.v1")
         for relative_path, expected_hash in runtime["source_sha256"].items():

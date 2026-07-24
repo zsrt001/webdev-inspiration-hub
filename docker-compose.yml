@@ -20,7 +20,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis Cache & Task Queue
+  # Optional session/feature-flag cache only; generation is PostgreSQL-backed.
   redis:
     image: redis:7-alpine
     container_name: ai_wedding_redis
@@ -80,26 +80,6 @@ services:
     ports:
       - "8001:8001"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
-
-  worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.worker
-    container_name: ai_wedding_worker
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    env_file:
-      - ./backend/.env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/ai_wedding
-      REDIS_URL: redis://redis:6379/0
-      AWS_S3_ENDPOINT: http://minio:9000
 
   frontend:
     image: nginx:1.27-alpine

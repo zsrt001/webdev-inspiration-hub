@@ -2,6 +2,9 @@
 
 import logging
 from contextlib import asynccontextmanager
+import re
+from urllib.parse import urlsplit
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -18,7 +21,11 @@ from app.core.error_response import (
     validation_exception_handler,
 )
 from app.core.rate_limit import RateLimitMiddleware
-from app.core.security_headers import web_security_middleware
+from app.core.security_headers import (
+    PROVIDER_PROBE_HEADER,
+    is_authenticated_provider_probe,
+    web_security_middleware,
+)
 from app.core.runtime_checks import (
     run_core_readiness_checks,
     run_readiness_checks,
@@ -79,13 +86,7 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown: close queue/redis/db resources
-    try:
-        from app.core.task_queue import close_pool
-        await close_pool()
-    except Exception as exc:
-        logger.warning("Task queue shutdown failed: %s", type(exc).__name__)
-
+    # Shutdown: close optional cache and database resources.
     try:
         from app.core.redis_client import close_redis
         await close_redis()
@@ -115,6 +116,88 @@ _RUNTIME_CONFIG_EXEMPT_PATHS = frozenset(
         "/api/v1/ops/readiness",
     }
 )
+_CREEM_WEBHOOK_PATH = "/api/v1/payments/webhook/creem"
+_EVOLINK_CALLBACK_PATH = re.compile(
+    r"^/api/v1/provider-callbacks/evolink/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}$",
+    re.IGNORECASE,
+)
+
+
+def _request_host(host_header: str) -> str:
+    """Normalize the bounded DNS Host form used by Vercel aliases."""
+    value = str(host_header or "").strip().lower()
+    if value.count(":") == 1:
+        value = value.split(":", 1)[0]
+    return value
+
+
+def _creem_callback_request_is_allowed(
+    *,
+    host_header: str,
+    method: str,
+    path: str,
+) -> bool:
+    """Expose only the signed Creem webhook on the dedicated callback alias."""
+    callback_host = settings.creem_callback_host.strip().lower()
+    if not callback_host or _request_host(host_header) != callback_host:
+        return True
+    return method.upper() == "POST" and path == _CREEM_WEBHOOK_PATH
+
+
+def _evolink_callback_request_is_allowed(
+    *,
+    host_header: str,
+    method: str,
+    path: str,
+    probe_secret: str = "",
+) -> bool:
+    """Expose only the signed callback and authenticated runtime probe."""
+
+    explicit_origin = str(settings.evolink_callback_base_url or "").strip()
+    try:
+        callback_host = (urlsplit(explicit_origin).hostname or "").lower()
+    except ValueError:
+        callback_host = ""
+    if not callback_host or _request_host(host_header) != callback_host:
+        return True
+    if method.upper() == "POST" and _EVOLINK_CALLBACK_PATH.fullmatch(path):
+        return True
+    return is_authenticated_provider_probe(
+        method=method,
+        path=path,
+        probe_secret=probe_secret,
+        settings_obj=settings,
+    )
+
+
+async def creem_callback_host_guard_middleware(request: Request, call_next):
+    host = request.headers.get("host", "")
+    method = request.method
+    path = request.url.path
+    if (
+        not _creem_callback_request_is_allowed(
+            host_header=host,
+            method=method,
+            path=path,
+        )
+        or not _evolink_callback_request_is_allowed(
+            host_header=host,
+            method=method,
+            path=path,
+            probe_secret=request.headers.get(PROVIDER_PROBE_HEADER, ""),
+        )
+    ):
+        return error_response(
+            request=request,
+            status_code=404,
+            detail={
+                "code": "route_not_found",
+                "message": "The requested route is not available on this host.",
+            },
+        )
+    return await call_next(request)
 
 
 async def runtime_config_guard_middleware(request: Request, call_next):
@@ -141,6 +224,7 @@ async def runtime_config_guard_middleware(request: Request, call_next):
     return await call_next(request)
 
 app.middleware("http")(runtime_config_guard_middleware)
+app.middleware("http")(creem_callback_host_guard_middleware)
 app.add_middleware(RateLimitMiddleware)
 app.middleware("http")(request_id_middleware)
 app.middleware("http")(web_security_middleware)

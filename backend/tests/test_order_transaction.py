@@ -1,4 +1,4 @@
-"""Atomic order, reservation, job and outbox contract."""
+"""Atomic order, reservation, and durable generation-job contract."""
 
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.models.idempotency_record import IdempotencyState
 from app.models.media_asset import MediaAsset, MediaAssetRole, MediaAssetStatus
-from app.models.outbox_event import OutboxEvent
+from app.models.generation_job import GenerationJob
 from app.services.credit_reservation_service import OrderFundingPolicySnapshot
 from app.services.idempotency_service import IdempotencyAttempt
 from app.services.order_transaction_service import (
@@ -90,7 +90,7 @@ def _command(user_id, asset_ids):
 
 
 class OrderTransactionTest(unittest.IsolatedAsyncioTestCase):
-    async def test_creates_ids_only_outbox_without_external_side_effect(self) -> None:
+    async def test_creates_durable_job_without_generation_outbox(self) -> None:
         user_id = uuid.uuid4()
         asset = MediaAsset(
             id=uuid.uuid4(),
@@ -125,7 +125,7 @@ class OrderTransactionTest(unittest.IsolatedAsyncioTestCase):
                 return_value=RuntimeExecutionStamp(
                     api_deployment_id="dpl_123",
                     runtime_bundle_id="rtb_" + "c" * 64,
-                    worker_image_digest="sha256:" + "d" * 64,
+                    backend_executor_digest="sha256:" + "d" * 64,
                 ),
             ),
         ):
@@ -134,10 +134,12 @@ class OrderTransactionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "QUEUED")
         self.assertEqual(result.status_url, f"/api/v1/orders/{result.order_id}")
         reserve.assert_awaited_once()
-        outbox = next(item for item in db.added if isinstance(item, OutboxEvent))
-        self.assertEqual(set(outbox.payload_json), {"job_id", "payload_version"})
-        self.assertEqual(outbox.payload_version, "generation-job.v1")
-        self.assertNotIn("asset", str(outbox.payload_json).lower())
+        jobs = [item for item in db.added if isinstance(item, GenerationJob)]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].order_id, result.order_id)
+        self.assertFalse(
+            any(type(item).__name__ == "OutboxEvent" for item in db.added)
+        )
         complete.assert_awaited_once()
 
     async def test_replay_returns_stored_response_without_assets_or_reservation(self) -> None:

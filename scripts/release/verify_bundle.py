@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify immutable manifest and fresh API/Worker runtime reports."""
+"""Verify one immutable manifest and its fresh website-backend runtime report."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.release.build_manifest import canonical_manifest_bytes, validate_manifest, verify_worker_report
+from scripts.release.build_manifest import canonical_manifest_bytes, validate_manifest
 
 
 _SIGNATURE = re.compile(r"^hmac-sha256:([0-9a-f]{64})$")
@@ -61,10 +61,10 @@ def verify_api_report(
         "api_deployment_id": normalized["api_deployment_id"],
         "schema_revision": normalized["schema_revision"],
         "api_compatibility_version": normalized["api_compatibility_version"],
-        "worker_compatibility_version": normalized["worker_compatibility_version"],
+        "backend_execution_version": normalized["backend_execution_version"],
+        "backend_executor_digest": normalized["backend_executor_digest"],
         "job_payload_min": normalized["job_payload_min"],
         "job_payload_max": normalized["job_payload_max"],
-        "worker_image_digest": normalized["worker_image_digest"],
         "provider_policy_hash": normalized["contract_hashes"]["provider"],
         "flag_contract_hash": normalized["contract_hashes"]["flag"],
     }
@@ -99,7 +99,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--api-report", required=True)
-    parser.add_argument("--worker-report", required=True)
     parser.add_argument("--signing-key-env", default="RELEASE_EVIDENCE_HMAC_KEY")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -108,14 +107,12 @@ def main() -> int:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         api_report = json.loads(Path(args.api_report).read_text(encoding="utf-8"))
-        worker_report = json.loads(Path(args.worker_report).read_text(encoding="utf-8"))
         verify_api_report(
             manifest,
             manifest_sha256=manifest_sha,
             report=api_report,
             signing_key=os.environ.get(args.signing_key_env, "").encode("utf-8"),
         )
-        verify_worker_report(manifest, worker_report)
         result = {
             "schema": "vowpic.bundle-verification.v1",
             "manifest_sha256": manifest_sha,

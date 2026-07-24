@@ -34,7 +34,7 @@ METRIC_FIELDS = {
     "unresolved_p0_p1",
     "unhandled_signed_webhooks",
     "ledger_reconciliation_failures",
-    "worker_heartbeat_age_seconds",
+    "backend_runtime_age_seconds",
     "oldest_mandatory_outbox_age_seconds",
     "synthetic_flow_dlq",
     "acceptance_prefix_deletion_failures",
@@ -53,8 +53,6 @@ SAMPLE_FIELDS = {
     "manifest_sha256",
     "runtime_bundle_id",
     "api_deployment_id",
-    "worker_deployment_id",
-    "worker_image_digest",
     "target_snapshot_hash",
     "bucket_started_at",
     "observed_at",
@@ -70,8 +68,6 @@ FINAL_FIELDS = {
     "manifest_sha256",
     "runtime_bundle_id",
     "api_deployment_id",
-    "worker_deployment_id",
-    "worker_image_digest",
     "target_snapshot_hash",
     "window_started_at",
     "window_deadline_at",
@@ -89,6 +85,20 @@ FINAL_INDEX_FIELDS = {
     "source_sha",
     "final_report_sha256",
     "sample_sha256",
+}
+API_RUNTIME_REPORT_FIELDS = {
+    "schema",
+    "passed",
+    "source_sha",
+    "runtime_bundle_id",
+    "api_deployment_id",
+    "schema_revision",
+    "release_role",
+    "liveness_response_sha256",
+    "readiness_response_sha256",
+    "version_response_sha256",
+    "observed_at",
+    "signature",
 }
 
 
@@ -185,8 +195,8 @@ def validate_metric_values(
     if any(type(metrics[name]) is not int or metrics[name] != 0 for name in zero_fields):
         raise ValueError("observation detected a nonzero blocking counter")
     if (
-        type(metrics["worker_heartbeat_age_seconds"]) not in {int, float}
-        or not 0 <= metrics["worker_heartbeat_age_seconds"] <= 120
+        type(metrics["backend_runtime_age_seconds"]) not in {int, float}
+        or not 0 <= metrics["backend_runtime_age_seconds"] <= 120
         or type(metrics["oldest_mandatory_outbox_age_seconds"]) not in {int, float}
         or not 0 <= metrics["oldest_mandatory_outbox_age_seconds"] <= 300
     ):
@@ -229,8 +239,6 @@ def _validate_sample_report(
         "manifest_sha256": run["manifest_sha256"],
         "runtime_bundle_id": run["runtime_bundle_id"],
         "api_deployment_id": run["api_deployment_id"],
-        "worker_deployment_id": run["worker_deployment_id"],
-        "worker_image_digest": run["worker_image_digest"],
         "target_snapshot_hash": run["target_snapshot_hash"],
     }
     if any(report.get(field) != value for field, value in expected.items()):
@@ -302,8 +310,6 @@ def _validate_final_documents(
         "manifest_sha256": run["manifest_sha256"],
         "runtime_bundle_id": run["runtime_bundle_id"],
         "api_deployment_id": run["api_deployment_id"],
-        "worker_deployment_id": run["worker_deployment_id"],
-        "worker_image_digest": run["worker_image_digest"],
         "target_snapshot_hash": run["target_snapshot_hash"],
         "window_started_at": _aware(run["started_at"]).isoformat(),
         "window_deadline_at": _aware(run["deadline_at"]).isoformat(),
@@ -395,7 +401,7 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
     from psycopg2.extras import RealDictCursor
 
     manifest = _load_object(args.manifest)
-    worker = _load_object(args.worker_report)
+    backend_runtime = _load_object(args.backend_runtime_report)
     target = _load_object(args.target_snapshot_report)
     if args.minimum_hours < 24 or manifest.get("source_sha") != args.source_sha:
         raise ValueError("observation start contract is invalid")
@@ -418,11 +424,23 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
                 "deployment_id": activation["api_deployment_id"],
                 "manifest_sha256": activation["manifest_sha256"],
             }
+            _verify_hmac_report(
+                backend_runtime,
+                expected_schema="vowpic.api-runtime-coordinate-report.v1",
+                signing_key=os.environ.get(args.runtime_signing_key_env, "").encode(),
+                label="observation backend runtime report",
+            )
             if (
                 hashlib.sha256(Path(args.manifest).read_bytes()).hexdigest() != activation["manifest_sha256"]
-                or worker.get("passed") is not True
-                or worker.get("coordinates", {}).get("runtime_bundle_id") != activation["runtime_bundle_id"]
-                or worker.get("coordinates", {}).get("worker_deployment_id") != activation["worker_deployment_id"]
+                or set(backend_runtime) != API_RUNTIME_REPORT_FIELDS
+                or backend_runtime.get("passed") is not True
+                or backend_runtime.get("source_sha") != activation["source_sha"]
+                or backend_runtime.get("runtime_bundle_id") != activation["runtime_bundle_id"]
+                or backend_runtime.get("api_deployment_id") != activation["api_deployment_id"]
+                or any(
+                    activation.get(field) is not None
+                    for field in ("worker_deployment_id", "worker_role", "worker_image_digest")
+                )
                 or target.get("passed") is not True
                 or target.get("target_snapshot_hash") != activation["target_snapshot_hash"]
             ):
@@ -447,7 +465,7 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
                     (
                         str(uuid4()), activation["id"], activation["manifest_sha256"],
                         activation["runtime_bundle_id"], activation["api_deployment_id"],
-                        activation["worker_deployment_id"], activation["worker_image_digest"],
+                        None, None,
                         activation["current_snapshot_hash"], activation["target_snapshot_hash"],
                         started, started + timedelta(hours=args.minimum_hours),
                     ),
@@ -491,8 +509,6 @@ def _bootstrap(args: argparse.Namespace) -> dict[str, Any]:
         "state": row["state"],
         "runtime_bundle_id": row["runtime_bundle_id"],
         "api_deployment_id": row["api_deployment_id"],
-        "worker_deployment_id": row["worker_deployment_id"],
-        "worker_image_digest": row["worker_image_digest"],
     }
 
 
@@ -532,8 +548,6 @@ def _sample(args: argparse.Namespace) -> dict[str, Any]:
                 "manifest_sha256": run["manifest_sha256"],
                 "runtime_bundle_id": run["runtime_bundle_id"],
                 "api_deployment_id": run["api_deployment_id"],
-                "worker_deployment_id": run["worker_deployment_id"],
-                "worker_image_digest": run["worker_image_digest"],
                 "target_snapshot_hash": run["target_snapshot_hash"],
                 "bucket_started_at": bucket.isoformat(),
                 "observed_at": observed_at.isoformat(),
@@ -749,8 +763,6 @@ def _aggregate(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]
         "observation_run_id": str(run["id"]), "activation_id": str(run["release_activation_id"]),
         "source_sha": run["source_sha"], "manifest_sha256": run["manifest_sha256"],
         "runtime_bundle_id": run["runtime_bundle_id"], "api_deployment_id": run["api_deployment_id"],
-        "worker_deployment_id": run["worker_deployment_id"],
-        "worker_image_digest": run["worker_image_digest"],
         "target_snapshot_hash": run["target_snapshot_hash"],
         "window_started_at": started.isoformat(),
         "window_deadline_at": deadline.isoformat(),
@@ -969,8 +981,7 @@ def _fail(args: argparse.Namespace) -> dict[str, Any]:
         "requires_shutdown": action == "FAIL_AND_SHUTDOWN",
         "observation_run_id": args.observation_run_id, "activation_id": activation_id,
         "source_sha": run["source_sha"], "runtime_bundle_id": run["runtime_bundle_id"],
-        "api_deployment_id": run["api_deployment_id"], "worker_deployment_id": run["worker_deployment_id"],
-        "worker_image_digest": run["worker_image_digest"],
+        "api_deployment_id": run["api_deployment_id"],
     }
 
 
@@ -996,209 +1007,21 @@ def _resolve_recovery(args: argparse.Namespace) -> dict[str, Any]:
         "schema": "vowpic.observation-recovery-resolution.v1", "passed": True,
         "observation_run_id": args.observation_run_id, "release_role": "COMMERCIAL_7A",
         "source_sha": run["source_sha"], "runtime_bundle_id": run["runtime_bundle_id"],
-        "api_deployment_id": run["api_deployment_id"], "worker_deployment_id": run["worker_deployment_id"],
-        "worker_image_digest": run["worker_image_digest"],
+        "api_deployment_id": run["api_deployment_id"],
         "private_compatible_baseline_url": coords["private_compatible_baseline_deployment_url"],
         "private_compatible_baseline_deployment_id": coords["private_compatible_baseline_deployment_id"],
         "schema_revision": "20260710_0020",
     }
 
 
-def _complete_recovery(args: argparse.Namespace) -> dict[str, Any]:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    resolution, resolution_sha = _bounded_report(
-        args.resolution_report, label="observation recovery resolution"
-    )
-    worker, worker_sha = _bounded_report(
-        args.worker_report, label="observation recovery Worker report"
-    )
-    api, api_sha = _bounded_report(
-        args.api_report, label="observation recovery API report"
-    )
-    approval = os.environ.get(args.approval_id_env, "").strip()
-    if (
-        set(resolution)
-        != {
-            "schema",
-            "passed",
-            "observation_run_id",
-            "release_role",
-            "source_sha",
-            "runtime_bundle_id",
-            "api_deployment_id",
-            "worker_deployment_id",
-            "worker_image_digest",
-            "private_compatible_baseline_url",
-            "private_compatible_baseline_deployment_id",
-            "schema_revision",
-        }
-        or resolution.get("schema")
-        != "vowpic.observation-recovery-resolution.v1"
-        or resolution.get("passed") is not True
-        or resolution.get("release_role") != "COMMERCIAL_7A"
-        or resolution.get("schema_revision") != "20260710_0020"
-        or args.disposition != "ROLLED_BACK_PRIVATE_BASELINE"
-        or not approval
-    ):
-        raise ValueError("observation recovery resolution or approval is invalid")
-    _verify_hmac_report(
-        worker,
-        expected_schema="vowpic.worker-host-report.v2",
-        signing_key=os.environ.get(args.worker_signing_key_env, "").encode(),
-        label="observation recovery Worker report",
-    )
-    worker_coordinates = worker.get("coordinates")
-    if (
-        set(worker)
-        != {
-            "schema",
-            "passed",
-            "action",
-            "provider",
-            "contract_sha256",
-            "state",
-            "coordinates",
-            "observed_at",
-            "signature",
-        }
-        or worker.get("action") != "stop"
-        or worker.get("provider") != "railway"
-        or str(worker.get("state") or "").upper() != "STOPPED"
-        or not isinstance(worker_coordinates, dict)
-        or worker_coordinates.get("worker_deployment_id")
-        != resolution["worker_deployment_id"]
-        or worker_coordinates.get("runtime_bundle_id")
-        != resolution["runtime_bundle_id"]
-        or worker_coordinates.get("worker_image_digest")
-        != resolution["worker_image_digest"]
-    ):
-        raise ValueError("observation recovery Worker shutdown is invalid")
-    _verify_hmac_report(
-        api,
-        expected_schema="vowpic.api-runtime-coordinate-report.v1",
-        signing_key=os.environ.get(args.api_signing_key_env, "").encode(),
-        label="observation recovery API report",
-    )
-    if (
-        set(api)
-        != {
-            "schema",
-            "passed",
-            "source_sha",
-            "runtime_bundle_id",
-            "api_deployment_id",
-            "schema_revision",
-            "release_role",
-            "liveness_response_sha256",
-            "readiness_response_sha256",
-            "version_response_sha256",
-            "observed_at",
-            "signature",
-        }
-        or api.get("source_sha") != resolution["source_sha"]
-        or api.get("runtime_bundle_id") != resolution["runtime_bundle_id"]
-        or api.get("api_deployment_id")
-        != resolution["private_compatible_baseline_deployment_id"]
-        or api.get("schema_revision") != resolution["schema_revision"]
-        or api.get("release_role") != resolution["release_role"]
-    ):
-        raise ValueError("observation recovery API rollback is invalid")
-    approval_sha = hashlib.sha256(approval.encode()).hexdigest()
-    database_url = os.environ.get(args.database_url_env, "")
-    store = PrivateBlobEvidenceStore(
-        store_id=os.environ.get(args.private_evidence_store_id_env, ""),
-        token=os.environ.get(args.private_evidence_token_env, ""),
-    )
-    with psycopg2.connect(_database_url(database_url)) as connection:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
-                ("vowpic-observation",),
-            )
-            run = _load_run(cursor, resolution["observation_run_id"], lock=True)
-            expected_coordinates = {
-                "source_sha": run["source_sha"],
-                "runtime_bundle_id": run["runtime_bundle_id"],
-                "api_deployment_id": run["api_deployment_id"],
-                "worker_deployment_id": run["worker_deployment_id"],
-                "worker_image_digest": run["worker_image_digest"],
-            }
-            if (
-                run["state"] != "FAILED"
-                or any(
-                    resolution.get(field) != value
-                    for field, value in expected_coordinates.items()
-                )
-                or run["approval"] != approval
-            ):
-                raise ValueError("observation recovery database coordinates drifted")
-            cursor.execute(
-                "SELECT * FROM release_observation_recoveries "
-                "WHERE observation_run_id=%s FOR UPDATE",
-                (run["id"],),
-            )
-            existing = cursor.fetchone()
-            prefix = str(run["private_evidence_prefix"]).strip("/\\")
-            object_key = f"{prefix}/observations/{run['id']}/recovery.json"
-            if existing is not None:
-                raw = store.read(object_key)
-                if (
-                    hashlib.sha256(raw).hexdigest()
-                    != existing["recovery_report_sha256"]
-                    or existing["private_object_key"] != object_key
-                ):
-                    raise ValueError("recorded observation recovery evidence drifted")
-                return json.loads(raw)
-            report = {
-                "schema": "vowpic.observation-recovery-complete.v1",
-                "passed": True,
-                "state": "RECORDED",
-                "observation_run_id": resolution["observation_run_id"],
-                "source_sha": resolution["source_sha"],
-                "runtime_bundle_id": resolution["runtime_bundle_id"],
-                "rolled_back_api_deployment_id": resolution[
-                    "private_compatible_baseline_deployment_id"
-                ],
-                "worker_deployment_id": resolution["worker_deployment_id"],
-                "disposition": args.disposition,
-                "resolution_sha256": resolution_sha,
-                "worker_report_sha256": worker_sha,
-                "api_report_sha256": api_sha,
-                "approval_sha256": approval_sha,
-                "recorded_at": _aware(api["observed_at"]).isoformat(),
-            }
-            raw = _canonical(report) + b"\n"
-            recovery_sha = hashlib.sha256(raw).hexdigest()
-            store.put_create_once(object_key, raw)
-            cursor.execute(
-                "INSERT INTO release_observation_recoveries "
-                "(id,observation_run_id,resolution_sha256,worker_report_sha256,"
-                "api_report_sha256,approval_sha256,disposition,recovery_report_sha256,"
-                "private_object_key) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (
-                    str(uuid4()),
-                    run["id"],
-                    resolution_sha,
-                    worker_sha,
-                    api_sha,
-                    approval_sha,
-                    args.disposition,
-                    recovery_sha,
-                    object_key,
-                ),
-            )
-    return report
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     start = sub.add_parser("start")
-    start.add_argument("--manifest", required=True); start.add_argument("--worker-report", required=True)
+    start.add_argument("--manifest", required=True); start.add_argument("--backend-runtime-report", required=True)
     start.add_argument("--target-snapshot-report", required=True); start.add_argument("--source-sha", required=True)
     start.add_argument("--minimum-hours", type=int, default=24); start.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
+    start.add_argument("--runtime-signing-key-env", default="RELEASE_EVIDENCE_HMAC_KEY")
     boot = sub.add_parser("bootstrap"); boot.add_argument("--requested-observation-run-id")
     boot.add_argument("--allow-none", action="store_true"); boot.add_argument("--job-output")
     boot.add_argument("--database-url-env", default="OBSERVATION_DATABASE_URL")
@@ -1235,14 +1058,6 @@ def _parser() -> argparse.ArgumentParser:
     fail.add_argument("--private-evidence-token-env", default="PRIVATE_EVIDENCE_READ_TOKEN")
     recover = sub.add_parser("resolve-recovery"); recover.add_argument("--observation-run-id", required=True)
     recover.add_argument("--job-env"); recover.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
-    done = sub.add_parser("complete-recovery"); done.add_argument("--resolution-report", required=True)
-    done.add_argument("--worker-report", required=True); done.add_argument("--api-report", required=True)
-    done.add_argument("--disposition", required=True); done.add_argument("--approval-id-env", default="PRODUCTION_RECOVERY_APPROVAL_ID")
-    done.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
-    done.add_argument("--worker-signing-key-env", default="WORKER_HOST_EVIDENCE_SIGNING_KEY")
-    done.add_argument("--api-signing-key-env", default="ACCEPTANCE_EVIDENCE_SIGNING_KEY")
-    done.add_argument("--private-evidence-store-id-env", default="PRIVATE_EVIDENCE_STORE_ID")
-    done.add_argument("--private-evidence-token-env", default="PRIVATE_EVIDENCE_READ_WRITE_TOKEN")
     for command in sub.choices.values(): command.add_argument("--output", required=True)
     return parser
 
@@ -1259,7 +1074,6 @@ def main() -> int:
         elif args.command == "complete-finalize": result = _complete_finalize(args)
         elif args.command == "fail": result = _fail(args)
         elif args.command == "resolve-recovery": result = _resolve_recovery(args)
-        elif args.command == "complete-recovery": result = _complete_recovery(args)
         else: raise ValueError("unknown observation command")
         _write_once(Path(args.output), result)
         if args.command == "bootstrap" and args.job_output:
@@ -1272,8 +1086,6 @@ def main() -> int:
                     "state",
                     "runtime_bundle_id",
                     "api_deployment_id",
-                    "worker_deployment_id",
-                    "worker_image_digest",
                 ):
                     if key in result: handle.write(f"{key}={str(result[key]).lower() if isinstance(result[key], bool) else result[key]}\n")
         if args.command == "resolve-recovery" and args.job_env:

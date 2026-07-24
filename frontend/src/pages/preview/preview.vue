@@ -24,13 +24,7 @@
         <!-- STUDIO 3.0 REVEAL: CURTAIN -> COMPARE SLIDER -->
         <view class="folio-frame shadow-xl">
           <template v-if="revealed">
-            <CompareSlider
-              v-if="userUploadUrl"
-              :before-image="userUploadUrl"
-              :after-image="afterImageUrl"
-            />
             <image
-              v-else
               class="masterpiece-img"
               :src="afterImageUrl"
               mode="aspectFit"
@@ -182,8 +176,15 @@ import { useTemplateStore } from '../../stores/template';
 import { useOpsStore } from '../../stores/ops';
 import NavBar from '../../components/NavBar.vue';
 import PaymentModal from '../../components/PaymentModal.vue';
-import CompareSlider from '../../components/CompareSlider.vue';
+import {
+  deliveryVariantAssets,
+  displayAsset,
+  finalMasterAsset,
+  isOrderManualOrFailed,
+  previewAsset,
+} from '../../contracts/order';
 import { trackEvent } from '../../utils/analytics';
+import { resolvePublicUrl } from '../../utils/api';
 
 const orderStore = useOrderStore();
 const i18nStore = useI18nStore();
@@ -223,34 +224,29 @@ const loadingTexts = computed(() => [
 ]);
 
 const studioLoadingText = computed(() => loadingTexts.value[currentTextIndex.value]);
-const generationStageOrder = ['queued', 'identity_refs_ready', 'provider_submitted', 'qa_checking', 'repairing', 'postprocessing', 'completed'];
-const generationStage = computed(() => {
-  const direct = orderStore.currentOrder?.generation_stage;
-  if (direct) return String(direct);
-  const params = orderStore.currentOrder?.generation_params as any;
-  return params && typeof params === 'object' ? String(params.generation_stage || '') : '';
-});
+const generationStageOrder = ['CREATED', 'CHECKING', 'QUEUED', 'GENERATING', 'QA_PENDING', 'REPAIRING', 'READY'];
+const generationStage = computed(() => orderStore.currentOrder?.status || '');
 const generationStageLabel = computed(() => {
   switch (generationStage.value) {
-    case 'queued': return tr('任务已排队', 'Queued');
-    case 'identity_refs_ready': return tr('身份参考已锁定', 'Identity anchors ready');
-    case 'provider_submitted': return tr('已提交生成', 'Submitted to AI');
-    case 'qa_checking': return tr('质检中', 'Quality checking');
-    case 'repairing': return tr('自动修复中', 'Auto repairing');
-    case 'postprocessing': return tr('成片处理中', 'Finishing final images');
-    case 'completed': return tr('已完成', 'Completed');
-    case 'failed': return tr('生成失败', 'Generation failed');
+    case 'CREATED': return tr('任务已创建', 'Created');
+    case 'CHECKING': return tr('照片检查中', 'Checking portraits');
+    case 'QUEUED': return tr('任务已排队', 'Queued');
+    case 'GENERATING': return tr('已提交生成', 'Generating');
+    case 'QA_PENDING': return tr('质检中', 'Quality checking');
+    case 'REPAIRING': return tr('自动修复中', 'Auto repairing');
+    case 'READY':
+    case 'COMPLETED': return tr('已完成', 'Completed');
     default: return '';
   }
 });
 const generationStageHint = computed(() => {
   switch (generationStage.value) {
-    case 'queued': return tr('正在等待生成通道', 'Waiting for the generation channel');
-    case 'identity_refs_ready': return tr('人脸与上半身参考已准备好', 'Face and upper-body references are ready');
-    case 'provider_submitted': return tr('Gemini 编辑任务已提交', 'Gemini edit job has been submitted');
-    case 'qa_checking': return tr('正在检查脸像、构图和伪影', 'Checking identity, composition, and artifacts');
-    case 'repairing': return tr('检测到问题，正在自动多轮修复', 'Issue detected, automatic repair is running');
-    case 'postprocessing': return tr('正在整理预览、高清与多比例成片', 'Preparing preview, HD, and aspect variants');
+    case 'CREATED':
+    case 'CHECKING': return tr('正在安全校验人物照片', 'Validating portrait inputs');
+    case 'QUEUED': return tr('正在等待生成通道', 'Waiting for the generation channel');
+    case 'GENERATING': return tr('生成任务正在执行', 'The generation task is running');
+    case 'QA_PENDING': return tr('正在检查脸像、构图和伪影', 'Checking identity, composition, and artifacts');
+    case 'REPAIRING': return tr('检测到问题，正在自动修复', 'An issue was detected and is being repaired');
     default: return tr('旗舰质检已开启', 'Flagship Quality Control Active');
   }
 });
@@ -260,79 +256,34 @@ const generationProgressWidth = computed(() => {
   return `${progressStep.value * 25}%`;
 });
 
-const userUploadUrl = computed(() => {
-  const source = orderStore.currentOrder?.source_image_urls as any;
-  if (source && source.images && source.images.length > 0) return source.images[0];
-  return null;
-});
-
-const deliveryVariantSuffixes = ['portrait_2x3', 'print_3x2', 'xhs_3x4', 'portrait_4x5', 'wallpaper_9x16', 'square_1x1'];
-function pickPrimaryDeliveryImage(urls?: Record<string, string> | null): string | null {
-  if (!urls) return null;
-  if (urls.image_1) return urls.image_1;
-  const master = Object.entries(urls).find(([key]) => !deliveryVariantSuffixes.some((suffix) => key.includes(suffix)));
-  if (master?.[1]) return master[1];
-  return Object.values(urls)[0] || null;
-}
-
 const previewImageUrl = computed(() => {
-  const master = orderStore.currentOrder?.preview_master_image_url;
-  if (master) return master;
-  const urls = orderStore.currentOrder?.preview_image_urls;
-  const primary = pickPrimaryDeliveryImage(urls);
-  if (primary) return primary;
-  return '/static/style-previews/royal_castle.jpg';
+  const asset = previewAsset(orderStore.currentOrder);
+  return resolvePublicUrl(asset?.download_path || '/style-previews/royal_castle.jpg');
 });
 
 const hdImageUrl = computed(() => {
-  const master = orderStore.currentOrder?.final_master_image_url;
-  if (master) return master;
-  const urls = orderStore.currentOrder?.final_image_urls;
-  const primary = pickPrimaryDeliveryImage(urls);
-  if (primary) return primary;
-  return previewImageUrl.value;
+  const asset = finalMasterAsset(orderStore.currentOrder);
+  return resolvePublicUrl(asset?.download_path || previewAsset(orderStore.currentOrder)?.download_path || '');
 });
 
-const afterImageUrl = computed(() => (orderStore.isCompleted ? hdImageUrl.value : previewImageUrl.value));
+const afterImageUrl = computed(() => {
+  const asset = displayAsset(orderStore.currentOrder);
+  return resolvePublicUrl(asset?.download_path || '');
+});
 const canDownload = computed(
   () => privateDownloadAvailable.value && orderStore.currentOrder?.can_download === true
 );
-const downloadLocked = computed(() => orderStore.currentOrder?.download_locked !== false || !canDownload.value);
-const downloadVariantLabels: Record<string, string> = {
-  portrait_2x3: tr('2:3 下载裁切', '2:3 Download crop'),
-  print_3x2: tr('3:2 冲印裁切', '3:2 Print crop'),
-  xhs_3x4: tr('3:4 下载版本', '3:4 Download version'),
-  portrait_4x5: tr('4:5 下载裁切', '4:5 Download crop'),
-  wallpaper_9x16: tr('9:16 下载裁切', '9:16 Download crop'),
-  square_1x1: tr('1:1 下载裁切', '1:1 Download crop'),
-};
-const localizedVariantLabel = (key: string, fallback?: string) => {
-  const matched = Object.keys(downloadVariantLabels).find((suffix) => key.includes(suffix));
-  return matched ? downloadVariantLabels[matched] : fallback || tr('下载裁切版', 'Download crop');
-};
+const downloadLocked = computed(() => !canDownload.value);
 const downloadVariants = computed(() => {
   if (!canDownload.value) return [];
-  const explicit = orderStore.currentOrder?.download_variants;
-  if (Array.isArray(explicit) && explicit.length) {
-    return explicit
-      .map((item: any) => ({
-        key: String(item.key || item.url || ''),
-        url: String(item.url || ''),
-        label: localizedVariantLabel(String(item.key || ''), String(item.label || '')),
-        filename: `ai-wedding-${String(item.key || 'crop')}.jpg`,
-      }))
-      .filter((item) => item.key && item.url);
-  }
-  const urls = orderStore.currentOrder?.final_image_urls || {};
-  return Object.entries(urls)
-    .filter(([key]) => key !== 'image_1')
-    .map(([key, url]) => {
-      const matched = Object.keys(downloadVariantLabels).find((suffix) => key.includes(suffix));
-      return matched
-        ? { key, url: String(url), label: downloadVariantLabels[matched], filename: `ai-wedding-${matched}.jpg` }
-        : null;
-    })
-    .filter(Boolean) as { key: string; url: string; label: string; filename: string }[];
+  return deliveryVariantAssets(orderStore.currentOrder).map((asset, index) => ({
+    key: asset.id,
+    url: resolvePublicUrl(asset.download_path),
+    label: asset.width && asset.height
+      ? `${asset.width}×${asset.height} ${tr('下载版本', 'Download variant')}`
+      : `${tr('下载版本', 'Download variant')} ${index + 1}`,
+    filename: `vowpic-delivery-${asset.id}.jpg`,
+  }));
 });
 const abVariantOptions = computed(() => {
   const templates = templateStore.templates || [];
@@ -352,245 +303,58 @@ const abVariantOptions = computed(() => {
     .map((item: any) => ({ id: String(item.id), title: String(item.marketing_title || item.title || item.id) }));
 });
 const hasRenderableOutput = computed(() => {
-  const preview = orderStore.currentOrder?.preview_image_urls;
-  const final = orderStore.currentOrder?.final_image_urls;
-  const hasPreview = !!(preview && Object.keys(preview).length);
-  const hasFinal = !!(final && Object.keys(final).length);
-  return orderStore.isCompleted || hasFinal || hasPreview;
+  return displayAsset(orderStore.currentOrder) !== null;
 });
 
-const hasError = computed(() => orderStore.currentOrder?.error_message != null);
-const providerFailureCode = computed(() => {
-  const explicitCode = orderStore.currentOrder?.failure_code;
-  if (explicitCode) return explicitCode;
-  const params = orderStore.currentOrder?.generation_params;
-  return params && typeof params === 'object' ? String((params as any).failure_code || '') || null : null;
-});
-
-const ignoredInputLabel = (key?: string | null) => {
-  switch (key) {
-    case 'scene_text': return tr('场景文本', 'Scene text');
-    case 'outfit_text': return tr('服装文本', 'Outfit text');
-    case 'scene_preset_id': return tr('场景预设', 'Scene preset');
-    case 'clothing_preset_id': return tr('服装预设', 'Outfit preset');
-    default: return '';
-  }
-};
-
-const sourceLabel = (src?: string | null) => {
-  switch (src) {
-    case 'upload': return tr('上传图', 'Upload');
-    case 'text': return tr('文本', 'Text');
-    case 'preset': return tr('预设', 'Preset');
-    case 'random': return tr('随机', 'Random');
-    default: return '—';
-  }
-};
-
-const directorDecisionHintLabel = (hint?: string | null) => {
-  const raw = String(hint || '').trim();
-  if (!raw) return '';
-  if (raw === 'director_mode_enabled') return tr('导演模式已启用', 'Director Mode enabled');
-  if (raw.startsWith('ignored:')) {
-    const ignored = raw.replace('ignored:', '').split(',').map((item) => ignoredInputLabel(item)).filter(Boolean);
-    return ignored.length ? `${tr('已忽略', 'Ignored')}: ${ignored.join(' / ')}` : '';
-  }
-  if (raw.startsWith('scene:')) {
-    const [, source, presetTitle, weightPart] = raw.split(':');
-    const parts = [`${tr('场景', 'Scene')}: ${sourceLabel(source)}`];
-    if (presetTitle) parts.push(presetTitle);
-    if (weightPart?.startsWith('w=')) {
-      const numeric = Number(weightPart.slice(2));
-      if (!Number.isNaN(numeric)) parts.push(`IP ${numeric.toFixed(2)}`);
-    }
-    return parts.join(' · ');
-  }
-  if (raw.startsWith('outfit:')) {
-    const [, source, presetTitle, weightPart] = raw.split(':');
-    const parts = [`${tr('服装', 'Outfit')}: ${sourceLabel(source)}`];
-    if (presetTitle) parts.push(presetTitle);
-    if (weightPart?.startsWith('w=')) {
-      const numeric = Number(weightPart.slice(2));
-      if (!Number.isNaN(numeric)) parts.push(`IP ${numeric.toFixed(2)}`);
-    }
-    return parts.join(' · ');
-  }
-  if (raw.startsWith('couple:')) {
-    const mode = raw.replace('couple:', '');
-    return mode === 'remote'
-      ? tr('双人链路: 历史协作记录', 'Couple flow: archived partner session')
-      : tr('双人链路: 本机双传', 'Couple flow: Local dual upload');
-  }
-  return raw;
-};
-
-const qaReasonLabel = (reason?: string | null) => {
-  switch (reason) {
-    case 'fused_faces': return tr('融脸', 'Fused faces');
-    case 'body_fusion': return tr('肢体融合', 'Body fusion');
-    case 'subject_missing': return tr('主体缺失', 'Subject missing');
-    case 'identity_swap': return tr('身份错位', 'Identity swap');
-    case 'identity_mismatch': return tr('脸不像本人', 'Identity mismatch');
-    case 'extra_limbs': return tr('多余肢体', 'Extra limbs');
-    case 'bad_hands': return tr('手部异常', 'Bad hands');
-    case 'dress_exposure_error': return tr('婚纱露出异常', 'Dress exposure issue');
-    case 'cropped_face': return tr('裁头', 'Cropped face');
-    case 'headless': return tr('无头', 'Headless');
-    case 'face_distortion': return tr('脸部变形', 'Face distortion');
-    case 'subject_too_small': return tr('人物占比过小', 'Subject too small');
-    case 'face_too_small': return tr('脸部不够清晰', 'Face too small');
-    case 'background_dominates': return tr('背景抢主体', 'Background dominates');
-    case 'excessive_headroom': return tr('头顶留白过多', 'Too much headroom');
-    case 'awkward_crop': return tr('裁切不自然', 'Awkward crop');
-    case 'dress_cropped': return tr('婚纱裁切不完整', 'Dress cropped');
-    case 'poor_subject_separation': return tr('主体层次不足', 'Poor subject separation');
-    case 'flat_centered_pose': return tr('姿态过于僵硬', 'Flat centered pose');
-    case 'weak_couple_interaction': return tr('双人互动不足', 'Weak couple interaction');
-    case 'harsh_backlight': return tr('逆光过强', 'Harsh backlight');
-    case 'severe_artifacts': return tr('严重伪影', 'Severe artifacts');
-    default: return '';
-  }
-};
-
-const providerFailureMessageLabel = (failureCode?: string | null) => {
-  switch (failureCode) {
-    case 'cloud_subscription_required':
-      return tr('当前 Comfy Cloud 账号未开通排队执行权限。', 'The current Comfy Cloud account cannot queue workflows.');
-    case 'cloud_queue_rejected':
-      return tr('Comfy Cloud 已拒绝本次排队请求。', 'Comfy Cloud rejected the workflow queue request.');
-    case 'cloud_job_failed':
-      return tr('Comfy Cloud 任务执行失败。', 'The Comfy Cloud job failed during execution.');
-    case 'workflow_error':
-      return tr('当前云端工作流与平台能力不兼容。', 'The current cloud workflow is incompatible with the platform runtime.');
-    case 'provider_model_unavailable':
-      return tr('当前配置的模型在提供商侧不可用。', 'The configured model is not available from the current provider.');
-    case 'delivery_error':
-      return tr('图片已生成，但交付到存储时失败。', 'Images rendered, but delivery to storage failed.');
-    case 'generation_timeout':
-      return tr('生成超时，请稍后重试。', 'Generation timed out. Please retry later.');
-    default:
-      return '';
-  }
-};
-
-const providerFailureHintLabel = (failureCode?: string | null) => {
-  switch (failureCode) {
-    case 'cloud_subscription_required':
-      return tr('Cloud 队列权限未开通', 'Cloud queue access missing');
-    case 'cloud_queue_rejected':
-      return tr('Cloud 队列拒绝任务', 'Cloud queue rejected the task');
-    case 'cloud_job_failed':
-      return tr('云端任务执行失败', 'Cloud job execution failed');
-    case 'workflow_error':
-      return tr('工作流兼容性异常', 'Workflow compatibility issue');
-    case 'provider_model_unavailable':
-      return tr('模型通道不可用', 'Model channel unavailable');
-    case 'delivery_error':
-      return tr('存储交付失败', 'Storage delivery failed');
-    case 'generation_timeout':
-      return tr('生成超时', 'Generation timeout');
-    default:
-      return '';
-  }
-};
-
-const providerFailureActionLabel = (failureCode?: string | null) => {
-  switch (failureCode) {
-    case 'cloud_subscription_required':
-      return tr('请开通 Comfy Cloud 订阅，或更换具备 queue 权限的 API Key。', 'Enable a Comfy Cloud subscription or switch to an API key with queue access.');
-    case 'cloud_queue_rejected':
-      return tr('请检查 Cloud 额度、订阅状态和 API Key 权限。', 'Check Cloud credits, subscription status, and API key permissions.');
-    case 'cloud_job_failed':
-      return tr('请稍后重试；若持续失败，请检查工作流与模型兼容性。', 'Retry later. If it persists, inspect workflow and model compatibility.');
-    case 'workflow_error':
-      return tr('请切换到 Cloud 兼容工作流，或简化当前节点配置。', 'Switch to a Cloud-compatible workflow or simplify the current nodes.');
-    case 'provider_model_unavailable':
-      return tr('请在提供商后台确认该模型已开通，或改用当前账号已开放的模型名称。', 'Confirm that this model is enabled for the provider account, or switch to a model name already enabled for this key.');
-    case 'delivery_error':
-      return tr('请检查对象存储配置、公网访问和写入权限。', 'Check object storage configuration, public access, and write permissions.');
-    case 'generation_timeout':
-      return tr('建议稍后重试，或降低任务复杂度后再生成。', 'Retry later or reduce task complexity before generating again.');
-    default:
-      return '';
-  }
-};
-
+const hasError = computed(() => Boolean(
+  orderStore.currentOrder?.error_message
+  || isOrderManualOrFailed(orderStore.currentOrder?.status)
+  || (orderStore.isCompleted && !hasRenderableOutput.value)
+));
 const displayErrorMessage = computed(() => {
-  const providerMessage = providerFailureMessageLabel(providerFailureCode.value);
-  if (providerMessage) return providerMessage;
-  return orderStore.currentOrder?.error_message || tr('服务暂不可用，请稍后重试。', 'The AI is currently at rest.');
+  if (orderStore.currentOrder?.error_message) return orderStore.currentOrder.error_message;
+  switch (orderStore.currentOrder?.status) {
+    case 'UNKNOWN_EXTERNAL_STATE':
+      return tr('任务正在等待人工对账，为避免重复扣费不会自动重提。', 'The task is awaiting manual reconciliation and will not be resubmitted automatically.');
+    case 'CONSENT_REVIEW_REQUIRED':
+      return tr('任务需要完成授权复核后才能继续。', 'The task requires consent review before it can continue.');
+    case 'CANCELLED':
+      return tr('任务已取消，未交付的额度会按结算规则处理。', 'The task was cancelled; undelivered credits follow the settlement policy.');
+    case 'FAILED':
+      return tr('生成失败，请返回创作页重新检查照片和方向。', 'Generation failed. Return to the studio and review the portraits and direction.');
+    case 'DELETED':
+      return tr('该任务已删除。', 'This task has been deleted.');
+    default:
+      return tr('成片暂不可读取，请稍后刷新。', 'The delivery is temporarily unavailable. Please refresh later.');
+  }
 });
 
 const effectiveHints = computed(() => {
-  const o: any = orderStore.currentOrder;
+  const o = orderStore.currentOrder;
   const hints: string[] = [];
-  if (o?.director_mode) hints.push(tr('导演模式', 'Director Mode'));
-  if (o?.subject_count) hints.push(`${tr('主体数', 'Subjects')}: ${o.subject_count}`);
-  if (o?.couple_flow === 'remote') hints.push(tr('双人链路: 历史协作记录', 'Couple flow: archived partner session'));
-  else if (o?.couple_flow === 'local') hints.push(tr('双人链路: 本机双传', 'Couple flow: Local dual upload'));
-  if (o?.effective_scene_source) hints.push(`${tr('场景', 'Scene')}: ${sourceLabel(o.effective_scene_source)}`);
-  if (o?.effective_outfit_source) hints.push(`${tr('服装', 'Outfit')}: ${sourceLabel(o.effective_outfit_source)}`);
-  const ignored = Array.isArray(o?.ignored_inputs)
-    ? o.ignored_inputs.map((item: string) => ignoredInputLabel(item)).filter(Boolean)
-    : [];
-  if (ignored.length) {
-    hints.push(`${tr('已忽略', 'Ignored')}: ${ignored.join(' / ')}`);
-  }
-  if (o?.effective_scene_preset_title && o?.effective_scene_source && o.effective_scene_source !== 'upload' && o.effective_scene_source !== 'text') {
-    hints.push(`${tr('场景预设', 'Scene preset')}: ${o.effective_scene_preset_title}`);
-  }
-  if (o?.effective_outfit_preset_title && o?.effective_outfit_source && o.effective_outfit_source !== 'upload' && o.effective_outfit_source !== 'text') {
-    hints.push(`${tr('服装预设', 'Outfit preset')}: ${o.effective_outfit_preset_title}`);
-  }
-  if (typeof o?.effective_scene_ip_weight === 'number' && o?.effective_scene_source && o.effective_scene_source !== 'text') {
-    hints.push(`${tr('场景 IP 权重', 'Scene IP weight')}: ${o.effective_scene_ip_weight.toFixed(2)}`);
-  }
-  if (typeof o?.effective_outfit_ip_weight === 'number' && o?.effective_outfit_source && o.effective_outfit_source !== 'text') {
-    hints.push(`${tr('服装 IP 权重', 'Outfit IP weight')}: ${o.effective_outfit_ip_weight.toFixed(2)}`);
-  }
-  if (Array.isArray(o?.director_decision_hints)) {
-    hints.push(...o.director_decision_hints.map((item: string) => directorDecisionHintLabel(item)).filter(Boolean));
-  }
+  if (o?.access_tier) hints.push(`${tr('交付等级', 'Access tier')}: ${o.access_tier}`);
+  if (o?.settlement_status) hints.push(`${tr('结算', 'Settlement')}: ${o.settlement_status}`);
+  if (o?.delivery_status) hints.push(`${tr('交付', 'Delivery')}: ${o.delivery_status}`);
   return hints;
 });
 
 const failureHints = computed(() => {
-  const chips: string[] = [];
-  const providerHint = providerFailureHintLabel(providerFailureCode.value);
-  if (providerHint) chips.push(providerHint);
-  const reasons = Array.isArray(orderStore.currentOrder?.qa_last_reasons)
-    ? orderStore.currentOrder?.qa_last_reasons || []
-    : [];
-  chips.push(...reasons.map((item: string) => qaReasonLabel(item)).filter(Boolean));
-  if (chips.length && orderStore.currentOrder?.qa_attempt_count) {
-    chips.push(`${tr('重试次数', 'Attempts')}: ${orderStore.currentOrder.qa_attempt_count}`);
-  }
-  return chips;
+  const status = orderStore.currentOrder?.status;
+  return status && isOrderManualOrFailed(status) ? [`${tr('状态', 'Status')}: ${status}`] : [];
 });
 
 const failureActionHints = computed(() => {
-  const advice: string[] = [];
-  const providerAdvice = providerFailureActionLabel(providerFailureCode.value);
-  if (providerAdvice) advice.push(providerAdvice);
-  const reasons = Array.isArray(orderStore.currentOrder?.qa_last_reasons)
-    ? orderStore.currentOrder?.qa_last_reasons || []
-    : [];
-  if (reasons.includes('fused_faces') || reasons.includes('identity_swap') || reasons.includes('identity_mismatch')) {
-    advice.push(tr('双人请更换差异更明显的正脸自拍', 'Use two more distinct front-facing selfies for couple mode'));
+  switch (orderStore.currentOrder?.status) {
+    case 'UNKNOWN_EXTERNAL_STATE':
+      return [tr('请等待系统对账或联系支持，不要重复创建相同任务。', 'Wait for reconciliation or contact support; do not recreate the same task.')];
+    case 'CONSENT_REVIEW_REQUIRED':
+      return [tr('请完成授权复核。', 'Complete the required consent review.')];
+    case 'FAILED':
+    case 'CANCELLED':
+      return [tr('可返回创作页重新选择人物照片和稳定模板。', 'Return to the studio to select portraits and a stable style again.')];
+    default:
+      return [];
   }
-  if (reasons.includes('body_fusion') || reasons.includes('extra_limbs')) {
-    advice.push(tr('重拍半身或全身照，避免遮挡手臂', 'Retake half/full-body photos and keep arms unobstructed'));
-  }
-  if (reasons.includes('cropped_face') || reasons.includes('headless')) {
-    advice.push(tr('请保留完整头部与肩部，不要贴边裁切', 'Keep the full head and shoulders inside the frame'));
-  }
-  if (reasons.includes('bad_hands')) {
-    advice.push(tr('上传更自然的站姿，手部尽量自然下垂', 'Use a more natural standing pose with visible hands'));
-  }
-  if (reasons.includes('dress_exposure_error')) {
-    advice.push(tr('请选择更保守的婚纱模板或换一张遮挡更少的清晰照片', 'Choose a safer dress style or upload a clearer, less occluded photo'));
-  }
-  return advice;
 });
 
 let textInterval: any;
@@ -749,14 +513,27 @@ const downloadImageUrl = async (url: string, fallbackName = 'ai-wedding-studio-h
     const browser = globalThis as any;
     const doc = browser?.document;
     if (!doc) throw new Error('document_unavailable');
+    const response = await browser.fetch(url, { credentials: 'include' });
+    if (!response?.ok) {
+      throw new Error(`download_failed_${Number(response?.status || 0)}`);
+    }
+    const blob = await response.blob();
+    if (!blob?.size) throw new Error('download_empty');
+    const objectUrl = browser.URL.createObjectURL(blob);
     const link = doc.createElement('a');
-    link.href = url;
+    link.href = objectUrl;
     link.download = guessFileName(url, fallbackName);
-    link.target = '_blank';
-    link.rel = 'noopener';
     doc.body.appendChild(link);
-    link.click();
-    doc.body.removeChild(link);
+    try {
+      link.click();
+    } finally {
+      doc.body.removeChild(link);
+        // Chromium may not have consumed the Blob URL when the click handler
+        // returns. Keep it alive long enough for the browser download manager
+        // to take ownership; immediate revocation cancels an otherwise valid
+        // private download.
+        browser.setTimeout(() => browser.URL.revokeObjectURL(objectUrl), 60_000);
+    }
     await trackEvent({
       eventType: 'download_success',
       sourcePage: 'preview',
@@ -879,8 +656,10 @@ watch(
   }
 );
 
-const retry = () => {
-  if (orderStore.currentOrder?.id) orderStore.startPolling(orderStore.currentOrder.id);
+const retry = async () => {
+  if (orderStore.currentOrder?.id) {
+    await orderStore.refreshOrder(orderStore.currentOrder.id);
+  }
 };
 
 onMounted(async () => {

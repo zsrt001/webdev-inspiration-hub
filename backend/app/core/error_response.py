@@ -33,12 +33,18 @@ _CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]+")
 _GRANT_TOKEN_PATH_PATTERN = re.compile(
     r"(/api/v1/media/grants/)[A-Za-z0-9_-]{20,128}"
 )
+_EVOLINK_CALLBACK_TOKEN_PATH_PATTERN = re.compile(
+    r"(/api/v1/provider-callbacks/evolink/"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/)[0-9a-fA-F]{64}"
+)
 
 
 def redact_sensitive_path(value: object) -> str:
     """Remove bearer-like path credentials before any application log sink."""
 
-    return _GRANT_TOKEN_PATH_PATTERN.sub(r"\1[REDACTED]", str(value or ""))
+    redacted = _GRANT_TOKEN_PATH_PATTERN.sub(r"\1[REDACTED]", str(value or ""))
+    return _EVOLINK_CALLBACK_TOKEN_PATH_PATTERN.sub(r"\1[REDACTED]", redacted)
 
 
 class SensitivePathLogFilter(logging.Filter):

@@ -477,7 +477,6 @@ class WebOnlyStaticContractTest(unittest.TestCase):
             for relative_path in (
                 "backend/app/__init__.py",
                 "backend/run_api.py",
-                "backend/run_worker.py",
             )
         )
         idempotent_storage_source = "\n".join(

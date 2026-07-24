@@ -133,13 +133,6 @@
               <text>{{ stylePanelTitle }}</text>
               <text>{{ stylePanelNote }}</text>
             </view>
-            <view v-if="generationMode !== 'golden_anniversary'" class="free-mode-card compact" :class="{ active: !selectedStyleFamily }" @tap="selectedStyleFamily = ''">
-              <view class="free-mode-copy">
-                <text class="free-mode-label">{{ tr('默认', 'Default') }}</text>
-                <text class="free-mode-title heading-serif">{{ tr('不套模板，按文字或参考图生成', 'No template, follow text or references') }}</text>
-                <text class="free-mode-desc">{{ tr('适合已经有明确服装、场景或氛围想法的用户。', 'Best when you already know the outfit, scene, or mood you want.') }}</text>
-              </view>
-            </view>
             <view class="style-grid">
               <view v-for="card in styleCards" :key="card.familyKey" class="style-card" :class="{ active: selectedStyleFamily === card.familyKey }" @tap="selectedStyleFamily = card.familyKey">
                 <view class="style-image-frame">
@@ -153,38 +146,8 @@
             </view>
 
             <view class="style-section-head reference-head">
-              <text>{{ tr('参考图（可选）', 'Reference Images (optional)') }}</text>
-              <text>{{ tr('上传后会强控对应方向，文字只做兼容微调', 'Uploaded references strongly control their domain; text only refines compatibly') }}</text>
-            </view>
-            <view class="reference-grid">
-              <view class="upload-card">
-                <text class="field-label">{{ tr('场景参考图（可选）', 'Scene Reference (optional)') }}</text>
-                <view v-if="sceneReferencePath" class="preview-box ref-box">
-                  <image :src="sceneReferencePath" class="preview-image" mode="aspectFill" />
-                  <view class="preview-actions">
-                    <button class="mini-btn" @tap.stop="pickSceneReference">{{ tr('更换', 'Replace') }}</button>
-                    <button class="mini-btn ghost" @tap.stop="sceneReferencePath = ''">{{ tr('移除', 'Remove') }}</button>
-                  </view>
-                </view>
-                <view v-else class="empty-box short" @tap="pickSceneReference">
-                  <text class="empty-plus">+</text>
-                  <text class="empty-title">{{ tr('上传场景参考', 'Upload scene reference') }}</text>
-                </view>
-              </view>
-              <view class="upload-card">
-                <text class="field-label">{{ tr('服装参考图（可选）', 'Outfit Reference (optional)') }}</text>
-                <view v-if="outfitReferencePath" class="preview-box ref-box">
-                  <image :src="outfitReferencePath" class="preview-image" mode="aspectFill" />
-                  <view class="preview-actions">
-                    <button class="mini-btn" @tap.stop="pickOutfitReference">{{ tr('更换', 'Replace') }}</button>
-                    <button class="mini-btn ghost" @tap.stop="outfitReferencePath = ''">{{ tr('移除', 'Remove') }}</button>
-                  </view>
-                </view>
-                <view v-else class="empty-box short" @tap="pickOutfitReference">
-                  <text class="empty-plus">+</text>
-                  <text class="empty-title">{{ tr('上传服装参考', 'Upload outfit reference') }}</text>
-                </view>
-              </view>
+              <text>{{ tr('参考图', 'Reference Images') }}</text>
+              <text>{{ tr('当前私有资产合同仅接收人物照片；场景和服装请先使用文字描述。', 'The current private-asset contract accepts portraits only; use text for scene and outfit direction.') }}</text>
             </view>
           </view>
         </view>
@@ -214,7 +177,7 @@
                   <view class="check-dot"></view>
                   <text>{{ portraitRequirementText }}</text>
                 </view>
-                <view class="check-row" :class="{ done: selectedStyleFamily || hasDirectionText || sceneReferencePath || outfitReferencePath }">
+                <view class="check-row" :class="{ done: selectedStyleFamily || hasDirectionText }">
                   <view class="check-dot"></view>
                   <text>{{ enhancerStateText }}</text>
                 </view>
@@ -245,6 +208,12 @@ import NavBar from '../../components/NavBar.vue';
 import PaymentModal from '../../components/PaymentModal.vue';
 import LegalConsentInline from '../../components/LegalConsentInline.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
+import {
+  buildBaseCreatePayload,
+  isTemplateCategoryAllowedForMode,
+  type GenerationMode,
+} from '../../contracts/create';
+import type { UploadBatchResponse } from '../../contracts/order';
 import { useI18nStore } from '../../stores/i18n';
 import { useOrderStore } from '../../stores/order';
 import { useOpsStore } from '../../stores/ops';
@@ -254,7 +223,6 @@ import { ensureSession } from '../../utils/auth';
 import { runLocalSmartInputCheck, type SmartInputVerdict } from '../../utils/local_smart_input';
 import { trackEvent } from '../../utils/analytics';
 
-type GenerationMode = 'single' | 'couple_local' | 'golden_anniversary';
 type UploadQuality = {
   quality_score: number;
   quality_level: 'good' | 'warning' | 'poor';
@@ -262,7 +230,7 @@ type UploadQuality = {
   risk_flags: string[];
   metrics: Record<string, number>;
 };
-type PortraitSlot = { localPath: string; uploadedUrl: string; uploadQuality?: UploadQuality | null };
+type PortraitSlot = { localPath: string; uploadedAssetId: string; uploadQuality?: UploadQuality | null };
 
 const STYLE_ORDER = ['chn_xiuhe', 'korean_minimal', 'royal_castle', 'old_money', 'gothic_romance', 'beach_sunset', 'hk_retro', 'twilight_forest', 'japanese_shiromuku', 'cyberpunk_city', 'school_days', 'classic_bw', 'golden_vintage_studio_8090', 'golden_chinese_courtyard', 'golden_modern_remake'];
 const GOLDEN_STYLE_FAMILIES = ['golden_vintage_studio_8090', 'golden_chinese_courtyard', 'golden_modern_remake'];
@@ -300,9 +268,10 @@ const routeQuery = ref<Record<string, string>>({});
 
 const generationMode = ref<GenerationMode>('single');
 const selectedStyleFamily = ref('');
-const portraitSlots = ref<PortraitSlot[]>([{ localPath: '', uploadedUrl: '' }, { localPath: '', uploadedUrl: '' }]);
-const sceneReferencePath = ref('');
-const outfitReferencePath = ref('');
+const portraitSlots = ref<PortraitSlot[]>([
+  { localPath: '', uploadedAssetId: '' },
+  { localPath: '', uploadedAssetId: '' },
+]);
 const globalStyleText = ref('');
 const outfitText = ref('');
 const sceneText = ref('');
@@ -327,11 +296,6 @@ const selectedTemplate = computed<Template | null>(() => {
   return styleCards.value.find((item) => item.familyKey === selectedStyleFamily.value)?.template || null;
 });
 const styleCards = computed(() => {
-  const desiredCategories = generationMode.value === 'single'
-    ? ['single']
-    : isGoldenAnniversaryMode.value
-      ? ['vintage']
-      : ['couple', 'vintage'];
   const ordered = templateStore.templates.slice().sort((a, b) => {
     const ar = STYLE_ORDER.indexOf(getTemplateFamilyKey(a));
     const br = STYLE_ORDER.indexOf(getTemplateFamilyKey(b));
@@ -341,8 +305,7 @@ const styleCards = computed(() => {
   return ordered.flatMap((item) => {
     const familyKey = getTemplateFamilyKey(item);
     if (!familyKey || familyKey === 'custom_mode' || familyKey === 'custom' || seen.has(familyKey)) return [];
-    const category = String(item.category || '').toLowerCase();
-    if (!desiredCategories.includes(category)) return [];
+    if (!isTemplateCategoryAllowedForMode(item.category, generationMode.value)) return [];
     seen.add(familyKey);
     const actual = item;
     return [{
@@ -356,12 +319,11 @@ const styleCards = computed(() => {
 });
 const hasDirectionText = computed(() => !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim()));
 const summaryImageUrl = computed(() => resolvePublicUrl(selectedTemplate.value?.image_url || '/style-previews/custom_mode.jpg'));
-const directionPanelTitle = computed(() => selectedStyleFamily.value
-  ? tr('增强创作方向（可选）', 'Enhance Direction (optional)')
-  : tr('补充服装、场景与氛围（可选）', 'Add Outfit, Scene, and Mood (optional)'));
-const directionPanelDesc = computed(() => selectedStyleFamily.value
-  ? tr('你已经选择了参考风格。这里负责补充细节；如果上传场景/服装参考图，参考图会优先控制对应方向。', 'You already selected a reference style. Use this area to refine details; uploaded scene/outfit references control their matching direction first.')
-  : tr('自由模式不强制选模板。没有参考图时，文字就是主创作指令；上传参考图后，文字负责补充氛围、镜头、布光和质感。', 'Free mode does not require a template. Without references, text is the main creative brief; after uploading references, text refines mood, lens, lighting, and texture.'));
+const directionPanelTitle = computed(() => tr('增强创作方向（可选）', 'Enhance Direction (optional)'));
+const directionPanelDesc = computed(() => tr(
+  '已选择稳定参考风格；可用文字补充服装、场景、镜头和氛围。',
+  'A stable reference style is selected; use text to refine outfit, scene, lens, and mood.',
+));
 const stylePanelTitle = computed(() => {
   if (generationMode.value === 'single') return tr('参考风格（单人）', 'Reference Styles (solo)');
   if (isGoldenAnniversaryMode.value) return tr('金婚重塑模板', 'Golden Anniversary Templates');
@@ -369,21 +331,19 @@ const stylePanelTitle = computed(() => {
 });
 const stylePanelNote = computed(() => isGoldenAnniversaryMode.value
   ? tr('必选：用于父母/长辈纪念合照的专项模板', 'Required: legacy templates for parents and elders')
-  : tr('可选：无参考图时按文字主控生成', 'Optional: text leads when no reference is uploaded'));
+  : tr('系统默认选择稳定风格，你也可以切换', 'A stable style is selected by default and can be changed'));
 const outputModeLabel = computed(() => generationMode.value === 'single'
   ? tr('单人输出', 'Single Output')
   : isGoldenAnniversaryMode.value
     ? tr('金婚重塑', 'Golden Anniversary')
     : tr('双人同机', 'Couple Local'));
-const templateStateLabel = computed(() => selectedStyleFamily.value ? tr('已选择模板', 'Style Selected') : tr('自由模式', 'Free Mode'));
+const templateStateLabel = computed(() => tr('已选择稳定模板', 'Stable Style Selected'));
 const sceneControlLabel = computed(() => {
-  if (sceneReferencePath.value) return tr('参考图强控', 'Reference control');
   if (sceneText.value.trim() || globalStyleText.value.trim()) return tr('文字主控', 'Text control');
   if (selectedStyleFamily.value) return tr('模板兜底', 'Template fallback');
   return tr('随机兜底', 'Random fallback');
 });
 const outfitControlLabel = computed(() => {
-  if (outfitReferencePath.value) return tr('参考图强控', 'Reference control');
   if (outfitText.value.trim() || globalStyleText.value.trim()) return tr('文字主控', 'Text control');
   if (selectedStyleFamily.value) return tr('模板兜底', 'Template fallback');
   return tr('随机兜底', 'Random fallback');
@@ -404,25 +364,18 @@ const priorityGuideItems = computed(() => [
     active: true,
   },
   {
-    key: 'reference',
-    index: '03',
-    title: tr('场景/服装参考图', 'Scene/outfit references'),
-    copy: tr('有图时优先复刻对应方向。', 'When uploaded, they control their matching domain.'),
-    active: !!(sceneReferencePath.value || outfitReferencePath.value),
-  },
-  {
     key: 'text',
-    index: '04',
+    index: '03',
     title: tr('文字创作', 'Text direction'),
     copy: tr('无参考图时主控；有参考图时微调氛围、镜头和布光。', 'Controls when no reference exists; otherwise refines mood, lens, and lighting.'),
     active: hasDirectionText.value,
   },
   {
     key: 'preset',
-    index: '05',
-    title: tr('模板/随机', 'Preset/random'),
-    copy: tr('只在没有明确图文方向时兜底。', 'Only fills in when no clear image or text direction exists.'),
-    active: !!selectedStyleFamily.value || (!hasDirectionText.value && !sceneReferencePath.value && !outfitReferencePath.value),
+    index: '04',
+    title: tr('稳定模板', 'Stable preset'),
+    copy: tr('系统默认选中，也可以手动切换。', 'Selected by default and can be changed manually.'),
+    active: !!selectedStyleFamily.value,
   },
 ]);
 const generationCost = computed(() => {
@@ -447,15 +400,14 @@ const readinessSubtitle = computed(() => portraitRequirementMet.value
 const enhancerStateText = computed(() => {
   if (selectedStyleFamily.value) return tr('已选择参考风格', 'Reference style selected');
   if (hasDirectionText.value) return tr('已填写服装/场景方向', 'Outfit or scene direction added');
-  if (sceneReferencePath.value || outfitReferencePath.value) return tr('已上传参考图', 'Reference image added');
   return tr('增强项未填写，可跳过', 'No enhancers added, can skip');
 });
 const summaryTip = computed(() => selectedTemplate.value
-  ? tr('身份和人数始终锁定。场景/服装参考图优先控制对应方向；无参考图时文字主控；模板只补未指定细节。', 'Identity and subject count stay locked. Scene/outfit references control their matching direction first; text leads when no reference exists; templates only fill unspecified details.')
-  : tr('不选择模板也可以生成。若只写文字，文字会主控场景和服装；若上传参考图，参考图优先控制对应方向，文字只做兼容微调。', 'You can generate without a template. Text controls scene and outfit when used alone; uploaded references take priority for their matching direction, with text used only for compatible refinement.'));
+  ? tr('身份和人数始终锁定。文字补充场景和服装，模板只补未指定细节。', 'Identity and subject count stay locked. Text refines scene and outfit; the template fills unspecified details.')
+  : tr('正在加载稳定模板。', 'Loading a stable template.'));
 const canSubmit = computed(() => {
   if (!legalAccepted.value || submitting.value) return false;
-  return portraitRequirementMet.value;
+  return portraitRequirementMet.value && selectedTemplate.value !== null;
 });
 const modeOptions = computed(() => [
   { value: 'single' as GenerationMode, title: tr('单人生成', 'Single'), desc: tr('一张照片，直接生成个人婚纱风格', 'One portrait, direct solo bridal output') },
@@ -476,27 +428,26 @@ function currentQuery(): Record<string, string> {
 function setMode(mode: GenerationMode) {
   if (generationMode.value === mode) return;
   generationMode.value = mode;
-  portraitSlots.value[1] = { localPath: '', uploadedUrl: '' };
+  portraitSlots.value[1] = { localPath: '', uploadedAssetId: '' };
   if (selectedStyleFamily.value && !hasStyleForMode(selectedStyleFamily.value, mode)) {
     selectedStyleFamily.value = '';
   }
-  if (mode === 'golden_anniversary') selectDefaultGoldenStyle();
+  selectDefaultStyleForMode();
 }
 function hasStyleForMode(familyKey: string, mode: GenerationMode) {
-  const desiredCategories = mode === 'single' ? ['single'] : mode === 'golden_anniversary' ? ['vintage'] : ['couple', 'vintage'];
   return templateStore.templates.some((item) => {
     if (getTemplateFamilyKey(item) !== familyKey) return false;
-    return desiredCategories.includes(String(item.category || '').toLowerCase());
+    return isTemplateCategoryAllowedForMode(item.category, mode);
   });
 }
-function selectDefaultGoldenStyle() {
-  const currentIsGolden = selectedStyleFamily.value && GOLDEN_STYLE_FAMILIES.includes(selectedStyleFamily.value);
-  if (currentIsGolden) return;
-  const matched = templateStore.templates.find((item) => {
-    const category = String(item.category || '').toLowerCase();
-    return category === 'vintage' && GOLDEN_STYLE_FAMILIES.includes(getTemplateFamilyKey(item));
-  });
-  selectedStyleFamily.value = matched ? getTemplateFamilyKey(matched) : GOLDEN_STYLE_FAMILIES[0];
+function selectDefaultStyleForMode() {
+  if (selectedStyleFamily.value && hasStyleForMode(selectedStyleFamily.value, generationMode.value)) return;
+  const preferredFamily = generationMode.value === 'golden_anniversary'
+    ? GOLDEN_STYLE_FAMILIES[0]
+    : 'korean_minimal';
+  const preferred = styleCards.value.find((item) => item.familyKey === preferredFamily);
+  const fallback = styleCards.value[0];
+  selectedStyleFamily.value = preferred?.familyKey || fallback?.familyKey || '';
 }
 function applyRouteQuery(query: Record<string, string>) {
   const mode = String(query.mode || '').toLowerCase();
@@ -512,14 +463,14 @@ function applyRouteQuery(query: Record<string, string>) {
     }
   }
 
-  if (generationMode.value === 'golden_anniversary') selectDefaultGoldenStyle();
+  selectDefaultStyleForMode();
 }
 function applyStoredTemplateIntent() {
   if (selectedStyleFamily.value || !templateStore.selectedTemplate) return;
   const stored = templateStore.selectedTemplate;
   if (String(stored.category || '').toLowerCase() === 'vintage') generationMode.value = 'golden_anniversary';
   selectedStyleFamily.value = getTemplateFamilyKey(stored);
-  if (generationMode.value === 'golden_anniversary') selectDefaultGoldenStyle();
+  selectDefaultStyleForMode();
 }
 function serializeUploadQuality(verdict: SmartInputVerdict): UploadQuality {
   return {
@@ -534,23 +485,6 @@ function serializeUploadQuality(verdict: SmartInputVerdict): UploadQuality {
         .map(([key, value]) => [key, Number(value)])
     ),
   };
-}
-function buildOrderUploadQuality(images: string[]): Array<Record<string, any>> {
-  return portraitSlots.value
-    .flatMap((slot, index): Array<Record<string, any>> => {
-      if (!slot.uploadQuality) return [];
-      const role = generationMode.value === 'single'
-        ? 'subject'
-        : isGoldenAnniversaryMode.value
-          ? index === 0 ? 'elder_1' : 'elder_2'
-          : index === 0 ? 'person_1' : 'person_2';
-      return [{
-        ...slot.uploadQuality,
-        slot_index: index,
-        role,
-        image_url: images[index] || slot.uploadedUrl || null,
-      }];
-    });
 }
 function portraitLabel(index: number) {
   if (generationMode.value === 'single') return tr('主人像', 'Main Portrait');
@@ -594,21 +528,17 @@ async function pickPortrait(index: number) {
   try {
     const { localPath, uploadQuality } = await pickLocalImage();
     if (!localPath) return;
-    portraitSlots.value[index] = { localPath, uploadedUrl: '', uploadQuality };
+    portraitSlots.value[index] = { localPath, uploadedAssetId: '', uploadQuality };
   } catch (error) {
     console.error(error);
   }
 }
 function clearPortrait(index: number) {
-  portraitSlots.value[index] = { localPath: '', uploadedUrl: '', uploadQuality: null };
+  portraitSlots.value[index] = { localPath: '', uploadedAssetId: '', uploadQuality: null };
 }
-async function pickSceneReference() { sceneReferencePath.value = (await pickLocalImage()).localPath; }
-async function pickOutfitReference() { outfitReferencePath.value = (await pickLocalImage()).localPath; }
 function resolveSeedTemplate(): Template {
-  if (selectedTemplate.value) return selectedTemplate.value;
-  return templateStore.templates.find((item) => item.id === 'custom' || item.is_custom) || {
-    id: 'custom', category: 'custom', title: 'Custom Mode', image_url: '/style-previews/custom_mode.jpg', style_family: 'custom_mode', is_custom: true,
-  };
+  if (!selectedTemplate.value) throw new Error('A stable template is required');
+  return selectedTemplate.value;
 }
 async function uploadLocalAsset(localPath: string, uploadQuality?: UploadQuality | null) {
   const startedAt = Date.now();
@@ -617,15 +547,18 @@ async function uploadLocalAsset(localPath: string, uploadQuality?: UploadQuality
     sourcePage: 'create',
     templateId: selectedTemplate.value?.id || null,
   });
-  const result = await uploadFile('/upload', localPath, 'file');
-  const url = String(result.url || '').trim();
+  const result = await uploadFile('/media/uploads', localPath, 'file') as UploadBatchResponse;
+  const assetId = String(result.assets?.[0]?.asset_id || '').trim();
+  if (!assetId || result.assets.length !== 1) {
+    throw new Error('Private upload response is invalid');
+  }
   await trackEvent({
     eventType: 'asset_upload_completed',
     sourcePage: 'create',
     templateId: selectedTemplate.value?.id || null,
     meta: {
       duration_ms: Date.now() - startedAt,
-      has_url: !!url,
+      has_asset: true,
       quality_score: uploadQuality?.quality_score ?? null,
       quality_level: uploadQuality?.quality_level ?? null,
     },
@@ -654,15 +587,15 @@ async function uploadLocalAsset(localPath: string, uploadQuality?: UploadQuality
       }
     }
   }
-  return url;
+  return assetId;
 }
 async function ensurePortraitUploaded(index: number) {
   const slot = portraitSlots.value[index];
   if (!slot.localPath) return '';
-  if (slot.uploadedUrl) return slot.uploadedUrl;
-  const url = await uploadLocalAsset(slot.localPath, slot.uploadQuality);
-  portraitSlots.value[index].uploadedUrl = url;
-  return url;
+  if (slot.uploadedAssetId) return slot.uploadedAssetId;
+  const assetId = await uploadLocalAsset(slot.localPath, slot.uploadQuality);
+  portraitSlots.value[index].uploadedAssetId = assetId;
+  return assetId;
 }
 async function submitCreate() {
   if (!creationAvailable.value) return;
@@ -702,35 +635,30 @@ async function submitCreate() {
   submitting.value = true;
   try {
     const seed = resolveSeedTemplate();
-    const images: string[] = [];
+    const assetIds: string[] = [];
     if (generationMode.value === 'single') {
-      images.push(await ensurePortraitUploaded(0));
+      assetIds.push(await ensurePortraitUploaded(0));
     } else {
-      images.push(await ensurePortraitUploaded(0), await ensurePortraitUploaded(1));
+      assetIds.push(await ensurePortraitUploaded(0), await ensurePortraitUploaded(1));
     }
-    const sceneImageUrl = sceneReferencePath.value ? await uploadLocalAsset(sceneReferencePath.value) : undefined;
-    const clothingImageUrl = outfitReferencePath.value ? await uploadLocalAsset(outfitReferencePath.value) : undefined;
-    const uploadQuality = buildOrderUploadQuality(images);
-    const order = await orderStore.createOrder(seed.id, images, {
-      legal_accepted: true,
-      director_mode: !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim() || sceneImageUrl || clothingImageUrl),
-      global_style_text: globalStyleText.value.trim() || undefined,
-      scene_text: sceneText.value.trim() || undefined,
-      outfit_text: outfitText.value.trim() || undefined,
-      scene_image_url: sceneImageUrl,
-      clothing_image_url: clothingImageUrl,
-      upload_quality: uploadQuality.length ? uploadQuality : undefined,
+    const payload = buildBaseCreatePayload({
+      templateId: seed.id,
+      assetIds,
+      globalStyleText: globalStyleText.value,
+      sceneText: sceneText.value,
+      outfitText: outfitText.value,
     });
+    const { accepted, order } = await orderStore.createOrder(payload);
     await trackEvent({
       eventType: 'generation_order_created',
       sourcePage: 'create',
       templateId: seed.id,
       meta: {
         generation_mode: generationMode.value,
-        subject_count: images.length,
-        director_mode: !!(globalStyleText.value.trim() || outfitText.value.trim() || sceneText.value.trim() || sceneImageUrl || clothingImageUrl),
+        subject_count: assetIds.length,
+        director_mode: payload.director_mode === true,
         credits_cost: generationCost.value,
-        order_id: order.id,
+        order_id: accepted.order_id,
       },
     });
     navBarRef.value?.refreshBalance();
@@ -778,6 +706,7 @@ onMounted(async () => {
   if (!templateStore.templates.length) await templateStore.fetchTemplates();
   applyRouteQuery(currentQuery());
   applyStoredTemplateIntent();
+  selectDefaultStyleForMode();
   setTimeout(() => applyRouteQuery(currentQuery()), 0);
 });
 </script>

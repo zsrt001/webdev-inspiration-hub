@@ -31,7 +31,7 @@ NOW = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
 
 class EvolinkReconciliationTest(unittest.IsolatedAsyncioTestCase):
     async def test_delivery_exhaustion_stages_cleanup_before_failure_settlement(self) -> None:
-        from app import worker_tasks
+        from app.services import generation_executor_service as executor
 
         lease = JobLease(uuid.uuid4(), "worker-a", uuid.uuid4(), 3, NOW, NOW.replace(minute=2))
         attempt_id = uuid.uuid4()
@@ -46,23 +46,23 @@ class EvolinkReconciliationTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(
-                worker_tasks,
+                executor,
                 "build_delivery_assets",
                 AsyncMock(side_effect=RuntimeError("storage unavailable")),
             ),
             patch.object(
-                worker_tasks,
+                executor,
                 "_retry_reconciliation",
                 AsyncMock(return_value=False),
             ),
             patch.object(
-                worker_tasks,
+                executor,
                 "prepare_delivery_intents_for_terminal_cleanup",
                 cleanup,
             ),
-            patch.object(worker_tasks, "_settle_reconciliation_failure", settle),
+            patch.object(executor, "_settle_reconciliation_failure", settle),
         ):
-            await worker_tasks._execute_ready_delivery(
+            await executor._execute_ready_delivery(
                 db,
                 attempt_id=attempt_id,
                 lease=lease,
@@ -71,19 +71,16 @@ class EvolinkReconciliationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["cleanup", "settle"])
         db.rollback.assert_awaited_once()
 
-    async def test_due_dispatch_enqueues_only_job_id_and_contract_version(self) -> None:
-        from app import worker_tasks
+    async def test_due_reconciliation_is_selected_without_redis(self) -> None:
+        from app.services import generation_executor_service as executor
 
         job_id = uuid.uuid4()
-        job = SimpleNamespace(id=job_id)
 
         class Rows:
             def all(self):
-                return [job]
+                return [job_id]
 
         db = SimpleNamespace(scalars=AsyncMock(return_value=Rows()))
-        redis = SimpleNamespace(enqueue_job=AsyncMock())
-
         class SessionContext:
             async def __aenter__(self):
                 return db
@@ -91,27 +88,24 @@ class EvolinkReconciliationTest(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *_args):
                 return False
 
-        with patch.object(
-            worker_tasks,
-            "async_session_maker",
-            return_value=SessionContext(),
+        with (
+            patch.object(
+                executor,
+                "async_session_maker",
+                return_value=SessionContext(),
+            ),
+            patch.object(
+                executor,
+                "backend_runtime_coordinates",
+                return_value=("dpl_current", "rtb_" + "a" * 64),
+            ),
         ):
-            await worker_tasks.dispatch_generation_reconciliation(
-                {"redis": redis},
-                now=NOW,
-            )
+            work = await executor._pending_backend_work(limit=1, now=NOW)
 
-        redis.enqueue_job.assert_awaited_once()
-        args = redis.enqueue_job.await_args.args
-        kwargs = redis.enqueue_job.await_args.kwargs
-        self.assertEqual(args, ("reconcile_generation_v1", str(job_id), "generation-job.v1"))
-        self.assertEqual(
-            kwargs,
-            {"_job_id": f"generation-reconcile:v1:{job_id}:{int(NOW.timestamp()) // 5}"},
-        )
+        self.assertEqual(work, [("reconcile", job_id)])
 
     async def test_worker_success_path_accounts_stores_qa_and_disposes_exact_attempt(self) -> None:
-        from app import worker_tasks
+        from app.services import generation_executor_service as executor
 
         lease = JobLease(uuid.uuid4(), "worker-a", uuid.uuid4(), 1, NOW, NOW.replace(minute=2))
         attempt_id = uuid.uuid4()
@@ -143,15 +137,15 @@ class EvolinkReconciliationTest(unittest.IsolatedAsyncioTestCase):
         )
         delivery = AsyncMock()
         with (
-            patch.object(worker_tasks, "async_session_maker", return_value=SessionContext()),
+            patch.object(executor, "async_session_maker", return_value=SessionContext()),
             patch.object(
-                worker_tasks,
+                executor,
                 "_load_reconciliation_attempt",
                 AsyncMock(return_value=attempt),
             ),
-            patch.object(worker_tasks, "ensure_accepted_submission_accounting", accounting),
+            patch.object(executor, "ensure_accepted_submission_accounting", accounting),
             patch.object(
-                worker_tasks,
+                executor,
                 "reconcile_evolink_attempt",
                 AsyncMock(
                     return_value=ReconciliationResult(
@@ -161,22 +155,22 @@ class EvolinkReconciliationTest(unittest.IsolatedAsyncioTestCase):
                     )
                 ),
             ),
-            patch.object(worker_tasks, "persist_evolink_candidate", candidate),
-            patch.object(worker_tasks, "run_and_persist_strict_qa", qa),
-            patch.object(worker_tasks, "decide_next_generation_action", disposition),
+            patch.object(executor, "persist_evolink_candidate", candidate),
+            patch.object(executor, "run_and_persist_strict_qa", qa),
+            patch.object(executor, "decide_next_generation_action", disposition),
             patch.object(
-                worker_tasks,
+                executor,
                 "settle_open_partner_consent_case_after_provider",
                 AsyncMock(return_value=False),
             ),
-            patch.object(worker_tasks, "build_delivery_assets", delivery, create=True),
+            patch.object(executor, "build_delivery_assets", delivery, create=True),
             patch.object(
-                worker_tasks,
+                executor,
                 "_qa_retry_is_exhausted",
                 AsyncMock(return_value=False),
             ),
         ):
-            await worker_tasks._execute_generation_reconciliation(
+            await executor._execute_generation_reconciliation(
                 lease,
                 user_id,
                 attempt_id,
@@ -204,7 +198,7 @@ class EvolinkReconciliationTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result.state, "UNRESOLVED")
-        self.assertEqual(result.reason, "provider_task_id_absent")
+        self.assertEqual(result.reason, "provider_submission_human_required")
         provider.get_task.assert_not_awaited()
         provider.submit.assert_not_awaited()
 

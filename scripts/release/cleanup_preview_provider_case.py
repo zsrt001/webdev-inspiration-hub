@@ -44,8 +44,7 @@ def validate_case_row(reference: dict[str, Any], row: dict[str, Any]) -> None:
         "source_sha",
         "runtime_bundle_id",
         "api_deployment_id",
-        "worker_deployment_id",
-        "worker_image_digest",
+        "backend_executor_digest",
         "job_id",
         "attempt_id",
         "asset_id",
@@ -78,22 +77,43 @@ def validate_case_row(reference: dict[str, Any], row: dict[str, Any]) -> None:
         str(row.get("job_api_deployment_id") or "") != normalized["api_deployment_id"]
         or str(row.get("job_runtime_bundle_id") or "") != normalized["runtime_bundle_id"]
         or str(row.get("job_worker_image_digest") or "")
-        != normalized["worker_image_digest"]
+        != normalized["backend_executor_digest"]
     ):
         raise ValueError("Provider cleanup job runtime coordinates mismatch")
-    if str(row.get("attempt_provider") or "") != "evolink" or row.get(
-        "attempt_provider_job_id"
-    ) is not None:
-        raise ValueError("Provider cleanup refuses a submitted or foreign attempt")
-    allowed = {
-        "order_status": {"QUEUED", "CANCELLED"},
-        "job_status": {"QUEUED", "CANCELLED"},
-        "attempt_status": {"PREPARED", "FAILED"},
-        "asset_status": {"PENDING_UPLOAD", "ACTIVE", "PENDING_DELETE", "DELETED"},
-    }
-    for field, values in allowed.items():
-        if str(row.get(field) or "") not in values:
-            raise ValueError(f"Provider cleanup {field} is not safely terminalizable")
+    if str(row.get("attempt_provider") or "") != "evolink":
+        raise ValueError("Provider cleanup refuses a foreign attempt")
+    provider_task_id = str(row.get("attempt_provider_job_id") or "").strip()
+    if provider_task_id:
+        attempt_status = str(row.get("attempt_status") or "")
+        job_status = str(row.get("job_status") or "")
+        order_status = str(row.get("order_status") or "")
+        terminal_graphs = {
+            ("FINISHED", "FINISHED", "READY"),
+            ("FINISHED", "FAILED", "FAILED"),
+            ("FAILED", "FAILED", "FAILED"),
+        }
+        if (attempt_status, job_status, order_status) not in terminal_graphs:
+            raise ValueError(
+                "Provider cleanup refuses a submitted attempt before terminal settlement"
+            )
+    else:
+        allowed_unsubmitted = {
+            "order_status": {"QUEUED", "CANCELLED"},
+            "job_status": {"QUEUED", "CANCELLED"},
+            "attempt_status": {"PREPARED", "FAILED"},
+        }
+        for field, values in allowed_unsubmitted.items():
+            if str(row.get(field) or "") not in values:
+                raise ValueError(
+                    f"Provider cleanup {field} is not safely terminalizable"
+                )
+    if str(row.get("asset_status") or "") not in {
+        "PENDING_UPLOAD",
+        "ACTIVE",
+        "PENDING_DELETE",
+        "DELETED",
+    }:
+        raise ValueError("Provider cleanup asset_status is not safely terminalizable")
 
 
 def _database_url(value: str) -> str:
@@ -188,6 +208,9 @@ def cleanup_case(
             reference = _build_reference(normalized, row)
             row.update(reference)
             validate_case_row(reference, row)
+            provider_task_bound = bool(
+                str(row.get("attempt_provider_job_id") or "").strip()
+            )
             cursor.execute(
                 """
                 UPDATE asset_access_grants
@@ -206,39 +229,40 @@ def cleanup_case(
                 ),
             )
             revoked_count = int(cursor.rowcount)
-            cursor.execute(
-                """
-                UPDATE generation_attempts
-                   SET status = 'FAILED', finished_at = COALESCE(finished_at, %s), updated_at = %s
-                 WHERE id = %s AND status IN ('PREPARED','FAILED') AND provider_job_id IS NULL
-                """,
-                (current, current, reference["attempt_id"]),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError("Provider cleanup attempt CAS failed")
-            cursor.execute(
-                """
-                UPDATE generation_jobs
-                   SET status = 'CANCELLED', finished_at = COALESCE(finished_at, %s),
-                       last_error_code = 'preview_provider_case_cleanup', updated_at = %s
-                 WHERE id = %s AND status IN ('QUEUED','CANCELLED') AND lease_owner IS NULL
-                """,
-                (current, current, reference["job_id"]),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError("Provider cleanup job CAS failed")
-            cursor.execute(
-                """
-                UPDATE orders
-                   SET status = 'CANCELLED', error_message = 'preview_provider_case_cleanup', updated_at = %s
-                 WHERE generation_job_id = %s AND status IN ('QUEUED','CANCELLED')
-                   AND price_cents = 0 AND payment_id IS NULL AND paid_at IS NULL
-                   AND reservation_id IS NULL
-                """,
-                (current, reference["job_id"]),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError("Provider cleanup order CAS failed")
+            if not provider_task_bound:
+                cursor.execute(
+                    """
+                    UPDATE generation_attempts
+                       SET status = 'FAILED', finished_at = COALESCE(finished_at, %s), updated_at = %s
+                     WHERE id = %s AND status IN ('PREPARED','FAILED') AND provider_job_id IS NULL
+                    """,
+                    (current, current, reference["attempt_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Provider cleanup attempt CAS failed")
+                cursor.execute(
+                    """
+                    UPDATE generation_jobs
+                       SET status = 'CANCELLED', finished_at = COALESCE(finished_at, %s),
+                           last_error_code = 'preview_provider_case_cleanup', updated_at = %s
+                     WHERE id = %s AND status IN ('QUEUED','CANCELLED') AND lease_owner IS NULL
+                    """,
+                    (current, current, reference["job_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Provider cleanup job CAS failed")
+                cursor.execute(
+                    """
+                    UPDATE orders
+                       SET status = 'CANCELLED', error_message = 'preview_provider_case_cleanup', updated_at = %s
+                     WHERE generation_job_id = %s AND status IN ('QUEUED','CANCELLED')
+                       AND price_cents = 0 AND payment_id IS NULL AND paid_at IS NULL
+                       AND reservation_id IS NULL
+                    """,
+                    (current, reference["job_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Provider cleanup order CAS failed")
             cursor.execute(
                 """
                 UPDATE media_assets
@@ -300,6 +324,8 @@ def cleanup_case(
         "grants_revoked_or_already_revoked": revoked_count,
         "storage_delete_result": deletion.value,
         "cleanup_scope": "local-database-grant-and-private-object",
+        "provider_task_bound": provider_task_bound,
+        "terminal_generation_graph_preserved": provider_task_bound,
         "observed_at": current.astimezone(timezone.utc).isoformat(),
     }
 

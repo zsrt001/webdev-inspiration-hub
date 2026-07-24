@@ -67,9 +67,15 @@
           </text>
         </view>
         <view class="td">
-          <picker :range="orderStatusOptions" :value="orderStatusIndex(order.status)" @change="onOrderStatusChange(order, $event)">
+          <picker
+            v-if="!order.generation_managed"
+            :range="orderStatusOptions"
+            :value="orderStatusIndex(order.status)"
+            @change="onOrderStatusChange(order, $event)"
+          >
             <view class="status-pill" :class="order.status">{{ order.status }}</view>
           </picker>
+          <view v-else class="status-pill" :class="order.status">{{ order.status }}</view>
         </view>
         <view class="td">
           <text class="strong">{{ order.failure_code || qaReasonText(order.qa_last_reasons) || tr('通过', 'Clear') }}</text>
@@ -303,6 +309,7 @@ interface AdminOrder {
   credits_cost?: number | null;
   refunded_credits?: number | null;
   status: string;
+  generation_managed: boolean;
   template_id?: string | null;
   failure_code?: string | null;
   qa_last_reasons?: string[];
@@ -439,11 +446,12 @@ function onFilterStatusChange(event: any) {
 }
 
 function orderStatusIndex(status: string): number {
-  const index = orderStatusOptions.indexOf(status || 'CREATED');
+  const index = orderStatusOptions.indexOf(status);
   return index >= 0 ? index : 0;
 }
 
 async function onOrderStatusChange(order: AdminOrder, event: any) {
+  if (order.generation_managed) return;
   const nextStatus = orderStatusOptions[Number(event.detail?.value || 0)] || 'CREATED';
   if (nextStatus === order.status) return;
   try {

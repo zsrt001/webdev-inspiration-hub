@@ -102,7 +102,9 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         self.assertIn("alembic upgrade head", self.ci)
         self.assertIn("backend.tests.integration.test_identity_rls", self.ci)
         self.assertIn("backend.tests.integration.test_partner_invite_rls", self.ci)
-        self.assertIn("docker build --file backend/Dockerfile.worker", self.ci)
+        self.assertIn("backend-execution-contract:", self.ci)
+        self.assertIn("website-backend EvoLink execution boundary", self.ci)
+        self.assertNotIn("docker build --file backend/Dockerfile.worker", self.ci)
         self.assertIn("scripts/release/aggregate_gates.py", self.ci)
         self.assertIn("--profile pr", self.ci)
         self.assertIn("artifacts/release/", self.ci)
@@ -133,7 +135,7 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         self.assertIn("environment: preview-identity", self.integration)
         self.assertIn("npm run playwright:install --prefix frontend", self.integration)
         self.assertIn("test -n \"$PREVIEW_MIGRATION_DATABASE_URL\"", self.integration)
-        self.assertIn("test -n \"$PREVIEW_PRIVATE_STORAGE_BUCKET\"", self.integration)
+        self.assertIn("test -n \"$PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN\"", self.integration)
         self.assertIn("if: always()", self.integration)
         self.assertNotIn("continue-on-error", self.integration)
         self.assertNotIn("Missing secret; skipping", self.integration)
@@ -160,12 +162,13 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         self.assertNotIn("route.fulfill", self.preview_test)
         self.assertNotIn("mock", self.preview_test.lower())
 
-    def test_preview_emits_pass_cases_and_explicit_stage6_not_run_evidence(self) -> None:
+    def test_preview_emits_only_real_pass_cases_for_the_full_release_scope(self) -> None:
         for case_id in (
             "preview_google_session",
             "preview_private_media_owner_read",
             "preview_private_media_cross_user",
             "preview_private_media_delete",
+            "preview_creem_test_contract",
             "preview_main_journey",
             "preview_account_export",
             "preview_account_delete",
@@ -175,7 +178,10 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         ):
             with self.subTest(case_id=case_id):
                 self.assertIn(case_id, self.integration)
-        self.assertIn('"PASS" if passed else "NOT_RUN"', self.integration)
+        self.assertNotIn('"PASS" if passed else "NOT_RUN"', self.integration)
+        self.assertNotIn("explicit Stage-6 NOT_RUN evidence", self.integration)
+        self.assertIn("materialize_preview_release_evidence.py", self.integration)
+        self.assertIn("verify_preview_release_package.py build", self.integration)
         self.assertIn('"status": "PASS"', self.integration)
         self.assertIn('"schema": "vowpic.gate-evidence.v1"', self.integration)
         self.assertIn("artifacts/release/${SOURCE_SHA}", self.integration)

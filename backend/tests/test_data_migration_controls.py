@@ -343,6 +343,30 @@ class DataMigrationControlTest(unittest.TestCase):
         self.assertIn("statement_timeout=1800s", source)
         self.assertNotIn('"downgrade"', source)
         self.assertIn('"automatic_downgrade": False', source)
+        self.assertIn(
+            "await repair_commercial_guard_row_shapes(db)",
+            source,
+        )
+        self.assertIn('"commercial_guard_repair": guard_repair_report', source)
+        self.assertIn(
+            "additional_script_paths=(GUARD_REPAIR_PATH,)",
+            source,
+        )
+        self.assertIn('"control_checksums": controls', source)
+        self.assertIn("SQLAlchemyError", source)
+
+    def test_additive_contract_hash_binds_the_guard_repair_dependency(
+        self,
+    ) -> None:
+        common = importlib.import_module("scripts.release._migration_common")
+        apply_script = ROOT / "scripts/release/apply_additive_migrations.py"
+        guard_repair = (
+            ROOT / "scripts/release/repair_commercial_guard_row_shapes.py"
+        )
+        self.assertNotEqual(
+            common._bound_script_sha256((apply_script, guard_repair)),
+            common._bound_script_sha256((apply_script,)),
+        )
 
     def test_raw_probe_material_is_ephemeral_mode_0600_and_create_once(
         self,

@@ -24,6 +24,12 @@ from app.services.admin_service import (
     get_all_users,
 )
 from app.services.feature_flag_service import require_request_capability
+from app.services.generation_manual_settlement_service import (
+    GenerationManualSettlementError,
+    create_generation_manual_evidence,
+    list_generation_manual_cases,
+    resolve_generation_manual_case,
+)
 from app.services.account_risk_service import get_account_risk_summary
 from app.services.admin_audit_service import list_admin_audit_logs, log_admin_action
 from app.services.analytics_reporting_service import (
@@ -212,6 +218,7 @@ class AdminOrderItem(BaseModel):
     credits_cost: int | None = None
     refunded_credits: int | None = None
     status: str
+    generation_managed: bool = False
     template_id: str | None = None
     failure_code: str | None = None
     qa_last_reasons: list[str] = Field(default_factory=list)
@@ -326,6 +333,102 @@ class AdminAuditLogItem(BaseModel):
     created_at: datetime
 
 
+class AdminGenerationManualCase(BaseModel):
+    job_id: uuid.UUID
+    order_id: uuid.UUID
+    attempt_id: uuid.UUID
+    attempt_kind: str
+    submit_started_at: datetime | None = None
+    reason_code: str
+    reason_detail: str | None = None
+
+
+class AdminGenerationManualCasesResponse(BaseModel):
+    cases: list[AdminGenerationManualCase]
+    total: int
+
+
+class AdminGenerationManualEvidenceRequest(BaseModel):
+    action: Literal[
+        "BIND_PROVIDER_TASK",
+        "CONFIRMED_NOT_ACCEPTED_RETRY",
+        "FAIL_AND_SETTLE",
+    ]
+    source_type: Literal[
+        "EVOLINK_API",
+        "EVOLINK_DASHBOARD",
+        "EVOLINK_SUPPORT",
+    ]
+    observation_reference: str = Field(min_length=4, max_length=256)
+    observed_at: datetime
+    approval_id: uuid.UUID
+    operator_reason: str = Field(min_length=8, max_length=500)
+    provider_task_id: str | None = Field(default=None, min_length=1, max_length=128)
+    provider_accepted: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_evidence_shape(self):
+        if self.action == "BIND_PROVIDER_TASK":
+            if not self.provider_task_id or self.provider_accepted is not None:
+                raise ValueError("binding evidence requires only provider_task_id")
+        elif self.action == "CONFIRMED_NOT_ACCEPTED_RETRY":
+            if self.provider_task_id is not None or self.provider_accepted is not False:
+                raise ValueError("retry evidence requires confirmed provider non-acceptance")
+        elif self.provider_task_id is not None or self.provider_accepted is None:
+            raise ValueError("settlement evidence requires provider acceptance fact")
+        return self
+
+
+class AdminGenerationManualEvidenceResponse(BaseModel):
+    provider_evidence_object_key: str
+    provider_evidence_sha256: str
+    job_id: uuid.UUID
+    attempt_id: uuid.UUID
+    action: str
+
+
+class AdminGenerationManualResolutionRequest(BaseModel):
+    action: Literal[
+        "BIND_PROVIDER_TASK",
+        "CONFIRMED_NOT_ACCEPTED_RETRY",
+        "FAIL_AND_SETTLE",
+    ]
+    provider_evidence_object_key: str = Field(
+        pattern=(
+            r"^operations/generation-manual-evidence/"
+            r"[0-9a-f-]{36}/[0-9a-f]{64}\.json$"
+        )
+    )
+    provider_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operator_reason: str = Field(min_length=8, max_length=500)
+    provider_task_id: str | None = Field(default=None, min_length=1, max_length=128)
+    provider_accepted: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_resolution_shape(self):
+        if self.action == "BIND_PROVIDER_TASK":
+            if not self.provider_task_id or self.provider_accepted is not None:
+                raise ValueError("binding requires only provider_task_id")
+        elif self.action == "CONFIRMED_NOT_ACCEPTED_RETRY":
+            if self.provider_task_id is not None or self.provider_accepted is not False:
+                raise ValueError("retry requires confirmed provider non-acceptance")
+        elif self.provider_task_id is not None or self.provider_accepted is None:
+            raise ValueError("terminal settlement requires provider acceptance fact")
+        return self
+
+
+class AdminGenerationManualResolutionResponse(BaseModel):
+    job_id: uuid.UUID
+    order_id: uuid.UUID
+    attempt_id: uuid.UUID
+    action: str
+    job_status: str
+    attempt_status: str
+    order_status: str
+    settlement_status: str
+    next_action: str
+
+
 class TestEmailRequest(BaseModel):
     to: EmailStr
 
@@ -382,6 +485,14 @@ def _user_item(user: User, balance: int | None = None) -> AdminUserItem:
 
 def _order_status_value(order: Order) -> str:
     return order.status.value if hasattr(order.status, "value") else str(order.status)
+
+
+def _is_generation_managed_order(order: Order) -> bool:
+    return (
+        order.generation_job_id is not None
+        or order.reservation_id is not None
+        or OrderStatus(order.status) is OrderStatus.UNKNOWN_EXTERNAL_STATE
+    )
 
 
 def _order_params(order: Order) -> dict[str, Any]:
@@ -474,6 +585,7 @@ def _order_item(order: Order, user: User | None) -> AdminOrderItem:
         credits_cost=_safe_int(params.get("credits_cost")),
         refunded_credits=_safe_int(params.get("refunded_credits"), 0),
         status=_order_status_value(order),
+        generation_managed=_is_generation_managed_order(order),
         template_id=order.template_id,
         failure_code=str(params.get("failure_code") or "") or None,
         qa_last_reasons=_string_list(params.get("qa_last_reasons")),
@@ -940,6 +1052,138 @@ async def get_admin_order_detail(
     return _order_detail(order, user)
 
 
+@router.get(
+    "/generation/manual-settlements",
+    response_model=AdminGenerationManualCasesResponse,
+)
+async def list_admin_generation_manual_settlements(
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    """List ambiguous submissions that cannot be automatically replayed."""
+
+    cases = await list_generation_manual_cases(db, limit=limit)
+    return AdminGenerationManualCasesResponse(
+        cases=[
+            AdminGenerationManualCase(
+                job_id=item.job_id,
+                order_id=item.order_id,
+                attempt_id=item.attempt_id,
+                attempt_kind=item.attempt_kind,
+                submit_started_at=item.submit_started_at,
+                reason_code=item.reason_code,
+                reason_detail=item.reason_detail,
+            )
+            for item in cases
+        ],
+        total=len(cases),
+    )
+
+
+@router.post(
+    "/generation/manual-settlements/{job_id}/evidence",
+    response_model=AdminGenerationManualEvidenceResponse,
+)
+async def create_admin_generation_manual_evidence(
+    job_id: uuid.UUID,
+    payload: AdminGenerationManualEvidenceRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist one content-addressed Provider fact before any UNKNOWN mutation."""
+
+    try:
+        evidence = await create_generation_manual_evidence(
+            db,
+            job_id=job_id,
+            action=payload.action,
+            source_type=payload.source_type,
+            observation_reference=payload.observation_reference,
+            observed_at=payload.observed_at,
+            approval_id=payload.approval_id,
+            operator_actor=str(
+                getattr(request.state, "admin_actor", "admin-actor-missing")
+            ),
+            operator_reason=payload.operator_reason,
+            provider_task_id=payload.provider_task_id,
+            provider_accepted=payload.provider_accepted,
+        )
+    except GenerationManualSettlementError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+    await log_admin_action(
+        db,
+        action="record_generation_ambiguous_submission_evidence",
+        request=request,
+        details={
+            "job_id": str(evidence.job_id),
+            "attempt_id": str(evidence.attempt_id),
+            "resolution": evidence.action,
+            "provider_evidence_object_key": evidence.object_key,
+            "provider_evidence_sha256": evidence.sha256,
+        },
+    )
+    return AdminGenerationManualEvidenceResponse(
+        provider_evidence_object_key=evidence.object_key,
+        provider_evidence_sha256=evidence.sha256,
+        job_id=evidence.job_id,
+        attempt_id=evidence.attempt_id,
+        action=evidence.action,
+    )
+
+
+@router.post(
+    "/generation/manual-settlements/{job_id}/resolve",
+    response_model=AdminGenerationManualResolutionResponse,
+)
+async def resolve_admin_generation_manual_settlement(
+    job_id: uuid.UUID,
+    payload: AdminGenerationManualResolutionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply one audited Provider fact without replaying an ambiguous POST."""
+
+    try:
+        result = await resolve_generation_manual_case(
+            db,
+            job_id=job_id,
+            action=payload.action,
+            provider_evidence_object_key=payload.provider_evidence_object_key,
+            provider_evidence_sha256=payload.provider_evidence_sha256,
+            operator_reason=payload.operator_reason,
+            provider_task_id=payload.provider_task_id,
+            provider_accepted=payload.provider_accepted,
+        )
+    except GenerationManualSettlementError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+    await db.flush()
+    await log_admin_action(
+        db,
+        action="resolve_generation_ambiguous_submission",
+        request=request,
+        details={
+            "job_id": str(result.job_id),
+            "order_id": str(result.order_id),
+            "attempt_id": str(result.attempt_id),
+            "resolution": result.action,
+            "provider_evidence_object_key": payload.provider_evidence_object_key,
+            "provider_evidence_sha256": payload.provider_evidence_sha256,
+            "next_action": result.next_action,
+        },
+    )
+    return AdminGenerationManualResolutionResponse(
+        job_id=result.job_id,
+        order_id=result.order_id,
+        attempt_id=result.attempt_id,
+        action=result.action,
+        job_status=result.job_status,
+        attempt_status=result.attempt_status,
+        order_status=result.order_status,
+        settlement_status=result.settlement_status,
+        next_action=result.next_action,
+    )
+
+
 @router.patch("/orders/{order_id}/status", response_model=AdminOrderDetail)
 @router.post("/orders/{order_id}/status", response_model=AdminOrderDetail)
 async def update_order_status(
@@ -948,7 +1192,7 @@ async def update_order_status(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update an order status using the existing OrderStatus enum."""
+    """Update only a legacy order through its validated state machine."""
     await ensure_user_account_columns(db)
     clean_status = (payload.status or "").strip().upper()
     if clean_status not in ORDER_STATUS_VALUES:
@@ -956,7 +1200,18 @@ async def update_order_status(
 
     order = await _get_admin_order(db, order_id)
     previous_status = _order_status_value(order)
-    order.status = OrderStatus(clean_status)
+    target_status = OrderStatus(clean_status)
+    if _is_generation_managed_order(order):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "generation_status_requires_settlement_workflow"},
+        )
+    if not order.can_transition_to(target_status):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "order_status_transition_invalid"},
+        )
+    order.status = target_status
     await db.flush()
     await log_admin_action(
         db,

@@ -157,8 +157,8 @@ updates.
 Protected Preview deployments therefore require three separate database
 secrets: `PREVIEW_RUNTIME_DATABASE_URL` for the application runtime login,
 `PREVIEW_CONTROL_PLANE_DATABASE_URL` for the control-writer login, and
-`PREVIEW_MIGRATION_DATABASE_URL` for workflow-only administration. The
-identity API, commercial API, Worker, and Provider-proof process must receive
+`PREVIEW_MIGRATION_DATABASE_URL` for workflow-only administration. The identity
+and commercial website backends plus the Provider-proof process must receive
 only the first two application URLs. `PREVIEW_CONTROL_READ_DATABASE_URL`
 remains a fourth, read-only resolver input and does not replace either runtime
 role.

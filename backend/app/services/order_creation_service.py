@@ -1,14 +1,15 @@
 """Admission boundary for durable generation orders.
 
 The only accepted identity inputs are owned private MediaAsset IDs. Gatekeeper
-I/O completes before the atomic PostgreSQL order/reservation/job/outbox write;
-no queue, Provider-generation, Redis, or background-task call exists here.
+I/O completes before the atomic PostgreSQL order/reservation/job write; no
+Redis queue or detached Worker call exists here.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 import uuid
 
 from fastapi import HTTPException
@@ -47,6 +48,16 @@ from app.services.template_service import get_template_by_id, template_is_commer
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+async def _kick_backend_generation(*, order_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    # Keep the executor import behind the committed order boundary. The
+    # executor's delivery path depends on partner-order policy, which in turn
+    # imports this module's command builder.
+    from app.services.generation_executor_service import execute_order_generation_once
+
+    await execute_order_generation_once(order_id=order_id, user_id=user_id)
 GATEKEEPER_POLICY_VERSION = "gatekeeper.v1"
 
 
@@ -90,7 +101,9 @@ def _validate_request(request: OrderCreate) -> tuple[object, str, str, int, bool
         raise _error(422, "template_not_available", "The selected template is not commercially available.")
     subject_count = len(request.asset_ids)
     expected_category = "single" if subject_count == 1 else "couple"
-    if str(template.category).strip().lower() != expected_category:
+    template_category = str(template.category).strip().lower()
+    allowed_categories = {"single"} if subject_count == 1 else {"couple", "vintage"}
+    if template_category not in allowed_categories:
         raise _error(
             422,
             "template_subject_count_mismatch",
@@ -155,10 +168,10 @@ def _validate_request(request: OrderCreate) -> tuple[object, str, str, int, bool
             )
 
     director_mode = bool(request.director_mode)
-    generation_mode = expected_category
+    generation_mode = "golden_anniversary" if template_category == "vintage" else expected_category
     scene_tier = "premium" if director_mode else "base"
     credit_cost = get_generation_cost(
-        str(template.category),
+        template_category,
         image_count=subject_count,
         director_mode=director_mode,
     )
@@ -357,6 +370,17 @@ async def create_order_for_user(
         request_hash=request_hash,
     )
     if replay is not None:
+        if settings.using_backend_generation_execution:
+            try:
+                await _kick_backend_generation(
+                    order_id=replay.order_id,
+                    user_id=current_user.id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "backend_generation_kick_deferred",
+                    extra={"error_type": type(exc).__name__},
+                )
         return replay
 
     try:
@@ -376,6 +400,21 @@ async def create_order_for_user(
         )
         accepted = await create_order_transaction(db, command, now=now)
         await db.commit()
+        if settings.using_backend_generation_execution:
+            try:
+                await _kick_backend_generation(
+                    order_id=accepted.order_id,
+                    user_id=current_user.id,
+                )
+            except Exception as exc:
+                # The committed PostgreSQL job remains authoritative. The
+                # authenticated order-progress endpoint or protected manual
+                # recovery retries it without replaying a Provider POST that
+                # may already have been accepted.
+                logger.warning(
+                    "backend_generation_kick_deferred",
+                    extra={"error_type": type(exc).__name__},
+                )
         return accepted
     except HTTPException:
         await db.rollback()

@@ -15,6 +15,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
@@ -23,15 +24,12 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNNER = ROOT / "scripts" / "release" / "run_approved_worker_host.py"
 REGISTER = ROOT / "scripts" / "release" / "register_bundle.py"
 PRIVATE_STORE = ROOT / "scripts" / "release" / "private_evidence_store.py"
 AUTH_ORIGIN = ROOT / "scripts" / "release" / "configure_staged_auth_origin.py"
 BINDING_CLEANUP = ROOT / "scripts" / "release" / "cleanup_acceptance_bindings.py"
 ACTIVATION_PLAN = ROOT / "scripts" / "release" / "apply_activation_plan.py"
 CANARY_EXTRACTOR = ROOT / "scripts" / "release" / "extract_production_canary_bundle.py"
-CONTRACT = ROOT / "release" / "worker-host-contract.json"
-TMP = ROOT / ".tmp" / "production-release-workflow"
 CANARY_TMP = ROOT / ".tmp" / "production-canary-extractor"
 PRODUCTION_RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "production-release.yml"
 OBSERVATION_LOGIN_WORKFLOW = (
@@ -41,14 +39,6 @@ OBSERVATION_LOGIN_WORKFLOW = (
     / "production-observation-database-logins.yml"
 )
 PYTHON = shutil.which("python") or "python"
-
-
-def _module():
-    spec = importlib.util.spec_from_file_location("run_approved_worker_host", RUNNER)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _register_module():
@@ -77,7 +67,35 @@ class ProductionReleaseCredentialContractTest(unittest.TestCase):
         self.assertNotIn("PRODUCTION_CONTROL_READ_DATABASE_URL", workflow)
         self.assertEqual(
             workflow.count("--database-url-env PRODUCTION_READ_ONLY_DATABASE_URL"),
-            4,
+            5,
+        )
+
+    def test_legacy_outbox_retirement_reports_are_persisted_fail_closed(self) -> None:
+        payload = yaml.load(
+            PRODUCTION_RELEASE_WORKFLOW.read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        steps = payload["jobs"]["invalidate-activate-observe"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        retire_index = names.index("Inventory and retire reconciled legacy outbox")
+        upload_index = names.index("Persist sanitized legacy outbox retirement evidence")
+        observe_index = names.index("Start one durable observation row and exit")
+        self.assertLess(retire_index, upload_index)
+        self.assertLess(upload_index, observe_index)
+        upload = steps[upload_index]
+        self.assertEqual(upload["if"], "${{ always() }}")
+        self.assertEqual(
+            upload["uses"],
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        )
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+        self.assertIn(
+            "artifacts/production-release/legacy-outbox-inventory.json",
+            upload["with"]["path"],
+        )
+        self.assertIn(
+            "artifacts/production-release/legacy-outbox-retirement.json",
+            upload["with"]["path"],
         )
 
     def test_observation_login_rotation_is_manual_exact_main_and_self_cleaning(self) -> None:
@@ -178,188 +196,41 @@ class ProductionCanaryBundleExtractorTest(unittest.TestCase):
                 module.extract_bundle(archive, CANARY_TMP / "links")
 
 
-class WorkerHostContractTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        shutil.rmtree(TMP, ignore_errors=True)
-        TMP.mkdir(parents=True)
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        shutil.rmtree(TMP, ignore_errors=True)
-        if TMP.parent.exists() and not any(TMP.parent.iterdir()):
-            TMP.parent.rmdir()
-
-    def test_committed_host_contract_pins_the_official_railway_binary_and_worker_inputs(self) -> None:
-        module = _module()
-        payload, digest = module.load_contract(CONTRACT)
-        self.assertRegex(digest, r"^[0-9a-f]{64}$")
-        self.assertEqual(payload["provider"], "railway")
-        self.assertEqual(payload["cli"]["version"], "5.27.2")
-        self.assertEqual(
-            payload["cli"]["archive_sha256"],
-            "a0bc1e684ec4ada394533c8bd374aa6e954a4b4c14cf85d637941a53b6eb6132",
-        )
-        self.assertEqual(
-            payload["cli"]["executable_sha256"],
-            "078c6b28362ea41905a0caf30a29fd00ad9933b7946a90533d495d7056e7d7cd",
-        )
-        self.assertEqual(
-            payload["deployment"]["image_repository"],
-            "ghcr.io/zsrt001/vowpic-worker",
-        )
-        self.assertEqual(
-            payload["deployment"]["dockerfile_path"], "backend/Dockerfile.worker"
-        )
-        self.assertNotIn("executable", payload)
-        self.assertNotIn("approved", payload)
-
-    def test_missing_railway_coordinates_exit_not_run_without_external_process(self) -> None:
-        output = TMP / "worker-preflight.json"
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("RAILWAY_")
-        }
-        completed = subprocess.run(
-            [
-                PYTHON,
-                str(RUNNER),
-                "preflight",
-                "--contract",
-                str(CONTRACT),
-                "--output",
-                str(output),
-            ],
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 3)
-        self.assertIn("NOT_RUN", completed.stderr)
-        self.assertFalse(output.exists())
-
-    def test_secret_values_reach_railway_only_through_stdin(self) -> None:
-        module = _module()
-        context = {
-            "cli_path": "railway",
-            "token": "project-token-value",
-            "project": "project-1",
-            "environment": "production",
-            "service": "vowpic-worker",
-            "region": "us-east",
-        }
-        with patch.object(module, "_run_cli", return_value="{}") as run_cli:
-            module._set_variable(context, "DATABASE_URL", "postgresql://private")
-        arguments = run_cli.call_args.args[1]
-        self.assertIn("DATABASE_URL", arguments)
-        self.assertNotIn("postgresql://private", arguments)
-        self.assertEqual(run_cli.call_args.kwargs["stdin_value"], "postgresql://private")
-        self.assertIn("--skip-deploys", arguments)
-
-    def test_deploy_binds_one_new_deployment_and_scales_it_to_zero(self) -> None:
-        module = _module()
-        payload, _ = module.load_contract(CONTRACT)
-        context = {
-            "cli_path": "railway",
-            "token": "project-token-value",
-            "project": "project-1",
-            "environment": "production",
-            "service": "vowpic-worker",
-            "region": "us-east",
-        }
-        args = argparse.Namespace(
-            source_sha="a" * 40,
-            runtime_bundle_id="rtb_" + "b" * 64,
-            api_deployment_id="dpl_api_1",
-            image_ref=(
-                "ghcr.io/zsrt001/vowpic-worker@sha256:" + "c" * 64
-            ),
-        )
-        with (
-            patch.object(module, "_set_variable") as set_variable,
-            patch.object(
-                module,
-                "_deployment_rows",
-                side_effect=[
-                    [{"id": "worker-old", "status": "SUCCESS"}],
-                    [
-                        {"id": "worker-new", "status": "SUCCESS"},
-                        {"id": "worker-old", "status": "SUCCESS"},
-                    ],
-                ],
-            ),
-            patch.object(module, "_run_cli", return_value="{}") as run_cli,
-            patch.object(module, "_scale") as scale,
+class BackendExecutionContractTest(unittest.TestCase):
+    def test_production_release_has_no_external_worker_host_dependency(self) -> None:
+        workflow = PRODUCTION_RELEASE_WORKFLOW.read_text(encoding="utf-8").lower()
+        for forbidden in (
+            "railway",
+            "run_approved_worker_host.py",
+            "dockerfile.worker",
+            "production_redis_url",
+            "task_execution_mode=arq",
         ):
-            state, coordinates = module._deploy(payload, context, args)
-        self.assertEqual(state, "STAGED")
-        self.assertEqual(coordinates["worker_deployment_id"], "worker-new")
-        self.assertEqual(coordinates["worker_image_digest"], "sha256:" + "c" * 64)
-        self.assertEqual(scale.call_args.args, (context, 0))
-        self.assertGreaterEqual(set_variable.call_count, len(payload["runtime_secret_envs"]))
-        deploy_arguments = run_cli.call_args.args[1]
-        self.assertEqual(deploy_arguments[:3], ["service", "source", "connect"])
-        self.assertIn(args.image_ref, deploy_arguments)
-        self.assertNotIn("--new", deploy_arguments)
-        self.assertNotIn("--yes", deploy_arguments)
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, workflow)
 
-    def test_status_requires_exact_api_readiness_and_runtime_version(self) -> None:
-        module = _module()
-        source_sha = "a" * 40
-        runtime = "rtb_" + "b" * 64
-        digest = "sha256:" + "c" * 64
-        api_deployment_id = "dpl_api_1"
-        payloads = {
-            "https://target.example/health/ready": {"ready": True},
-            "https://target.example/api/v1/version": {
-                "schema": "vowpic.runtime-bundle-report.v1",
-                "source_sha": source_sha,
-                "runtime_bundle_id": runtime,
-                "deployment_id": api_deployment_id,
-                "release_role": "COMMERCIAL_7A",
-                "runtime_environment": "production",
-                "worker_image_digest": digest,
-            },
-        }
+    def test_production_release_deploys_backend_execution_mode(self) -> None:
+        workflow = PRODUCTION_RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('TASK_EXECUTION_MODE: backend', workflow)
+        self.assertIn('--env "TASK_EXECUTION_MODE=backend"', workflow)
+        self.assertIn("backend_execution_version", workflow)
+        self.assertIn("backend_executor_digest", workflow)
 
-        class Response:
-            def __init__(self, url: str):
-                self.status = 200
-                self._url = url
-                self._raw = json.dumps(payloads[url]).encode()
+    def test_backend_runtime_report_replaces_worker_heartbeat(self) -> None:
+        workflow = PRODUCTION_RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("collect_runtime_report.py", workflow)
+        self.assertIn("--backend-runtime-report", workflow)
+        self.assertIn("--expected-release-role COMMERCIAL_7A", workflow)
+        self.assertNotIn("--worker-heartbeat-report", workflow)
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def geturl(self):
-                return self._url
-
-            def read(self, _limit):
-                return self._raw
-
-        class Opener:
-            def open(self, request, timeout):
-                self.timeout = timeout
-                return Response(request.full_url)
-
-        args = argparse.Namespace(
-            api_base_url="https://target.example",
-            api_ready_timeout_seconds=10,
-            source_sha=source_sha,
-            runtime_bundle_id=runtime,
-            api_deployment_id=api_deployment_id,
-            expected_image_digest=digest,
-        )
-        with patch.object(module.urllib.request, "build_opener", return_value=Opener()):
-            readiness_sha, version_sha = module._wait_for_api_runtime(args)
-        self.assertRegex(readiness_sha, r"^[0-9a-f]{64}$")
-        self.assertRegex(version_sha, r"^[0-9a-f]{64}$")
+    def test_obsolete_worker_host_sources_are_absent(self) -> None:
+        for path in (
+            ROOT / "release" / "worker-host-contract.json",
+            ROOT / "scripts" / "release" / "run_approved_worker_host.py",
+            ROOT / "backend" / "Dockerfile.worker",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(path.exists())
 
 
 class PrivateEvidenceStoreTest(unittest.TestCase):
@@ -416,16 +287,23 @@ class PrivateEvidenceStoreTest(unittest.TestCase):
 
 
 class ProductionWorkflowStaticContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory(
+            prefix="vowpic-production-release-"
+        )
+        self.tmp_root = Path(self._temporary_directory.name)
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
     def test_commercial_state_machine_is_exact_and_cannot_skip_or_regress(self) -> None:
         register = _register_module()
         expected = (
             "RESERVED",
             "ROLLBACK_BASELINE_VERIFIED",
             "API_TARGET_STAGED",
-            "WORKER_STAGED",
             "MANIFEST_SEALED",
             "SCHEMA_0020",
-            "WORKER_RUNNING",
             "DATA_SWITCHED",
             "ACCEPTANCE_READY",
             "TARGET_ACCEPTED",
@@ -451,7 +329,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
 
     def test_phase_evidence_is_deterministic_fail_closed_and_secret_free(self) -> None:
         register = _register_module()
-        evidence_root = TMP / "phase-evidence"
+        evidence_root = self.tmp_root / "phase-evidence"
         evidence_root.mkdir(parents=True, exist_ok=True)
         first = evidence_root / "first.json"
         second = evidence_root / "second.json"
@@ -540,73 +418,18 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
                 bindings=bindings,
             )
 
-    def test_worker_stage_requires_one_signed_exact_deployment_report(self) -> None:
+    def test_backend_runtime_is_required_at_acceptance_and_promotion(self) -> None:
         register = _register_module()
-        worker = _module()
-        root = TMP / "worker-stage"
-        root.mkdir(parents=True, exist_ok=True)
-        digest = "sha256:" + "b" * 64
-        runtime = "rtb_" + "c" * 64
-        worker_id = "worker-7a-01"
-        source_sha = "a" * 40
-        api_deployment_id = "dpl_target"
-        signing_key = b"k" * 32
-        _contract, contract_sha256 = worker.load_contract(CONTRACT)
-
-        def write(name: str, coordinates: dict[str, str]) -> Path:
-            target = root / f"{name}.json"
-            unsigned = {
-                "schema": "vowpic.worker-host-report.v2",
-                "action": "deploy",
-                "passed": True,
-                "provider": "railway",
-                "contract_sha256": contract_sha256,
-                "state": "STAGED",
-                "coordinates": coordinates,
-                "observed_at": "2026-07-19T00:00:00+00:00",
-            }
-            signature = hmac.new(
-                signing_key,
-                json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(),
-                hashlib.sha256,
-            ).hexdigest()
-            target.write_text(
-                json.dumps({**unsigned, "signature": f"hmac-sha256:{signature}"}),
-                encoding="utf-8",
-            )
-            return target
-
-        deployment_coordinates = {
-            "provider": "railway",
-            "project": "project-1",
-            "environment": "production",
-            "service": "vowpic-worker",
-            "region": "us-east",
-            "source_sha": source_sha,
-            "worker_image_digest": digest,
-            "worker_deployment_id": worker_id,
-            "runtime_bundle_id": runtime,
-            "api_deployment_id": api_deployment_id,
-        }
-        deployment = write("deployment", deployment_coordinates)
-
-        with patch.dict(os.environ, {"WORKER_HOST_EVIDENCE_SIGNING_KEY": signing_key.decode()}):
-            self.assertEqual(
-                register._worker_bindings(deployment),
-                {
-                    "source_sha": source_sha,
-                    "worker_image_digest": digest,
-                    "worker_deployment_id": worker_id,
-                    "runtime_bundle_id": runtime,
-                    "api_deployment_id": api_deployment_id,
-                },
-            )
-            drifted = json.loads(deployment.read_text(encoding="utf-8"))
-            drifted["coordinates"]["worker_deployment_id"] = "worker-other"
-            drifted_path = root / "drifted.json"
-            drifted_path.write_text(json.dumps(drifted), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "signature"):
-                register._worker_bindings(drifted_path)
+        self.assertEqual(
+            register._PHASE_EVIDENCE_ARGUMENTS["ACCEPTANCE_READY"],
+            ("backend_runtime_report",),
+        )
+        self.assertEqual(
+            register._PHASE_EVIDENCE_ARGUMENTS["TARGET_PROMOTED"],
+            ("promotion_report", "backend_runtime_report"),
+        )
+        self.assertNotIn("WORKER_STAGED", register.COMMERCIAL_7A_PHASES)
+        self.assertNotIn("WORKER_RUNNING", register.COMMERCIAL_7A_PHASES)
 
     def test_pre_schema_phase_reports_form_a_create_once_hash_chain(self) -> None:
         register = _register_module()
@@ -813,24 +636,51 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         )
 
     def _write_phase_report(self, name: str) -> Path:
-        root = TMP / "chain-evidence"
+        root = self.tmp_root / "chain-evidence"
         root.mkdir(parents=True, exist_ok=True)
         target = root / f"{name}.json"
         target.write_text(json.dumps({"schema": "proof.v1", "passed": True}), encoding="utf-8")
         return target
 
-    def test_workflow_is_manual_exact_sha_only_and_resolves_worker_digest(self) -> None:
+    def test_workflow_is_manual_exact_sha_only_and_derives_backend_runtime(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "production-release.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
         parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
         self.assertEqual(set(parsed["on"]), {"workflow_dispatch"})
         self.assertEqual(
             set(parsed["on"]["workflow_dispatch"]["inputs"]),
-            {"required_source_sha"},
+            {
+                "required_source_sha",
+                "preview_run_id",
+                "preview_run_attempt",
+            },
         )
-        self.assertEqual(
-            parsed["on"]["workflow_dispatch"]["inputs"]["required_source_sha"]["required"],
-            "true",
+        for name in ("required_source_sha", "preview_run_id", "preview_run_attempt"):
+            with self.subTest(input=name):
+                self.assertEqual(
+                    parsed["on"]["workflow_dispatch"]["inputs"][name]["required"],
+                    "true",
+                )
+        authorize = parsed["jobs"]["authorize"]
+        authorize_text = json.dumps(authorize, sort_keys=True)
+        self.assertIn("vowpic-preview-release-", authorize_text)
+        self.assertIn("verify_preview_release_package.py verify", authorize_text)
+        self.assertIn("verify_github_workflow_run.py", authorize_text)
+        self.assertIn(
+            '--evidence-root \\"$RUNNER_TEMP/preview-release\\"',
+            authorize_text,
+        )
+        self.assertIn("${{ inputs.preview_run_id }}", authorize_text)
+        self.assertIn("${{ inputs.preview_run_attempt }}", authorize_text)
+        self.assertNotIn("secrets.PRODUCTION_DATABASE_URL", authorize_text)
+        self.assertNotIn("secrets.VERCEL_TOKEN", authorize_text)
+        self.assertLess(
+            workflow.index("verify_github_workflow_run.py"),
+            workflow.index("actions/download-artifact"),
+        )
+        self.assertLess(
+            workflow.index("verify_preview_release_package.py verify"),
+            workflow.index("register_bundle.py reserve"),
         )
         for forbidden in (
             "\n  push:\n",
@@ -842,7 +692,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
         self.assertIn("group: vowpic-production-release", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
-        self.assertEqual(workflow.count("vars.PRODUCTION_BASE_URL"), 12)
+        self.assertEqual(workflow.count("vars.PRODUCTION_BASE_URL"), 14)
         self.assertNotIn("secrets.PRODUCTION_BASE_URL", workflow)
         for impossible_preprovisioned_evidence in (
             "CREEM_TEST_EVIDENCE_BASE64",
@@ -850,7 +700,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "PRODUCTION_QUALITY_REVIEW_DRAFT_BASE64",
         ):
             self.assertNotIn(impossible_preprovisioned_evidence, workflow)
-        self.assertIn("docker/build-push-action@", workflow)
+        self.assertNotIn("docker/build-push-action@", workflow)
         self.assertIn("verify_provider_capabilities.py", workflow)
         self.assertNotIn("verify_provider_grant_fetch.py", workflow)
         self.assertNotIn("provider-reconciliation-contract", workflow)
@@ -865,12 +715,10 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertNotIn("inputs.worker_image_digest", workflow)
         self.assertLess(
             workflow.index("verify_provider_capabilities.py"),
-            workflow.index("docker/build-push-action@"),
-        )
-        self.assertLess(
-            workflow.index("docker/build-push-action@"),
             workflow.index("build_runtime_bundle_id.py"),
         )
+        self.assertIn("backend_execution_version", workflow)
+        self.assertIn("backend_executor_digest", workflow)
 
     def test_quality_review_is_submitted_after_the_exact_cases_exist(self) -> None:
         workflow_path = ROOT / ".github/workflows/production-release.yml"
@@ -1032,10 +880,8 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         phase_markers = [
             "--phase ROLLBACK_BASELINE_VERIFIED",
             "--phase API_TARGET_STAGED",
-            "--phase WORKER_STAGED",
             "--phase MANIFEST_SEALED",
             "--phase SCHEMA_0020",
-            "--phase WORKER_RUNNING",
             "--phase DATA_SWITCHED",
             "--phase ACCEPTANCE_READY",
             "--phase TARGET_ACCEPTED",
@@ -1071,12 +917,11 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         )
         self.assertLess(
             workflow.index("validate_production_runtime_environment.py"),
-            workflow.index("docker/build-push-action@"),
+            workflow.index("build_runtime_bundle_id.py"),
         )
         for name in (
             "PRODUCTION_RUNTIME_DATABASE_URL",
             "PRODUCTION_CONTROL_PLANE_DATABASE_URL",
-            "PRODUCTION_REDIS_URL",
             "PRODUCTION_SECRET_KEY",
             "ACCEPTANCE_IDENTITY_HMAC_KEY",
             "PRIVATE_BLOB_READ_WRITE_TOKEN",
@@ -1106,7 +951,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             step
             for step in reserve_steps
             if step.get("name")
-            == "Build once, deploy one staged target, and bind the suspended Worker"
+            == "Build once and deploy one staged website-backend target"
         )
         deploy_run = deploy_step["run"]
         self.assertEqual(deploy_run.count("${DEPLOY_ENV_ARGS[@]}"), 1)
@@ -1116,8 +961,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             'RELEASE_ROLE=COMMERCIAL_7A',
             'DATABASE_URL=$DATABASE_URL',
             'CONTROL_PLANE_DATABASE_URL=$CONTROL_PLANE_DATABASE_URL',
-            'REDIS_URL=$REDIS_URL',
-            'TASK_EXECUTION_MODE=arq',
+            'TASK_EXECUTION_MODE=backend',
             'STORAGE_PROVIDER=vercel',
             'EVOLINK_API_KEY=$EVOLINK_API_KEY',
             'WENWEN_VISION_API_KEY=$WENWEN_VISION_API_KEY',
@@ -1169,6 +1013,14 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertIn("collect_observation_metrics.py", observation_source)
         self.assertIn("OBSERVATION_READ_DATABASE_URL", observation_source)
         self.assertIn("OBSERVATION_WRITE_DATABASE_URL", observation_source)
+        self.assertIn(
+            'test -n "$OBSERVATION_READ_DATABASE_URL"',
+            observation_source,
+        )
+        self.assertNotIn(
+            'if test -z "$OBSERVATION_READ_DATABASE_URL"',
+            observation_source,
+        )
         self.assertIn("environment: production-observation", observation_source)
         sample_job = observation_payload["jobs"]["sample"]
         sample_run = "\n".join(
@@ -1198,6 +1050,27 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         self.assertIn("psql", bootstrap_run)
         self.assertNotIn("actions/checkout", json.dumps(bootstrap, sort_keys=True))
 
+        release_payload = yaml.load(
+            (ROOT / ".github/workflows/production-release.yml").read_text(
+                encoding="utf-8"
+            ),
+            Loader=yaml.BaseLoader,
+        )
+        failure_step = next(
+            step
+            for step in release_payload["jobs"]["reconcile-failure"]["steps"]
+            if step.get("name")
+            == "Keep flags OFF and use rollback rather than re-Promote"
+        )
+        self.assertEqual(
+            failure_step["env"]["PRIVATE_EVIDENCE_READ_WRITE_TOKEN"],
+            "${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}",
+        )
+        self.assertIn(
+            "backend/scripts/rollback_baseline_evidence.py read",
+            failure_step["run"],
+        )
+
     def test_every_phase_advance_receives_the_private_evidence_store(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "production-release.yml"
         payload = yaml.load(
@@ -1213,7 +1086,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
                 effective_env = {**job_env, **(step.get("env") or {})}
                 self.assertIn("PRIVATE_EVIDENCE_STORE_ID", effective_env)
                 self.assertIn("PRIVATE_EVIDENCE_WRITE_TOKEN", effective_env)
-        self.assertEqual(found, 10)
+        self.assertEqual(found, 9)
 
     def test_every_python_release_job_installs_the_hash_locked_runtime(self) -> None:
         for relative_path in (

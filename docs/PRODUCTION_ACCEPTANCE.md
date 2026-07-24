@@ -4,9 +4,9 @@ VowPic **尚未达到 Production accepted**。仓库已经实现安全基线、�
 
 ## 当前可验证范围
 
-- PR CI 已验证锁定依赖、PostgreSQL migration/RLS/并发、后端、OpenAPI、前端类型/单测/真实 Web 构建/无障碍和 Worker 镜像。
+- PR CI 合同覆盖锁定依赖、PostgreSQL migration/RLS/并发、网站后端执行边界、OpenAPI、前端类型/单测、真实 Web 构建和无障碍；当前分支尚未取得对应远端 CI 成功证据。
 - `safe-baseline-release.yml` 已实现生产安全基线、全能力关闭、部署坐标、零运行时 DDL 和无业务数据副作用的受保护验证合同；没有对应的受保护运行证据时状态仍是 `NOT_RUN`。
-- `integration.yml` 已实现真实 Google PKCE、私有媒体、隔离 Worker/Redis、Provider fetch、运行时绑定和取消安全清理；当前 GitHub 环境仍缺少隔离数据库角色、Google 状态、私有存储、Redis、Vercel、Supabase 和 Provider secret，因此 Stage 5 是 `NOT_RUN`。
+- `integration.yml` 已实现真实 Google PKCE、私有媒体、FastAPI 网站后端直连 EvoLink、Provider fetch、运行时绑定和取消安全清理；在当前外部库存和同一 merge SHA 的受保护运行通过前，Stage 5 保持 `NOT_RUN`，不得凭旧记录断言资源缺失或可用。
 - 普通 Vercel Preview 只证明 browse-only Web/API 构建可部署，不得替代受保护 Preview。
 
 以上发布流程都必须绑定精确 source SHA、runtime bundle、Vercel deployment、数据库 revision 和 create-once 证据。Preview 验收完成后必须恢复 Supabase 精确回调、关闭全部能力并清理验收业务数据。
@@ -18,7 +18,7 @@ VowPic **尚未达到 Production accepted**。仓库已经实现安全基线、�
 - `/api/v1/ops/config` 仍公开报告 `remote_join=true`、`local_recommendations=true` 和 `director_mode=true`。
 - `/api/v1/session/{id}/status`、`/api/v1/live_portrait/list`、`/api/v1/leads/list`、`/api/v1/leads/export.csv` 和 `/api/v1/users/{id}` 没有命中当前先于认证和业务查询返回 `410 Gone` 的永久墓碑合同。
 - `/api/v1/recommendations/local_studios` 可匿名返回三条已退役的本地影楼推荐记录，而当前产品明确不提供本地影楼推荐。
-- `/api/v1/ops/readiness` 仍按旧逻辑报告 `commercial_ready=true`；该结果没有当前 source/runtime、受保护 Preview、私有存储、隔离 Redis、Provider、支付或正式证据绑定，不能视为发布就绪。
+- `/api/v1/ops/readiness` 仍按旧逻辑报告 `commercial_ready=true`；该结果没有当前 source/runtime、受保护 Preview、私有存储、PostgreSQL lease/fencing、Provider、支付或正式证据绑定，不能视为发布就绪。
 
 这不是当前 `main` 的实现缺口；当前代码和测试已覆盖对应 `410` 墓碑及能力关闭合同。风险来自旧 Production 尚未通过受保护安全基线流程替换。临时 Vercel Firewall 锁定和正式发布都属于外部项目状态变更；在实际锁定、读回、签名留证以及受保护发布完成前，Production 必须标记为 **存在已确认暴露、未 accepted**，不得以普通 Preview Promote 代替。
 

@@ -1,5 +1,6 @@
 """Orders API routes using database-backed state machine."""
 
+import logging
 import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
@@ -20,6 +21,7 @@ from app.schemas.order import (
 )
 from app.services.order_creation_service import create_order_for_user
 from app.services.feature_flag_service import require_request_capability, resolve_request_capability
+from app.services.generation_executor_service import advance_order_generation_once
 from app.services.idempotency_service import IdempotencyConflict
 from app.services.private_download_service import (
     PrivateDownloadError,
@@ -30,6 +32,7 @@ from app.services.private_download_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def _private_download_allowed(db: AsyncSession) -> bool:
@@ -111,6 +114,61 @@ async def get_order(
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Order not found")
+    private_download_allowed = await _private_download_allowed(db)
+    return await _serialize_order_for_user(
+        db,
+        order,
+        current_user.id,
+        private_download_allowed=private_download_allowed,
+    )
+
+
+@router.post("/{order_id}/progress", response_model=OrderRead)
+async def progress_order(
+    order_id: str,
+    request: Request,
+    current_user: User = Depends(get_session_user),
+    db: AsyncSession = Depends(get_db),
+) -> OrderRead:
+    """Advance one owned durable generation step and return the refreshed order."""
+
+    try:
+        order_uuid = uuid.UUID(order_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid order ID") from exc
+    order = await db.scalar(
+        select(Order).where(
+            Order.id == order_uuid,
+            Order.user_id == current_user.id,
+            Order.deleted_at.is_(None),
+        )
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    await require_request_capability(
+        request,
+        db,
+        Capability.GENERATION,
+        verified_user_id=current_user.id,
+    )
+    try:
+        await advance_order_generation_once(
+            order_id=order_uuid,
+            user_id=current_user.id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "backend_generation_progress_failed",
+            extra={"error_type": type(exc).__name__},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "generation_executor_unavailable",
+                "retryable": False,
+            },
+        ) from exc
+    await db.refresh(order)
     private_download_allowed = await _private_download_allowed(db)
     return await _serialize_order_for_user(
         db,
@@ -212,7 +270,10 @@ async def download_order_asset(
         media_type=result.mime_type,
         headers={
             "Cache-Control": "private, no-store",
-            "Content-Disposition": f'attachment; filename="{result.filename}"',
+            # The same authenticated path is used by <image> for the private
+            # preview/final projection. A same-origin `download` attribute
+            # still downloads this response when the user clicks a button.
+            "Content-Disposition": f'inline; filename="{result.filename}"',
             "X-Content-Type-Options": "nosniff",
         },
     )

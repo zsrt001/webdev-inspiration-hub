@@ -23,7 +23,7 @@ EXPECTED = {
         "submit_endpoint": "/v1/images/generations",
         "task_query_endpoint": "/v1/tasks/{task_id}",
         "ambiguous_submission_policy": "hold_without_resubmit",
-        "official_host": "docs.evolink.ai",
+        "official_hosts": {"evolink.ai", "docs.evolink.ai"},
         "implemented_by": {
             "backend/app/services/evolink_service.py",
             "backend/app/services/generation_attempt_service.py",
@@ -37,7 +37,7 @@ EXPECTED = {
             "subscription.paid",
             "subscription.scheduled_cancel",
         },
-        "official_host": "docs.creem.io",
+        "official_hosts": {"docs.creem.io"},
         "implemented_by": {
             "backend/app/services/creem_event_service.py",
             "backend/app/services/payment_service.py",
@@ -47,7 +47,7 @@ EXPECTED = {
 }
 
 
-def _valid_official_url(value: Any, expected_host: str) -> bool:
+def _valid_official_url(value: Any, expected_hosts: set[str]) -> bool:
     try:
         parsed = urlsplit(str(value or ""))
         port = parsed.port
@@ -55,7 +55,7 @@ def _valid_official_url(value: Any, expected_host: str) -> bool:
         return False
     return (
         parsed.scheme == "https"
-        and parsed.hostname == expected_host
+        and parsed.hostname in expected_hosts
         and port in {None, 443}
         and parsed.username is None
         and parsed.password is None
@@ -81,7 +81,7 @@ def validate_provider_capabilities(document: dict[str, Any]) -> dict[str, list[s
         if not isinstance(entry, dict):
             raise ValueError(f"provider capability is invalid: {provider}")
         for key, value in expected.items():
-            if key in {"official_host", "implemented_by", "subscription_events"}:
+            if key in {"official_hosts", "implemented_by", "subscription_events"}:
                 continue
             if entry.get(key) != value:
                 raise ValueError(f"provider capability mismatch: {provider}.{key}")
@@ -92,7 +92,10 @@ def validate_provider_capabilities(document: dict[str, Any]) -> dict[str, list[s
             not isinstance(sources, list)
             or not sources
             or len(sources) != len(set(sources))
-            or not all(_valid_official_url(url, str(expected["official_host"])) for url in sources)
+            or not all(
+                _valid_official_url(url, set(expected["official_hosts"]))
+                for url in sources
+            )
         ):
             raise ValueError(f"provider official sources are invalid: {provider}")
         implementations = entry.get("implemented_by")

@@ -1,5 +1,5 @@
 {
-  "contract_version": "preview-protected-runtime.v4",
+  "contract_version": "preview-protected-runtime.v5",
   "release_role": "PREVIEW_IDENTITY",
   "schema_revision": "20260710_0020",
   "api_version": "vowpic-web-identity-private-media.v3",
@@ -49,12 +49,11 @@
     "release_role": "PREVIEW_COMMERCIAL",
     "api_role": "PREVIEW_COMMERCIAL_API",
     "schema_revision": "20260710_0020",
-    "worker": {
-      "role": "PREVIEW_COMMERCIAL_WORKER",
-      "image_identity": "oci-digest-only",
+    "backend_executor": {
+      "version": "vowpic-backend-executor.v1",
       "runtime_identity": "same-as-api",
-      "host": "protected-ephemeral-preview-runner",
-      "heartbeat_max_age_seconds": 120
+      "host": "vercel-api",
+      "lease_store": "postgresql"
     },
     "provider_capability_policy": "release/provider-capabilities.json",
     "provider_grant_origin": "exact-temporary-vercel-alias",
@@ -63,14 +62,10 @@
     "provider_grant_other_routes": "404 including missing-or-invalid runtime probes",
     "feature_snapshot": "all-off-until-case-scoped-activation",
     "evidence": {
-      "worker_build": "create-once",
-      "worker_start": "create-once",
-      "worker_heartbeat": "redis-and-process-bound",
+      "backend_runtime": "signed-health-and-version",
       "provider_fetch": "signed-real-network-and-database-read-count"
     },
     "cleanup": {
-      "worker": "stop-and-remove-exact-container",
-      "worker_heartbeat": "prove-absent",
       "provider_grant_origin": "remove-exact-alias-and-read-back",
       "feature_flags": "all-off",
       "activation_terminal_phase": "CLEANED"

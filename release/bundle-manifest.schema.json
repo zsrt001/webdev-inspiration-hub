@@ -9,8 +9,9 @@
     "source_sha", "api_build_sha256", "api_deployment_id", "preview_id",
     "private_compatible_baseline_deployment_id", "staged_target_deployment_id",
     "worker_image_digest", "worker_deployment_id", "schema_revision",
-    "api_compatibility_version", "worker_compatibility_version", "job_payload_min",
-    "job_payload_max", "contract_hashes", "tool_versions"
+    "api_compatibility_version", "backend_execution_version",
+    "backend_executor_digest", "worker_compatibility_version",
+    "job_payload_min", "job_payload_max", "contract_hashes", "tool_versions"
   ],
   "properties": {
     "schema": {"const": "vowpic.bundle-manifest.v1"},
@@ -24,11 +25,13 @@
     "preview_id": {"type": ["string", "null"], "maxLength": 160},
     "private_compatible_baseline_deployment_id": {"type": ["string", "null"], "maxLength": 160},
     "staged_target_deployment_id": {"type": ["string", "null"], "maxLength": 160},
-    "worker_image_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
-    "worker_deployment_id": {"type": ["string", "null"], "maxLength": 160},
+    "worker_image_digest": {"type": "null"},
+    "worker_deployment_id": {"type": "null"},
     "schema_revision": {"type": "string", "pattern": "^[0-9]{8}_[0-9]{4}$"},
     "api_compatibility_version": {"type": "string", "minLength": 1, "maxLength": 160},
-    "worker_compatibility_version": {"type": "string", "minLength": 1, "maxLength": 160},
+    "backend_execution_version": {"type": "string", "minLength": 1, "maxLength": 160},
+    "backend_executor_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "worker_compatibility_version": {"type": "null"},
     "job_payload_min": {"type": "string", "minLength": 1, "maxLength": 160},
     "job_payload_max": {"type": "string", "minLength": 1, "maxLength": 160},
     "contract_hashes": {
@@ -45,8 +48,7 @@
         "target_snapshot": {"$ref": "#/$defs/sha256"},
         "gate": {"$ref": "#/$defs/sha256"},
         "runtime": {"$ref": "#/$defs/sha256"},
-        "database_roles": {"$ref": "#/$defs/sha256"},
-        "worker_host": {"$ref": "#/$defs/sha256"}
+        "database_roles": {"$ref": "#/$defs/sha256"}
       }
     },
     "tool_versions": {
@@ -55,5 +57,35 @@
       "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 160}
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "release_role": {
+            "enum": ["PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"]
+          }
+        },
+        "required": ["release_role"]
+      },
+      "then": {
+        "properties": {
+          "contract_hashes": {
+            "required": [
+              "provider", "model", "policy", "catalog", "flag",
+              "pre_activation_off_snapshot", "target_snapshot",
+              "gate", "runtime", "database_roles"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "contract_hashes": {
+            "not": {"required": ["database_roles"]}
+          }
+        }
+      }
+    }
+  ],
   "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
 }

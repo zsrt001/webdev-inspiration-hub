@@ -173,6 +173,33 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertIn("CLICK_STATS_REPAIR_TEST_DATABASE_URL:", backend_job)
         self.assertIn("backend.tests.integration.test_click_stats_repair", backend_job)
 
+    def test_backend_ci_runs_real_generation_recovery_and_manual_settlement(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "ci.yml"
+        ).read_text(encoding="utf-8")
+        backend_job = workflow[
+            workflow.index("  backend-test:"):
+            workflow.index("  frontend-check:")
+        ]
+        self.assertIn(
+            "RUN_BACKEND_GENERATION_INTEGRATION: '1'",
+            backend_job,
+        )
+        self.assertIn(
+            "BACKEND_GENERATION_INTEGRATION_DATABASE_URL:",
+            backend_job,
+        )
+        self.assertIn(
+            "- name: Run the real website-backend generation recovery contract\n"
+            "        working-directory: backend",
+            backend_job,
+        )
+        self.assertIn(
+            "python -m unittest "
+            "tests.integration.test_backend_generation_recovery -v",
+            backend_job,
+        )
+
     def test_backend_ci_waits_for_the_final_postgres_server_before_integration_tests(self) -> None:
         workflow = _read(".github/workflows/ci.yml")
         backend_job = workflow[
@@ -362,7 +389,7 @@ class CiReleaseContractTest(unittest.TestCase):
             "WINDOWS_LOCKS_RESULT",
             "BACKEND_RESULT",
             "FRONTEND_RESULT",
-            "WORKER_IMAGE_RESULT",
+            "BACKEND_EXECUTION_RESULT",
         ):
             self.assertIn(f'os.environ["{result_env}"] == "success"', workflow)
 
@@ -465,14 +492,16 @@ class CiReleaseContractTest(unittest.TestCase):
             "@intlify/core-base": "9.14.5",
             "@intlify/message-resolver": "9.1.11",
             "adm-zip": "0.6.0",
+            "body-parser": "1.20.6",
             "cookie": "0.7.0",
             "esbuild": "0.25.0",
             "glob": "10.5.0",
-            "immutable": "5.1.5",
+            "immutable": "5.1.8",
+            "js-yaml": "4.3.0",
             "path-to-regexp": "0.1.13",
             "picomatch@2.3.1": "2.3.2",
             "picomatch@4.0.3": "4.0.4",
-            "postcss": "8.5.10",
+            "postcss": "8.5.12",
             "qs": "6.15.2",
             "rollup": "4.59.0",
             "send": "0.19.0",

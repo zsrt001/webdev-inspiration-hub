@@ -16,12 +16,12 @@ def _bootstrap_path() -> None:
         sys.path.insert(0, str(backend_dir))
 
 
-async def _run(probe_storage: bool, probe_generation_queue: bool, strict: bool) -> int:
+async def _run(probe_storage: bool, probe_generation_backend: bool, strict: bool) -> int:
     from app.core.runtime_checks import run_readiness_checks
 
     report = await run_readiness_checks(
         probe_storage=probe_storage,
-        probe_generation_queue=probe_generation_queue,
+        probe_generation_backend=probe_generation_backend,
         strict_mode=strict,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -31,7 +31,11 @@ async def _run(probe_storage: bool, probe_generation_queue: bool, strict: bool) 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Commercial readiness checker")
     parser.add_argument("--probe-storage", action="store_true", help="Run storage upload/delete probe")
-    parser.add_argument("--probe-generation-queue", action="store_true", help="Run a real generation queue probe")
+    parser.add_argument(
+        "--probe-generation-backend",
+        action="store_true",
+        help="Run the website-backend generation capability probe",
+    )
     parser.add_argument(
         "--non-strict",
         action="store_true",
@@ -43,7 +47,7 @@ def main() -> int:
     return asyncio.run(
         _run(
             probe_storage=bool(args.probe_storage),
-            probe_generation_queue=bool(args.probe_generation_queue),
+            probe_generation_backend=bool(args.probe_generation_backend),
             strict=not args.non_strict,
         )
     )

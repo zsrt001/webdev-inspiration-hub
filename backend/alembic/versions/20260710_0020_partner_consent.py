@@ -24,10 +24,9 @@ PARTNER_TABLES = (
     "partner_consent_cases",
 )
 
-# The application login inherits only vowpic_runtime.  Service-specific roles
-# remain available for future split-process logins, but the current API and
-# Worker must receive an explicit, non-destructive surface through
-# vowpic_runtime before COMMERCIAL_7A can start.
+# The application login inherits only vowpic_runtime. The current website
+# backend receives an explicit, non-destructive surface through vowpic_runtime
+# before COMMERCIAL_7A can start; no external generation process is required.
 COMMERCIAL_7A_RUNTIME_ADDITIVE_PRIVILEGES = {
     "upload_batches": ("SELECT", "INSERT", "UPDATE"),
     "media_assets": ("SELECT", "INSERT", "UPDATE"),

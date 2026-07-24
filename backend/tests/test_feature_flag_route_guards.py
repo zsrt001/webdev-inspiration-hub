@@ -1,4 +1,4 @@
-"""Route and worker adoption contracts for PostgreSQL feature flags."""
+"""Route and backend-executor adoption contracts for PostgreSQL feature flags."""
 
 from __future__ import annotations
 
@@ -30,15 +30,18 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
                 for node in ast.walk(tree)
             ):
                 offenders.append(str(path.relative_to(ROOT)))
-        worker = APP / "worker_tasks.py"
-        worker_tree = ast.parse(worker.read_text(encoding="utf-8"), filename=str(worker))
+        executor = APP / "services" / "generation_executor_service.py"
+        executor_tree = ast.parse(
+            executor.read_text(encoding="utf-8"),
+            filename=str(executor),
+        )
         if any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id in {"require_bootstrap_capability", "bootstrap_capability_enabled"}
-            for node in ast.walk(worker_tree)
+            for node in ast.walk(executor_tree)
         ):
-            offenders.append(str(worker.relative_to(ROOT)))
+            offenders.append(str(executor.relative_to(ROOT)))
         self.assertEqual(offenders, [])
 
     def test_mutating_routes_use_authoritative_request_dependency(self) -> None:
@@ -69,6 +72,7 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
     def test_admin_mutations_use_the_separate_control_plane_connection(self) -> None:
         source = (APP / "routers" / "ops_admin.py").read_text(encoding="utf-8")
         self.assertIn("get_control_plane_db", source)
+        self.assertNotIn("worker_image_digest", source)
         for function_name in ("mutate_feature_flag", "emergency_disable_feature_flag"):
             tree = ast.parse(source)
             function = next(
@@ -78,6 +82,14 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
             )
             segment = ast.get_source_segment(source, function) or ""
             self.assertIn("Depends(get_control_plane_db)", segment)
+
+    def test_public_feature_flag_schema_has_no_retired_worker_coordinate(self) -> None:
+        from app.main import app
+
+        properties = app.openapi()["components"]["schemas"]["FeatureFlagMutationRequest"][
+            "properties"
+        ]
+        self.assertNotIn("worker_image_digest", properties)
 
     def test_formal_verifier_matrix_covers_every_stage1_blocked_and_retired_route(self) -> None:
         script = ROOT / "scripts" / "release" / "verify_safe_baseline.py"
@@ -235,20 +247,19 @@ class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(raised.exception.detail["code"], "capability_disabled")
 
-    async def test_worker_rejects_missing_server_stamps_before_task16(self) -> None:
+    async def test_backend_rejects_missing_server_stamps_before_task16(self) -> None:
         flags = importlib.import_module("app.core.feature_flags")
         service = importlib.import_module("app.services.feature_flag_service")
         with self.assertRaises(service.CapabilityDisabled):
-            await service.require_worker_capability(
+            await service.require_backend_capability(
                 AsyncMock(),
                 flags.Capability.GENERATION,
                 deployment_id=None,
                 runtime_bundle_id=None,
-                worker_image_digest=None,
                 user_id=None,
             )
 
-    async def test_worker_rejects_spoofed_coordinates_without_database_access(self) -> None:
+    async def test_backend_rejects_spoofed_coordinates_without_database_access(self) -> None:
         flags = importlib.import_module("app.core.feature_flags")
         service = importlib.import_module("app.services.feature_flag_service")
         db = AsyncMock()
@@ -257,16 +268,15 @@ class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
             runtime_environment="production",
             vercel_deployment_id="dpl_system",
             runtime_bundle_id="rtb_" + "a" * 64,
-            worker_image_digest="sha256:" + "b" * 64,
+            vercel_git_commit_sha="c" * 40,
             acceptance_identity_hmac_key="k" * 32,
         ):
             with self.assertRaises(service.CapabilityDisabled):
-                await service.require_worker_capability(
+                await service.require_backend_capability(
                     db,
                     flags.Capability.GENERATION,
                     deployment_id="dpl_spoofed",
                     runtime_bundle_id="rtb_" + "a" * 64,
-                    worker_image_digest="sha256:" + "b" * 64,
                     user_id=__import__("uuid").uuid4(),
                 )
         db.execute.assert_not_awaited()

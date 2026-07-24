@@ -33,7 +33,7 @@ def _valid_environment() -> dict[str, str]:
     return {
         "RUNTIME_ENVIRONMENT": "production",
         "RELEASE_ROLE": "COMMERCIAL_7A",
-        "TASK_EXECUTION_MODE": "arq",
+        "TASK_EXECUTION_MODE": "backend",
         "STORAGE_PROVIDER": "vercel",
         "GENERATION_ENGINE": "evolink",
         "LLM_PROVIDER": "wenwen",
@@ -86,7 +86,7 @@ class ProductionRuntimePreflightTest(unittest.TestCase):
             any(name.startswith("CREEM_SUBSCRIPTION_") for name in environment)
         )
 
-    def test_commercial_oauth_and_remote_redis_are_required(self) -> None:
+    def test_commercial_oauth_is_required_but_redis_does_not_gate_generation(self) -> None:
         environment = _valid_environment()
         environment["SUPABASE_ANON_KEY"] = ""
         environment["REDIS_URL"] = "redis://localhost:6379/0"
@@ -97,10 +97,7 @@ class ProductionRuntimePreflightTest(unittest.TestCase):
             "SUPABASE_URL and SUPABASE_ANON_KEY are required for commercial OAuth",
             errors,
         )
-        self.assertIn(
-            "REDIS_URL must not target a local host outside development",
-            errors,
-        )
+        self.assertFalse(any("REDIS_URL" in error for error in errors))
 
     def test_cost_cap_and_source_sha_fail_closed(self) -> None:
         environment = _valid_environment()

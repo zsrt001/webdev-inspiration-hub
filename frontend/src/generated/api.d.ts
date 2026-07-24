@@ -205,6 +205,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/generation/manual-settlements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Admin Generation Manual Settlements
+         * @description List ambiguous submissions that cannot be automatically replayed.
+         */
+        get: operations["list_admin_generation_manual_settlements_api_v1_admin_generation_manual_settlements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/generation/manual-settlements/{job_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Admin Generation Manual Evidence
+         * @description Persist one content-addressed Provider fact before any UNKNOWN mutation.
+         */
+        post: operations["create_admin_generation_manual_evidence_api_v1_admin_generation_manual_settlements__job_id__evidence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/generation/manual-settlements/{job_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Admin Generation Manual Settlement
+         * @description Apply one audited Provider fact without replaying an ambiguous POST.
+         */
+        post: operations["resolve_admin_generation_manual_settlement_api_v1_admin_generation_manual_settlements__job_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/grant_credits": {
         parameters: {
             query?: never;
@@ -360,7 +420,7 @@ export interface paths {
         put?: never;
         /**
          * Update Order Status
-         * @description Update an order status using the existing OrderStatus enum.
+         * @description Update only a legacy order through its validated state machine.
          */
         post: operations["update_order_status_api_v1_admin_orders__order_id__status_post"];
         delete?: never;
@@ -368,7 +428,7 @@ export interface paths {
         head?: never;
         /**
          * Update Order Status
-         * @description Update an order status using the existing OrderStatus enum.
+         * @description Update only a legacy order through its validated state machine.
          */
         patch: operations["update_order_status_api_v1_admin_orders__order_id__status_patch"];
         trace?: never;
@@ -901,6 +961,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops/generation/maintain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Maintain Generation Jobs
+         * @description Run one authenticated manual recovery batch in the website backend.
+         */
+        post: operations["maintain_generation_jobs_api_v1_ops_generation_maintain_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ops/health": {
         parameters: {
             query?: never;
@@ -1107,6 +1187,26 @@ export interface paths {
         get: operations["get_order_funding_api_v1_orders__order_id__funding_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/{order_id}/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Progress Order
+         * @description Advance one owned durable generation step and return the refreshed order.
+         */
+        post: operations["progress_order_api_v1_orders__order_id__progress_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2301,6 +2401,137 @@ export interface components {
             /** Width */
             width: number;
         };
+        /** AdminGenerationManualCase */
+        AdminGenerationManualCase: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Kind */
+            attempt_kind: string;
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /**
+             * Order Id
+             * Format: uuid
+             */
+            order_id: string;
+            /** Reason Code */
+            reason_code: string;
+            /** Reason Detail */
+            reason_detail?: string | null;
+            /** Submit Started At */
+            submit_started_at?: string | null;
+        };
+        /** AdminGenerationManualCasesResponse */
+        AdminGenerationManualCasesResponse: {
+            /** Cases */
+            cases: components["schemas"]["AdminGenerationManualCase"][];
+            /** Total */
+            total: number;
+        };
+        /** AdminGenerationManualEvidenceRequest */
+        AdminGenerationManualEvidenceRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "BIND_PROVIDER_TASK" | "CONFIRMED_NOT_ACCEPTED_RETRY" | "FAIL_AND_SETTLE";
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Observation Reference */
+            observation_reference: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Operator Reason */
+            operator_reason: string;
+            /** Provider Accepted */
+            provider_accepted?: boolean | null;
+            /** Provider Task Id */
+            provider_task_id?: string | null;
+            /**
+             * Source Type
+             * @enum {string}
+             */
+            source_type: "EVOLINK_API" | "EVOLINK_DASHBOARD" | "EVOLINK_SUPPORT";
+        };
+        /** AdminGenerationManualEvidenceResponse */
+        AdminGenerationManualEvidenceResponse: {
+            /** Action */
+            action: string;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Provider Evidence Object Key */
+            provider_evidence_object_key: string;
+            /** Provider Evidence Sha256 */
+            provider_evidence_sha256: string;
+        };
+        /** AdminGenerationManualResolutionRequest */
+        AdminGenerationManualResolutionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "BIND_PROVIDER_TASK" | "CONFIRMED_NOT_ACCEPTED_RETRY" | "FAIL_AND_SETTLE";
+            /** Operator Reason */
+            operator_reason: string;
+            /** Provider Accepted */
+            provider_accepted?: boolean | null;
+            /** Provider Evidence Object Key */
+            provider_evidence_object_key: string;
+            /** Provider Evidence Sha256 */
+            provider_evidence_sha256: string;
+            /** Provider Task Id */
+            provider_task_id?: string | null;
+        };
+        /** AdminGenerationManualResolutionResponse */
+        AdminGenerationManualResolutionResponse: {
+            /** Action */
+            action: string;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Status */
+            attempt_status: string;
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Job Status */
+            job_status: string;
+            /** Next Action */
+            next_action: string;
+            /**
+             * Order Id
+             * Format: uuid
+             */
+            order_id: string;
+            /** Order Status */
+            order_status: string;
+            /** Settlement Status */
+            settlement_status: string;
+        };
         /** AdminGenerationRound */
         AdminGenerationRound: {
             /**
@@ -2401,6 +2632,11 @@ export interface components {
             final_image_urls?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Generation Managed
+             * @default false
+             */
+            generation_managed: boolean;
             /** Generation Params */
             generation_params?: {
                 [key: string]: unknown;
@@ -2458,6 +2694,11 @@ export interface components {
             credits_cost?: number | null;
             /** Failure Code */
             failure_code?: string | null;
+            /**
+             * Generation Managed
+             * @default false
+             */
+            generation_managed: boolean;
             /** Id */
             id: string;
             /** Order No */
@@ -2962,8 +3203,6 @@ export interface components {
             state: components["schemas"]["FeatureFlagState"];
             /** Target Manifest Sha256 */
             target_manifest_sha256?: string | null;
-            /** Worker Image Digest */
-            worker_image_digest?: string | null;
         };
         /**
          * FeatureFlagState
@@ -4055,6 +4294,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_admin_generation_manual_settlements_api_v1_admin_generation_manual_settlements_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGenerationManualCasesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_admin_generation_manual_evidence_api_v1_admin_generation_manual_settlements__job_id__evidence_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminGenerationManualEvidenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGenerationManualEvidenceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_admin_generation_manual_settlement_api_v1_admin_generation_manual_settlements__job_id__resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminGenerationManualResolutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGenerationManualResolutionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5251,11 +5591,42 @@ export interface operations {
             };
         };
     };
+    maintain_generation_jobs_api_v1_ops_generation_maintain_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     readiness_api_v1_ops_health_get: {
         parameters: {
             query?: {
                 probe_storage?: boolean;
-                probe_generation_queue?: boolean;
+                probe_generation_backend?: boolean;
                 strict?: boolean;
             };
             header?: never;
@@ -5339,7 +5710,7 @@ export interface operations {
         parameters: {
             query?: {
                 probe_storage?: boolean;
-                probe_generation_queue?: boolean;
+                probe_generation_backend?: boolean;
                 strict?: boolean;
             };
             header?: never;
@@ -5590,6 +5961,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OrderFundingRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    progress_order_api_v1_orders__order_id__progress_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderRead"];
                 };
             };
             /** @description Validation Error */

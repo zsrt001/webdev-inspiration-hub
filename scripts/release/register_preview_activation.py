@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CAS-register one exact PREVIEW_IDENTITY or PREVIEW_COMMERCIAL runtime."""
+"""CAS-register one exact Preview identity or website-backend runtime."""
 
 from __future__ import annotations
 
@@ -59,12 +59,8 @@ def validate_coordinates(
         raise ValueError("workflow attempt must be positive")
     if role not in ALLOWED_ROLES:
         raise ValueError("Preview release role is not allowlisted")
-    worker_digest = str(worker_image_digest or "").strip().lower()
-    if role == "PREVIEW_COMMERCIAL":
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", worker_digest):
-            raise ValueError("PREVIEW_COMMERCIAL requires a digest-pinned Worker image")
-    elif worker_digest:
-        raise ValueError("PREVIEW_IDENTITY is Worker-free")
+    if str(worker_image_digest or "").strip():
+        raise ValueError("Preview activations are website-backend-only")
     coordinates = {
         "environment": ENVIRONMENT,
         "kind": role,
@@ -75,13 +71,6 @@ def validate_coordinates(
         "workflow_attempt": attempt,
         "schema_revision": SCHEMA_REVISION,
     }
-    if role == "PREVIEW_COMMERCIAL":
-        coordinates.update(
-            {
-                "worker_role": "PREVIEW_COMMERCIAL_WORKER",
-                "worker_image_digest": worker_digest,
-            }
-        )
     return coordinates
 
 
@@ -123,7 +112,6 @@ def build_activation_report(
         release_role=coordinates.get("kind"),
         source_sha=coordinates.get("source_sha"),
         runtime_bundle_id=coordinates.get("runtime_bundle_id"),
-        worker_image_digest=coordinates.get("worker_image_digest"),
         workflow_run_id=coordinates.get("workflow_run_id"),
         workflow_attempt=coordinates.get("workflow_attempt"),
     )
@@ -132,12 +120,11 @@ def build_activation_report(
         raise ValueError("Vercel deployment ID is invalid")
     deployment_url = _deployment_url(coordinates.get("api_deployment_url"))
     manifest = _sha256(coordinates.get("manifest_sha256"), label="manifest SHA-256")
-    worker_deployment_id = str(coordinates.get("worker_deployment_id") or "").strip()
-    if validated["kind"] == "PREVIEW_COMMERCIAL":
-        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", worker_deployment_id):
-            raise ValueError("Worker deployment ID is invalid")
-    elif worker_deployment_id:
-        raise ValueError("PREVIEW_IDENTITY cannot bind a Worker deployment ID")
+    if any(
+        coordinates.get(field) is not None
+        for field in ("worker_deployment_id", "worker_role", "worker_image_digest")
+    ):
+        raise ValueError("Preview activation must not bind external Worker coordinates")
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         raise ValueError("activation report timestamp must be timezone-aware")
@@ -156,8 +143,6 @@ def build_activation_report(
         "phase": "COMPLETED",
         "created_at": current.astimezone(timezone.utc).isoformat(),
     }
-    if worker_deployment_id:
-        report["worker_deployment_id"] = worker_deployment_id
     return report
 
 
@@ -187,9 +172,10 @@ def _activation_matches(row: dict[str, Any], coordinates: dict[str, Any]) -> boo
         "environment", "kind", "source_sha", "runtime_bundle_id", "api_role",
         "workflow_run_id", "workflow_attempt",
     ]
-    if coordinates["kind"] == "PREVIEW_COMMERCIAL":
-        keys.extend(["worker_role", "worker_image_digest"])
-    return all(str(row.get(key)) == str(coordinates[key]) for key in keys)
+    return all(str(row.get(key)) == str(coordinates[key]) for key in keys) and all(
+        row.get(field) is None
+        for field in ("worker_role", "worker_image_digest", "worker_deployment_id")
+    )
 
 
 def decide_reservation(
@@ -412,7 +398,6 @@ def mark_deployed(
     activation_id: str,
     coordinates: dict[str, Any],
     deployment: dict[str, str],
-    worker_deployment_id: str | None,
     manifest_sha256: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -421,12 +406,6 @@ def mark_deployed(
 
     UUID(activation_id)
     manifest = _sha256(manifest_sha256, label="manifest SHA-256")
-    worker_deployment = str(worker_deployment_id or "").strip()
-    if coordinates["kind"] == "PREVIEW_COMMERCIAL":
-        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", worker_deployment):
-            raise ValueError("Worker deployment ID is invalid")
-    elif worker_deployment:
-        raise ValueError("PREVIEW_IDENTITY cannot bind a Worker deployment ID")
     current = now or datetime.now(timezone.utc)
     with psycopg2.connect(_database_url(database_url)) as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -439,7 +418,7 @@ def mark_deployed(
                 raise ValueError("Preview activation coordinates mismatch")
             expected_deployment = (
                 deployment["api_deployment_id"], deployment["api_deployment_url"],
-                worker_deployment or None, manifest,
+                None, manifest,
             )
             recorded = (
                 row.get("api_deployment_id"), row.get("api_deployment_url"),
@@ -500,10 +479,11 @@ def complete_activation(
     ):
         if str(report.get(key)) != str(coordinates[key]):
             raise ValueError(f"Preview activation report {key} mismatch")
-    if coordinates["kind"] == "PREVIEW_COMMERCIAL":
-        for key in ("worker_role", "worker_image_digest"):
-            if report.get(key) != coordinates.get(key):
-                raise ValueError(f"Preview activation report {key} mismatch")
+    if any(
+        report.get(field) is not None
+        for field in ("worker_role", "worker_image_digest", "worker_deployment_id")
+    ):
+        raise ValueError("Preview activation report contains external Worker coordinates")
     with psycopg2.connect(_database_url(database_url)) as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("SELECT * FROM release_activations WHERE id = %s FOR UPDATE", (activation_id,))
@@ -514,8 +494,6 @@ def complete_activation(
             if not _activation_matches(row, coordinates):
                 raise ValueError("Preview activation coordinates mismatch")
             deployment_keys = ["api_deployment_id", "api_deployment_url", "manifest_sha256"]
-            if coordinates["kind"] == "PREVIEW_COMMERCIAL":
-                deployment_keys.append("worker_deployment_id")
             for key in deployment_keys:
                 if report.get(key) != row.get(key):
                     raise ValueError(f"Preview activation report {key} mismatch")
@@ -546,75 +524,6 @@ def _runtime_id(path: Path) -> str:
     return value
 
 
-def _worker_digest_from_report(path_value: str | None, *, role: str, source_sha: str) -> str | None:
-    if role == "PREVIEW_IDENTITY":
-        if path_value:
-            raise ValueError("PREVIEW_IDENTITY cannot accept a Worker build report")
-        return None
-    if not path_value:
-        raise ValueError("PREVIEW_COMMERCIAL requires a Worker build report")
-    try:
-        report = json.loads(Path(path_value).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("Preview Worker build report is unreadable") from exc
-    if (
-        not isinstance(report, dict)
-        or report.get("schema") != "vowpic.preview-worker-build.v1"
-        or report.get("passed") is not True
-        or report.get("source_sha") != source_sha
-    ):
-        raise ValueError("Preview Worker build report identity mismatch")
-    digest = str(report.get("worker_image_digest") or "").strip().lower()
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise ValueError("Preview Worker build report digest is invalid")
-    return digest
-
-
-def _worker_deployment_from_report(
-    path_value: str | None,
-    *,
-    role: str,
-    coordinates: dict[str, Any],
-    api_deployment_id: str,
-) -> str | None:
-    if role == "PREVIEW_IDENTITY":
-        if path_value:
-            raise ValueError("PREVIEW_IDENTITY cannot accept a Worker start report")
-        return None
-    if not path_value:
-        raise ValueError("PREVIEW_COMMERCIAL requires a Worker start report")
-    try:
-        report = json.loads(Path(path_value).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("Preview Worker start report is unreadable") from exc
-    required = {
-        "schema", "state", "source_sha", "runtime_bundle_id", "api_deployment_id",
-        "worker_image_digest", "container_id", "container_name", "observed_at",
-    }
-    expected = {
-        "schema": "vowpic.preview-worker-process.v1",
-        "state": "CREATED",
-        "source_sha": coordinates["source_sha"],
-        "runtime_bundle_id": coordinates["runtime_bundle_id"],
-        "api_deployment_id": api_deployment_id,
-        "worker_image_digest": coordinates["worker_image_digest"],
-    }
-    if not isinstance(report, dict) or set(report) != required:
-        raise ValueError("Preview Worker start report schema mismatch")
-    if any(report.get(key) != value for key, value in expected.items()):
-        raise ValueError("Preview Worker start report coordinates mismatch")
-    container_id = str(report.get("container_id") or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{12,64}", container_id):
-        raise ValueError("Preview Worker deployment ID is invalid")
-    try:
-        observed_at = datetime.fromisoformat(str(report.get("observed_at") or "").replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError("Preview Worker process timestamp is invalid") from exc
-    if observed_at.tzinfo is None:
-        raise ValueError("Preview Worker process timestamp must be timezone-aware")
-    return container_id
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -623,7 +532,6 @@ def main() -> int:
         command.add_argument("--role", choices=sorted(ALLOWED_ROLES), default=ROLE)
         command.add_argument("--source-sha", required=True)
         command.add_argument("--runtime-id-file", required=True)
-        command.add_argument("--worker-build-report")
         command.add_argument("--workflow-run-id", required=True)
         command.add_argument("--workflow-attempt", required=True, type=int)
         command.add_argument("--database-url-env", default="PREVIEW_CONTROL_DATABASE_URL")
@@ -634,7 +542,6 @@ def main() -> int:
     deployed = subparsers.choices["deployed"]
     deployed.add_argument("--deployment-url", required=True)
     deployed.add_argument("--manifest-sha256", required=True)
-    deployed.add_argument("--worker-start-report")
     deployed.add_argument("--vercel-token-env", default="VERCEL_TOKEN")
     deployed.add_argument("--vercel-project-id-env", default="VERCEL_PROJECT_ID")
     deployed.add_argument("--vercel-team-id-env", default="VERCEL_ORG_ID")
@@ -647,16 +554,10 @@ def main() -> int:
     try:
         database_url = os.environ.get(args.database_url_env, "").strip()
         runtime_id = _runtime_id(Path(args.runtime_id_file))
-        worker_digest = _worker_digest_from_report(
-            args.worker_build_report,
-            role=args.role,
-            source_sha=args.source_sha.strip().lower(),
-        )
         coordinates = validate_coordinates(
             release_role=args.role,
             source_sha=args.source_sha,
             runtime_bundle_id=runtime_id,
-            worker_image_digest=worker_digest,
             workflow_run_id=args.workflow_run_id,
             workflow_attempt=args.workflow_attempt,
         )
@@ -694,18 +595,11 @@ def main() -> int:
                         bypass_secret=os.environ.get(args.bypass_secret_env, ""),
                         client=client,
                     )
-                worker_deployment_id = _worker_deployment_from_report(
-                    args.worker_start_report,
-                    role=args.role,
-                    coordinates=coordinates,
-                    api_deployment_id=deployment["api_deployment_id"],
-                )
                 result = mark_deployed(
                     database_url,
                     activation_id=activation_id,
                     coordinates=coordinates,
                     deployment=deployment,
-                    worker_deployment_id=worker_deployment_id,
                     manifest_sha256=args.manifest_sha256,
                 )
                 report = build_activation_report(
@@ -713,7 +607,6 @@ def main() -> int:
                     coordinates={
                         **coordinates,
                         **deployment,
-                        "worker_deployment_id": worker_deployment_id,
                         "manifest_sha256": args.manifest_sha256,
                     },
                 )

@@ -313,15 +313,15 @@ class CapabilityRouteGuardTest(unittest.IsolatedAsyncioTestCase):
             "processing_state": "RECEIVED",
         }
         with patch.object(
-            payments,
-            "ingest_verified_creem_event",
+            payments.payment_service,
+            "process_webhook_event",
             new=AsyncMock(return_value=accepted),
         ) as webhook:
             result = await payments.creem_webhook(request, db)
         self.assertEqual(result, accepted)
         webhook.assert_awaited_once()
-        self.assertEqual(webhook.await_args.kwargs["raw_body"], b"{}")
-        self.assertEqual(webhook.await_args.kwargs["signature"], "signed")
+        self.assertEqual(webhook.await_args.kwargs["body"], b"{}")
+        self.assertEqual(webhook.await_args.kwargs["signature_header"], "signed")
 
         with patch.object(credits, "get_balance_async", new=AsyncMock(return_value=7)) as balance:
             payload = await credits.get_user_balance(current_user=user, db=db)
@@ -440,14 +440,17 @@ class CapabilityRouteGuardTest(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertFalse(hasattr(payments, retired_name), retired_name)
 
-    async def test_worker_rejects_legacy_payload_before_database_or_provider_access(self) -> None:
-        worker = importlib.import_module("app.worker_tasks")
+    async def test_backend_executor_rejects_legacy_payload_before_database_or_provider_access(self) -> None:
+        executor = importlib.import_module("app.services.generation_executor_service")
 
         with self.assertRaisesRegex(ValueError, "payload_version_unsupported"):
-            await worker.generate_order_v1({}, "not-a-uuid", "legacy-order.v0")
+            await executor.generate_order_v1({}, "not-a-uuid", "legacy-order.v0")
 
-        worker_source = (ROOT / "backend/app/worker_tasks.py").read_text(encoding="utf-8")
-        task_queue_source = (ROOT / "backend/app/core/task_queue.py").read_text(encoding="utf-8")
+        executor_source = (
+            ROOT / "backend/app/services/generation_executor_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertFalse((ROOT / "backend/app/worker_tasks.py").exists())
+        self.assertFalse((ROOT / "backend/app/core/task_queue.py").exists())
         for forbidden in (
             "LivePortraitJob",
             "generate_live_portrait",
@@ -455,9 +458,7 @@ class CapabilityRouteGuardTest(unittest.IsolatedAsyncioTestCase):
             "session_service",
             "source_image_urls",
         ):
-            self.assertNotIn(forbidden, worker_source)
-        self.assertNotIn("enqueue_live_portrait", task_queue_source)
-        self.assertNotIn("enqueue_generate_order", task_queue_source)
+            self.assertNotIn(forbidden, executor_source)
 
     async def test_admin_generation_and_credit_probes_are_blocked_before_external_calls(self) -> None:
         admin = importlib.import_module("app.routers.admin")

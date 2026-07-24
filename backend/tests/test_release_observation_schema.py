@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import importlib
+import importlib.util
 import json
 from pathlib import Path
 import unittest
@@ -13,6 +14,18 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+OBSERVE_SCRIPT = ROOT / "scripts" / "release" / "observe_release.py"
+METRICS_SCRIPT = (
+    ROOT / "scripts" / "release" / "collect_observation_metrics.py"
+)
+
+
+def _load_candidate(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ReleaseObservationSchemaTest(unittest.TestCase):
@@ -77,7 +90,7 @@ class ReleaseObservationSchemaTest(unittest.TestCase):
 class ReleaseObservationEvidenceTest(unittest.TestCase):
     @staticmethod
     def _module():
-        return importlib.import_module("scripts.release.observe_release")
+        return _load_candidate(OBSERVE_SCRIPT, "observe_release_candidate")
 
     @staticmethod
     def _run() -> dict[str, object]:
@@ -89,8 +102,6 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
             "manifest_sha256": "b" * 64,
             "runtime_bundle_id": "runtime-1",
             "api_deployment_id": "api-1",
-            "worker_deployment_id": "worker-1",
-            "worker_image_digest": "sha256:" + "c" * 64,
             "target_snapshot_hash": "d" * 64,
             "started_at": started,
             "deadline_at": started + timedelta(hours=24),
@@ -103,7 +114,7 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
             "unresolved_p0_p1": 0,
             "unhandled_signed_webhooks": 0,
             "ledger_reconciliation_failures": 0,
-            "worker_heartbeat_age_seconds": 10,
+            "backend_runtime_age_seconds": 10,
             "oldest_mandatory_outbox_age_seconds": 20,
             "synthetic_flow_dlq": 0,
             "acceptance_prefix_deletion_failures": 0,
@@ -127,8 +138,6 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
             "manifest_sha256": run["manifest_sha256"],
             "runtime_bundle_id": run["runtime_bundle_id"],
             "api_deployment_id": run["api_deployment_id"],
-            "worker_deployment_id": run["worker_deployment_id"],
-            "worker_image_digest": run["worker_image_digest"],
             "target_snapshot_hash": run["target_snapshot_hash"],
             "bucket_started_at": bucket.isoformat(),
             "observed_at": bucket.isoformat(),
@@ -165,35 +174,23 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
                 maximum_gap_minutes=15,
             )
 
-    def test_observation_accepts_only_signed_running_worker_status(self) -> None:
-        module = importlib.import_module("scripts.release.collect_observation_metrics")
+    def test_observation_accepts_only_signed_backend_runtime_status(self) -> None:
+        module = _load_candidate(METRICS_SCRIPT, "collect_observation_metrics_candidate")
         key = b"w" * 32
         source_sha = "a" * 40
         runtime = "rtb_" + "b" * 64
         api_deployment = "dpl_api_1"
-        worker_deployment = "worker-1"
-        image_digest = "sha256:" + "c" * 64
         unsigned = {
-            "schema": "vowpic.worker-host-report.v2",
+            "schema": "vowpic.api-runtime-coordinate-report.v1",
             "passed": True,
-            "action": "status",
-            "provider": "railway",
-            "contract_sha256": "d" * 64,
-            "state": "RUNNING",
-            "coordinates": {
-                "provider": "railway",
-                "project": "project-1",
-                "environment": "production",
-                "service": "vowpic-worker",
-                "region": "us-east",
-                "source_sha": source_sha,
-                "runtime_bundle_id": runtime,
-                "api_deployment_id": api_deployment,
-                "worker_deployment_id": worker_deployment,
-                "worker_image_digest": image_digest,
-                "api_readiness_sha256": "e" * 64,
-                "api_version_sha256": "f" * 64,
-            },
+            "source_sha": source_sha,
+            "runtime_bundle_id": runtime,
+            "api_deployment_id": api_deployment,
+            "schema_revision": "20260710_0020",
+            "release_role": "COMMERCIAL_7A",
+            "liveness_response_sha256": "d" * 64,
+            "readiness_response_sha256": "e" * 64,
+            "version_response_sha256": "f" * 64,
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }
         signature = hmac.new(
@@ -202,26 +199,22 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
             hashlib.sha256,
         ).hexdigest()
         report = {**unsigned, "signature": f"hmac-sha256:{signature}"}
-        age = module._validate_worker_report(
+        age = module._validate_backend_runtime_report(
             report,
             signing_key=key,
             expected_source_sha=source_sha,
             expected_runtime_bundle_id=runtime,
             expected_api_deployment_id=api_deployment,
-            expected_worker_deployment_id=worker_deployment,
-            expected_worker_image_digest=image_digest,
         )
         self.assertGreaterEqual(age, 0)
-        report["state"] = "SUCCESS"
-        with self.assertRaisesRegex(ValueError, "signature|status coordinates"):
-            module._validate_worker_report(
+        report["release_role"] = "PREVIEW_COMMERCIAL"
+        with self.assertRaisesRegex(ValueError, "runtime coordinates"):
+            module._validate_backend_runtime_report(
                 report,
                 signing_key=key,
                 expected_source_sha=source_sha,
                 expected_runtime_bundle_id=runtime,
                 expected_api_deployment_id=api_deployment,
-                expected_worker_deployment_id=worker_deployment,
-                expected_worker_image_digest=image_digest,
             )
 
     def test_final_documents_recompute_24_hour_gap_and_bind_index(self) -> None:
@@ -244,8 +237,6 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
             "manifest_sha256": run["manifest_sha256"],
             "runtime_bundle_id": run["runtime_bundle_id"],
             "api_deployment_id": run["api_deployment_id"],
-            "worker_deployment_id": run["worker_deployment_id"],
-            "worker_image_digest": run["worker_image_digest"],
             "target_snapshot_hash": run["target_snapshot_hash"],
             "window_started_at": run["started_at"].isoformat(),
             "window_deadline_at": run["deadline_at"].isoformat(),
@@ -355,8 +346,8 @@ class ReleaseObservationEvidenceTest(unittest.TestCase):
             module.validate_cleanup_report(report, run=run, signing_key=key)
 
     def test_incident_metric_requires_taxonomy_and_counts_open_severity(self) -> None:
-        module = importlib.import_module(
-            "scripts.release.collect_observation_metrics"
+        module = _load_candidate(
+            METRICS_SCRIPT, "collect_observation_metrics_candidate_incidents"
         )
 
         class Response:

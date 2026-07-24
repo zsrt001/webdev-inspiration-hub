@@ -14,6 +14,7 @@ from app.services.evolink_callback_service import (
     bind_evolink_callback_task,
 )
 from app.services.evolink_service import EvolinkProviderError, parse_evolink_task_fact
+from app.services.generation_executor_service import reconcile_generation_job
 
 
 router = APIRouter(include_in_schema=False)
@@ -42,13 +43,14 @@ async def evolink_task_callback(
         if not isinstance(task_id, str):
             raise ValueError("evolink_callback_task_id_missing")
         fact = parse_evolink_task_fact(task_id.strip(), payload)
-        await bind_evolink_callback_task(
+        result = await bind_evolink_callback_task(
             db,
             attempt_id=attempt_id,
             token=token,
             fact=fact,
         )
         await db.commit()
+        await reconcile_generation_job(result.job_id)
     except EvolinkCallbackError as exc:
         if exc.code == "evolink_callback_not_found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc

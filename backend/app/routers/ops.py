@@ -24,6 +24,7 @@ from app.services.acceptance_media_verification_service import (
 from app.services.ops_alert_service import get_ops_alerts, push_critical_alerts
 from app.services.ops_config_service import get_public_ops_config
 from app.services.feature_flag_service import require_request_capability, resolve_request_capability
+from app.services.generation_executor_service import run_backend_generation_maintenance
 from app.services.media_deletion_service import run_deletion_cleanup
 from app.services.retention_service import cleanup_expired_orders, cleanup_expired_source_images
 
@@ -78,11 +79,15 @@ def _require_cleanup_execution_role() -> None:
 
 @router.get("/readiness")
 @router.get("/health")
-async def readiness(probe_storage: bool = False, probe_generation_queue: bool = False, strict: bool = True):
+async def readiness(
+    probe_storage: bool = False,
+    probe_generation_backend: bool = False,
+    strict: bool = True,
+):
     effective_strict = True if not settings.debug else bool(strict)
     report = await run_readiness_checks(
         probe_storage=probe_storage,
-        probe_generation_queue=probe_generation_queue,
+        probe_generation_backend=probe_generation_backend,
         strict_mode=effective_strict,
     )
     if effective_strict and not report.get("commercial_ready", False):
@@ -224,3 +229,20 @@ async def poll_pending_orders(
         status_code=410,
         detail={"code": "legacy_order_poller_retired", "replacement": "generation-job.v1"},
     )
+
+
+@router.post("/generation/maintain")
+async def maintain_generation_jobs(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    """Run one authenticated manual recovery batch in the website backend."""
+    _require_cron_auth(authorization)
+    if not settings.using_backend_generation_execution:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "backend_generation_executor_disabled",
+                "retryable": False,
+            },
+        )
+    return await run_backend_generation_maintenance(limit=2)

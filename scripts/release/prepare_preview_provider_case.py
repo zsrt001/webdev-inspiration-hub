@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create one isolated real private-object case for the Preview Provider fetch proof."""
+"""Create one isolated private-object case for the backend Provider fetch proof."""
 
 from __future__ import annotations
 
@@ -62,7 +62,6 @@ def _validate_activation(activation: dict[str, Any]) -> dict[str, Any]:
         "kind": "PREVIEW_COMMERCIAL",
         "phase": "COMPLETED",
         "api_role": "PREVIEW_COMMERCIAL_API",
-        "worker_role": "PREVIEW_COMMERCIAL_WORKER",
     }
     if not isinstance(activation, dict) or any(
         activation.get(key) != value for key, value in expected.items()
@@ -73,11 +72,13 @@ def _validate_activation(activation: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Provider case activation source SHA is invalid")
     if not _RUNTIME_ID.fullmatch(str(activation.get("runtime_bundle_id") or "")):
         raise ValueError("Provider case activation runtime ID is invalid")
-    for field in ("api_deployment_id", "worker_deployment_id"):
-        if not _DEPLOYMENT_ID.fullmatch(str(activation.get(field) or "")):
-            raise ValueError(f"Provider case activation {field} is invalid")
-    if not _DIGEST.fullmatch(str(activation.get("worker_image_digest") or "")):
-        raise ValueError("Provider case activation Worker digest is invalid")
+    if not _DEPLOYMENT_ID.fullmatch(str(activation.get("api_deployment_id") or "")):
+        raise ValueError("Provider case activation API deployment ID is invalid")
+    if any(
+        activation.get(field) is not None
+        for field in ("worker_deployment_id", "worker_role", "worker_image_digest")
+    ):
+        raise ValueError("Provider case activation contains retired external Worker coordinates")
     return dict(activation)
 
 
@@ -127,8 +128,7 @@ def build_case_reference(
         "source_sha": str(normalized["source_sha"]),
         "runtime_bundle_id": str(normalized["runtime_bundle_id"]),
         "api_deployment_id": str(normalized["api_deployment_id"]),
-        "worker_deployment_id": str(normalized["worker_deployment_id"]),
-        "worker_image_digest": str(normalized["worker_image_digest"]),
+        "backend_executor_digest": get_settings().backend_executor_digest,
         "job_id": str(job_id),
         "attempt_id": str(attempt_id),
         "asset_id": str(asset_id),
@@ -143,7 +143,7 @@ def _runtime_matches(activation: dict[str, Any]) -> bool:
         and settings.source_sha == activation["source_sha"]
         and settings.runtime_bundle_id.strip() == activation["runtime_bundle_id"]
         and settings.deployment_id == activation["api_deployment_id"]
-        and settings.worker_image_digest.strip() == activation["worker_image_digest"]
+        and _DIGEST.fullmatch(settings.backend_executor_digest)
         and settings.provider_asset_grant_max_reads == 1
     )
 
@@ -210,7 +210,7 @@ def _case_reference_from_rows(
         or job.lease_owner is not None
         or job.api_deployment_id != reference["api_deployment_id"]
         or job.runtime_bundle_id != reference["runtime_bundle_id"]
-        or job.expected_worker_image_digest != reference["worker_image_digest"]
+        or job.expected_worker_image_digest != reference["backend_executor_digest"]
         or GenerationAttemptStatus(attempt.status) is not GenerationAttemptStatus.PREPARED
         or attempt.provider != "evolink"
         or attempt.provider_job_id is not None
@@ -269,8 +269,9 @@ async def prepare_case(
                     "source_sha": normalized["source_sha"],
                     "runtime_bundle_id": normalized["runtime_bundle_id"],
                     "api_deployment_id": normalized["api_deployment_id"],
-                    "worker_deployment_id": normalized["worker_deployment_id"],
-                    "worker_image_digest": normalized["worker_image_digest"],
+                    "worker_deployment_id": None,
+                    "worker_role": None,
+                    "worker_image_digest": None,
                 }
                 if (
                     activation_row is None
@@ -307,7 +308,7 @@ async def prepare_case(
                         submission_correlation_id=uuid.uuid4(),
                         api_deployment_id=normalized["api_deployment_id"],
                         runtime_bundle_id=normalized["runtime_bundle_id"],
-                        expected_worker_image_digest=normalized["worker_image_digest"],
+                        expected_worker_image_digest=get_settings().backend_executor_digest,
                     )
                     db.add(job)
                     await db.flush()

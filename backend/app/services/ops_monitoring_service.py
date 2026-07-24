@@ -8,8 +8,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.redis_client import get_redis
-from app.core.task_queue import get_pool
 from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
 from app.services.generation_service import generation_service
@@ -21,30 +19,8 @@ settings = get_settings()
 
 async def _runtime_checks() -> dict[str, Any]:
     summary: dict[str, Any] = {
-        "redis": {"ok": False, "detail": "not_checked"},
-        "task_queue": {"ok": False, "detail": "not_checked"},
         "generation": {"ok": False, "detail": "not_checked"},
     }
-    if settings.using_background_queue:
-        try:
-            redis = await get_redis()
-            pong = await redis.ping()
-            summary["redis"] = {"ok": bool(pong), "detail": "ok" if pong else "ping_failed"}
-        except Exception as exc:
-            summary["redis"] = {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
-    else:
-        summary["redis"] = {"ok": True, "detail": "not_required"}
-
-    if settings.using_background_queue or settings.live_portrait_enabled:
-        try:
-            pool = await get_pool()
-            pong = await pool.ping()
-            summary["task_queue"] = {"ok": bool(pong), "detail": "ok" if pong else "ping_failed"}
-        except Exception as exc:
-            summary["task_queue"] = {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
-    else:
-        summary["task_queue"] = {"ok": True, "detail": "not_required"}
-
     try:
         ok, detail = await generation_service.ping_runtime()
         summary["generation"] = {

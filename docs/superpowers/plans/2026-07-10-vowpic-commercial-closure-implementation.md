@@ -1,31 +1,28 @@
 # VowPic Commercial Closure Implementation Plan
 
-> **Authoritative execution amendment (2026-07-22):** Historical task text below
-> remains as an audit trail, but the current release implementation no longer
-> requires a Provider-owned Evolink idempotency/reconciliation contract, a
-> public Creem refund-creation API, two newly built Vercel deployments, Worker
-> network-fault injection, or synthetic dispatch-control actions. Evolink lost
-> responses are handled by VowPic's persisted `SUBMITTING/UNKNOWN` state and
-> callback correlation without blind resubmission. Creem payment, period-end
-> cancellation, refund, dispute, and replay are proved with signed sandbox facts;
-> refund initiation remains an operator/support action. The release builds one
-> digest-pinned Railway Worker image and one staged Vercel target, reuses the
-> completed SAFE_BASELINE as rollback, validates the linked SaaS flow, and
-> promotes that exact target once. `release/worker-host-contract.json`, the
-> current workflows, and `docs/operations/worker-host-addendum.md` supersede any
-> conflicting command, phase name, or gate later in this historical plan.
+> **Superseded execution plan (2026-07-23):** The task-by-task text below is
+> retained only as historical audit context. It must not be executed as the
+> current plan. The authoritative plan is
+> `docs/operations/vowpic-finite-production-closure-plan.md`. VowPic is an
+> overseas Web SaaS whose FastAPI website backend calls EvoLink directly.
+> Railway, a separately hosted generation Worker, Redis/ARQ generation queues,
+> Worker images, Worker heartbeats, and Worker-host release gates are retired.
+> PostgreSQL attempts, leases, fencing, `SUBMITTING/UNKNOWN`, task-ID lookup,
+> callback correlation, authenticated order-progress POST requests, and a
+> protected manual recovery POST provide durability without blind Provider
+> resubmission or a Vercel Cron dependency.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the current VowPic repository into the approved overseas Web-only commercial product, stopping the currently exposed high-risk paths first and reaching `Production accepted` only after the linked production evidence gates pass.
 
-**Architecture:** Preserve FastAPI, Vue 3/Uni-app Web (with the framework-required `h5` compiler target), Supabase/PostgreSQL, Redis/ARQ, Creem, Evolink, and private object storage. PostgreSQL owns identity, billing, media, job, consent, and feature-flag facts; Redis only caches flags and wakes durable jobs; a long-running OCI Worker owns Provider, QA, repair, and delivery work. This is one dependency-ordered program split into the authoritative seven stages and two Stage-7 production releases; never implement it as one unreviewable deployment.
+**Current architecture:** Preserve FastAPI, Vue 3/Uni-app Web (with the framework-required `h5` compiler token), Supabase/PostgreSQL, Creem, EvoLink, and private object storage. The FastAPI website backend owns bounded Provider submission, reconciliation, QA, repair, and delivery steps. PostgreSQL owns identity, billing, media, job, attempt, lease, consent, and feature-flag facts. Redis is optional cache infrastructure only and is not a generation or release dependency.
 
-**Tech Stack:** Python 3.11, FastAPI 0.139.0, Starlette 1.3.1, SQLAlchemy Async, Alembic, PostgreSQL 15, Redis 7, ARQ, Pydantic 2 strict schemas, Pillow/OpenCV, Supabase Google OAuth, Creem, Evolink, Vercel Web/API, Vue 3.4.21, Uni-app Web (`h5` compiler target), Pinia, TypeScript 5.3.3, Vite 5.2.8, Vitest 3.2.6, Playwright 1.61.1.
+**Tech Stack:** Python 3.11, FastAPI 0.139.0, Starlette 1.3.1, SQLAlchemy Async, Alembic, PostgreSQL 15, Pydantic 2 strict schemas, Pillow/OpenCV, Supabase Google OAuth, Creem, EvoLink, Vercel Web/API, Vue 3.4.21, Uni-app Web (`h5` compiler token), Pinia, TypeScript 5.3.3, Vite 5.2.8, Vitest 3.2.6, Playwright 1.61.1.
 
 ## Global Constraints
 
-- Authority is `docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md`. If an older README, PRD, plan, fallback constant, runtime JSON file, or UI string conflicts with that specification, stop and resolve the conflict in favor of the specification before coding.
+- Execution authority is `docs/operations/vowpic-finite-production-closure-plan.md`. The 2026-07-10 specification and the remaining task text in this file are historical inputs only where they conflict with the finite closure plan or current architecture.
 - Product surface is overseas Web SaaS only. Remove WeChat, Mini Program, OpenID ownership, guest generation, public password auth, public external-URL input, Live Portrait, local vendor recommendations, leads/contact forms, transactional-email promises, and unverified subscription perks from the active release.
 - Do not create `/v2`, replace the stack, introduce a UI framework, or add a second generation Provider.
 - Work in an isolated worktree created with `superpowers:using-git-worktrees`; suggested branch: `codex/vowpic-commercial-closure`.

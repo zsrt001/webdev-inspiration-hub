@@ -30,7 +30,6 @@ class FeatureFlagMutationRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=512)
     deployment_id: str | None = Field(default=None, max_length=160)
     runtime_bundle_id: str | None = Field(default=None, max_length=80)
-    worker_image_digest: str | None = Field(default=None, max_length=80)
     release_activation_id: UUID | None = None
     target_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     cohort_user_ids: list[UUID] = Field(default_factory=list, max_length=100)
@@ -64,7 +63,6 @@ async def list_feature_flags(
                 "state": row.state,
                 "deployment_id": row.deployment_id,
                 "runtime_bundle_id": row.runtime_bundle_id,
-                "worker_image_digest": row.worker_image_digest,
                 "release_activation_id": str(row.release_activation_id) if row.release_activation_id else None,
                 "target_manifest_sha256": row.target_manifest_sha256,
                 "cohort_user_count": len(row.cohort_user_ids or []),
@@ -98,7 +96,6 @@ async def mutate_feature_flag(
             reason=payload.reason,
             deployment_id=payload.deployment_id,
             runtime_bundle_id=payload.runtime_bundle_id,
-            worker_image_digest=payload.worker_image_digest,
             release_activation_id=payload.release_activation_id,
             target_manifest_sha256=payload.target_manifest_sha256,
             cohort_user_ids=payload.cohort_user_ids,

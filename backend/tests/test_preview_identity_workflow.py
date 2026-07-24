@@ -37,10 +37,14 @@ def _load(name: str, relative_path: str):
 
 class PreviewIdentityWorkflowTest(unittest.TestCase):
     def test_runtime_contract_keeps_identity_worker_free_and_adds_commercial_role(self) -> None:
-        contract_path = ROOT / "release" / "preview-runtime-contract.json"
+        contract_path = (
+            ROOT
+            / "release"
+            / "preview-runtime-contract.json"
+        )
         self.assertTrue(contract_path.exists())
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
-        self.assertEqual(contract["contract_version"], "preview-protected-runtime.v4")
+        self.assertEqual(contract["contract_version"], "preview-protected-runtime.v5")
         self.assertEqual(contract["release_role"], "PREVIEW_IDENTITY")
         self.assertEqual(contract["schema_revision"], "20260710_0020")
         self.assertEqual(
@@ -79,7 +83,15 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertNotIn("provider_model", serialized_identity)
         commercial = contract["commercial_extension"]
         self.assertEqual(commercial["release_role"], "PREVIEW_COMMERCIAL")
-        self.assertEqual(commercial["worker"]["image_identity"], "oci-digest-only")
+        self.assertEqual(
+            commercial["backend_executor"],
+            {
+                "version": "vowpic-backend-executor.v1",
+                "runtime_identity": "same-as-api",
+                "host": "vercel-api",
+                "lease_store": "postgresql",
+            },
+        )
         self.assertEqual(commercial["provider_grant_origin"], "exact-temporary-vercel-alias")
         self.assertEqual(
             commercial["provider_runtime_probe"],
@@ -234,9 +246,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "api_deployment_id": "dpl_preview",
             "api_deployment_url": "https://preview.vercel.app",
             "api_role": "PREVIEW_COMMERCIAL_API",
-            "worker_deployment_id": "c" * 64,
-            "worker_role": "PREVIEW_COMMERCIAL_WORKER",
-            "worker_image_digest": "sha256:" + "d" * 64,
+            "worker_deployment_id": None,
+            "worker_role": None,
+            "worker_image_digest": None,
             "workflow_run_id": "123",
             "workflow_attempt": 2,
             "phase": "COMPLETED",
@@ -383,8 +395,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "source_sha": source_sha,
             "runtime_bundle_id": "rtb_" + "b" * 64,
             "api_deployment_id": "dpl_preview",
-            "worker_deployment_id": "c" * 64,
-            "worker_image_digest": "sha256:" + "d" * 64,
+            "backend_executor_digest": "sha256:" + "d" * 64,
             "grant_id": "00000000-0000-0000-0000-000000000008",
             "asset_id": "00000000-0000-0000-0000-000000000009",
             "job_id": "00000000-0000-0000-0000-000000000010",
@@ -507,8 +518,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "source_sha": "a" * 40,
             "runtime_bundle_id": "rtb_" + "b" * 64,
             "api_deployment_id": "dpl_preview",
-            "worker_deployment_id": "c" * 64,
-            "worker_image_digest": "sha256:" + "d" * 64,
+            "backend_executor_digest": "sha256:" + "d" * 64,
             "job_id": "00000000-0000-0000-0000-000000000010",
             "attempt_id": "00000000-0000-0000-0000-000000000011",
             "asset_id": "00000000-0000-0000-0000-000000000009",
@@ -555,9 +565,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "runtime_bundle_id": "rtb_" + "b" * 64,
             "api_deployment_id": "dpl_preview",
             "api_role": "PREVIEW_COMMERCIAL_API",
-            "worker_deployment_id": "c" * 64,
-            "worker_role": "PREVIEW_COMMERCIAL_WORKER",
-            "worker_image_digest": "sha256:" + "d" * 64,
+            "worker_deployment_id": None,
+            "worker_role": None,
+            "worker_image_digest": None,
         }
         owner_id = UUID("00000000-0000-0000-0000-000000000020")
         ids = {
@@ -566,11 +576,17 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "attempt_id": UUID("00000000-0000-0000-0000-000000000023"),
             "asset_id": UUID("00000000-0000-0000-0000-000000000024"),
         }
-        reference = prepare.build_case_reference(
-            activation,
-            owner_user_id=owner_id,
-            **ids,
-        )
+        backend_digest = "sha256:" + "d" * 64
+        with patch.object(
+            prepare,
+            "get_settings",
+            return_value=SimpleNamespace(backend_executor_digest=backend_digest),
+        ):
+            reference = prepare.build_case_reference(
+                activation,
+                owner_user_id=owner_id,
+                **ids,
+            )
         self.assertEqual(
             reference["case_id"],
             str(prepare.case_id_for_activation(activation["activation_id"])),
@@ -597,7 +613,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "job_lease_owner": None,
             "job_api_deployment_id": reference["api_deployment_id"],
             "job_runtime_bundle_id": reference["runtime_bundle_id"],
-            "job_worker_image_digest": reference["worker_image_digest"],
+            "job_worker_image_digest": reference["backend_executor_digest"],
             "attempt_status": "PREPARED",
             "attempt_provider": "evolink",
             "attempt_provider_job_id": None,
@@ -607,6 +623,27 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "active_identity_count": 1,
         }
         cleanup.validate_case_row(reference, row)
+        cleanup.validate_case_row(
+            reference,
+            {
+                **row,
+                "order_status": "READY",
+                "job_status": "FINISHED",
+                "attempt_status": "FINISHED",
+                "attempt_provider_job_id": "task-terminal-preview-proof",
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "before terminal settlement"):
+            cleanup.validate_case_row(
+                reference,
+                {
+                    **row,
+                    "order_status": "UNKNOWN_EXTERNAL_STATE",
+                    "job_status": "RECONCILING",
+                    "attempt_status": "SUBMITTED",
+                    "attempt_provider_job_id": "task-still-running-preview-proof",
+                },
+            )
         with self.assertRaisesRegex(ValueError, "source SHA"):
             prepare.build_case_reference(
                 {**activation, "source_sha": "not-a-source-sha"},
@@ -641,7 +678,6 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         commercial_runtime = "rtb_" + "3" * 64
         activation_id = "00000000-0000-0000-0000-000000000041"
         api_id = "dpl_commercial"
-        worker_id = "4" * 64
         digest = "sha256:" + "5" * 64
 
         def evidence(case_id: str, runtime: str) -> dict[str, object]:
@@ -670,8 +706,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "source_sha": source,
             "runtime_bundle_id": commercial_runtime,
             "api_deployment_id": api_id,
-            "worker_deployment_id": worker_id,
-            "worker_image_digest": digest,
+            "worker_deployment_id": None,
+            "worker_role": None,
+            "worker_image_digest": None,
         }
         provider_capabilities = json.loads(
             (ROOT / "release/provider-capabilities.json").read_text(encoding="utf-8")
@@ -693,42 +730,54 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             identity_cleanup={"state": "CLEANED", "source_sha": source, "runtime_bundle_id": identity_runtime},
             activation=activation,
             provider_capabilities=provider_capabilities,
-            worker_heartbeat={"state": "RUNNING", "heartbeat": {**activation, "worker_image_digest": digest}},
-            provider_fetch={
+            backend_runtime={
+                "schema": "vowpic.api-runtime-coordinate-report.v1",
                 "passed": True,
-                **activation,
-                "provider_capabilities_sha256": provider_capabilities_hash,
-                "provider_task_terminal_status": "completed",
-                "provider_fetch_count": 1,
-            },
-            provider_case_cleanup={"state": "CLEANED", "activation_id": activation_id},
-            provider_origin_cleanup={"state": "REMOVED", "activation_id": activation_id},
-            worker_cleanup={
-                "state": "STOPPED",
+                "release_role": "PREVIEW_COMMERCIAL",
+                "runtime_environment": "preview",
+                "backend_execution_version": "vowpic-backend-executor.v1",
+                "backend_executor_digest": digest,
                 "source_sha": source,
                 "runtime_bundle_id": commercial_runtime,
                 "api_deployment_id": api_id,
-                "worker_deployment_id": worker_id,
-                "worker_image_digest": digest,
-                "heartbeat_state": "ABSENT",
             },
+            provider_fetch={
+                "passed": True,
+                **activation,
+                "backend_executor_digest": digest,
+                "provider_capabilities_sha256": provider_capabilities_hash,
+                "provider_task_terminal_status": "completed",
+                "network_submit_count": 1,
+                "provider_fetch_count": 1,
+                "callback_recovery": "BOUND_FROM_PROVIDER_CALLBACK",
+                "submitter_provider_task_write_count": 0,
+                "callback_attempt_status": "FINISHED",
+                "callback_job_status": "FINISHED",
+            },
+            provider_case_cleanup={
+                "state": "CLEANED",
+                "activation_id": activation_id,
+                "provider_task_bound": True,
+                "terminal_generation_graph_preserved": True,
+            },
+            provider_origin_cleanup={"state": "REMOVED", "activation_id": activation_id},
             commercial_cleanup={
                 "state": "CLEANED",
                 "activation_id": activation_id,
                 "source_sha": source,
                 "runtime_bundle_id": commercial_runtime,
                 "api_deployment_id": api_id,
-                "worker_deployment_id": worker_id,
+                "worker_deployment_id": None,
             },
             now=datetime(2026, 7, 14, 0, 1, tzinfo=timezone.utc),
         )
         self.assertEqual(set(result["runtime_bindings"]), {"pr", "preview_identity", "preview_commercial", "stage5_composite"})
         self.assertEqual(
             {row["case_id"] for row in result["commercial_evidence"]},
-            {"preview_provider_sandbox_contract", "preview_worker_heartbeat", "preview_provider_fetch", "preview_cleanup"},
+            {"preview_provider_sandbox_contract", "preview_backend_runtime", "preview_provider_fetch", "preview_cleanup"},
         )
         self.assertEqual(result["commercial_evidence"][-1]["runtime_bundle_id"], result["runtime_bindings"]["stage5_composite"])
-        with self.assertRaisesRegex(ValueError, "Worker cleanup"):
+        with self.assertRaisesRegex(ValueError, "website-backend runtime"):
             module.build_stage5_materialization(
                 source_sha=source,
                 gate_contract_sha256=gate_hash,
@@ -738,12 +787,38 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                 identity_cleanup={"state": "CLEANED", "source_sha": source, "runtime_bundle_id": identity_runtime},
                 activation=activation,
                 provider_capabilities=provider_capabilities,
-                worker_heartbeat={"state": "RUNNING", "heartbeat": {**activation, "worker_image_digest": digest}},
-                provider_fetch={"passed": True, **activation, "provider_capabilities_sha256": provider_capabilities_hash, "provider_task_terminal_status": "completed", "provider_fetch_count": 1},
-                provider_case_cleanup={"state": "CLEANED", "activation_id": activation_id},
+                backend_runtime={
+                    "schema": "vowpic.api-runtime-coordinate-report.v1",
+                    "passed": True,
+                    "release_role": "PREVIEW_COMMERCIAL",
+                    "runtime_environment": "preview",
+                    "backend_execution_version": "vowpic-backend-executor.v1",
+                    "backend_executor_digest": digest,
+                    "source_sha": source,
+                    "runtime_bundle_id": "rtb_" + "9" * 64,
+                    "api_deployment_id": api_id,
+                },
+                provider_fetch={
+                    "passed": True,
+                    **activation,
+                    "backend_executor_digest": digest,
+                    "provider_capabilities_sha256": provider_capabilities_hash,
+                    "provider_task_terminal_status": "completed",
+                    "network_submit_count": 1,
+                    "provider_fetch_count": 1,
+                    "callback_recovery": "BOUND_FROM_PROVIDER_CALLBACK",
+                    "submitter_provider_task_write_count": 0,
+                    "callback_attempt_status": "FINISHED",
+                    "callback_job_status": "FINISHED",
+                },
+                provider_case_cleanup={
+                    "state": "CLEANED",
+                    "activation_id": activation_id,
+                    "provider_task_bound": True,
+                    "terminal_generation_graph_preserved": True,
+                },
                 provider_origin_cleanup={"state": "REMOVED", "activation_id": activation_id},
-                worker_cleanup={"state": "STOPPED", "source_sha": source, "runtime_bundle_id": "rtb_" + "9" * 64, "api_deployment_id": api_id, "worker_deployment_id": worker_id, "worker_image_digest": digest, "heartbeat_state": "ABSENT"},
-                commercial_cleanup={"state": "CLEANED", "activation_id": activation_id, "source_sha": source, "runtime_bundle_id": commercial_runtime, "api_deployment_id": api_id, "worker_deployment_id": worker_id},
+                commercial_cleanup={"state": "CLEANED", "activation_id": activation_id, "source_sha": source, "runtime_bundle_id": commercial_runtime, "api_deployment_id": api_id, "worker_deployment_id": None},
                 now=datetime(2026, 7, 14, 0, 1, tzinfo=timezone.utc),
             )
 
@@ -805,8 +880,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             )
         source = (ROOT / "scripts/release/register_preview_activation.py").read_text(encoding="utf-8")
         self.assertIn('add_argument("--role"', source)
-        self.assertIn('add_argument("--worker-build-report"', source)
-        self.assertIn('add_argument("--worker-start-report"', source)
+        self.assertNotIn('add_argument("--worker-build-report"', source)
+        self.assertNotIn('add_argument("--worker-start-report"', source)
+        self.assertIn("Preview activations are website-backend-only", source)
         self.assertIn("worker_deployment_id = %s", source)
         with self.assertRaises(ValueError):
             module.validate_coordinates(
@@ -835,7 +911,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 module.write_create_once_json(output, report)
 
-    def test_preview_commercial_registration_requires_digest_pinned_worker(self) -> None:
+    def test_preview_commercial_registration_is_backend_only(self) -> None:
         module = _load(
             "register_preview_commercial_activation",
             "scripts/release/register_preview_activation.py",
@@ -847,13 +923,12 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             release_role="PREVIEW_COMMERCIAL",
             source_sha="a" * 40,
             runtime_bundle_id="rtb_" + "b" * 64,
-            worker_image_digest="sha256:" + "c" * 64,
             workflow_run_id="123",
             workflow_attempt=2,
         )
         self.assertEqual(coordinates["kind"], "PREVIEW_COMMERCIAL")
         self.assertEqual(coordinates["api_role"], "PREVIEW_COMMERCIAL_API")
-        self.assertEqual(coordinates["worker_role"], "PREVIEW_COMMERCIAL_WORKER")
+        self.assertNotIn("worker_role", coordinates)
         self.assertEqual(coordinates["schema_revision"], "20260710_0020")
         report_coordinates = {
             **coordinates,
@@ -861,52 +936,28 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "api_deployment_url": "https://preview.vercel.app",
             "manifest_sha256": "d" * 64,
         }
-        with self.assertRaisesRegex(ValueError, "Worker deployment ID"):
-            module.build_activation_report(
-                activation_id="00000000-0000-0000-0000-000000000007",
-                coordinates=report_coordinates,
-            )
         report = module.build_activation_report(
             activation_id="00000000-0000-0000-0000-000000000007",
-            coordinates={**report_coordinates, "worker_deployment_id": "worker-preview-123"},
+            coordinates=report_coordinates,
         )
-        self.assertEqual(report["worker_deployment_id"], "worker-preview-123")
-        with tempfile.TemporaryDirectory() as directory:
-            worker_report = Path(directory) / "worker-created.json"
-            worker_report.write_text(
-                json.dumps(
-                    {
-                        "schema": "vowpic.preview-worker-process.v1",
-                        "state": "CREATED",
-                        "source_sha": coordinates["source_sha"],
-                        "runtime_bundle_id": coordinates["runtime_bundle_id"],
-                        "api_deployment_id": "dpl_preview",
-                        "worker_image_digest": coordinates["worker_image_digest"],
-                        "container_id": "e" * 64,
-                        "container_name": "vowpic-preview-123-2",
-                        "observed_at": "2026-07-14T00:00:00+00:00",
-                    },
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
-            )
-            self.assertEqual(
-                module._worker_deployment_from_report(
-                    str(worker_report),
-                    role="PREVIEW_COMMERCIAL",
-                    coordinates=coordinates,
-                    api_deployment_id="dpl_preview",
-                ),
-                "e" * 64,
-            )
-        with self.assertRaises(ValueError):
+        self.assertEqual(report["phase"], "COMPLETED")
+        self.assertNotIn("worker_deployment_id", report)
+        with self.assertRaisesRegex(ValueError, "backend-only"):
             module.validate_coordinates(
                 release_role="PREVIEW_COMMERCIAL",
                 source_sha="a" * 40,
                 runtime_bundle_id="rtb_" + "b" * 64,
-                worker_image_digest="vowpic-worker:latest",
+                worker_image_digest="sha256:" + "c" * 64,
                 workflow_run_id="123",
                 workflow_attempt=2,
+            )
+        with self.assertRaisesRegex(ValueError, "must not bind external Worker"):
+            module.build_activation_report(
+                activation_id="00000000-0000-0000-0000-000000000007",
+                coordinates={
+                    **report_coordinates,
+                    "worker_deployment_id": "worker-preview-123",
+                },
             )
 
     def test_preview_commercial_snapshot_requires_the_exact_all_off_set(self) -> None:
@@ -1002,8 +1053,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         reserved = SimpleNamespace(
             kind="PREVIEW_COMMERCIAL",
             api_role="PREVIEW_COMMERCIAL_API",
-            worker_role="PREVIEW_COMMERCIAL_WORKER",
-            worker_image_digest="sha256:" + "a" * 64,
+            worker_role=None,
+            worker_image_digest=None,
             worker_deployment_id=None,
             phase="RESERVED",
             runtime_bundle_id="rtb_" + "c" * 64,
@@ -1012,8 +1063,21 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
         args = SimpleNamespace(role="PREVIEW_COMMERCIAL", runtime_bundle_id=reserved.runtime_bundle_id)
         cleanup._validate_activation(reserved, args)
-        with self.assertRaisesRegex(ValueError, "deployment ID"):
-            cleanup._validate_activation(SimpleNamespace(**{**vars(reserved), "phase": "DEPLOYED"}), args)
+        cleanup._validate_activation(
+            SimpleNamespace(**{**vars(reserved), "phase": "DEPLOYED"}),
+            args,
+        )
+        with self.assertRaisesRegex(ValueError, "retired external Worker"):
+            cleanup._validate_activation(
+                SimpleNamespace(
+                    **{
+                        **vars(reserved),
+                        "phase": "DEPLOYED",
+                        "worker_deployment_id": "worker-preview-123",
+                    }
+                ),
+                args,
+            )
         model_source = (ROOT / "backend/app/models/acceptance_identity_binding.py").read_text(
             encoding="utf-8"
         )
@@ -1041,9 +1105,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         commercial_activation = SimpleNamespace(
             kind="PREVIEW_COMMERCIAL",
             api_role="PREVIEW_COMMERCIAL_API",
-            worker_role="PREVIEW_COMMERCIAL_WORKER",
-            worker_image_digest="sha256:" + "a" * 64,
-            worker_deployment_id="b" * 64,
+            worker_role=None,
+            worker_image_digest=None,
+            worker_deployment_id=None,
             phase="COMPLETED",
             runtime_bundle_id="rtb_" + "c" * 64,
             current_snapshot_hash="d" * 64,
@@ -1177,18 +1241,17 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "--schema 20260710_0020",
             "20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py",
             "PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64",
-            "PREVIEW_PRIVATE_STORAGE_BUCKET",
+            "PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN",
             "--profile stage5_foundation",
             "if: always()",
             "cancel-in-progress: false",
             "commercial:",
             "environment: preview-commercial",
             "--release-role PREVIEW_COMMERCIAL",
-            "run_preview_worker.py build",
-            "run_preview_worker.py create",
             "snapshot_preview_commercial_flags.py",
-            "run_preview_worker.py resume",
-            "run_preview_worker.py heartbeat",
+            "TASK_EXECUTION_MODE=backend",
+            "collect_runtime_report.py",
+            "backend-runtime.json",
             "configure_preview_provider_grant_origin.py add",
             "prepare_preview_provider_case.py",
             "PROVIDER_GRANT_PROBE_SECRET",
@@ -1196,11 +1259,13 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "VERCEL_PROJECT_ID",
             "VERCEL_ORG_ID",
             "prepare_preview_provider_grant.py",
-            "verify_provider_grant_fetch.py",
+            "verify_preview_evolink_callback_recovery.py",
+            "configure_evolink_callback_origin.py plan",
+            "configure_evolink_callback_origin.py bind",
+            "EVOLINK_CALLBACK_BASE_URL",
             "cleanup_preview_provider_case.py",
             "materialize_stage5_evidence.py",
             "vowpic-pr-gates-${{ inputs.ci_run_id }}-${{ inputs.ci_run_attempt }}",
-            "run_preview_worker.py stop",
             "--role PREVIEW_COMMERCIAL",
         ):
             with self.subTest(required=required):
@@ -1216,7 +1281,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertIn("artifacts/stage5-aggregate/${SOURCE_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}", workflow)
         self.assertNotIn('--output "$STAGE5_ROOT/', workflow)
         cleanup_job = workflow.index("Revoke any prepared grant and remove the exact temporary alias")
-        cleanup_end = workflow.index("Stop the exact Worker", cleanup_job)
+        cleanup_end = workflow.index(
+            "Return the database-owned Preview Commercial activation to CLEANED",
+            cleanup_job,
+        )
         cleanup_block = workflow[cleanup_job:cleanup_end]
         self.assertIn("set +e", cleanup_block)
         self.assertIn("provider_cleanup_status=$?", cleanup_block)
@@ -1243,31 +1311,39 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("continue-on-error: true\n      - name: Clean", workflow)
         self.assertLess(
-            workflow.index("run_preview_worker.py create"),
             workflow.index("snapshot_preview_commercial_flags.py"),
-        )
-        self.assertLess(
-            workflow.index("snapshot_preview_commercial_flags.py"),
-            workflow.index("run_preview_worker.py resume"),
+            workflow.index("collect_runtime_report.py"),
         )
         provider_job = workflow.index("Lease the exact Provider-grant origin")
+        self.assertLess(
+            workflow.index("collect_runtime_report.py"),
+            provider_job,
+        )
         self.assertLess(
             workflow.index("verify_provider_capabilities.py", provider_job),
             workflow.index("configure_preview_provider_grant_origin.py add", provider_job),
         )
+        for retired in ("run_preview_worker.py", "PREVIEW_REDIS", "railway", "Dockerfile.worker"):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired.lower(), workflow.lower())
 
     def test_preview_runtime_uses_distinct_non_migration_database_logins(self) -> None:
         workflow = (ROOT / ".github/workflows/integration.yml").read_text(encoding="utf-8")
         for required in (
             "PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}",
             "PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}",
-            "PREVIEW_PRIVATE_STORAGE_ENDPOINT: ${{ secrets.PREVIEW_PRIVATE_STORAGE_ENDPOINT }}",
+            "PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}",
+            "PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN }}",
+            "SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}",
             "EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}",
             "EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}",
             "EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}",
             "PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}",
             'test -n "$PREVIEW_RUNTIME_DATABASE_URL"',
             'test -n "$PREVIEW_CONTROL_PLANE_DATABASE_URL"',
+            'test -n "$PREVIEW_CONTROL_READ_DATABASE_URL"',
+            "verify_preview_database_isolation.py",
+            "PRODUCTION_SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, workflow)
@@ -1278,11 +1354,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ]
         commercial_deploy = workflow[
             workflow.index("Build once and deploy the exact Preview Commercial API") :
-            workflow.index("Resolve the platform API ID and create the Worker without starting it")
-        ]
-        worker_create = workflow[
-            workflow.index("Resolve the platform API ID and create the Worker without starting it") :
-            workflow.index("Bind API and dormant Worker, then complete the immutable activation")
+            workflow.index("Resolve the exact platform API deployment ID")
         ]
         provider_case = workflow[
             workflow.index("Lease the exact Provider-grant origin") :
@@ -1295,8 +1367,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         for required_name in (
             "PREVIEW_RUNTIME_DATABASE_URL",
             "PREVIEW_CONTROL_PLANE_DATABASE_URL",
-            "PREVIEW_REDIS_URL",
-            "PREVIEW_PRIVATE_STORAGE_ENDPOINT",
+            "PREVIEW_CONTROL_READ_DATABASE_URL",
+            "PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN",
             "EVOLINK_API_KEY",
             "EVOLINK_API_BASE_URL",
             "EVOLINK_IMAGE_MODEL",
@@ -1304,17 +1376,64 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(preflight=required_name):
                 self.assertIn(required_name, commercial_preflight)
-        for runtime_block in (identity_deploy, commercial_deploy, worker_create):
+        for runtime_block in (identity_deploy, commercial_deploy):
             with self.subTest(block=runtime_block.splitlines()[0]):
                 self.assertIn("DATABASE_URL=$PREVIEW_RUNTIME_DATABASE_URL", runtime_block)
                 self.assertIn(
                     "CONTROL_PLANE_DATABASE_URL=$PREVIEW_CONTROL_PLANE_DATABASE_URL",
                     runtime_block,
                 )
+                self.assertIn("SUPABASE_URL=$PREVIEW_SUPABASE_URL", runtime_block)
+                self.assertIn(
+                    "SUPABASE_ANON_KEY=$PREVIEW_SUPABASE_PUBLISHABLE_KEY",
+                    runtime_block,
+                )
                 self.assertNotIn("DATABASE_URL=$PREVIEW_MIGRATION_DATABASE_URL", runtime_block)
+        self.assertEqual(
+            workflow.count("backend/scripts/resolve_preview_supabase_runtime.py"),
+            2,
+        )
         self.assertIn(
             "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY",
             identity_deploy,
+        )
+        first_isolation = workflow.index(
+            "Prove Preview Supabase physical isolation read-only"
+        )
+        second_isolation = workflow.index(
+            "Re-prove Preview Supabase isolation before Commercial mutation"
+        )
+        self.assertLess(
+            first_isolation,
+            workflow.index("Apply the exact Preview schema"),
+        )
+        schema_upgrade = workflow.index("Apply the exact Preview schema")
+        guard_repair = workflow.index(
+            "Repair and verify the exact schema-0020 cross-table commercial guards"
+        )
+        runtime_id = workflow.index("Compute the PREVIEW_IDENTITY runtime ID")
+        self.assertLess(schema_upgrade, guard_repair)
+        self.assertLess(guard_repair, runtime_id)
+        self.assertIn(
+            "python scripts/release/repair_commercial_guard_row_shapes.py",
+            workflow,
+        )
+        self.assertIn("--environment preview", workflow)
+        self.assertNotIn(
+            "--database-url-env PREVIEW_MIGRATION_DATABASE_URL",
+            workflow[schema_upgrade:runtime_id],
+        )
+        commercial_job = workflow[
+            workflow.index("  commercial:") :
+            workflow.index("  stage5:")
+        ]
+        self.assertIn("needs: [register, smoke, cleanup]", commercial_job)
+        self.assertIn("needs.register.result == 'success'", commercial_job)
+        self.assertIn("needs.smoke.result == 'success'", commercial_job)
+        self.assertIn("needs.cleanup.result == 'success'", commercial_job)
+        self.assertLess(
+            second_isolation,
+            workflow.index("Build the exact website-backend runtime ID before deployment"),
         )
 
         self.assertIn(
@@ -1330,143 +1449,95 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             provider_case,
         )
 
-    def test_preview_worker_commands_are_digest_pinned_ephemeral_and_shell_free(self) -> None:
-        worker = _load(
-            "run_preview_worker",
-            "scripts/release/run_preview_worker.py",
-        )
-        build = worker.build_command(
-            source_sha="a" * 40,
-            oci_output=Path("preview-worker.oci"),
-        )
-        self.assertIsInstance(build, list)
-        self.assertEqual(build[:3], ["docker", "buildx", "build"])
-        self.assertIn("type=oci,dest=preview-worker.oci", build)
-        self.assertIn("--provenance=true", build)
-        self.assertIn("--sbom=true", build)
-        self.assertNotIn("shell=True", repr(build))
-
-        self.assertFalse(hasattr(worker, "start_command"))
-        created = worker.create_command(
-            image_reference="vowpic-preview-worker@sha256:" + "b" * 64,
-            container_name="vowpic-preview-123-1",
-            env_file=Path("worker.env"),
-        )
-        self.assertEqual(created[:2], ["docker", "create"])
-        for required in (
-            "--read-only",
-            "--cap-drop=ALL",
-            "no-new-privileges:true",
-            "--memory=2g",
-            "--cpus=2",
-            "--restart=no",
-        ):
-            self.assertIn(required, created)
-        with self.assertRaises(ValueError):
-            worker.create_command(
-                image_reference="vowpic-preview-worker:latest",
-                container_name="vowpic-preview-123-1",
-                env_file=Path("worker.env"),
+    def test_preview_backend_runtime_is_api_bound_and_worker_free(self) -> None:
+        workflow = (ROOT / ".github/workflows/integration.yml").read_text(encoding="utf-8")
+        contract = json.loads(
+            (ROOT / "release/preview-runtime-contract.json").read_text(
+                encoding="utf-8"
             )
-        self.assertNotIn("--detach", created)
-        created_report = worker.build_process_report(
-            source_sha="a" * 40,
-            runtime_bundle_id="rtb_" + "c" * 64,
-            api_deployment_id="dpl_preview_123",
-            image_reference="vowpic-preview-worker@sha256:" + "b" * 64,
-            container_id="d" * 64,
-            container_name="vowpic-preview-123-1",
-            state="CREATED",
-            now=datetime(2026, 7, 14, tzinfo=timezone.utc),
         )
-        self.assertEqual(created_report["state"], "CREATED")
-        process_report = worker.build_process_report(
-            source_sha="a" * 40,
-            runtime_bundle_id="rtb_" + "c" * 64,
-            api_deployment_id="dpl_preview_123",
-            image_reference="vowpic-preview-worker@sha256:" + "b" * 64,
-            container_id="d" * 64,
-            container_name="vowpic-preview-123-1",
-            now=datetime(2026, 7, 14, tzinfo=timezone.utc),
-        )
-        self.assertEqual(process_report["worker_image_digest"], "sha256:" + "b" * 64)
-        self.assertEqual(process_report["runtime_bundle_id"], "rtb_" + "c" * 64)
-        self.assertEqual(process_report["api_deployment_id"], "dpl_preview_123")
-        heartbeat_payload = {
-            "schema": "vowpic.worker-heartbeat.v1",
-            "worker_id": "worker-preview-123",
-            "environment": "preview",
-            "source_sha": "a" * 40,
-            "runtime_bundle_id": "rtb_" + "c" * 64,
-            "api_deployment_id": "dpl_preview_123",
-            "worker_deployment_id": "d" * 64,
-            "worker_image_digest": "sha256:" + "b" * 64,
-            "schema_revision": "20260710_0020",
-            "payload_min": "generation-job.v1",
-            "payload_max": "generation-job.v1",
-            "config_hash": "e" * 64,
-            "current_feature_snapshot_hash": "f" * 64,
-            "target_feature_snapshot_hash": "f" * 64,
-            "published_at": "2026-07-14T00:00:00+00:00",
-        }
-        validated = worker.validate_runtime_heartbeat_payload(
-            heartbeat_payload,
-            source_sha="a" * 40,
-            runtime_bundle_id="rtb_" + "c" * 64,
-            api_deployment_id="dpl_preview_123",
-            worker_deployment_id="d" * 64,
-            worker_image_digest="sha256:" + "b" * 64,
-            current_snapshot_hash="f" * 64,
-            target_snapshot_hash="f" * 64,
-            now=datetime(2026, 7, 14, 0, 1, tzinfo=timezone.utc),
-        )
-        self.assertEqual(validated["worker_deployment_id"], "d" * 64)
-        with self.assertRaisesRegex(ValueError, "coordinate mismatch"):
-            worker.validate_runtime_heartbeat_payload(
-                heartbeat_payload,
-                source_sha="a" * 40,
-                runtime_bundle_id="rtb_" + "c" * 64,
-                api_deployment_id="dpl_other",
-                worker_deployment_id="d" * 64,
-                worker_image_digest="sha256:" + "b" * 64,
-                current_snapshot_hash="f" * 64,
-                target_snapshot_hash="f" * 64,
-                now=datetime(2026, 7, 14, 0, 1, tzinfo=timezone.utc),
-            )
+        backend = contract["commercial_extension"]["backend_executor"]
         self.assertEqual(
-            worker.validate_cleanup_heartbeat_payload(
-                None,
-                source_sha="a" * 40,
-                runtime_bundle_id="rtb_" + "c" * 64,
-                api_deployment_id="dpl_preview_123",
-                worker_deployment_id="d" * 64,
-                worker_image_digest="sha256:" + "b" * 64,
-                current_snapshot_hash="f" * 64,
-                target_snapshot_hash="f" * 64,
-            ),
-            None,
+            backend,
+            {
+                "version": "vowpic-backend-executor.v1",
+                "runtime_identity": "same-as-api",
+                "host": "vercel-api",
+                "lease_store": "postgresql",
+            },
         )
-        cleanup_heartbeat = worker.validate_cleanup_heartbeat_payload(
-            heartbeat_payload,
-            source_sha="a" * 40,
-            runtime_bundle_id="rtb_" + "c" * 64,
-            api_deployment_id="dpl_preview_123",
-            worker_deployment_id="d" * 64,
-            worker_image_digest="sha256:" + "b" * 64,
-            current_snapshot_hash="f" * 64,
-            target_snapshot_hash="f" * 64,
+        self.assertIn("TASK_EXECUTION_MODE=backend", workflow)
+        self.assertIn("collect_runtime_report.py", workflow)
+        self.assertIn("backend-runtime.json", workflow)
+        self.assertFalse((ROOT / "scripts/release/run_preview_worker.py").exists())
+        for retired in ("run_preview_worker", "PREVIEW_REDIS", "Dockerfile.worker", "railway"):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired.lower(), workflow.lower())
+        self.assertNotIn(
+            "${{ secrets.PREVIEW_PROVIDER_OWNER_USER_ID }}",
+            workflow,
         )
-        self.assertEqual(cleanup_heartbeat["runtime_bundle_id"], "rtb_" + "c" * 64)
-        worker_source = (ROOT / "scripts/release/run_preview_worker.py").read_text(
-            encoding="utf-8"
+        self.assertIn(
+            "backend/scripts/resolve_preview_provider_owner.py",
+            workflow,
         )
+        self.assertLess(
+            workflow.index("resolve_preview_provider_owner.py"),
+            workflow.index("prepare_preview_provider_case.py"),
+        )
+
+    def test_preview_commercial_closes_the_full_release_evidence_contract(self) -> None:
+        workflow = (ROOT / ".github/workflows/integration.yml").read_text(encoding="utf-8")
+        required_files = (
+            "backend/scripts/configure_preview_commercial_auth_origin.py",
+            "backend/scripts/configure_preview_commercial_flags.py",
+            "backend/scripts/cleanup_preview_commercial.py",
+            "backend/scripts/materialize_preview_release_evidence.py",
+            "backend/scripts/verify_preview_release_package.py",
+            "frontend/e2e/helpers/creem-hosted-checkout.ts",
+            "frontend/e2e/preview-commercial-flow.spec.ts",
+        )
+        for relative in required_files:
+            with self.subTest(relative=relative):
+                self.assertTrue((ROOT / relative).is_file(), f"{relative} is missing")
+
         for required in (
-            'stop.add_argument("--runtime-bundle-id", required=True)',
-            'stop.add_argument("--redis-url-env"',
-            "client.eval",
-            '"heartbeat_state": "ABSENT"',
+            "CREEM_TEST_API_KEY: ${{ secrets.CREEM_TEST_API_KEY }}",
+            "CREEM_TEST_WEBHOOK_SECRET: ${{ secrets.CREEM_TEST_WEBHOOK_SECRET }}",
+            "CREEM_TEST_PRODUCT_PACK_50: ${{ secrets.CREEM_TEST_PRODUCT_PACK_50 }}",
+            "CREEM_TEST_SUBSCRIPTION_STARTER_PRODUCT_ID: ${{ secrets.CREEM_TEST_SUBSCRIPTION_STARTER_PRODUCT_ID }}",
+            "PREVIEW_GOOGLE_SUBJECTS_B64: ${{ secrets.PREVIEW_GOOGLE_SUBJECTS_B64 }}",
+            "PREVIEW_GOOGLE_STORAGE_STATE_B64: ${{ secrets.PREVIEW_GOOGLE_STORAGE_STATE_B64 }}",
+            "PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64: ${{ secrets.PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64 }}",
+            "CREEM_API_BASE_URL=https://test-api.creem.io",
+            "configure_preview_commercial_auth_origin.py",
+            "configure_preview_commercial_flags.py",
+            "RUN_PREVIEW_COMMERCIAL_E2E: '1'",
+            "e2e/preview-commercial-flow.spec.ts",
+            "materialize_preview_release_evidence.py",
+            "verify_preview_release_package.py build",
+            "vowpic-preview-release-${{ github.run_id }}-${{ github.run_attempt }}-evidence",
         ):
-            self.assertIn(required, worker_source)
+            with self.subTest(required=required):
+                self.assertIn(required, workflow)
+
+        self.assertNotIn("explicit Stage-6 NOT_RUN evidence", workflow)
+        self.assertNotIn('"status": "PASS" if passed else "NOT_RUN"', workflow)
+        self.assertLess(
+            workflow.index("configure_preview_commercial_auth_origin.py"),
+            workflow.index("e2e/preview-commercial-flow.spec.ts"),
+        )
+        self.assertLess(
+            workflow.index("configure_preview_commercial_flags.py"),
+            workflow.index("e2e/preview-commercial-flow.spec.ts"),
+        )
+        self.assertLess(
+            workflow.index("e2e/preview-commercial-flow.spec.ts"),
+            workflow.index("materialize_preview_release_evidence.py"),
+        )
+        for retired in ("PREVIEW_REDIS", "run_preview_worker.py", "Dockerfile.worker", "railway"):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired.lower(), workflow.lower())
 
     def test_production_workflow_is_manual_serialized_and_promotes_only_after_acceptance(self) -> None:
         path = ROOT / ".github" / "workflows" / "production-release.yml"
@@ -1493,8 +1564,15 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             '"$VERCEL_CLI" build --prod',
             "deploy --prebuilt --prod --skip-domain",
             "RUNTIME_BUNDLE_ID=",
-            "resolve_release_coordinates.py",
-            "--coordinate-kind preview-commercial-cleaned",
+            "resolve_exact_preview_coordinates.py",
+            '--workflow-run-id "${{ inputs.preview_run_id }}"',
+            '--workflow-attempt "${{ inputs.preview_run_attempt }}"',
+            '${{ needs.authorize.outputs.preview_activation_id }}',
+            '${{ needs.authorize.outputs.preview_runtime_bundle_id }}',
+            '${{ needs.authorize.outputs.preview_api_deployment_id }}',
+            '${{ needs.authorize.outputs.preview_manifest_sha256 }}',
+            "configure_evolink_callback_origin.py plan",
+            "configure_evolink_callback_origin.py bind",
             "register_bundle.py reserve",
             "--kind COMMERCIAL_7A",
         ):
@@ -1505,6 +1583,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertLess(
             workflow.index("register_bundle.py reserve"),
             workflow.index("secrets.VERCEL_TOKEN"),
+        )
+        self.assertLess(
+            workflow.index("configure_evolink_callback_origin.py bind"),
+            workflow.index("--expected-phase RESERVED --phase ROLLBACK_BASELINE_VERIFIED"),
         )
         self.assertEqual(workflow.lower().count('"$vercel_cli" promote'), 1)
         self.assertLess(

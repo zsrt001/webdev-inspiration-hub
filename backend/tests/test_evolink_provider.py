@@ -8,6 +8,7 @@ import sys
 import unittest
 import uuid
 
+import httpx
 from pydantic import ValidationError
 
 
@@ -66,6 +67,24 @@ class EvolinkProviderTest(unittest.TestCase):
             callback_url,
         )
 
+    def test_callback_uses_the_explicit_deployment_bound_origin(self) -> None:
+        attempt_id = uuid.UUID("00000000-0000-4000-8000-000000000073")
+        with patch.multiple(
+            evolink_module.settings,
+            evolink_callback_base_url="https://vowpic-provider-exact.vercel.app",
+            webhook_base_url="https://vowpic-creem-test.vercel.app",
+            secret_key="callback-test-secret-key-at-least-32-bytes",
+        ):
+            callback_url = build_evolink_callback_url(attempt_id)
+
+        self.assertTrue(
+            callback_url.startswith(
+                "https://vowpic-provider-exact.vercel.app/"
+                "api/v1/provider-callbacks/evolink/"
+            )
+        )
+        self.assertNotIn("vowpic-creem-test", callback_url)
+
     def test_request_is_exact_https_image_edit_payload(self) -> None:
         request = EvolinkGenerationRequest(
             model="gemini-3.1-flash-image-preview",
@@ -95,8 +114,38 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertEqual(fact.task_id, "task_123")
         self.assertEqual(fact.cost_minor_units, 17)
         self.assertEqual(fact.currency, "USD")
-        with self.assertRaisesRegex(EvolinkProviderError, "evolink_submit_task_id_missing"):
+        with self.assertRaisesRegex(
+            EvolinkProviderError,
+            "evolink_submit_task_id_missing",
+        ) as raised:
             parse_evolink_submit_fact({"data": {"status": "queued"}})
+        self.assertTrue(raised.exception.acceptance_possible)
+
+    def test_every_malformed_post_2xx_submit_payload_is_acceptance_ambiguous(self) -> None:
+        cases = (
+            ("not-an-object", "evolink_response_not_object"),
+            ({"task_id": ""}, "evolink_submit_task_id_missing"),
+            (
+                {
+                    "task_id": "task_123",
+                    "usage": {"cost_minor_units": -1, "currency": "USD"},
+                },
+                "evolink_cost_schema_invalid",
+            ),
+            (
+                {
+                    "task_id": "task_123",
+                    "usage": {"cost_minor_units": 1, "currency": "invalid"},
+                },
+                "evolink_cost_schema_invalid",
+            ),
+        )
+        for payload, code in cases:
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(EvolinkProviderError, code) as raised:
+                    parse_evolink_submit_fact(payload)
+                self.assertTrue(raised.exception.acceptance_possible)
+                self.assertFalse(raised.exception.retryable)
 
     def test_task_fact_rejects_success_without_outputs_or_non_https_output(self) -> None:
         with self.assertRaisesRegex(EvolinkProviderError, "evolink_task_outputs_invalid"):
@@ -153,6 +202,89 @@ class EvolinkProviderTest(unittest.TestCase):
         self.assertIn("preserve each identity separately", compacted)
         self.assertIn("upright 3:4", compacted)
         self.assertIn("no watermark", compacted)
+
+
+class EvolinkReadinessTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    async def _ping(status_code: int, payload: object | None = None):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if payload is None:
+                return httpx.Response(status_code, request=request)
+            return httpx.Response(status_code, json=payload, request=request)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        with patch.multiple(
+            evolink_module.settings,
+            generation_engine="evolink",
+            evolink_api_key="test-key",
+            evolink_api_base_url="https://api.evolink.ai",
+            evolink_image_model="gemini-3-pro-image-preview",
+            webhook_base_url="https://www.vowpic.com",
+            secret_key="callback-test-secret-key-at-least-32-bytes",
+        ), patch.object(evolink_module.httpx, "AsyncClient", return_value=client):
+            return await EvolinkService().ping_runtime()
+
+    async def test_models_200_requires_configured_image_model(self) -> None:
+        ok, detail = await self._ping(
+            200,
+            {
+                "object": "list",
+                "data": [
+                    {"id": "gemini-3-pro-image-preview"},
+                    {"id": "other-model"},
+                ],
+            },
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(detail, "http_200:model_available")
+
+    async def test_models_200_without_configured_image_model_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            EvolinkProviderError,
+            "evolink_image_model_unavailable",
+        ) as raised:
+            await self._ping(200, {"data": [{"id": "other-model"}]})
+
+        self.assertFalse(raised.exception.retryable)
+
+    async def test_models_200_with_invalid_schema_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            EvolinkProviderError,
+            "evolink_models_schema_invalid",
+        ) as raised:
+            await self._ping(200, {"unexpected": []})
+
+        self.assertTrue(raised.exception.retryable)
+
+    async def test_models_404_and_405_never_count_as_ready(self) -> None:
+        for status_code in (404, 405):
+            with self.subTest(status_code=status_code):
+                with self.assertRaisesRegex(
+                    EvolinkProviderError,
+                    f"evolink_models_endpoint_rejected_{status_code}",
+                ) as raised:
+                    await self._ping(status_code)
+                self.assertFalse(raised.exception.retryable)
+
+    async def test_models_auth_failures_are_not_retryable(self) -> None:
+        for status_code in (401, 403):
+            with self.subTest(status_code=status_code):
+                with self.assertRaisesRegex(
+                    EvolinkProviderError,
+                    "evolink_auth_failed",
+                ) as raised:
+                    await self._ping(status_code)
+                self.assertFalse(raised.exception.retryable)
+
+    async def test_models_server_failure_is_retryable_but_not_ready(self) -> None:
+        with self.assertRaisesRegex(
+            EvolinkProviderError,
+            "evolink_runtime_unavailable",
+        ) as raised:
+            await self._ping(503)
+
+        self.assertTrue(raised.exception.retryable)
 
 
 if __name__ == "__main__":

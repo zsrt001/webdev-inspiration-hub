@@ -40,8 +40,6 @@ jobs:
       state: ${{ steps.resolve.outputs.state }}
       runtime_bundle_id: ${{ steps.resolve.outputs.runtime_bundle_id }}
       api_deployment_id: ${{ steps.resolve.outputs.api_deployment_id }}
-      worker_deployment_id: ${{ steps.resolve.outputs.worker_deployment_id }}
-      worker_image_digest: ${{ steps.resolve.outputs.worker_image_digest }}
     steps:
       - name: Run the fixed read-only bootstrap query
         id: resolve
@@ -50,6 +48,7 @@ jobs:
           REQUESTED_OBSERVATION_RUN_ID: ${{ inputs.observation_run_id }}
         run: |
           set -euo pipefail
+          test -n "$OBSERVATION_READ_DATABASE_URL"
           RESULT="$(
             psql "$OBSERVATION_READ_DATABASE_URL" -X -v ON_ERROR_STOP=1 -At \
               -v requested="$REQUESTED_OBSERVATION_RUN_ID" <<'SQL'
@@ -58,9 +57,7 @@ jobs:
                      activation.source_sha,
                      activation.kind AS release_role,
                      observation.runtime_bundle_id,
-                     observation.api_deployment_id,
-                     observation.worker_deployment_id,
-                     observation.worker_image_digest
+                     observation.api_deployment_id
               FROM public.release_observation_runs AS observation
               JOIN public.release_activations AS activation
                 ON activation.id = observation.release_activation_id
@@ -90,7 +87,7 @@ jobs:
             test "$STATE" = "FAILED"
             echo "active=false" >> "$GITHUB_OUTPUT"
           fi
-          for KEY in source_sha observation_run_id release_role state runtime_bundle_id api_deployment_id worker_deployment_id worker_image_digest; do
+          for KEY in source_sha observation_run_id release_role state runtime_bundle_id api_deployment_id; do
             case "$KEY" in
               observation_run_id) JSON_KEY=id ;;
               *) JSON_KEY="$KEY" ;;
@@ -113,20 +110,14 @@ jobs:
           ref: ${{ needs.bootstrap.outputs.source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
-      - uses: ./.github/actions/setup-railway-cli
-      - name: Collect real incidents, database counters, Worker heartbeat, and cleanup
+      - name: Collect real incidents, database counters, backend runtime health, and cleanup
         env:
           OBSERVATION_READ_DATABASE_URL: ${{ secrets.OBSERVATION_READ_DATABASE_URL }}
           OBSERVATION_WRITE_DATABASE_URL: ${{ secrets.OBSERVATION_WRITE_DATABASE_URL }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
           OBSERVATION_SIGNING_KEY: ${{ secrets.OBSERVATION_SIGNING_KEY }}
-          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
-          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
-          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
-          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
+          RELEASE_EVIDENCE_HMAC_KEY: ${{ secrets.RELEASE_EVIDENCE_HMAC_KEY }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           GH_INCIDENT_TOKEN: ${{ github.token }}
@@ -136,15 +127,15 @@ jobs:
             --database-url-env OBSERVATION_READ_DATABASE_URL \
             --requested-observation-run-id "${{ needs.bootstrap.outputs.observation_run_id }}" \
             --output "$RUNNER_TEMP/sample-resolution.json"
-          python scripts/release/run_approved_worker_host.py status \
-            --contract release/worker-host-contract.json \
-            --source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
-            --runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
-            --api-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
-            --expected-deployment-id "${{ needs.bootstrap.outputs.worker_deployment_id }}" \
-            --expected-image-digest "${{ needs.bootstrap.outputs.worker_image_digest }}" \
-            --api-base-url "$PRODUCTION_BASE_URL" \
-            --output "$RUNNER_TEMP/worker-heartbeat.json"
+          python scripts/release/collect_runtime_report.py \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --expected-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
+            --expected-runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
+            --expected-source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
+            --expected-schema 20260710_0020 \
+            --expected-release-role COMMERCIAL_7A \
+            --signing-key-env RELEASE_EVIDENCE_HMAC_KEY \
+            --output "$RUNNER_TEMP/backend-runtime.json"
           python scripts/release/ensure_observation_cleanup_cycle.py \
             --base-url "$PRODUCTION_BASE_URL" \
             --database-url-env OBSERVATION_READ_DATABASE_URL \
@@ -162,9 +153,8 @@ jobs:
             --expected-source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
             --expected-runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
             --expected-api-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
-            --expected-worker-deployment-id "${{ needs.bootstrap.outputs.worker_deployment_id }}" \
-            --expected-worker-image-digest "${{ needs.bootstrap.outputs.worker_image_digest }}" \
-            --worker-report "$RUNNER_TEMP/worker-heartbeat.json" \
+            --backend-runtime-report "$RUNNER_TEMP/backend-runtime.json" \
+            --runtime-signing-key-env RELEASE_EVIDENCE_HMAC_KEY \
             --cleanup-report "$RUNNER_TEMP/cleanup-cycle.json" \
             --output "$RUNNER_TEMP/observation-metrics.json"
           OBSERVATION_METRICS_INPUT_PATH="$RUNNER_TEMP/observation-metrics.json" \
@@ -243,19 +233,12 @@ jobs:
           ref: ${{ needs.bootstrap.outputs.source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
-      - uses: ./.github/actions/setup-railway-cli
-      - name: Record failure, apply OFF-only policy, and disable the exact Worker
+      - name: Record failure and apply the OFF-only policy
         id: reconcile
         env:
           OBSERVATION_EMERGENCY_DATABASE_URL: ${{ secrets.OBSERVATION_EMERGENCY_DATABASE_URL }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_READ_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_TOKEN }}
-          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
-          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
-          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
-          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
         run: |
           set -euo pipefail
           python scripts/release/observe_release.py fail \
@@ -267,16 +250,6 @@ jobs:
           ACTION="$(jq -r '.action' "$RUNNER_TEMP/observation-failed.json")"
           test "$ACTION" = "FAIL_AND_SHUTDOWN" -o "$ACTION" = "RESUME_FINALIZATION" -o "$ACTION" = "ALREADY_PASSED"
           echo "action=$ACTION" >> "$GITHUB_OUTPUT"
-          if test "$ACTION" = "FAIL_AND_SHUTDOWN"; then
-            python scripts/release/run_approved_worker_host.py stop \
-              --contract release/worker-host-contract.json \
-              --expected-deployment-id "${{ needs.bootstrap.outputs.worker_deployment_id }}" \
-              --source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
-              --runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
-              --api-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
-              --expected-image-digest "${{ needs.bootstrap.outputs.worker_image_digest }}" \
-              --output "$RUNNER_TEMP/worker-stopped.json"
-          fi
 
   resume-finalization:
     name: Resume only a cryptographically complete FINALIZING observation
@@ -345,7 +318,6 @@ jobs:
           ref: ${{ needs.bootstrap.outputs.source_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-release-python
-      - uses: ./.github/actions/setup-railway-cli
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
@@ -356,13 +328,8 @@ jobs:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           PRODUCTION_RECOVERY_APPROVAL_ID: ${{ secrets.PRODUCTION_RECOVERY_APPROVAL_ID }}
+          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          WORKER_HOST_EVIDENCE_SIGNING_KEY: ${{ secrets.WORKER_HOST_EVIDENCE_SIGNING_KEY }}
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
-          RAILWAY_ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT }}
-          RAILWAY_WORKER_SERVICE: ${{ vars.RAILWAY_WORKER_SERVICE }}
-          RAILWAY_REGION: ${{ vars.RAILWAY_REGION }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_READ_WRITE_TOKEN }}
@@ -379,33 +346,45 @@ jobs:
           . "$RUNNER_TEMP/recovery.env"
           set +a
           cat "$RUNNER_TEMP/recovery.env" >> "$GITHUB_ENV"
-          python scripts/release/run_approved_worker_host.py stop \
-            --contract release/worker-host-contract.json \
-            --expected-deployment-id "$RECOVERY_WORKER_DEPLOYMENT_ID" \
-            --source-sha "$RECOVERY_SOURCE_SHA" \
-            --runtime-bundle-id "$RECOVERY_RUNTIME_BUNDLE_ID" \
-            --api-deployment-id "$RECOVERY_API_DEPLOYMENT_ID" \
-            --expected-image-digest "$RECOVERY_WORKER_IMAGE_DIGEST" \
-            --output "$RUNNER_TEMP/recovery-worker-stopped.json"
-          "$VERCEL_CLI" rollback "$RECOVERY_PRIVATE_COMPATIBLE_BASELINE_URL" --yes --token="$VERCEL_TOKEN"
+          python backend/scripts/rollback_baseline_evidence.py read \
+            --target-source-sha "$RECOVERY_SOURCE_SHA" \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
+            --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \
+            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --output "$RUNNER_TEMP/recovery-baseline.json" \
+            --job-env "$RUNNER_TEMP/recovery-baseline.env" \
+            --env-prefix RECOVERY_
+          set -a
+          . "$RUNNER_TEMP/recovery-baseline.env"
+          set +a
+          python scripts/release/apply_activation_plan.py \
+            --phase emergency-off \
+            --activation-plan release/activation-plan.json \
+            --release-resolution-report "$RUNNER_TEMP/recovery.json" \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --output "$RUNNER_TEMP/recovery-off.json"
+          "$VERCEL_CLI" rollback "$RECOVERY_BASELINE_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
           "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"
           python scripts/release/collect_runtime_report.py \
             --base-url "$PRODUCTION_BASE_URL" \
-            --expected-deployment-id "$RECOVERY_PRIVATE_COMPATIBLE_BASELINE_DEPLOYMENT_ID" \
-            --expected-runtime-bundle-id "$RECOVERY_RUNTIME_BUNDLE_ID" \
-            --expected-source-sha "$RECOVERY_SOURCE_SHA" \
-            --expected-schema "$RECOVERY_SCHEMA_REVISION" \
-            --expected-release-role COMMERCIAL_7A \
+            --expected-deployment-id "$RECOVERY_BASELINE_DEPLOYMENT_ID" \
+            --expected-runtime-bundle-id "$RECOVERY_BASELINE_RUNTIME_BUNDLE_ID" \
+            --expected-source-sha "$RECOVERY_BASELINE_SOURCE_SHA" \
+            --expected-schema "$RECOVERY_BASELINE_SCHEMA_REVISION" \
+            --expected-release-role "$RECOVERY_BASELINE_RELEASE_ROLE" \
             --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
             --output "$RUNNER_TEMP/recovery-api.json"
-          python scripts/release/observe_release.py complete-recovery \
+          python backend/scripts/complete_observation_recovery.py \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --resolution-report "$RUNNER_TEMP/recovery.json" \
-            --worker-report "$RUNNER_TEMP/recovery-worker-stopped.json" \
+            --baseline-resolution "$RUNNER_TEMP/recovery-baseline.json" \
+            --off-report "$RUNNER_TEMP/recovery-off.json" \
             --api-report "$RUNNER_TEMP/recovery-api.json" \
             --disposition ROLLED_BACK_PRIVATE_BASELINE \
             --approval-id-env PRODUCTION_RECOVERY_APPROVAL_ID \
-            --worker-signing-key-env WORKER_HOST_EVIDENCE_SIGNING_KEY \
             --api-signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
             --private-evidence-store-id-env PRIVATE_EVIDENCE_STORE_ID \
             --private-evidence-token-env PRIVATE_EVIDENCE_READ_WRITE_TOKEN \

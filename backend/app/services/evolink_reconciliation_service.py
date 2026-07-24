@@ -71,7 +71,10 @@ async def reconcile_evolink_attempt(
     attempt = await load_reconcilable_attempt(db, attempt_id=attempt_id, lease=lease)
     task_id = str(attempt.provider_job_id or "").strip()
     if not task_id:
-        return ReconciliationResult("UNRESOLVED", "provider_task_id_absent")
+        return ReconciliationResult(
+            "UNRESOLVED",
+            "provider_submission_human_required",
+        )
     try:
         fact = await provider.get_task(task_id)
     except (httpx.TimeoutException, httpx.ConnectError):

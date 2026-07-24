@@ -27,7 +27,7 @@ from app.models.payment_event import (
 )
 from app.models.user import User
 from app.models.user_credit import UserCredit
-from app.schemas.payment import CheckoutRedirect, CreditPackStatusResponse
+from app.schemas.payment import AcceptedPaymentEvent, CheckoutRedirect, CreditPackStatusResponse
 from app.services.billing_catalog_service import (
     BillingCatalogUnavailable,
     CheckoutCatalogSelection,
@@ -1133,9 +1133,11 @@ class PaymentService:
                 status_code=404,
             )
         state = _enum_value(event.processing_state)
-        if state == PaymentEventProcessingState.APPLIED.value:
-            return None
-        if state == PaymentEventProcessingState.UNHANDLED.value:
+        if state in {
+            PaymentEventProcessingState.APPLIED.value,
+            PaymentEventProcessingState.UNHANDLED.value,
+            PaymentEventProcessingState.RECONCILIATION_REQUIRED.value,
+        }:
             return None
         event_type = str(event.event_type).lower()
         if event_type == "checkout.completed":
@@ -1180,8 +1182,8 @@ class PaymentService:
         payload: dict[str, Any] | None = None,
         body: bytes,
         signature_header: str | None,
-    ) -> CreditPurchase | None:
-        """Compatibility entrypoint; raw body remains the sole signed authority."""
+    ) -> AcceptedPaymentEvent:
+        """Persist, apply, and acknowledge one signed Creem event idempotently."""
 
         del payload
         try:
@@ -1203,11 +1205,19 @@ class PaymentService:
                 PaymentEvent.event_id == accepted.event_id,
             )
         )
-        if event is None or not accepted.created:
-            return None
-        result = await self.apply_payment_event(db, payment_event_id=event.id)
-        await db.commit()
-        return result
+        if event is None:
+            raise PaymentError(
+                code="payment_event_not_found",
+                message="Payment event was not found after ingestion.",
+                status_code=500,
+            )
+        try:
+            await self.apply_payment_event(db, payment_event_id=event.id)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        return accepted
 
     async def request_refund_review(self) -> None:
         """Preserve the legacy route without pretending Creem exposes a refund API."""
