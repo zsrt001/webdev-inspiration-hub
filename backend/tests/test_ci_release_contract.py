@@ -131,6 +131,42 @@ class CiReleaseContractTest(unittest.TestCase):
         self.assertLess(release_tools, build)
         self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 1)
 
+    def test_every_vercel_build_job_pins_the_exact_compatible_uv(self) -> None:
+        expected = {
+            ".github/workflows/safe-baseline-release.yml": 1,
+            ".github/workflows/integration.yml": 2,
+            ".github/workflows/production-release.yml": 1,
+        }
+        setup_marker = (
+            "uses: astral-sh/setup-uv@"
+            "11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2"
+        )
+        for relative_path, expected_count in expected.items():
+            workflow = _read(relative_path)
+            setups = [match.start() for match in re.finditer(setup_marker, workflow)]
+            builds = [
+                match.start()
+                for match in re.finditer(re.escape('"$VERCEL_CLI" build'), workflow)
+            ]
+            with self.subTest(workflow=relative_path):
+                self.assertEqual(len(setups), expected_count)
+                self.assertEqual(len(builds), expected_count)
+                self.assertEqual(
+                    workflow.count(
+                        'checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"'
+                    ),
+                    expected_count,
+                )
+                self.assertEqual(
+                    workflow.count('test "$(uv --version)" = "uv 0.10.11"'),
+                    expected_count,
+                )
+                previous_build = -1
+                for setup, build in zip(setups, builds, strict=True):
+                    self.assertGreater(setup, previous_build)
+                    self.assertLess(setup, build)
+                    previous_build = build
+
     def test_upload_artifact_raw_digest_is_canonicalized_before_binding(self) -> None:
         workflow = _read(".github/workflows/safe-baseline-release.yml")
         step = workflow[

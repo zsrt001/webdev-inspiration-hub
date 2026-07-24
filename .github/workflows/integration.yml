@@ -73,6 +73,14 @@ jobs:
             frontend/package-lock.json
             scripts/release-tools/package-lock.json
 
+      - name: Install the Vercel-compatible uv build tool
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.11"
+          checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"
+          enable-cache: false
+          download-from-astral-mirror: false
+
       - name: Require protected credentials before any mutation
         shell: bash
         env:
@@ -127,6 +135,7 @@ jobs:
           VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
           test -x "$VERCEL_CLI"
           test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          test "$(uv --version)" = "uv 0.10.11"
           echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
 
       - name: Resolve the exact Preview Supabase public OAuth runtime
@@ -221,6 +230,7 @@ jobs:
           if [[ "${{ inputs.failure_boundary }}" == "reserve" ]]; then exit 91; fi
 
       - name: Build and deploy the exact Vercel Preview output
+        id: preview_deploy
         env:
           PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
           PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
@@ -237,6 +247,7 @@ jobs:
           MANIFEST_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
           [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
           printf '%s\n' "$MANIFEST_SHA256" > "$RUNNER_TEMP/preview-manifest-sha256.txt"
+          touch "$RUNNER_TEMP/preview-deploy-attempted"
           DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt \
             --env "RUNTIME_ENVIRONMENT=preview" \
             --env "RELEASE_ROLE=PREVIEW_IDENTITY" \
@@ -275,6 +286,85 @@ jobs:
             --manifest-sha256 "$(tr -d '\r\n' < "$RUNNER_TEMP/preview-manifest-sha256.txt")" \
             --activation-report "$EVIDENCE_DIR/activation-report.json" \
             --output "$EVIDENCE_DIR/phase-deployed.json"
+
+      - name: Recover and bind a completed Preview deployment after a register failure
+        if: failure()
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -euo pipefail
+          if ! test -f "$RUNNER_TEMP/preview-deployment-url.txt"; then
+            exit 0
+          fi
+          test -f "$RUNNER_TEMP/preview-activation-id.txt"
+          test -f "$RUNNER_TEMP/preview-runtime-id.txt"
+          test -f "$RUNNER_TEMP/preview-manifest-sha256.txt"
+          if ! test -f "$EVIDENCE_DIR/activation-report.json"; then
+            python scripts/release/register_preview_activation.py deployed \
+              --source-sha "$SOURCE_SHA" \
+              --runtime-id-file "$RUNNER_TEMP/preview-runtime-id.txt" \
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+              --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+              --activation-id-file "$RUNNER_TEMP/preview-activation-id.txt" \
+              --deployment-url "$(tr -d '\r\n' < "$RUNNER_TEMP/preview-deployment-url.txt")" \
+              --manifest-sha256 "$(tr -d '\r\n' < "$RUNNER_TEMP/preview-manifest-sha256.txt")" \
+              --activation-report "$EVIDENCE_DIR/activation-report.json" \
+              --output "$EVIDENCE_DIR/phase-deployed-recovered.json"
+          fi
+
+      - name: Materialize the fail-closed Preview deploy stage
+        if: failure()
+        env:
+          DEPLOY_STEP_OUTCOME: ${{ steps.preview_deploy.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/preview-failure-stage
+          python - \
+            "$RUNNER_TEMP/preview-deploy-attempted" \
+            "$RUNNER_TEMP/preview-deployment-url.txt" \
+            "$EVIDENCE_DIR/activation-report.json" \
+            artifacts/preview-failure-stage/failure-stage.json <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          attempted = Path(sys.argv[1]).is_file()
+          url_recorded = Path(sys.argv[2]).is_file()
+          deployment_bound = Path(sys.argv[3]).is_file()
+          payload = {
+              "schema": "vowpic.preview-deploy-stage.v1",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "deploy_step_outcome": os.environ["DEPLOY_STEP_OUTCOME"],
+              "deploy_attempted": attempted,
+              "deployment_url_recorded": url_recorded,
+              "deployment_bound": deployment_bound,
+              "safe_predeployment_cleanup": not (
+                  attempted or url_recorded or deployment_bound
+              ),
+          }
+          output = Path(sys.argv[4])
+          with output.open("x", encoding="utf-8", newline="\n") as handle:
+              json.dump(payload, handle, sort_keys=True, indent=2)
+              handle.write("\n")
+          PY
+
+      - name: Persist the exact failed Preview deploy stage
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-failure-stage
+          path: artifacts/preview-failure-stage/failure-stage.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
 
       - name: Persist the create-once activation report
         id: activation_evidence
@@ -583,6 +673,25 @@ jobs:
           name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-origin
           path: artifacts/preview-origin
 
+      - name: Authoritatively locate the failed Preview deploy stage
+        id: failure_stage_artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/github_artifact_evidence.py lookup \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --name "vowpic-preview-identity-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-failure-stage" \
+            --token-env GITHUB_TOKEN \
+            --job-output "$GITHUB_OUTPUT"
+
+      - name: Download the exact failed Preview deploy stage when found
+        if: steps.failure_stage_artifact.outputs.state == 'FOUND'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-failure-stage
+          path: artifacts/preview-failure-stage
+
       - name: Clean from database-owned activation and binding coordinates
         env:
           PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
@@ -609,6 +718,7 @@ jobs:
           set -euo pipefail
           python scripts/release/materialize_preview_cleanup_gate.py \
             --cleanup-report "$EVIDENCE_DIR/cleanup-report.json" \
+            --failure-stage artifacts/preview-failure-stage/failure-stage.json \
             --register-result "$REGISTER_RESULT" \
             --source-sha "$SOURCE_SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
@@ -662,6 +772,14 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             scripts/release-tools/package-lock.json
+
+      - name: Install the Vercel-compatible uv build tool
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.11"
+          checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"
+          enable-cache: false
+          download-from-astral-mirror: false
 
       - name: Require the isolated Preview Commercial runtime
         env:
@@ -725,6 +843,7 @@ jobs:
           VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
           test -x "$VERCEL_CLI"
           test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          test "$(uv --version)" = "uv 0.10.11"
           echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
           python -m unittest \
             backend.tests.test_preview_identity_workflow \

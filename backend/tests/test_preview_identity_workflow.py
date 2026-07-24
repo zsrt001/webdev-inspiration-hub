@@ -1559,9 +1559,49 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             workflow.index("  cleanup:\n") :
             workflow.index("  commercial:\n")
         ]
+        deploy = register[
+            register.index("- name: Build and deploy the exact Vercel Preview output") :
+            register.index("- name: Persist the create-once activation report")
+        ]
+        deploy_command = deploy.index('"$VERCEL_CLI" deploy --prebuilt')
+        self.assertIn("id: preview_deploy", deploy)
+        self.assertLess(
+            deploy.index('touch "$RUNNER_TEMP/preview-deploy-attempted"'),
+            deploy_command,
+        )
+        self.assertLess(
+            deploy.index(
+                "Recover and bind a completed Preview deployment after a register failure"
+            ),
+            deploy.index("Materialize the fail-closed Preview deploy stage"),
+        )
+        self.assertIn(
+            '"schema": "vowpic.preview-deploy-stage.v1"',
+            deploy,
+        )
+        self.assertIn(
+            '"safe_predeployment_cleanup": not (',
+            deploy,
+        )
+        self.assertIn(
+            "vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-failure-stage",
+            deploy,
+        )
         self.assertIn("materialize_preview_cleanup_gate.py", cleanup)
         self.assertIn("REGISTER_RESULT: ${{ needs.register.result }}", cleanup)
         self.assertIn('--register-result "$REGISTER_RESULT"', cleanup)
+        self.assertIn(
+            "Authoritatively locate the failed Preview deploy stage",
+            cleanup,
+        )
+        self.assertIn(
+            "Download the exact failed Preview deploy stage when found",
+            cleanup,
+        )
+        self.assertIn(
+            "--failure-stage artifacts/preview-failure-stage/failure-stage.json",
+            cleanup,
+        )
 
     def test_no_activation_cleanup_gate_is_strict_and_bound_to_register_failure(self) -> None:
         gate = _load(
@@ -1618,6 +1658,219 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                 },
                 register_result="failure",
             )
+
+    def test_predeployment_reservation_cleanup_is_keyed_by_activation(self) -> None:
+        gate = _load(
+            "preview_predeployment_cleanup_gate_contract",
+            "scripts/release/materialize_preview_cleanup_gate.py",
+        )
+        source_sha = "a" * 40
+        activation_id = "00000000-0000-0000-0000-000000000123"
+        report = {
+            "state": "CLEANED",
+            "source_sha": source_sha,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "activation_id": activation_id,
+            "api_deployment_id": None,
+            "worker_deployment_id": None,
+            "bindings_revoked": 0,
+            "sessions_revoked": 0,
+            "refresh_tokens_revoked": 0,
+            "consumed_users": 0,
+            "second_binding": False,
+            "origin_restored": False,
+            "origin_cleanup": {
+                "origin_state_artifact": "ABSENT",
+                "state": "NOT_REQUIRED",
+            },
+            "private_asset_prefix": [],
+            "storage_objects_deleted": 0,
+            "storage_objects_remaining": 0,
+            "business_rows": {
+                "account_risk_events": 0,
+                "credit_grant_lots": 0,
+                "credit_purchases": 0,
+                "credit_transactions": 0,
+                "live_portrait_jobs": 0,
+                "orders": 0,
+                "subscription_credit_grants": 0,
+                "user_credits": 0,
+                "user_subscriptions": 0,
+                "welcome_grant_claims": 0,
+            },
+        }
+        failure_stage = {
+            "schema": "vowpic.preview-deploy-stage.v1",
+            "source_sha": source_sha,
+            "workflow_run_id": "123",
+            "workflow_attempt": 1,
+            "deploy_step_outcome": "failure",
+            "deploy_attempted": False,
+            "deployment_url_recorded": False,
+            "deployment_bound": False,
+            "safe_predeployment_cleanup": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gate_contract = root / "gates.json"
+            gate_contract.write_text("{}\n", encoding="utf-8")
+            output = gate.materialize_cleanup_gate(
+                report,
+                failure_stage=failure_stage,
+                register_result="failure",
+                source_sha=source_sha,
+                workflow_run_id="123",
+                workflow_attempt="1",
+                gate_contract=gate_contract,
+                release_root=root / "release",
+            )
+            self.assertIsNotNone(output)
+            assert output is not None
+            self.assertEqual(
+                output.relative_to(root / "release").as_posix(),
+                (
+                    f"{source_sha}/123-1/activation-{activation_id}/"
+                    "08-cleanup/preview_cleanup.json"
+                ),
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["case_id"], "preview_cleanup")
+            self.assertEqual(payload["status"], "PASS")
+            self.assertFalse(payload["capability_enabled"])
+
+            with self.assertRaises(gate.PreviewCleanupGateError):
+                gate.materialize_cleanup_gate(
+                    report,
+                    failure_stage=failure_stage,
+                    register_result="success",
+                    source_sha=source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="2",
+                    gate_contract=gate_contract,
+                    release_root=root / "release-success",
+                )
+            with self.assertRaises(gate.PreviewCleanupGateError):
+                gate.materialize_cleanup_gate(
+                    {**report, "activation_id": "NOT-A-UUID"},
+                    failure_stage=failure_stage,
+                    register_result="failure",
+                    source_sha=source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="3",
+                    gate_contract=gate_contract,
+                    release_root=root / "release-invalid",
+                )
+            with self.assertRaises(gate.PreviewCleanupGateError):
+                gate.materialize_cleanup_gate(
+                    {**report, "storage_objects_deleted": False},
+                    failure_stage=failure_stage,
+                    register_result="failure",
+                    source_sha=source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="4",
+                    gate_contract=gate_contract,
+                    release_root=root / "release-false-zero",
+                )
+            with self.assertRaises(gate.PreviewCleanupGateError):
+                gate.materialize_cleanup_gate(
+                    {**report, "unexpected_side_effect": 1},
+                    failure_stage=failure_stage,
+                    register_result="failure",
+                    source_sha=source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="5",
+                    gate_contract=gate_contract,
+                    release_root=root / "release-extra",
+                )
+            for label, invalid_stage in (
+                ("missing", None),
+                (
+                    "attempted",
+                    {
+                        **failure_stage,
+                        "deploy_attempted": True,
+                        "safe_predeployment_cleanup": False,
+                    },
+                ),
+                (
+                    "url-recorded",
+                    {
+                        **failure_stage,
+                        "deployment_url_recorded": True,
+                        "safe_predeployment_cleanup": False,
+                    },
+                ),
+                (
+                    "bound",
+                    {
+                        **failure_stage,
+                        "deployment_bound": True,
+                        "safe_predeployment_cleanup": False,
+                    },
+                ),
+                (
+                    "wrong-source",
+                    {**failure_stage, "source_sha": "c" * 40},
+                ),
+                (
+                    "wrong-run",
+                    {**failure_stage, "workflow_run_id": "456"},
+                ),
+                (
+                    "boolean-attempt",
+                    {**failure_stage, "workflow_attempt": True},
+                ),
+                (
+                    "extra-field",
+                    {**failure_stage, "unexpected": "unsafe"},
+                ),
+            ):
+                with self.subTest(invalid_failure_stage=label):
+                    with self.assertRaises(gate.PreviewCleanupGateError):
+                        gate.materialize_cleanup_gate(
+                            report,
+                            failure_stage=invalid_stage,
+                            register_result="failure",
+                            source_sha=source_sha,
+                            workflow_run_id="123",
+                            workflow_attempt="1",
+                            gate_contract=gate_contract,
+                            release_root=root / f"release-stage-{label}",
+                        )
+
+            no_activation_report = {
+                "state": "NO_ACTIVATION",
+                "bindings_revoked": 0,
+                "sessions_revoked": 0,
+                "refresh_tokens_revoked": 0,
+                "business_rows": {},
+                "origin_cleanup": {
+                    "origin_state_artifact": "ABSENT",
+                    "state": "NOT_REQUIRED",
+                },
+            }
+            self.assertIsNone(
+                gate.materialize_cleanup_gate(
+                    no_activation_report,
+                    failure_stage=failure_stage,
+                    register_result="failure",
+                    source_sha=source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="1",
+                    gate_contract=gate_contract,
+                    release_root=root / "release-no-activation",
+                )
+            )
+            with self.assertRaises(gate.PreviewCleanupGateError):
+                gate.materialize_cleanup_gate(
+                    no_activation_report,
+                    register_result="failure",
+                    source_sha=source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="1",
+                    gate_contract=gate_contract,
+                    release_root=root / "release-no-activation-unsafe",
+                )
 
     def test_production_workflow_is_manual_serialized_and_promotes_only_after_acceptance(self) -> None:
         path = ROOT / ".github" / "workflows" / "production-release.yml"
