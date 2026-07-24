@@ -1383,6 +1383,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                     "CONTROL_PLANE_DATABASE_URL=$PREVIEW_CONTROL_PLANE_DATABASE_URL",
                     runtime_block,
                 )
+                self.assertIn("TASK_EXECUTION_MODE=backend", runtime_block)
                 self.assertIn("SUPABASE_URL=$PREVIEW_SUPABASE_URL", runtime_block)
                 self.assertIn(
                     "SUPABASE_ANON_KEY=$PREVIEW_SUPABASE_PUBLISHABLE_KEY",
