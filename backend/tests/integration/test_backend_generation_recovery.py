@@ -271,15 +271,23 @@ class BackendGenerationRecoveryIntegrationTest(unittest.IsolatedAsyncioTestCase)
             kind=GenerationAttemptKind.INITIAL,
             provider="evolink",
         )
+        db.add(attempt)
+        await db.flush()
+        attempt.status = GenerationAttemptStatus.SUBMITTING
+        attempt.provider_job_id = provider_job_id
+        attempt.submit_started_at = datetime.now(timezone.utc)
+        job.active_attempt_id = attempt.id
+        job.status = GenerationJobStatus.ACTIVE
+        await db.flush()
         attempt.status = (
             GenerationAttemptStatus.UNKNOWN
             if manual
             else GenerationAttemptStatus.SUBMITTED
         )
-        attempt.provider_job_id = provider_job_id
-        attempt.submit_started_at = datetime.now(timezone.utc)
-        db.add(attempt)
         await db.flush()
+        if not manual:
+            attempt.status = GenerationAttemptStatus.FINISHED
+            await db.flush()
         reservation = CreditReservation(
             id=uuid.uuid4(),
             user_id=user_id,
@@ -295,7 +303,6 @@ class BackendGenerationRecoveryIntegrationTest(unittest.IsolatedAsyncioTestCase)
         db.add(reservation)
         await db.flush()
 
-        job.active_attempt_id = attempt.id
         job.status = (
             GenerationJobStatus.RECONCILING
             if manual
