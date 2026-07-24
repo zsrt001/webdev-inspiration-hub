@@ -325,6 +325,10 @@ def verify_reference(
     expected_report_sha256: str,
     token: str,
     client: httpx.Client,
+    expected_source_sha: str | None = None,
+    expected_runtime_bundle_id: str | None = None,
+    expected_deployment_id: str | None = None,
+    expected_after_snapshot_sha256: str | None = None,
 ) -> dict[str, Any]:
     expected = str(expected_report_sha256 or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected):
@@ -335,6 +339,59 @@ def verify_reference(
         raise GitHubArtifactError("stored formal report SHA-256 mismatch")
     if report.get("passed") is not True:
         raise GitHubArtifactError("stored formal report is not a PASS report")
+    semantic_expectations = (
+        expected_source_sha,
+        expected_runtime_bundle_id,
+        expected_deployment_id,
+        expected_after_snapshot_sha256,
+    )
+    if any(value is not None for value in semantic_expectations):
+        if any(value is None for value in semantic_expectations):
+            raise ValueError(
+                "formal report semantic verification requires every expected coordinate"
+            )
+        source_sha = str(expected_source_sha or "").strip()
+        runtime_bundle_id = str(expected_runtime_bundle_id or "").strip()
+        deployment_id = str(expected_deployment_id or "").strip()
+        after_snapshot_sha256 = str(
+            expected_after_snapshot_sha256 or ""
+        ).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+            raise ValueError(
+                "expected formal source SHA must be 40 lowercase hex characters"
+            )
+        if not re.fullmatch(r"rtb_[0-9a-f]{64}", runtime_bundle_id):
+            raise ValueError("expected formal runtime bundle ID is invalid")
+        if (
+            not deployment_id
+            or len(deployment_id) > 255
+            or any(char.isspace() for char in deployment_id)
+        ):
+            raise ValueError("expected formal deployment ID is invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", after_snapshot_sha256):
+            raise ValueError(
+                "expected formal after-snapshot SHA-256 must be 64 lowercase hex characters"
+            )
+        if report.get("schema_version") != "vowpic.safe-baseline-verification.v1":
+            raise GitHubArtifactError(
+                "stored formal report schema is not the safe-baseline contract"
+            )
+        expected_fields = {
+            "source_sha": source_sha,
+            "runtime_bundle_id": runtime_bundle_id,
+            "deployment_id": deployment_id,
+            "after_snapshot_sha256": after_snapshot_sha256,
+        }
+        for field, expected_value in expected_fields.items():
+            if str(report.get(field) or "").strip() != expected_value:
+                raise GitHubArtifactError(
+                    f"stored formal report {field} does not match the completed activation"
+                )
+        no_side_effects = report.get("no_side_effects")
+        if not isinstance(no_side_effects, dict) or no_side_effects.get("matches") is not True:
+            raise GitHubArtifactError(
+                "stored formal report does not prove a no-side-effect snapshot"
+            )
     coordinates = parse_reference(reference)
     return {
         "passed": True,
@@ -376,6 +433,10 @@ def main() -> int:
     verify = subparsers.add_parser("verify-reference")
     verify.add_argument("--reference", required=True)
     verify.add_argument("--expected-report-sha256", required=True)
+    verify.add_argument("--expected-source-sha")
+    verify.add_argument("--expected-runtime-bundle-id")
+    verify.add_argument("--expected-deployment-id")
+    verify.add_argument("--expected-after-snapshot-sha256")
     verify.add_argument("--token-env", required=True)
     verify.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -427,6 +488,10 @@ def main() -> int:
                 expected_report_sha256=args.expected_report_sha256,
                 token=token,
                 client=client,
+                expected_source_sha=args.expected_source_sha,
+                expected_runtime_bundle_id=args.expected_runtime_bundle_id,
+                expected_deployment_id=args.expected_deployment_id,
+                expected_after_snapshot_sha256=args.expected_after_snapshot_sha256,
             )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)

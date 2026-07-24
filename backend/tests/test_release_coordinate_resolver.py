@@ -683,6 +683,91 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
                     client=client,
                 )
 
+    def test_stored_formal_reference_can_be_bound_to_completed_activation(self) -> None:
+        module = _artifact_module()
+        source_sha = "a" * 40
+        runtime_bundle_id = "rtb_" + "b" * 64
+        deployment_id = "dpl_exact"
+        snapshot_sha256 = "c" * 64
+        report = {
+            "schema_version": "vowpic.safe-baseline-verification.v1",
+            "passed": True,
+            "source_sha": source_sha,
+            "runtime_bundle_id": runtime_bundle_id,
+            "deployment_id": deployment_id,
+            "after_snapshot_sha256": snapshot_sha256,
+            "no_side_effects": {"matches": True},
+        }
+        report_raw = json.dumps(report, sort_keys=True).encode("utf-8")
+        archive_io = io.BytesIO()
+        with zipfile.ZipFile(
+            archive_io,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+            archive.writestr("safe-baseline-formal.json", report_raw)
+        archive_raw = archive_io.getvalue()
+        archive_digest = hashlib.sha256(archive_raw).hexdigest()
+        reference = module.build_reference(
+            repository="owner/repo",
+            run_id="456",
+            artifact_id="123",
+            artifact_digest=f"sha256:{archive_digest}",
+            report_name="safe-baseline-formal.json",
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/actions/artifacts/123"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": 123,
+                        "expired": False,
+                        "digest": f"sha256:{archive_digest}",
+                        "workflow_run": {"id": 456},
+                    },
+                )
+            if request.url.path.endswith("/actions/artifacts/123/zip"):
+                return httpx.Response(200, content=archive_raw)
+            return httpx.Response(404)
+
+        expected = {
+            "expected_source_sha": source_sha,
+            "expected_runtime_bundle_id": runtime_bundle_id,
+            "expected_deployment_id": deployment_id,
+            "expected_after_snapshot_sha256": snapshot_sha256,
+        }
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            verified = module.verify_reference(
+                reference,
+                expected_report_sha256=hashlib.sha256(report_raw).hexdigest(),
+                token="github-token",
+                client=client,
+                **expected,
+            )
+        self.assertTrue(verified["passed"])
+
+        for label, changes in (
+            ("source", {"expected_source_sha": "d" * 40}),
+            (
+                "runtime bundle",
+                {"expected_runtime_bundle_id": "rtb_" + "d" * 64},
+            ),
+            ("deployment", {"expected_deployment_id": "dpl_other"}),
+            ("snapshot", {"expected_after_snapshot_sha256": "d" * 64}),
+        ):
+            with self.subTest(label=label), httpx.Client(
+                transport=httpx.MockTransport(handler)
+            ) as client:
+                with self.assertRaises(module.GitHubArtifactError):
+                    module.verify_reference(
+                        reference,
+                        expected_report_sha256=hashlib.sha256(report_raw).hexdigest(),
+                        token="github-token",
+                        client=client,
+                        **{**expected, **changes},
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

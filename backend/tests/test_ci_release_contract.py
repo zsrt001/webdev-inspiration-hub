@@ -904,7 +904,7 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
         legacy_restore = workflow.index("Rehearse the legacy source")
         durable_evidence = workflow.index("id: legacy_evidence")
         bridge = workflow.index("alembic upgrade 20260516_0012")
-        formal_preflight = workflow.index("--action preflight")
+        formal_preflight = workflow.index("--action preflight", bridge)
         self.assertLess(discovery, legacy_inventory)
         self.assertLess(discovery, inventory_rls)
         self.assertLess(inventory_rls, legacy_inventory)
@@ -1415,6 +1415,292 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             register.validate_phase_transition("STAGED", "PROMOTED")
         register.validate_phase_transition("STAGED", "PROMOTION_ARMED")
         register.validate_phase_transition("PROMOTION_ARMED", "PROMOTED")
+
+    def test_completed_safe_baseline_is_read_only_idempotent_and_fails_closed(self) -> None:
+        register = _load_script(
+            "scripts/release/register_safe_baseline.py",
+            "register_safe_baseline_completed_preflight_contract",
+        )
+        completed = _load_script(
+            "scripts/release/verify_completed_safe_baseline.py",
+            "verify_completed_safe_baseline_contract",
+        )
+        artifact = _load_script(
+            "scripts/release/github_artifact_evidence.py",
+            "completed_safe_baseline_artifact_reference_contract",
+        )
+        source_sha = "a" * 40
+        runner_sha = "b" * 40
+        repository = "owner/repository"
+        evidence_reference = artifact.build_reference(
+            repository=repository,
+            run_id="12345",
+            artifact_id="67890",
+            artifact_digest="sha256:" + "c" * 64,
+            report_name="formal-verification.json",
+        )
+        activation = {
+            "runtime_bundle_id": "rtb_" + "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "build_artifact_id": "23456",
+            "build_artifact_digest": "sha256:" + "f" * 64,
+            "source_sha": source_sha,
+            "workflow_run_id": "12345",
+            "workflow_attempt": 2,
+            "api_deployment_id": "dpl_exact-coordinate",
+            "api_deployment_url": "https://exact-coordinate.vercel.app",
+            "api_role": "SAFE_BASELINE",
+            "current_snapshot_hash": "1" * 64,
+            "target_snapshot_hash": "3" * 64,
+            "private_evidence_prefix": evidence_reference,
+            "report_sha256": "2" * 64,
+            "phase": "COMPLETED",
+            "version": 7,
+        }
+        preflight = {
+            "action": "preflight",
+            "state": "ALREADY_COMPLETED",
+            "schema_revision": register.TARGET_SCHEMA,
+            "activation_phase": "COMPLETED",
+            "activation": activation,
+            "source_sha": source_sha,
+            "runner_sha": runner_sha,
+            "workflow_run_id": "99999",
+        }
+
+        report, returned_reference, returned_report_sha = (
+            completed.verify_completed_state(
+                preflight,
+                expected_source_sha=source_sha,
+                expected_runner_sha=runner_sha,
+                expected_repository=repository,
+            )
+        )
+
+        self.assertTrue(report["already_completed"])
+        self.assertEqual(report["activation"]["phase"], "COMPLETED")
+        self.assertEqual(
+            report["activation"]["formal_evidence"]["artifact_id"],
+            "67890",
+        )
+        self.assertEqual(returned_reference, evidence_reference)
+        self.assertEqual(returned_report_sha, "2" * 64)
+
+        nonterminal = {
+            **preflight,
+            "state": "RETRY_PROMOTED",
+            "activation_phase": "PROMOTED",
+        }
+        continuation, returned_reference, returned_report_sha = (
+            completed.verify_completed_state(
+                nonterminal,
+                expected_source_sha=source_sha,
+                expected_runner_sha=runner_sha,
+                expected_repository=repository,
+            )
+        )
+        self.assertFalse(continuation["already_completed"])
+        self.assertEqual(returned_reference, "")
+        self.assertEqual(returned_report_sha, "")
+        self.assertNotIn("activation", continuation)
+
+        invalid_cases = {
+            "request source mismatch": {
+                **preflight,
+                "source_sha": "9" * 40,
+            },
+            "activation source mismatch": {
+                **preflight,
+                "activation": {**activation, "source_sha": "9" * 40},
+            },
+            "wrong repository": {
+                **preflight,
+                "activation": {
+                    **activation,
+                    "private_evidence_prefix": artifact.build_reference(
+                        repository="other/repository",
+                        run_id="12345",
+                        artifact_id="67890",
+                        artifact_digest="sha256:" + "c" * 64,
+                        report_name="formal-verification.json",
+                    ),
+                },
+            },
+            "missing immutable snapshot": {
+                **preflight,
+                "activation": {**activation, "current_snapshot_hash": None},
+            },
+            "credentialed deployment URL": {
+                **preflight,
+                "activation": {
+                    **activation,
+                    "api_deployment_url": "https://user:pass@example.com",
+                },
+            },
+            "query-bearing deployment URL": {
+                **preflight,
+                "activation": {
+                    **activation,
+                    "api_deployment_url": "https://example.com/?token=secret",
+                },
+            },
+            "non-Vercel deployment URL": {
+                **preflight,
+                "activation": {
+                    **activation,
+                    "api_deployment_url": "https://evil.example",
+                },
+            },
+            "path-bearing deployment URL": {
+                **preflight,
+                "activation": {
+                    **activation,
+                    "api_deployment_url": "https://exact.vercel.app/secret-path",
+                },
+            },
+            "noncanonical deployment port": {
+                **preflight,
+                "activation": {
+                    **activation,
+                    "api_deployment_url": "https://exact.vercel.app:8443",
+                },
+            },
+            "wrong evidence run": {
+                **preflight,
+                "activation": {
+                    **activation,
+                    "private_evidence_prefix": artifact.build_reference(
+                        repository=repository,
+                        run_id="54321",
+                        artifact_id="67890",
+                        artifact_digest="sha256:" + "c" * 64,
+                        report_name="formal-verification.json",
+                    ),
+                },
+            },
+            "missing target snapshot": {
+                **preflight,
+                "activation": {**activation, "target_snapshot_hash": None},
+            },
+            "missing formal report hash": {
+                **preflight,
+                "activation": {**activation, "report_sha256": None},
+            },
+        }
+        for label, invalid in invalid_cases.items():
+            with self.subTest(label=label):
+                with self.assertRaises(completed.CompletedSafeBaselineError):
+                    completed.verify_completed_state(
+                        invalid,
+                        expected_source_sha=source_sha,
+                        expected_runner_sha=runner_sha,
+                        expected_repository=repository,
+                    )
+
+        connection = mock.MagicMock()
+        connection.execute.return_value.scalar_one.return_value = "on"
+        engine = mock.MagicMock()
+        engine.connect.return_value.__enter__.return_value = connection
+        with (
+            mock.patch.object(register, "create_engine", return_value=engine),
+            mock.patch.object(
+                register,
+                "_current_revision",
+                return_value=register.TARGET_SCHEMA,
+            ),
+            mock.patch.object(register, "_read_activation", return_value=activation),
+        ):
+            completed_preflight = register._preflight(
+                "postgresql://read-only",
+                source_sha=source_sha,
+                runner_sha=runner_sha,
+                workflow_run_id="99999",
+                workflow_attempt=1,
+            )
+        self.assertEqual(completed_preflight["state"], "ALREADY_COMPLETED")
+        self.assertEqual(completed_preflight["activation_phase"], "COMPLETED")
+
+    def test_safe_baseline_workflow_checks_completed_state_before_any_mutation(self) -> None:
+        workflow = _read(".github/workflows/safe-baseline-release.yml")
+        completed_start = workflow.index("  completed-state:")
+        mutating_start = workflow.index("  safe-baseline:")
+        completed_job = workflow[completed_start:mutating_start]
+        mutating_header = workflow[
+            mutating_start:workflow.index("    steps:", mutating_start)
+        ]
+
+        self.assertLess(completed_start, mutating_start)
+        self.assertIn("environment: production", completed_job)
+        self.assertIn("PRODUCTION_READ_ONLY_DATABASE_URL", completed_job)
+        self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", completed_job)
+        self.assertIn(
+            "verify_completed_safe_baseline.py",
+            completed_job,
+        )
+        self.assertIn(
+            "github_artifact_evidence.py verify-reference",
+            completed_job,
+        )
+        self.assertIn('--expected-source-sha "$SOURCE_SHA"', completed_job)
+        self.assertIn(
+            '--expected-runtime-bundle-id "$ACTIVATION_RUNTIME_BUNDLE_ID"',
+            completed_job,
+        )
+        self.assertIn(
+            '--expected-deployment-id "$ACTIVATION_DEPLOYMENT_ID"',
+            completed_job,
+        )
+        self.assertIn(
+            '--expected-after-snapshot-sha256 "$ACTIVATION_TARGET_SNAPSHOT_SHA256"',
+            completed_job,
+        )
+        self.assertIn(
+            "github_artifact_evidence.py lookup-bound-build",
+            completed_job,
+        )
+        self.assertIn(
+            '--artifact-id "$ACTIVATION_BUILD_ARTIFACT_ID"',
+            completed_job,
+        )
+        self.assertIn(
+            '--artifact-digest "$ACTIVATION_BUILD_ARTIFACT_DIGEST"',
+            completed_job,
+        )
+        self.assertIn(
+            "Recheck live current main before terminal success",
+            completed_job,
+        )
+        self.assertIn(
+            'verify_github_ref.py \\\n'
+            '            --repository "$GITHUB_REPOSITORY" \\\n'
+            "            --ref refs/heads/main",
+            completed_job,
+        )
+        self.assertLess(
+            completed_job.index(
+                "github_artifact_evidence.py lookup-bound-build"
+            ),
+            completed_job.index(
+                "Recheck live current main before terminal success"
+            ),
+        )
+        self.assertLess(
+            completed_job.index(
+                "Recheck live current main before terminal success"
+            ),
+            completed_job.index(
+                "Persist the sanitized immutable completion proof"
+            ),
+        )
+        self.assertIn(
+            "if: ${{ steps.completed.outputs.already_completed == 'true' }}",
+            completed_job,
+        )
+        self.assertIn("needs: completed-state", mutating_header)
+        self.assertIn(
+            "if: ${{ needs.completed-state.outputs.already_completed != 'true' }}",
+            mutating_header,
+        )
 
     def test_unbound_reservation_adoption_uses_ancestry_approval_and_exact_cas(self) -> None:
         register = _load_script(

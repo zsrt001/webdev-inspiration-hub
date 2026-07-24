@@ -2010,6 +2010,7 @@ def _preflight(
             validate_promoted_control_descendant(source_sha, effective_runner_sha)
         if state not in {
             "FRESH_INSTALL",
+            "ALREADY_COMPLETED",
             "TAKEOVER_RESERVED",
             "TAKEOVER_RESERVED_BUILD",
             "TAKEOVER_RESERVED_CONTROL",
@@ -2047,6 +2048,7 @@ def _preflight(
                     "api_deployment_url",
                     "api_role",
                     "current_snapshot_hash",
+                    "target_snapshot_hash",
                     "private_evidence_prefix",
                     "report_sha256",
                     "phase",
