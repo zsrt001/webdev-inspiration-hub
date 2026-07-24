@@ -1539,6 +1539,86 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             with self.subTest(retired=retired):
                 self.assertNotIn(retired.lower(), workflow.lower())
 
+    def test_workflow_bootstraps_ref_guard_and_treats_absent_activation_as_clean_noop(self) -> None:
+        workflow = (ROOT / ".github/workflows/integration.yml").read_text(encoding="utf-8")
+        register = workflow[
+            workflow.index("  register:\n") :
+            workflow.index("  smoke:\n")
+        ]
+        self.assertLess(
+            register.index("- name: Verify this is the exact current trusted main commit"),
+            register.index("- name: Install pinned release, backend, and frontend tools"),
+        )
+        checkout = register[
+            register.index("- name: Check out only the workflow commit") :
+            register.index("- uses: actions/setup-python")
+        ]
+        self.assertIn("persist-credentials: false", checkout)
+
+        cleanup = workflow[
+            workflow.index("  cleanup:\n") :
+            workflow.index("  commercial:\n")
+        ]
+        self.assertIn("materialize_preview_cleanup_gate.py", cleanup)
+        self.assertIn("REGISTER_RESULT: ${{ needs.register.result }}", cleanup)
+        self.assertIn('--register-result "$REGISTER_RESULT"', cleanup)
+
+    def test_no_activation_cleanup_gate_is_strict_and_bound_to_register_failure(self) -> None:
+        gate = _load(
+            "preview_cleanup_gate_contract",
+            "scripts/release/materialize_preview_cleanup_gate.py",
+        )
+        report = {
+            "state": "NO_ACTIVATION",
+            "bindings_revoked": 0,
+            "sessions_revoked": 0,
+            "refresh_tokens_revoked": 0,
+            "business_rows": {},
+            "origin_cleanup": {
+                "origin_state_artifact": "ABSENT",
+                "state": "NOT_REQUIRED",
+            },
+        }
+        result = gate.verify_no_activation_report(
+            report,
+            register_result="failure",
+        )
+        self.assertEqual(result["state"], "NO_ACTIVATION_VERIFIED")
+        self.assertEqual(result["side_effects"], 0)
+
+        with self.assertRaises(gate.PreviewCleanupGateError):
+            gate.verify_no_activation_report(report, register_result="success")
+
+        for field in (
+            "bindings_revoked",
+            "sessions_revoked",
+            "refresh_tokens_revoked",
+        ):
+            malformed = {**report, field: False}
+            with self.subTest(boolean_zero=field):
+                with self.assertRaises(gate.PreviewCleanupGateError):
+                    gate.verify_no_activation_report(
+                        malformed,
+                        register_result="failure",
+                    )
+
+        with self.assertRaises(gate.PreviewCleanupGateError):
+            gate.verify_no_activation_report(
+                {**report, "storage_objects_deleted": 7},
+                register_result="failure",
+            )
+        with self.assertRaises(gate.PreviewCleanupGateError):
+            gate.verify_no_activation_report(
+                {
+                    **report,
+                    "origin_cleanup": {
+                        **report["origin_cleanup"],
+                        "callback_urls_removed": 1,
+                    },
+                },
+                register_result="failure",
+            )
+
     def test_production_workflow_is_manual_serialized_and_promotes_only_after_acceptance(self) -> None:
         path = ROOT / ".github" / "workflows" / "production-release.yml"
         self.assertTrue(path.exists(), "manual Production workflow is missing")

@@ -4776,6 +4776,10 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
             "scripts/release/verify_github_ref.py",
             "verify_github_ref_contract",
         )
+        source = _read("scripts/release/verify_github_ref.py")
+        self.assertNotRegex(source, r"(?m)^import httpx$")
+        self.assertNotIn("from httpx", source)
+        self.assertIn("from urllib.request import Request, urlopen", source)
         expected = "a" * 40
 
         def matching(request: httpx.Request) -> httpx.Response:
@@ -4801,6 +4805,43 @@ class SafeBaselineWorkflowContractTest(unittest.TestCase):
                 client=client,
             )
         self.assertEqual(result["sha"], expected)
+
+        class StandardLibraryResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return json.dumps(
+                    {
+                        "ref": "refs/heads/main",
+                        "object": {"type": "commit", "sha": expected},
+                    }
+                ).encode("utf-8")
+
+        with mock.patch.object(
+            module,
+            "urlopen",
+            return_value=StandardLibraryResponse(),
+        ) as open_ref:
+            stdlib_result = module.verify_ref(
+                repository="owner/repo",
+                ref="refs/heads/main",
+                expected_sha=expected,
+                token="github-token",
+            )
+        self.assertEqual(stdlib_result["sha"], expected)
+        request = open_ref.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer github-token")
+        self.assertEqual(
+            request.full_url,
+            "https://api.github.com/repos/owner/repo/git/ref/heads/main",
+        )
 
         with httpx.Client(transport=httpx.MockTransport(matching)) as client:
             with self.assertRaises(module.GitHubRefVerificationError):

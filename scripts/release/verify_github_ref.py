@@ -10,9 +10,10 @@ import os
 from pathlib import Path
 import re
 import sys
+from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-
-import httpx
+from urllib.request import Request, urlopen
 
 
 API_BASE = "https://api.github.com"
@@ -52,13 +53,52 @@ def _sha(value: str) -> str:
     return clean
 
 
+def _read_payload(
+    *,
+    url: str,
+    headers: dict[str, str],
+    client: Any | None,
+) -> tuple[int, Any]:
+    if client is not None:
+        try:
+            response = client.get(url, headers=headers)
+            status_code = int(response.status_code)
+            if status_code != 200:
+                return status_code, None
+            return status_code, response.json()
+        except ValueError as exc:
+            raise GitHubRefVerificationError(
+                "GitHub ref read returned invalid JSON"
+            ) from exc
+        except Exception as exc:
+            raise GitHubRefVerificationError("GitHub ref read failed") from exc
+
+    request = Request(url, headers=headers, method="GET")
+    try:
+        with urlopen(request, timeout=20.0) as response:
+            status_code = int(response.status)
+            body = response.read()
+    except HTTPError as exc:
+        return int(exc.code), None
+    except (OSError, TimeoutError, URLError) as exc:
+        raise GitHubRefVerificationError("GitHub ref read failed") from exc
+    if status_code != 200:
+        return status_code, None
+    try:
+        return status_code, json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GitHubRefVerificationError(
+            "GitHub ref read returned invalid JSON"
+        ) from exc
+
+
 def verify_ref(
     *,
     repository: str,
     ref: str,
     expected_sha: str,
     token: str,
-    client: httpx.Client,
+    client: Any | None = None,
 ) -> dict[str, str | bool]:
     repository_name = _repository(repository)
     canonical_ref = _ref(ref)
@@ -67,23 +107,20 @@ def verify_ref(
     if not clean_token:
         raise ValueError("GitHub token is required")
     api_ref = quote(canonical_ref.removeprefix("refs/"), safe="/")
-    response = client.get(
-        f"{API_BASE}/repos/{repository_name}/git/ref/{api_ref}",
+    status_code, payload = _read_payload(
+        url=f"{API_BASE}/repos/{repository_name}/git/ref/{api_ref}",
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {clean_token}",
             "X-GitHub-Api-Version": API_VERSION,
             "User-Agent": "vowpic-ref-guard/1",
         },
+        client=client,
     )
-    if response.status_code != 200:
+    if status_code != 200:
         raise GitHubRefVerificationError(
-            f"GitHub ref read failed with HTTP {response.status_code}"
+            f"GitHub ref read failed with HTTP {status_code}"
         )
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise GitHubRefVerificationError("GitHub ref read returned invalid JSON") from exc
     target = payload.get("object") if isinstance(payload, dict) else None
     if (
         not isinstance(payload, dict)
@@ -118,14 +155,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         token = os.environ.get(args.token_env, "")
-        with httpx.Client(timeout=20.0) as client:
-            result = verify_ref(
-                repository=args.repository,
-                ref=args.ref,
-                expected_sha=args.expected_sha,
-                token=token,
-                client=client,
-            )
+        result = verify_ref(
+            repository=args.repository,
+            ref=args.ref,
+            expected_sha=args.expected_sha,
+            token=token,
+        )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as handle:
