@@ -18,7 +18,6 @@ from app.models.generation_attempt import (
 )
 from app.models.generation_job import GenerationJob, GenerationJobStatus
 from app.models.order import Order, OrderStatus
-from app.models.outbox_event import OutboxEvent, OutboxEventStatus
 from app.models.qa_verdict import QaDecision, QaVerdict
 from app.services.credit_reservation_service import release_or_refund_reservation
 from app.services.generation_job_service import validate_job_transition
@@ -26,8 +25,6 @@ from app.services.job_lease_service import require_current_generation_fence
 
 
 GENERATION_ATTEMPT_PAYLOAD_VERSION = "generation-attempt.v1"
-GENERATION_ATTEMPT_AGGREGATE_TYPE = "generation_attempt"
-GENERATION_ATTEMPT_CREATED_EVENT = "GENERATION_ATTEMPT_CREATED"
 MAX_CANDIDATE_REPAIRS = 2
 _REASON_CODE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
@@ -119,38 +116,6 @@ def build_repair_attempt(*, job: GenerationJob, verdict: QaVerdict) -> Generatio
         "reason_codes": list(reasons),
     }
     return repair
-
-
-def build_repair_outbox_event(
-    *,
-    repair: GenerationAttempt,
-    now: datetime | None = None,
-) -> OutboxEvent:
-    """Create the one IDs-only, replay-deduplicated handoff for a repair row."""
-
-    if (
-        GenerationAttemptKind(repair.kind) is not GenerationAttemptKind.REPAIR
-        or not isinstance(repair.id, uuid.UUID)
-        or not isinstance(repair.source_verdict_id, uuid.UUID)
-    ):
-        raise RepairInvariantError("generation_repair_outbox_lineage_invalid")
-    current = now or datetime.now(timezone.utc)
-    return OutboxEvent(
-        id=uuid.uuid4(),
-        aggregate_type=GENERATION_ATTEMPT_AGGREGATE_TYPE,
-        aggregate_id=repair.id,
-        event_type=GENERATION_ATTEMPT_CREATED_EVENT,
-        dedupe_key=f"generation-attempt:v1:{repair.id}",
-        payload_version=GENERATION_ATTEMPT_PAYLOAD_VERSION,
-        payload_json={
-            "attempt_id": str(repair.id),
-            "payload_version": GENERATION_ATTEMPT_PAYLOAD_VERSION,
-        },
-        status=OutboxEventStatus.PENDING,
-        attempt_count=0,
-        next_attempt_at=current,
-        fencing_token=0,
-    )
 
 
 async def _load_verdict(db: AsyncSession, verdict_id: uuid.UUID) -> QaVerdict:
@@ -346,7 +311,6 @@ async def decide_next_generation_action(
         repair = build_repair_attempt(job=job, verdict=verdict)
         db.add(repair)
         await db.flush()
-        db.add(build_repair_outbox_event(repair=repair, now=current))
         job.repair_count = int(job.repair_count or 0) + 1
         job.active_attempt_id = repair.id
         job.delivery_status = "REPAIRING"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind one exact all-OFF feature snapshot to a completed Preview Commercial runtime."""
+"""Bind one all-OFF feature snapshot to a completed backend Preview runtime."""
 
 from __future__ import annotations
 
@@ -114,8 +114,9 @@ async def bind_all_off_snapshot(args: argparse.Namespace) -> dict[str, Any]:
                     "source_sha": args.source_sha,
                     "runtime_bundle_id": args.runtime_bundle_id,
                     "api_deployment_id": args.api_deployment_id,
-                    "worker_deployment_id": args.worker_deployment_id,
-                    "worker_image_digest": args.worker_image_digest,
+                    "worker_deployment_id": None,
+                    "worker_role": None,
+                    "worker_image_digest": None,
                     "phase": "COMPLETED",
                 }
                 if activation is None or any(
@@ -151,8 +152,6 @@ async def bind_all_off_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "source_sha": args.source_sha,
             "runtime_bundle_id": args.runtime_bundle_id,
             "api_deployment_id": args.api_deployment_id,
-            "worker_deployment_id": args.worker_deployment_id,
-            "worker_image_digest": args.worker_image_digest,
             "snapshot_sha256": snapshot["snapshot_sha256"],
             "capability_count": snapshot["capability_count"],
         }
@@ -173,8 +172,6 @@ def main() -> int:
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--runtime-bundle-id", required=True)
     parser.add_argument("--api-deployment-id", required=True)
-    parser.add_argument("--worker-deployment-id", required=True)
-    parser.add_argument("--worker-image-digest", required=True)
     parser.add_argument("--database-url-env", default="PREVIEW_CONTROL_DATABASE_URL")
     parser.add_argument("--output", required=True)
     parser.add_argument("--job-env")

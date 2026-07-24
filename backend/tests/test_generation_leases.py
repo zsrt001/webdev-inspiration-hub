@@ -1,4 +1,4 @@
-"""Durable generation Worker lease, recovery, and fencing contracts."""
+"""Durable backend-generation lease, recovery, and fencing contracts."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class _LeaseDb:
         return _ScalarRows(self.attempt_statuses)
 
 
-class WorkerLeaseTest(unittest.IsolatedAsyncioTestCase):
+class GenerationLeaseTest(unittest.IsolatedAsyncioTestCase):
     async def test_same_claim_replay_does_not_increment_fence(self) -> None:
         job = _job()
         db = _LeaseDb(job)
@@ -132,8 +132,8 @@ class WorkerLeaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(job.lease_claim_id)
         self.assertEqual(job.next_retry_at, NOW)
 
-    async def test_worker_commits_reconciliation_routing_before_returning(self) -> None:
-        from app import worker_tasks
+    async def test_backend_commits_reconciliation_routing_before_returning(self) -> None:
+        from app.services import generation_executor_service as executor
 
         job = _job()
         db = SimpleNamespace(commit=AsyncMock())
@@ -151,20 +151,30 @@ class WorkerLeaseTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(
-                worker_tasks,
+                executor,
                 "_load_capability_context",
                 AsyncMock(return_value=(job, uuid.uuid4())),
             ),
-            patch.object(worker_tasks, "async_session_maker", return_value=SessionContext()),
-            patch.object(worker_tasks, "claim_generation_job", side_effect=route_to_reconciliation),
+            patch.object(executor, "async_session_maker", return_value=SessionContext()),
+            patch.object(executor, "claim_generation_job", side_effect=route_to_reconciliation),
+            patch.object(
+                executor,
+                "reconcile_generation_v1",
+                AsyncMock(),
+            ) as reconcile,
         ):
-            await worker_tasks.generate_order_v1(
+            await executor.generate_order_v1(
                 {"worker_id": "worker-a"},
                 str(job.id),
                 "generation-job.v1",
             )
 
         db.commit.assert_awaited_once()
+        reconcile.assert_awaited_once_with(
+            {"worker_id": "worker-a"},
+            str(job.id),
+            "generation-job.v1",
+        )
 
     async def test_prepared_work_can_be_reclaimed_after_expiry(self) -> None:
         job = _job()
@@ -284,6 +294,81 @@ class WorkerLeaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.next_retry_at, NOW + timedelta(seconds=15))
         self.assertIsNone(job.lease_owner)
         self.assertIsNone(job.lease_claim_id)
+
+    async def test_crashed_submitting_attempt_without_task_becomes_manual_unknown(
+        self,
+    ) -> None:
+        job = _job()
+        job.status = GenerationJobStatus.RECONCILING
+        attempt = SimpleNamespace(
+            id=uuid.uuid4(),
+            job_id=job.id,
+            status=GenerationAttemptStatus.SUBMITTING,
+            provider_job_id=None,
+            submitted_at=None,
+        )
+        order = SimpleNamespace(id=job.order_id, status="GENERATING")
+
+        class ReconciliationDb:
+            def __init__(self):
+                self.calls = 0
+
+            async def scalar(self, _statement):
+                self.calls += 1
+                return (job, attempt, order)[self.calls - 1]
+
+        claim = await claim_generation_reconciliation(
+            ReconciliationDb(),
+            job_id=job.id,
+            worker_id="api:recovery",
+            claim_id=uuid.uuid4(),
+            now=NOW,
+        )
+
+        self.assertEqual(attempt.status, GenerationAttemptStatus.UNKNOWN)
+        self.assertEqual(order.status, "UNKNOWN_EXTERNAL_STATE")
+        self.assertEqual(
+            job.last_error_code,
+            "provider_submission_human_required",
+        )
+        self.assertEqual(
+            job.last_error_detail,
+            "submission_recovery_requires_provider_fact",
+        )
+        self.assertEqual(claim.attempt_id, attempt.id)
+
+    async def test_crashed_submitting_attempt_with_callback_task_becomes_submitted(
+        self,
+    ) -> None:
+        job = _job()
+        job.status = GenerationJobStatus.RECONCILING
+        attempt = SimpleNamespace(
+            id=uuid.uuid4(),
+            job_id=job.id,
+            status=GenerationAttemptStatus.SUBMITTING,
+            provider_job_id="task_callback_bound",
+            submitted_at=None,
+        )
+
+        class ReconciliationDb:
+            def __init__(self):
+                self.calls = 0
+
+            async def scalar(self, _statement):
+                self.calls += 1
+                return job if self.calls == 1 else attempt
+
+        claim = await claim_generation_reconciliation(
+            ReconciliationDb(),
+            job_id=job.id,
+            worker_id="api:recovery",
+            claim_id=uuid.uuid4(),
+            now=NOW,
+        )
+
+        self.assertEqual(attempt.status, GenerationAttemptStatus.SUBMITTED)
+        self.assertEqual(attempt.submitted_at, NOW)
+        self.assertEqual(claim.attempt_id, attempt.id)
 
     async def test_finished_candidate_can_be_reclaimed_for_bounded_qa_retry(self) -> None:
         job = _job()

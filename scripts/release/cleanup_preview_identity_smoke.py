@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed cleanup for one protected Preview activation."""
+"""Fail-closed cleanup for one protected website-backend Preview activation."""
 
 from __future__ import annotations
 
@@ -120,20 +120,11 @@ def _validate_activation(activation: ReleaseActivation, args: argparse.Namespace
     if activation.api_role != expected_api_role:
         raise ValueError("Preview cleanup activation role mismatch")
     if role == "PREVIEW_COMMERCIAL":
-        if activation.worker_role != "PREVIEW_COMMERCIAL_WORKER":
-            raise ValueError("Preview cleanup Worker role mismatch")
-        if not re.fullmatch(
-            r"sha256:[0-9a-f]{64}",
-            str(activation.worker_image_digest or "").strip().lower(),
+        if any(
+            getattr(activation, field) is not None
+            for field in ("worker_role", "worker_image_digest", "worker_deployment_id")
         ):
-            raise ValueError("Preview cleanup Worker image digest mismatch")
-        worker_deployment = str(activation.worker_deployment_id or "").strip()
-        if activation.phase != "RESERVED" and not re.fullmatch(
-            r"[A-Za-z0-9_.-]{1,160}", worker_deployment
-        ):
-            raise ValueError("Preview cleanup Worker deployment ID mismatch")
-        if activation.phase == "RESERVED" and worker_deployment:
-            raise ValueError("reserved Preview cleanup cannot own a Worker deployment ID")
+            raise ValueError("Preview cleanup found retired external Worker coordinates")
     if activation.phase not in {"RESERVED", "DEPLOYED", "COMPLETED", "CLEANED"}:
         raise ValueError("Preview cleanup activation phase is invalid")
     if args.runtime_bundle_id and activation.runtime_bundle_id != args.runtime_bundle_id:

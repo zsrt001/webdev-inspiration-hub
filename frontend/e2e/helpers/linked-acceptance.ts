@@ -32,6 +32,23 @@ export interface ApiResult<T = JsonObject> {
   body: T;
 }
 
+function protectedEnvironment(): 'PREVIEW' | 'PRODUCTION' {
+  return process.env.RUN_PREVIEW_E2E === '1' ? 'PREVIEW' : 'PRODUCTION';
+}
+
+function protectedEnvironmentValue(name: string, maximum = 4096): string {
+  const prefix = protectedEnvironment();
+  return requiredString(
+    process.env[`${prefix}_${name}`],
+    `${prefix}_${name}`,
+    maximum,
+  );
+}
+
+function protectedBaseUrl(): string {
+  return protectedEnvironmentValue('BASE_URL', 2048);
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -204,16 +221,17 @@ export function resolveProtectedAsset(relative: unknown): string {
 }
 
 export function releaseBinding(): ReleaseBinding {
+  const prefix = protectedEnvironment();
   const binding = {
-    source_sha: requiredString(process.env.PRODUCTION_SOURCE_SHA, 'Production source SHA').toLowerCase(),
+    source_sha: protectedEnvironmentValue('SOURCE_SHA').toLowerCase(),
     runtime_bundle_id: requiredString(
-      process.env.PRODUCTION_RUNTIME_BUNDLE_ID,
-      'Production runtime bundle ID',
+      process.env[`${prefix}_RUNTIME_BUNDLE_ID`],
+      `${prefix}_RUNTIME_BUNDLE_ID`,
     ).toLowerCase(),
-    deployment_id: requiredString(process.env.PRODUCTION_DEPLOYMENT_ID, 'Production deployment ID'),
+    deployment_id: protectedEnvironmentValue('DEPLOYMENT_ID'),
     manifest_sha256: requiredString(
-      process.env.PRODUCTION_MANIFEST_SHA256,
-      'Production manifest SHA-256',
+      process.env[`${prefix}_MANIFEST_SHA256`],
+      `${prefix}_MANIFEST_SHA256`,
     ).toLowerCase(),
   };
   if (
@@ -222,7 +240,7 @@ export function releaseBinding(): ReleaseBinding {
     || !COORDINATE.test(binding.deployment_id)
     || !SHA64.test(binding.manifest_sha256)
   ) {
-    throw new Error('Production release binding is invalid');
+    throw new Error(`${prefix} release binding is invalid`);
   }
   return binding;
 }
@@ -253,7 +271,7 @@ export async function api<T = JsonObject>(
   const headers: Record<string, string> = { ...(options.headers || {}) };
   if (method !== 'GET') {
     headers['X-CSRF-Token'] = await csrfToken(page);
-    headers.Origin = requiredString(process.env.PRODUCTION_BASE_URL, 'Production base URL', 2048);
+    headers.Origin = protectedBaseUrl();
   }
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   const result = await page.evaluate(async ({ endpoint: url, method: verb, headers: requestHeaders, body }) => {
@@ -283,7 +301,7 @@ export async function uploadProtectedAsset(
   const response = await page.request.post('/api/v1/media/uploads', {
     headers: {
       'X-CSRF-Token': csrf,
-      Origin: requiredString(process.env.PRODUCTION_BASE_URL, 'Production base URL', 2048),
+      Origin: protectedBaseUrl(),
     },
     multipart: {
       [fieldName]: {
@@ -300,9 +318,7 @@ export async function uploadProtectedAsset(
 }
 
 export async function completeGoogleLogin(page: Page, identityEmail: string): Promise<void> {
-  const base = new URL(
-    requiredString(process.env.PRODUCTION_BASE_URL, 'Production base URL', 2048),
-  );
+  const base = new URL(protectedBaseUrl());
   await page.goto('/pages/auth/login');
   const button = page.locator('button.google-button');
   await expect(button).toBeVisible();
@@ -341,6 +357,27 @@ export async function pollJson<T>(
   let lastStatus = 0;
   while (Date.now() < deadline) {
     const result = await api<T>(page, endpoint, { expected: [200, 404, 409, 503] });
+    lastStatus = result.status;
+    if (result.status === 200 && predicate(result.body)) return result.body;
+    await page.waitForTimeout(2_000);
+  }
+  throw new Error(`${label} did not reach its required state; last HTTP status ${lastStatus}`);
+}
+
+export async function pollActionJson<T>(
+  page: Page,
+  endpoint: string,
+  predicate: (value: T) => boolean,
+  timeoutSeconds: number,
+  label: string,
+): Promise<T> {
+  const deadline = Date.now() + requiredPositiveInteger(timeoutSeconds, `${label} timeout`) * 1000;
+  let lastStatus = 0;
+  while (Date.now() < deadline) {
+    const result = await api<T>(page, endpoint, {
+      method: 'POST',
+      expected: [200, 404, 409, 503],
+    });
     lastStatus = result.status;
     if (result.status === 200 && predicate(result.body)) return result.body;
     await page.waitForTimeout(2_000);

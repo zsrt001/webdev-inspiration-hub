@@ -16,7 +16,12 @@ import httpx
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "release" / "resolve_release_coordinates.py"
+SCRIPT = (
+    ROOT
+    / "scripts"
+    / "release"
+    / "resolve_release_coordinates.py"
+)
 ARTIFACT_SCRIPT = ROOT / "scripts" / "release" / "github_artifact_evidence.py"
 
 
@@ -52,8 +57,6 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
             "private_compatible_baseline_deployment_url": "https://baseline.vercel.app",
             "staged_target_deployment_id": "dpl_target",
             "staged_target_deployment_url": "https://target.vercel.app",
-            "worker_deployment_id": "worker-production-1",
-            "worker_image_digest": "sha256:" + "d" * 64,
         }
         report = {
             "schema": "vowpic.release-phase-report.v1",
@@ -62,7 +65,7 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
             "kind": "COMMERCIAL_7A",
             "source_sha": "a" * 40,
             "phase": "MANIFEST_SEALED",
-            "phase_rank": 4,
+            "phase_rank": 3,
             "previous_report_sha256": "e" * 64,
             "phase_evidence": {
                 "phase": "MANIFEST_SEALED",
@@ -72,7 +75,7 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
             "evidence_chain": [
                 {
                     "phase": "MANIFEST_SEALED",
-                    "phase_rank": 4,
+                    "phase_rank": 3,
                     "phase_evidence_sha256": "f" * 64,
                     "coordinates": manifest_coordinates,
                 }
@@ -92,9 +95,9 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
             "api_deployment_id": manifest_coordinates["staged_target_deployment_id"],
             "api_deployment_url": manifest_coordinates["staged_target_deployment_url"],
             "api_role": "COMMERCIAL_7A_API",
-            "worker_deployment_id": manifest_coordinates["worker_deployment_id"],
-            "worker_role": "COMMERCIAL_7A_WORKER",
-            "worker_image_digest": manifest_coordinates["worker_image_digest"],
+            "worker_deployment_id": None,
+            "worker_role": None,
+            "worker_image_digest": None,
             "private_evidence_prefix": "artifacts/release/a/123-1",
             "workflow_run_id": "123",
             "workflow_attempt": 1,
@@ -149,11 +152,13 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
             "api_deployment_id": "dpl_target",
             "staged_target_deployment_id": "dpl_target",
             "private_compatible_baseline_deployment_id": "dpl_baseline",
-            "worker_deployment_id": "worker-production-1",
-            "worker_image_digest": "sha256:" + "c" * 64,
+            "worker_deployment_id": None,
+            "worker_image_digest": None,
             "preview_id": None,
             "api_compatibility_version": "vowpic-api.v1",
-            "worker_compatibility_version": "vowpic-worker.v1",
+            "backend_execution_version": "vowpic-backend-executor.v1",
+            "backend_executor_digest": "sha256:" + "c" * 64,
+            "worker_compatibility_version": None,
             "job_payload_min": "generation-job.v1",
             "job_payload_max": "generation-job.v1",
             "contract_hashes": {
@@ -167,13 +172,11 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
                 "gate": "3" * 64,
                 "runtime": "4" * 64,
                 "database_roles": "5" * 64,
-                "worker_host": "6" * 64,
             },
             "tool_versions": {
                 "python": "3.11.15",
                 "node": "24.17.0",
                 "vercel": "56.2.0",
-                "docker": "27.5.1",
             },
         }
         raw = build_manifest.canonical_manifest_bytes(
@@ -285,7 +288,7 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.resolve_records("production", [], {}, now=datetime.now(timezone.utc))
 
-    def test_preview_commercial_requires_manifest_worker_and_active_role_binding(self) -> None:
+    def test_preview_commercial_requires_manifest_backend_and_active_role_binding(self) -> None:
         module = _module()
         self.assertIn("preview-commercial", module.SPEC_BY_KIND)
         now = datetime.now(timezone.utc)
@@ -299,9 +302,9 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
             "api_deployment_id": "dpl_preview_commercial",
             "api_deployment_url": "https://preview-commercial.vercel.app",
             "api_role": "PREVIEW_COMMERCIAL_API",
-            "worker_deployment_id": "worker-preview-1",
-            "worker_role": "PREVIEW_COMMERCIAL_WORKER",
-            "worker_image_digest": "sha256:" + "d" * 64,
+            "worker_deployment_id": None,
+            "worker_role": None,
+            "worker_image_digest": None,
             "private_evidence_prefix": "artifacts/release/a/run/dpl/c/",
             "workflow_run_id": "12345",
             "workflow_attempt": 1,
@@ -328,7 +331,7 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
 
         resolved = module.resolve_records("preview-commercial", [activation], report, now=now)
         self.assertEqual(resolved["manifest_sha256"], activation["manifest_sha256"])
-        self.assertEqual(resolved["worker_image_digest"], activation["worker_image_digest"])
+        self.assertIsNone(resolved["worker_image_digest"])
         self.assertEqual(resolved["private_evidence_prefix"], activation["private_evidence_prefix"])
 
         for changed in (
@@ -358,9 +361,9 @@ class ReleaseCoordinateResolverTest(unittest.TestCase):
             "api_deployment_id": "dpl_preview_commercial",
             "api_deployment_url": "https://preview-commercial.vercel.app",
             "api_role": "PREVIEW_COMMERCIAL_API",
-            "worker_deployment_id": "worker-preview-1",
-            "worker_role": "PREVIEW_COMMERCIAL_WORKER",
-            "worker_image_digest": "sha256:" + "d" * 64,
+            "worker_deployment_id": None,
+            "worker_role": None,
+            "worker_image_digest": None,
             "private_evidence_prefix": "artifacts/release/a/run/dpl/c/",
             "workflow_run_id": "12345",
             "workflow_attempt": 1,

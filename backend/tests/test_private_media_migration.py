@@ -32,9 +32,6 @@ class PrivateMediaMigrationTest(unittest.TestCase):
         cls.verifier = importlib.import_module(
             "scripts.release.verify_private_media"
         )
-        cls.drain = importlib.import_module(
-            "scripts.release.verify_runtime_drain"
-        )
 
     def test_reference_roles_are_explicit_and_unknowns_fail_closed(self) -> None:
         origin = "https://public.example"
@@ -307,53 +304,6 @@ class PrivateMediaMigrationTest(unittest.TestCase):
         result_end = source.index("\n  };", result_start)
         self.assertNotIn("url:", source[result_start:result_end])
         self.assertIn("await unlink(manifestPath)", source)
-
-    def test_runtime_drain_requires_exact_api_worker_and_empty_queue(self) -> None:
-        verdict = self.drain.build_drain_verdict(
-            version={"deployment_id": "dpl_target"},
-            ready={"status": "ready"},
-            expected_api_deployment_id="dpl_target",
-            expected_worker_deployment_id="worker-1",
-            old_coordinates={"dpl_old", "worker-old"},
-            queue_depth=0,
-            worker_heartbeat={"worker_deployment_id": "worker-1"},
-            waited_seconds=330,
-        )
-        self.assertTrue(verdict["passed"])
-        for changes, error in (
-            ({"queue_depth": 1}, "queue is not empty"),
-            (
-                {"version": {"deployment_id": "dpl_old"}},
-                "deployment ID mismatch",
-            ),
-            (
-                {
-                    "worker_heartbeat": {
-                        "worker_deployment_id": "worker-old"
-                    }
-                },
-                "Worker deployment drain",
-            ),
-        ):
-            arguments = {
-                "version": {"deployment_id": "dpl_target"},
-                "ready": {"status": "ready"},
-                "expected_api_deployment_id": "dpl_target",
-                "expected_worker_deployment_id": "worker-1",
-                "old_coordinates": {"dpl_old", "worker-old"},
-                "queue_depth": 0,
-                "worker_heartbeat": {
-                    "worker_deployment_id": "worker-1"
-                },
-                "waited_seconds": 330,
-            }
-            arguments.update(changes)
-            with self.subTest(error=error), self.assertRaisesRegex(
-                ValueError,
-                error,
-            ):
-                self.drain.build_drain_verdict(**arguments)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import secrets
 import time
 from datetime import datetime, timezone
@@ -16,15 +15,7 @@ from sqlalchemy import text
 from app.core.config import get_settings
 from app.core.database import async_session_maker, control_plane_async_session_maker
 from app.core.database_role_proof import validate_database_role_proof
-from app.core.redis_client import get_redis
-from app.core.task_queue import get_pool
 from app.services.generation_service import generation_service
-from app.services.job_lease_service import (
-    GENERATION_SCHEMA_REVISION,
-    WorkerHeartbeatInvalid,
-    read_worker_runtime_heartbeat,
-    worker_runtime_config_hash,
-)
 from app.services.runtime_bundle_service import public_runtime_bundle
 from app.services.storage import DeleteResult, storage_service
 
@@ -62,40 +53,6 @@ def _cors_origin_hosts() -> set[str]:
         if parsed.hostname:
             hosts.add(parsed.hostname.lower())
     return hosts
-
-
-def _redis_required() -> bool:
-    return settings.using_background_queue
-
-
-def _task_queue_required() -> bool:
-    return settings.using_background_queue
-
-
-def _worker_heartbeat_required() -> bool:
-    return bool(settings.worker_image_digest.strip())
-
-
-def _validate_queue_redis_url(value: str) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return "REDIS_URL is required when TASK_EXECUTION_MODE=arq"
-    try:
-        parsed = urlparse(raw)
-        host = (parsed.hostname or "").strip().lower()
-    except (TypeError, ValueError):
-        return "REDIS_URL must be a valid redis(s) URL"
-    if parsed.scheme.lower() not in {"redis", "rediss"} or not host:
-        return "REDIS_URL must be a valid redis(s) URL"
-    if host == "localhost" or host.endswith(".local"):
-        return "REDIS_URL must not target a local host outside development"
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return None
-    if address.is_loopback or address.is_unspecified:
-        return "REDIS_URL must not target a local host outside development"
-    return None
 
 
 def validate_commercial_config_values() -> list[str]:
@@ -153,10 +110,8 @@ def validate_commercial_config_values() -> list[str]:
             errors.append(
                 "SUPABASE_URL and SUPABASE_ANON_KEY are required for commercial OAuth"
             )
-    if settings.runtime_environment != "development" and settings.using_background_queue:
-        redis_url_error = _validate_queue_redis_url(settings.redis_url)
-        if redis_url_error:
-            errors.append(redis_url_error)
+    if not settings.using_backend_generation_execution:
+        errors.append("TASK_EXECUTION_MODE must be backend or auto")
     if not settings.effective_cleanup_cron_token:
         errors.append("CLEANUP_CRON_TOKEN or CRON_SECRET is required for automatic image deletion")
     if not settings.cors_origins and not settings.is_vercel_runtime:
@@ -186,6 +141,13 @@ def validate_commercial_config_values() -> list[str]:
     )
     if webhook_base_url_error:
         errors.append(webhook_base_url_error)
+
+    evolink_callback_base_url_error = _validate_public_base_url(
+        "EVOLINK_CALLBACK_BASE_URL",
+        settings.effective_evolink_callback_base_url,
+    )
+    if evolink_callback_base_url_error:
+        errors.append(evolink_callback_base_url_error)
 
     if settings.provider_grant_origin:
         provider_grant_origin_error = _validate_public_base_url(
@@ -275,61 +237,12 @@ async def _check_database_role(
     return True, detail
 
 
-async def _check_redis() -> tuple[bool, str]:
-    if not _redis_required():
-        return True, "not_required"
-    redis = await get_redis()
-    pong = await redis.ping()
-    if not pong:
-        raise RuntimeError("redis ping failed")
-    return True, "ok"
-
-
-async def _check_task_queue() -> tuple[bool, str]:
-    if not _task_queue_required():
-        return True, "not_required"
-    pool = await get_pool()
-    pong = await pool.ping()
-    if not pong:
-        raise RuntimeError("task queue ping failed")
-    return True, "ok"
-
-
-async def _check_worker_heartbeat() -> tuple[bool, str]:
-    if not _worker_heartbeat_required():
-        return True, "not_required"
-    try:
-        redis = await get_redis()
-        heartbeat = await read_worker_runtime_heartbeat(
-            redis,
-            environment=settings.runtime_environment,
-            runtime_bundle_id=settings.runtime_bundle_id.strip().lower(),
-        )
-    except WorkerHeartbeatInvalid as exc:
-        return False, str(exc)
-    expected = {
-        "source_sha": settings.source_sha,
-        "api_deployment_id": settings.deployment_id,
-        "worker_image_digest": settings.worker_image_digest.strip().lower(),
-        "schema_revision": GENERATION_SCHEMA_REVISION,
-        "payload_min": "generation-job.v1",
-        "payload_max": "generation-job.v1",
-        "config_hash": worker_runtime_config_hash(),
-    }
-    for field, value in expected.items():
-        if getattr(heartbeat, field) != value:
-            return False, f"worker_heartbeat_{field}_mismatch"
-    if heartbeat.current_feature_snapshot_hash != heartbeat.target_feature_snapshot_hash:
-        return False, "worker_feature_snapshot_mismatch"
-    return True, "ok"
-
-
 async def _check_generation_runtime() -> tuple[bool, str]:
     return await generation_service.ping_runtime()
 
 
-async def _check_generation_queue() -> tuple[bool, str]:
-    return await generation_service.probe_queue_capability()
+async def _check_generation_backend() -> tuple[bool, str]:
+    return await generation_service.probe_backend_capability()
 
 
 def _check_storage_config() -> tuple[bool, str]:
@@ -418,7 +331,7 @@ async def _run_check(name: str, coro, *, timeout_s: float = 5.0) -> tuple[str, d
 async def run_readiness_checks(
     *,
     probe_storage: bool = False,
-    probe_generation_queue: bool = False,
+    probe_generation_backend: bool = False,
     strict_mode: bool | None = None,
 ) -> dict[str, Any]:
     strict = (not settings.debug) if strict_mode is None else bool(strict_mode)
@@ -435,7 +348,7 @@ async def run_readiness_checks(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "strict_mode": True,
             "probe_storage": probe_storage,
-            "probe_generation_queue": probe_generation_queue,
+            "probe_generation_backend": probe_generation_backend,
             "commercial_ready": False,
             "blockers": ["commercial_config"],
             "checks": checks,
@@ -470,16 +383,14 @@ async def run_readiness_checks(
             timeout_s=15.0,
         )
         checks[name] = result
-    name, result = await _run_check("redis", _check_redis)
-    checks[name] = result
-    name, result = await _run_check("task_queue", _check_task_queue)
-    checks[name] = result
-    name, result = await _run_check("worker_heartbeat", _check_worker_heartbeat)
-    checks[name] = result
     name, result = await _run_check("generation_runtime", _check_generation_runtime)
     checks[name] = result
-    if probe_generation_queue:
-        name, result = await _run_check("generation_queue_probe", _check_generation_queue, timeout_s=90.0)
+    if probe_generation_backend:
+        name, result = await _run_check(
+            "generation_backend_probe",
+            _check_generation_backend,
+            timeout_s=90.0,
+        )
         checks[name] = result
 
     start = time.perf_counter()
@@ -509,12 +420,6 @@ async def run_readiness_checks(
         checks[name] = result
 
     required = ["database", "generation_runtime", "storage_config"]
-    if _redis_required():
-        required.append("redis")
-    if _task_queue_required():
-        required.append("task_queue")
-    if _worker_heartbeat_required():
-        required.append("worker_heartbeat")
     if strict:
         required.insert(0, "payments_config")
         required.insert(0, "commercial_config")
@@ -523,15 +428,15 @@ async def run_readiness_checks(
         )
     if probe_storage:
         required.append("storage_rw_probe")
-    if probe_generation_queue:
-        required.append("generation_queue_probe")
+    if probe_generation_backend:
+        required.append("generation_backend_probe")
 
     blockers = [key for key in required if not checks.get(key, {}).get("ok", False)]
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "strict_mode": strict,
         "probe_storage": probe_storage,
-        "probe_generation_queue": probe_generation_queue,
+        "probe_generation_backend": probe_generation_backend,
         "commercial_ready": len(blockers) == 0,
         "blockers": blockers,
         "checks": checks,
@@ -590,26 +495,12 @@ async def run_core_readiness_checks(*, strict_mode: bool | None = None) -> dict[
             timeout_s=15.0,
         )
         checks[name] = result
-    name, result = await _run_check("redis", _check_redis)
-    checks[name] = result
-    name, result = await _run_check("task_queue", _check_task_queue)
-    checks[name] = result
-    name, result = await _run_check("worker_heartbeat", _check_worker_heartbeat)
-    checks[name] = result
-
     required = ["database"]
     if strict:
         required.insert(0, "commercial_config")
         required.extend(
             ["database_schema", "database_role", "control_plane_database"]
         )
-    if _redis_required():
-        required.append("redis")
-    if _task_queue_required():
-        required.append("task_queue")
-    if _worker_heartbeat_required():
-        required.append("worker_heartbeat")
-
     blockers = [key for key in required if not checks.get(key, {}).get("ok", False)]
     ready = len(blockers) == 0
     return {

@@ -1,6 +1,7 @@
 """Application configuration using pydantic-settings."""
 
 from functools import lru_cache
+import hashlib
 import ipaddress
 from pathlib import Path
 import re
@@ -81,16 +82,15 @@ class Settings(BaseSettings):
     )
     runtime_bundle_id: str = ""
     release_role: str = Field(default="", validation_alias="RELEASE_ROLE")
-    worker_image_digest: str = ""
     acceptance_identity_hmac_key: str = ""
 
     # Database (Supabase/Neon compatible)
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_wedding"
     control_plane_database_url: str = ""
 
-    # Redis
+    # Optional Redis cache. Generation execution stays in the website backend.
     redis_url: str = "redis://localhost:6379/0"
-    task_execution_mode: str = "auto"  # auto | arq | inline
+    task_execution_mode: str = "auto"  # auto | backend | inline (development only)
 
     # AWS S3 Storage (for Vercel deployment)
     aws_access_key_id: str = ""
@@ -147,6 +147,7 @@ class Settings(BaseSettings):
     evolink_poll_interval: float = 5.0
     evolink_poll_timeout: int = 720
     evolink_max_retries: int = 2
+    evolink_callback_base_url: str = ""  # Exact deployment-bound callback origin
     gatekeeper_allow_without_pillow: bool = False
     qa_allow_without_pillow: bool = False
     qa_require_vision: bool = False
@@ -199,6 +200,7 @@ class Settings(BaseSettings):
     creem_api_key: str = ""
     creem_webhook_secret: str = ""
     creem_api_base_url: str = "https://api.creem.io"
+    creem_callback_host: str = ""
     creem_product_pack_50: str = ""
     creem_product_pack_120: str = ""
     creem_product_pack_300: str = ""
@@ -364,14 +366,33 @@ class Settings(BaseSettings):
             errors.append("RELEASE_ROLE must identify an approved Production role")
         if len(self.acceptance_identity_hmac_key.strip()) < 32:
             errors.append("ACCEPTANCE_IDENTITY_HMAC_KEY must contain at least 32 characters")
-        digest = self.worker_image_digest.strip()
-        if digest and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-            errors.append("WORKER_IMAGE_DIGEST must be a sha256 OCI digest")
         return errors
 
     @property
     def runtime_coordinates_valid(self) -> bool:
         return not self.runtime_coordinate_errors
+
+    @property
+    def backend_executor_digest(self) -> str:
+        """Stable non-secret stamp for the API deployment's generation executor.
+
+        The deployed generation-job schema still has a legacy worker-named
+        column. New website-backend jobs store this API-bound digest there until
+        a separately reviewed schema cleanup can rename the deployed column.
+        """
+        coordinates = (
+            self.deployment_id,
+            self.runtime_bundle_id.strip().lower(),
+            self.source_sha,
+        )
+        if (
+            not all(coordinates)
+            or not re.fullmatch(r"rtb_[0-9a-f]{64}", coordinates[1])
+            or not re.fullmatch(r"[0-9a-f]{40,64}", coordinates[2])
+        ):
+            return ""
+        canonical = "\n".join(coordinates).encode("utf-8")
+        return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
     @property
     def effective_control_plane_database_url(self) -> str:
@@ -592,6 +613,13 @@ class Settings(BaseSettings):
         return "http://localhost:8001"
 
     @property
+    def effective_evolink_callback_base_url(self) -> str:
+        explicit = self._normalize_public_base_url(self.evolink_callback_base_url)
+        if explicit:
+            return explicit
+        return self.effective_webhook_base_url
+
+    @property
     def effective_provider_grant_origin(self) -> str:
         explicit = self._normalize_public_base_url(self.provider_grant_origin)
         if explicit:
@@ -609,19 +637,23 @@ class Settings(BaseSettings):
     @property
     def generation_execution_mode(self) -> str:
         mode = (self.task_execution_mode or "").strip().lower()
-        if mode in {"inline", "sync", "direct"}:
+        if mode in {"inline", "sync"}:
             return "inline" if self.runtime_environment == "development" and self.debug else "disabled"
-        if mode in {"arq", "queue", "redis"}:
-            return "arq"
-        return "arq"
+        if mode in {"backend", "direct", "api", "auto", ""}:
+            return "backend"
+        return "disabled"
 
     @property
     def using_inline_generation_execution(self) -> bool:
         return self.generation_execution_mode == "inline"
 
     @property
+    def using_backend_generation_execution(self) -> bool:
+        return self.generation_execution_mode == "backend"
+
+    @property
     def using_background_queue(self) -> bool:
-        return self.generation_execution_mode == "arq"
+        return False
 
     @property
     def payment_mode(self) -> str:

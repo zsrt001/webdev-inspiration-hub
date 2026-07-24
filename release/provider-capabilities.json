@@ -6,7 +6,7 @@
       "task_query_endpoint": "/v1/tasks/{task_id}",
       "ambiguous_submission_policy": "hold_without_resubmit",
       "official_sources": [
-        "https://docs.evolink.ai/en/api-manual/image-series/gpt-image-2/gpt-image-2-image-generation",
+        "https://evolink.ai/docs/en/api-manual/image-series/nanobanana/nanobanana-pro-image-generate",
         "https://docs.evolink.ai/en/api-manual/task-management/get-task-detail"
       ],
       "implemented_by": [

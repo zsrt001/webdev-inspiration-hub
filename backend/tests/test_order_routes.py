@@ -98,6 +98,10 @@ class PrivateOrderRoutesTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.body, b"private-jpeg")
         self.assertEqual(response.headers["cache-control"], "private, no-store")
+        self.assertEqual(
+            response.headers["content-disposition"],
+            f'inline; filename="vowpic-final-master-{asset_id}.jpg"',
+        )
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertNotIn("object_key", str(response.headers).lower())
         self.assertNotIn("http", str(response.headers).lower())

@@ -126,12 +126,8 @@ def _build_next_steps(report: dict[str, Any]) -> list[str]:
         steps.append("补齐严格运行时配置，并确保受保护环境使用 `DEBUG=false`。")
     if "database" in blockers:
         steps.append("检查 `DATABASE_URL` 是否指向可连接且权限正确的 PostgreSQL。")
-    if "redis" in blockers:
-        steps.append("检查 `REDIS_URL`、实例连通性和队列隔离配置。")
-    if "task_queue" in blockers:
-        steps.append("检查 ARQ Worker、Redis、部署坐标和新鲜心跳。")
     if "generation_runtime" in blockers:
-        steps.append("检查 Evolink 凭据、已验证的提交对账合同和 Worker 运行时。")
+        steps.append("检查 EvoLink 凭据、网站后端生成执行配置和任务查询链路。")
     if "storage_config" in blockers or "storage_rw_probe" in blockers:
         steps.append("检查私有对象存储配置；如使用 Vercel Blob，确认读写令牌只存在于服务端。")
     if "payments_config" in blockers:
@@ -148,7 +144,7 @@ def _render_console(payload: dict[str, Any]) -> str:
     lines.append("=== AI Wedding Studio Production Preflight ===")
     lines.append(f"strict_mode: {payload['strict_mode']}")
     lines.append(f"probe_storage: {payload['probe_storage']}")
-    lines.append(f"probe_generation_queue: {payload['probe_generation_queue']}")
+    lines.append(f"probe_generation_backend: {payload['probe_generation_backend']}")
     lines.append(f"commercial_ready: {payload['commercial_ready']}")
     lines.append("")
     lines.append("Checks:")
@@ -179,7 +175,9 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     lines.append("")
     lines.append(f"- `strict_mode`: `{payload['strict_mode']}`")
     lines.append(f"- `probe_storage`: `{payload['probe_storage']}`")
-    lines.append(f"- `probe_generation_queue`: `{payload['probe_generation_queue']}`")
+    lines.append(
+        f"- `probe_generation_backend`: `{payload['probe_generation_backend']}`"
+    )
     lines.append(f"- `commercial_ready`: `{payload['commercial_ready']}`")
     lines.append("")
     lines.append("## Checks")
@@ -210,13 +208,16 @@ async def _run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     settings = get_settings()
     readiness = await run_readiness_checks(
         probe_storage=bool(args.probe_storage),
-        probe_generation_queue=bool(args.probe_generation_queue),
+        probe_generation_backend=bool(args.probe_generation_backend),
         strict_mode=not bool(args.non_strict),
     )
     payload = {
         "strict_mode": readiness.get("strict_mode", True),
         "probe_storage": readiness.get("probe_storage", False),
-        "probe_generation_queue": readiness.get("probe_generation_queue", False),
+        "probe_generation_backend": readiness.get(
+            "probe_generation_backend",
+            False,
+        ),
         "commercial_ready": readiness.get("commercial_ready", False),
         "blockers": readiness.get("blockers", []),
         "readiness": readiness,
@@ -234,7 +235,11 @@ def _write_text(path: Path, content: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Production preflight for commercial deployment")
     parser.add_argument("--probe-storage", action="store_true", help="Run a real storage upload/delete probe")
-    parser.add_argument("--probe-generation-queue", action="store_true", help="Run a real provider queue probe")
+    parser.add_argument(
+        "--probe-generation-backend",
+        action="store_true",
+        help="Run the website-backend generation capability probe",
+    )
     parser.add_argument("--non-strict", action="store_true", help="Run in non-strict mode")
     parser.add_argument("--write-artifacts", action="store_true", help="Write JSON and Markdown reports to backend/artifacts")
     parser.add_argument("--json-out", default=None, help="Optional JSON output path")

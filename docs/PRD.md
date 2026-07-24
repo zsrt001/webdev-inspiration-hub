@@ -3,7 +3,9 @@
 > 版本：v4.1
 > 日期：2026-07-13
 > 状态：当前产品合同；实现状态必须以代码、测试和发布证据为准
-> 上位设计：`docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md`
+> 当前架构：`docs/ARCHITECTURE.md`
+> 当前生产收口计划：`docs/operations/vowpic-finite-production-closure-plan.md`
+> 2026-07-10 商业闭环设计仅作历史决策追溯，不再作为当前运行拓扑权威。
 
 ## 1. 产品定义
 
@@ -33,7 +35,7 @@ VowPic 是面向海外用户的响应式 Web SaaS。用户通过浏览器登录�
 - 不提供游客账户或公开密码登录。
 - 不在当前公开版本中提供匿名远程合拍、Live Portrait、本地影楼推荐或线索 CRM。
 - 不用静态样例、假商家、假支付、假生成结果或 Admin Probe 冒充普通用户主链路。
-- 不在本阶段更换 FastAPI、Vue 3/Uni-app、PostgreSQL、Redis/ARQ 或 Creem 技术边界。
+- 不在本阶段更换 FastAPI、Vue 3/Uni-app、PostgreSQL 或 Creem 技术边界。Redis 仅可作为可选缓存，不是生成队列或生产前提。
 
 ## 3. 用户与权限
 
@@ -51,7 +53,7 @@ VowPic 是面向海外用户的响应式 Web SaaS。用户通过浏览器登录�
 
 ### 3.3 服务身份
 
-- Worker、定时任务、对账和清理任务使用独立的最小权限凭据。
+- 网站后端、定时维护、对账和清理任务使用各自所需的最小权限凭据。
 - 服务身份不得复用普通用户或管理员浏览器会话。
 
 ## 4. 公开创作模式
@@ -96,12 +98,12 @@ VowPic 是面向海外用户的响应式 Web SaaS。用户通过浏览器登录�
 ### 5.4 创建与生成
 
 1. 服务端重新校验身份、素材所有权、模式、模板、定价和可用积分。
-2. 订单、积分预留、generation job 和 outbox 在一个数据库事务中持久化。
-3. Worker 按租约领取任务并调用唯一获批的生产图像 Provider。
+2. 订单、积分预留和 generation job 在一个数据库事务中持久化；生成调度不依赖 outbox。
+3. FastAPI 网站后端按 PostgreSQL 租约领取任务并调用唯一获批的生产图像 Provider。
 4. 超时、拒绝、配额、无效响应和重复投递必须具有有限重试、幂等和可观察错误状态。
-5. 排队失败释放预留；Provider 或平台失败按账本规则退款或补偿，不能直接改写历史流水。
+5. 后端领取或执行失败释放预留；Provider 或平台失败按账本规则退款或补偿，不能直接改写历史流水。
 
-当前目标生产图像 Provider 为 Evolink；仓库中仍存在的其他生成适配器属于后续收敛与迁移范围，不能被隐式 fallback 启用。
+当前生产图像 Provider 仅为 Evolink；生成服务拒绝任何非 Evolink 配置且不存在隐式 fallback。遗留 outbox 表只保留下载审计或历史 schema 兼容用途，不参与生成调度。
 
 ### 5.5 质量检查与交付
 
@@ -134,7 +136,7 @@ VowPic 是面向海外用户的响应式 Web SaaS。用户通过浏览器登录�
 - 失败、退款/积分释放处理中；
 - 已删除或保留期到期。
 
-刷新、重复提交、网络中断和 Worker 重启不得产生重复订单、重复扣费或重复 Provider 调用。历史订单可以保留旧模式元数据用于只读解释，但不能重新暴露已退役入口。
+刷新、重复提交、网络中断和网站后端重启不得产生重复订单、重复扣费或重复 Provider 调用。历史订单可以保留旧模式元数据用于只读解释，但不能重新暴露已退役入口。
 
 ## 8. 页面与交互要求
 
@@ -214,17 +216,16 @@ VowPic 是面向海外用户的响应式 Web SaaS。用户通过浏览器登录�
 
 只有获批实施计划中全部强制任务、真实外部服务集成、Preview 门、staged Production 门、正式域名门、回滚演练和 release bundle 都通过，才能称为“规划完整实现”或 `Production accepted`。
 
-本地测试结果不可迁移为生产证据。正式结论必须绑定精确 source SHA、数据库 revision、API deployment、Worker digest、feature-flag snapshot 和验收报告。
+本地测试结果不可迁移为生产证据。正式结论必须绑定精确 source SHA、数据库 revision、API deployment、backend executor digest、feature-flag snapshot 和验收报告。
 
 ## 13. 文档权威顺序
 
 发生冲突时按以下顺序处理：
 
 1. 用户当前明确批准的需求与安全边界；
-2. `docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md`；
-3. `docs/superpowers/plans/2026-07-10-vowpic-commercial-closure-implementation.md`；
-4. 本 PRD；
-5. 当前代码、类型、migration、测试和发布证据共同证明的实际状态；
-6. 历史说明和旧工作日志。
+2. 本 PRD、`docs/ARCHITECTURE.md` 与 `docs/operations/vowpic-finite-production-closure-plan.md`；
+3. 当前代码、类型、migration、测试和发布证据共同证明的实际状态；
+4. `docs/OPERATIONS_RUNBOOK.md`；
+5. 已明确标注为历史的设计、实施计划、说明和工作日志。
 
-历史文档用于追溯，不能重新激活已退役功能，也不能把未验证目标写成当前能力。
+`docs/superpowers/specs/2026-07-10-vowpic-commercial-closure-design.md` 和同日 implementation plan 仅用于追溯当时决策；其中的 Redis/ARQ、独立 Worker、Railway、Worker heartbeat/digest 和 runtime drain 不得重新进入当前运行拓扑或发布门禁。历史文档不能重新激活已退役功能，也不能把未验证目标写成当前能力。

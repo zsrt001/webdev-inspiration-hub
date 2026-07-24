@@ -145,23 +145,35 @@ def _cost_fact(payload: dict[str, Any]) -> tuple[int | None, str | None]:
 
 
 def parse_evolink_submit_fact(payload: Any) -> EvolinkSubmitFact:
-    body = _object_payload(payload)
-    task_id = body.get("task_id") or body.get("id")
-    if not isinstance(task_id, str):
-        raise EvolinkProviderError(
-            "evolink_submit_task_id_missing",
-            retryable=False,
-            acceptance_possible=True,
-        )
-    amount, currency = _cost_fact(body)
     try:
+        body = _object_payload(payload)
+        task_id = body.get("task_id") or body.get("id")
+        if not isinstance(task_id, str):
+            raise EvolinkProviderError(
+                "evolink_submit_task_id_missing",
+                retryable=False,
+                acceptance_possible=True,
+            )
+        amount, currency = _cost_fact(body)
         return EvolinkSubmitFact(
             task_id=task_id.strip(),
             cost_minor_units=amount,
             currency=currency,
         )
+    except EvolinkProviderError as exc:
+        if exc.acceptance_possible:
+            raise
+        raise EvolinkProviderError(
+            exc.code,
+            retryable=exc.retryable,
+            acceptance_possible=True,
+        ) from exc
     except ValueError as exc:
-        raise EvolinkProviderError("evolink_submit_schema_invalid", retryable=False) from exc
+        raise EvolinkProviderError(
+            "evolink_submit_schema_invalid",
+            retryable=False,
+            acceptance_possible=True,
+        ) from exc
 
 
 _TASK_STATE_MAP = {
@@ -252,7 +264,7 @@ def build_evolink_callback_url(
     secret_key: str | None = None,
 ) -> str:
     origin = str(
-        settings.effective_webhook_base_url if base_url is None else base_url
+        settings.effective_evolink_callback_base_url if base_url is None else base_url
     ).strip().rstrip("/")
     token = build_evolink_callback_token(attempt_id, secret_key=secret_key)
     return _validated_https_url(
@@ -337,11 +349,57 @@ class EvolinkService:
             trust_env=False,
         ) as client:
             response = await client.get(f"{self._base_url()}/v1/models", headers=self._headers())
-        if response.status_code in {200, 404, 405}:
-            return True, f"http_{response.status_code}"
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise EvolinkProviderError(
+                    "evolink_models_schema_invalid",
+                    retryable=True,
+                ) from exc
+            candidates: object
+            if isinstance(payload, list):
+                candidates = payload
+            elif isinstance(payload, dict):
+                candidates = payload.get("data", payload.get("models"))
+            else:
+                candidates = None
+            if not isinstance(candidates, list):
+                raise EvolinkProviderError(
+                    "evolink_models_schema_invalid",
+                    retryable=True,
+                )
+            available_models: set[str] = set()
+            for item in candidates:
+                if isinstance(item, str):
+                    model_id = item.strip()
+                elif isinstance(item, dict):
+                    model_id = next(
+                        (
+                            str(item.get(key) or "").strip()
+                            for key in ("id", "model", "model_id", "name")
+                            if str(item.get(key) or "").strip()
+                        ),
+                        "",
+                    )
+                else:
+                    model_id = ""
+                if model_id:
+                    available_models.add(model_id)
+            if settings.evolink_image_model not in available_models:
+                raise EvolinkProviderError(
+                    "evolink_image_model_unavailable",
+                    retryable=False,
+                )
+            return True, "http_200:model_available"
         if response.status_code in {401, 403}:
             raise EvolinkProviderError("evolink_auth_failed", retryable=False)
-        raise EvolinkProviderError("evolink_runtime_unavailable", retryable=True)
+        if response.status_code == 429 or response.status_code >= 500:
+            raise EvolinkProviderError("evolink_runtime_unavailable", retryable=True)
+        raise EvolinkProviderError(
+            f"evolink_models_endpoint_rejected_{response.status_code}",
+            retryable=False,
+        )
 
     async def submit(
         self,

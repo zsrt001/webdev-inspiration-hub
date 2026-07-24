@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Build a canonical, immutable, role-bound release bundle manifest."""
+"""Build a canonical, immutable, backend-role-bound release bundle manifest."""
 
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -34,6 +33,8 @@ MANIFEST_FIELDS = frozenset(
         "worker_deployment_id",
         "schema_revision",
         "api_compatibility_version",
+        "backend_execution_version",
+        "backend_executor_digest",
         "worker_compatibility_version",
         "job_payload_min",
         "job_payload_max",
@@ -56,9 +57,8 @@ BASE_CONTRACT_HASH_FIELDS = frozenset(
 )
 CONTRACT_HASH_FIELDS_BY_ROLE = {
     "PREVIEW_COMMERCIAL": BASE_CONTRACT_HASH_FIELDS | {"database_roles"},
-    "COMMERCIAL_7A": BASE_CONTRACT_HASH_FIELDS
-    | {"database_roles", "worker_host"},
-    "CONTRACT_7B": BASE_CONTRACT_HASH_FIELDS | {"database_roles", "worker_host"},
+    "COMMERCIAL_7A": BASE_CONTRACT_HASH_FIELDS | {"database_roles"},
+    "CONTRACT_7B": BASE_CONTRACT_HASH_FIELDS | {"database_roles"},
 }
 FORBIDDEN_MUTABLE_FIELDS = frozenset(
     {
@@ -171,11 +171,20 @@ def validate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["schema_revision"] = schema_revision
     for field in (
         "api_compatibility_version",
-        "worker_compatibility_version",
+        "backend_execution_version",
         "job_payload_min",
         "job_payload_max",
     ):
         normalized[field] = _identifier(payload[field], label=field)
+    backend_digest = str(payload["backend_executor_digest"] or "").strip().lower()
+    if not _OCI_DIGEST.fullmatch(backend_digest):
+        raise ValueError("backend executor digest must be immutable")
+    normalized["backend_executor_digest"] = backend_digest
+    normalized["worker_compatibility_version"] = _identifier(
+        payload["worker_compatibility_version"],
+        label="worker_compatibility_version",
+        optional=True,
+    )
 
     contracts = payload["contract_hashes"]
     expected_contract_hashes = CONTRACT_HASH_FIELDS_BY_ROLE.get(
@@ -197,9 +206,12 @@ def validate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
         normalized_tools[str(clean_name)] = str(clean_version)
     normalized["tool_versions"] = normalized_tools
 
-    has_worker = role in {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"}
-    if has_worker != bool(normalized["worker_image_digest"] and normalized["worker_deployment_id"]):
-        raise ValueError("release role and Worker coordinates do not match")
+    if (
+        normalized["worker_image_digest"] is not None
+        or normalized["worker_deployment_id"] is not None
+        or normalized["worker_compatibility_version"] is not None
+    ):
+        raise ValueError("backend-only releases must not contain Worker coordinates")
     if role in {"PREVIEW_IDENTITY", "PREVIEW_COMMERCIAL"}:
         if not normalized["preview_id"]:
             raise ValueError("Preview role requires a Preview ID")
@@ -234,46 +246,6 @@ def write_manifest_create_once(path: Path, payload: dict[str, Any]) -> str:
         handle.write(raw)
         handle.flush()
     return hashlib.sha256(raw).hexdigest()
-
-
-def _aware_timestamp(value: Any, *, label: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"{label} is invalid") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError(f"{label} must include a timezone")
-    return parsed.astimezone(timezone.utc)
-
-
-def verify_worker_report(
-    manifest: dict[str, Any],
-    report: dict[str, Any],
-    *,
-    now: datetime | None = None,
-    maximum_age: timedelta = timedelta(seconds=120),
-) -> None:
-    normalized = validate_manifest(manifest)
-    if normalized["release_role"] not in {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"}:
-        raise ValueError("release role does not permit a Worker report")
-    expected = {
-        "schema": "vowpic.worker-runtime-report.v1",
-        "release_role": normalized["release_role"],
-        "source_sha": normalized["source_sha"],
-        "runtime_bundle_id": normalized["runtime_bundle_id"],
-        "worker_image_digest": normalized["worker_image_digest"],
-        "worker_deployment_id": normalized["worker_deployment_id"],
-        "schema_revision": normalized["schema_revision"],
-        "job_payload_min": normalized["job_payload_min"],
-        "job_payload_max": normalized["job_payload_max"],
-    }
-    if not isinstance(report, dict) or any(report.get(key) != value for key, value in expected.items()):
-        raise ValueError("Worker report does not match the immutable bundle")
-    observed = _aware_timestamp(report.get("published_at"), label="Worker published_at")
-    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    age = current - observed
-    if age < timedelta(seconds=-5) or age > maximum_age:
-        raise ValueError("Worker heartbeat report is stale or from the future")
 
 
 def main() -> int:

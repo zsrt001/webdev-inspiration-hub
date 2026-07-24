@@ -16,7 +16,7 @@ _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _EXPECTED_VALUES = {
     "RUNTIME_ENVIRONMENT": "production",
     "RELEASE_ROLE": "COMMERCIAL_7A",
-    "TASK_EXECUTION_MODE": "arq",
+    "TASK_EXECUTION_MODE": "backend",
     "STORAGE_PROVIDER": "vercel",
     "GENERATION_ENGINE": "evolink",
     "LLM_PROVIDER": "wenwen",
@@ -78,17 +78,20 @@ def validate_environment(
         errors.append("SOURCE_SHA must be an exact 40-character lowercase commit")
 
     _bootstrap_imports()
+    try:
+        from app.core.config import Settings
+        from app.core import runtime_checks
+    except Exception:
+        errors.append("Production runtime validator could not be imported")
+        return sorted(set(errors))
+
     with _temporary_environment(environ):
         try:
-            from app.core.config import Settings
-            from app.core import runtime_checks
-
             settings = Settings(
                 _env_file=None,
                 vercel_deployment_id="dpl_preflight",
                 vercel_git_commit_sha=source_sha,
                 runtime_bundle_id="rtb_" + ("0" * 64),
-                worker_image_digest="sha256:" + ("0" * 64),
             )
         except Exception:
             errors.append("Production runtime configuration could not be parsed")

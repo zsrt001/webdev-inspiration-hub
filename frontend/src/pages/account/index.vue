@@ -217,6 +217,12 @@
 import { computed, onMounted, ref } from 'vue';
 import NavBar from '../../components/NavBar.vue';
 import LegalFooter from '../../components/LegalFooter.vue';
+import {
+  type OrderRead,
+  displayAsset,
+  isOrderDeliverable,
+  isOrderManualOrFailed,
+} from '../../contracts/order';
 import { downloadAccountExport } from '../../services/account';
 import { useI18nStore } from '../../stores/i18n';
 import { useOpsStore } from '../../stores/ops';
@@ -258,21 +264,6 @@ interface TransactionsResponse {
   transactions: CreditTransaction[];
 }
 
-interface Order {
-  id: string;
-  template_id: string | null;
-  preview_image_urls: Record<string, string> | null;
-  final_image_urls: Record<string, string> | null;
-  preview_master_image_url?: string | null;
-  final_master_image_url?: string | null;
-  created_at: string;
-  expires_at?: string | null;
-  storage_cleanup_status?: string | null;
-  status: string;
-}
-
-type OrdersResponse = Order[] | { value?: Order[]; items?: Order[]; results?: Order[]; orders?: Order[] };
-
 interface LegalPolicies {
   retention?: {
     source_images_days?: number;
@@ -295,7 +286,7 @@ const error = ref('');
 const profile = ref<UserProfile | null>(null);
 const balance = ref<BalanceResponse | null>(null);
 const transactions = ref<CreditTransaction[]>([]);
-const orders = ref<Order[]>([]);
+const orders = ref<OrderRead[]>([]);
 const legalPolicies = ref<LegalPolicies | null>(null);
 const supabaseAuthed = ref(false);
 const supabaseEnabled = ref(false);
@@ -378,35 +369,12 @@ function transactionTitle(item: CreditTransaction): string {
   return map[key] || key || tr('积分变化', 'Credit activity');
 }
 
-const deliveryVariantSuffixes = ['portrait_2x3', 'print_3x2', 'xhs_3x4', 'portrait_4x5', 'wallpaper_9x16', 'square_1x1'];
-function pickPrimaryFromMap(urls: Record<string, string> | null): string | null {
-  if (!urls) return null;
-  if (urls.image_1) return urls.image_1;
-  const master = Object.entries(urls).find(([key]) => !deliveryVariantSuffixes.some((suffix) => key.includes(suffix)));
-  if (master?.[1]) return master[1];
-  return Object.values(urls)[0] || null;
+function orderPreview(order: OrderRead): string {
+  const asset = displayAsset(order);
+  return resolvePublicUrl(asset?.download_path || '/style-previews/royal_castle.jpg');
 }
 
-function orderPreview(order: Order): string {
-  if (order.final_master_image_url) return resolvePublicUrl(order.final_master_image_url);
-  if (order.preview_master_image_url) return resolvePublicUrl(order.preview_master_image_url);
-  const final = pickPrimaryFromMap(order.final_image_urls);
-  if (final) return resolvePublicUrl(final);
-  const preview = pickPrimaryFromMap(order.preview_image_urls);
-  if (preview) return resolvePublicUrl(preview);
-  return resolvePublicUrl('/style-previews/royal_castle.jpg');
-}
-
-function normalizeOrderRows(response: OrdersResponse): Order[] {
-  if (Array.isArray(response)) return response;
-  if (Array.isArray(response?.value)) return response.value;
-  if (Array.isArray(response?.items)) return response.items;
-  if (Array.isArray(response?.results)) return response.results;
-  if (Array.isArray(response?.orders)) return response.orders;
-  return [];
-}
-
-function statusText(status: string): string {
+function statusText(status: OrderRead['status']): string {
   const normalized = String(status || '').toUpperCase();
   const map: Record<string, string> = {
     CREATED: tr('已创建', 'Created'),
@@ -416,13 +384,22 @@ function statusText(status: string): string {
     FAILED: tr('失败', 'Failed'),
     REFUNDED: tr('已退款', 'Refunded'),
   };
+  Object.assign(map, {
+    QUEUED: tr('已排队', 'Queued'),
+    QA_PENDING: tr('质检中', 'Quality checking'),
+    REPAIRING: tr('修复中', 'Repairing'),
+    READY: tr('已交付', 'Delivered'),
+    CANCELLED: tr('已取消', 'Cancelled'),
+    UNKNOWN_EXTERNAL_STATE: tr('等待人工对账', 'Manual reconciliation'),
+    CONSENT_REVIEW_REQUIRED: tr('等待授权复核', 'Consent review'),
+    DELETED: tr('已删除', 'Deleted'),
+  });
   return map[normalized] || normalized;
 }
 
-function statusClass(status: string): string {
-  const normalized = String(status || '').toUpperCase();
-  if (normalized === 'COMPLETED') return 'completed';
-  if (normalized === 'FAILED' || normalized === 'REFUNDED') return 'failed';
+function statusClass(status: OrderRead['status']): string {
+  if (isOrderDeliverable(status)) return 'completed';
+  if (isOrderManualOrFailed(status)) return 'failed';
   return 'pending';
 }
 
@@ -453,7 +430,7 @@ async function loadAccount(): Promise<void> {
       get<UserProfile>('/users/me', { showLoading: false, showError: false }),
       get<BalanceResponse>('/credits/balance', { showLoading: false, showError: false }),
       get<TransactionsResponse>('/credits/transactions?limit=8', { showLoading: false, showError: false }),
-      get<OrdersResponse>('/orders', { showLoading: false, showError: false }),
+      get<OrderRead[]>('/orders', { showLoading: false, showError: false }),
       get<LegalPolicies>('/legal/policies', { showLoading: false, showError: false }),
       get('/admin/me', { showLoading: false, showError: false }),
       subscriptionStore.fetchPlans(true),
@@ -464,7 +441,7 @@ async function loadAccount(): Promise<void> {
     balance.value = balanceResult.status === 'fulfilled' ? balanceResult.value : null;
     transactions.value = transactionsResult.status === 'fulfilled' ? (transactionsResult.value.transactions || []) : [];
     orders.value = ordersResult.status === 'fulfilled'
-      ? normalizeOrderRows(ordersResult.value).slice(0, 6)
+      ? ordersResult.value.slice(0, 6)
       : [];
     legalPolicies.value = legalResult.status === 'fulfilled' ? legalResult.value : null;
     adminAccess.value = adminResult.status === 'fulfilled';

@@ -1,16 +1,18 @@
 # VowPic 海外 Web 商业闭环与生产验收设计
 
-> 状态：七个设计章节、方案一和一步到位范围均已获得用户书面确认；本文是已批准设计权威，逐任务执行权威见同日 implementation plan。
+> **历史决策记录，不是当前执行权威。** 当前运行拓扑以 `docs/ARCHITECTURE.md` 为准，当前有限生产收口以 `docs/operations/vowpic-finite-production-closure-plan.md` 为准。本文中的 Redis/ARQ、独立 Worker、Railway、Worker digest/heartbeat 和 runtime drain 设计均已被网站 FastAPI 后端直连 EvoLink、PostgreSQL 租约/对账及认证订单推进方案取代。
+
+> 状态：2026-07-10 已批准设计的历史归档；不再是当前设计或执行权威。
 >
 > 日期：2026-07-10
 >
 > 实施状态：尚未开始修改生产代码。
 
-> 2026-07-22 执行修订：上面的实施状态是 2026-07-10 的历史快照，当前实现状态以代码、`docs/ai-worklog.md` 和生产证据为准。Evolink 只作为普通生图 API 使用；VowPic 通过提交前持久化、`SUBMITTING/UNKNOWN` 状态和回调关联避免盲目重提，不再要求供应商提供幂等/关联查询合同，也不在真实 Worker 注入丢包。Creem 退款由 Dashboard/支持发起并以签名沙箱事件和交易事实验收，不虚构公开退款创建 API。生产发布只构建一个 Worker 镜像和一个 staged Vercel 目标，使用已验证的 SAFE_BASELINE 作为回滚基线，验收后对同一目标 Promote 一次。旧文中与本修订冲突的双部署、Provider 合同激活、Worker 网络故障注入和伪 dispatch 动作均已废止。
+> 2026-07-23 执行修订：上面的实施状态和本文后续拓扑是 2026-07-10 的历史快照。当前实现状态以代码、`docs/PRD.md`、`docs/ARCHITECTURE.md`、有限生产收口计划和生产证据为准。EvoLink 只是由 VowPic FastAPI 网站后端调用的生图 API；提交前持久化、`SUBMITTING/UNKNOWN`、PostgreSQL lease/fencing、回调关联、已认证订单进度 POST 和受保护人工恢复 POST 负责恢复与对账。当前 Production 不构建或部署独立 Worker 镜像，不使用 Railway，也不把 Redis/ARQ 或 Vercel Cron 作为生成前提。Creem 退款、订阅和取消仅以 Test Mode 签名事件与账本事实进入自动 Preview 验收。旧文中与此修订冲突的 Worker、Redis/ARQ 生成队列、runtime drain、双部署、Provider 合同激活、网络故障注入和伪 dispatch 动作均已废止。
 
 ## 1. 决策摘要
 
-VowPic 的目标产品是面向海外用户的 Web SaaS，不是微信产品，也不包含微信小程序。此次工作采用“保留现有架构、分阶段加固、最终一次生产验收”的方案：继续使用 FastAPI、Vue 3/Uni-app Web（其编译目标 token 为 `h5`）、Supabase/PostgreSQL、Redis/ARQ、Creem、Evolink 和对象存储，不建立 `/v2`，不重写技术栈，也不引入新的 UI 框架。
+VowPic 的目标产品是面向海外用户的 Web SaaS，不是微信产品，也不包含微信小程序。本段以下内容记录 2026-07-10 当时的历史方案；凡涉及 Redis/ARQ、独立 Worker 或 Railway 的描述均已被文首修订取代，不得用于当前实现或验收。
 
 本文是一份统一验收的 umbrella spec，不是一份可以原子执行的单任务计划。后续实施计划必须按本文七个阶段拆成有先后依赖、独立退出门和回滚点的工作包；“一步到位”指最终只接受完整商业闭环，不表示把身份、存储、支付、队列、QA、前端和迁移塞进一次部署。只有全部强制门禁通过、达到 `Production accepted` 后，才能报告“规划已经完整实现”。
 

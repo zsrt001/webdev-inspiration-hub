@@ -24,7 +24,6 @@ for location in (ROOT, BACKEND):
 
 from scripts.release.build_manifest import canonical_manifest_bytes, validate_manifest
 from scripts.release.private_evidence_store import PrivateBlobEvidenceStore
-from scripts.release.run_approved_worker_host import verify_report as verify_worker_host_report
 from scripts.release.verify_inventory_signature import verify_inventory_evidence
 
 
@@ -37,7 +36,6 @@ _RUN_ID = re.compile(r"^[1-9][0-9]{0,19}$")
 _SHA64 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_SHA = re.compile(r"^[0-9a-f]{40,64}$")
 _RUNTIME_ID = re.compile(r"^rtb_[0-9a-f]{64}$")
-_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COORDINATE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _PREVIEW_RESOLUTION_KEYS = {
     "activation_id", "environment", "kind", "source_sha", "runtime_bundle_id",
@@ -50,10 +48,8 @@ COMMERCIAL_7A_PHASES = (
     "RESERVED",
     "ROLLBACK_BASELINE_VERIFIED",
     "API_TARGET_STAGED",
-    "WORKER_STAGED",
     "MANIFEST_SEALED",
     "SCHEMA_0020",
-    "WORKER_RUNNING",
     "DATA_SWITCHED",
     "ACCEPTANCE_READY",
     "TARGET_ACCEPTED",
@@ -749,18 +745,16 @@ def bind_migration_parent_cas(
 
 
 _PHASE_EVIDENCE_ARGUMENTS = {
-    "WORKER_STAGED": ("worker_deployment_report",),
     "ROLLBACK_BASELINE_VERIFIED": ("inspect_report",),
     "API_TARGET_STAGED": ("build_output", "inspect_report"),
     "SCHEMA_0020": ("migration_report", "replay_report"),
-    "WORKER_RUNNING": ("worker_start_report", "worker_heartbeat_report"),
     "DATA_SWITCHED": (
         "identity_report",
         "commercial_report",
         "generation_report",
         "media_report",
     ),
-    "ACCEPTANCE_READY": ("worker_heartbeat_report",),
+    "ACCEPTANCE_READY": ("backend_runtime_report",),
     "TARGET_ACCEPTED": (
         "auth_security_report",
         "account_cleanup_report",
@@ -768,7 +762,7 @@ _PHASE_EVIDENCE_ARGUMENTS = {
         "auth_origin_add_report",
         "auth_origin_remove_report",
     ),
-    "TARGET_PROMOTED": ("promotion_report", "worker_heartbeat_report"),
+    "TARGET_PROMOTED": ("promotion_report", "backend_runtime_report"),
     "PUBLIC_INVALIDATED": ("delete_report", "private_media_report"),
     "ACTIVATED": ("activation_report",),
     "OBSERVING": ("observation_start_report",),
@@ -781,38 +775,6 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
         raise ValueError(f"{label} must be a JSON object")
     _validate_evidence_payload(payload, label=label)
     return payload
-
-
-def _worker_bindings(deployment_report: Path) -> dict[str, str]:
-    deployment = _load_json_object(deployment_report, label="Worker deployment report")
-    deployment = verify_worker_host_report(
-        deployment,
-        action="deploy",
-        signing_key=os.environ.get("WORKER_HOST_EVIDENCE_SIGNING_KEY", "").encode(
-            "utf-8"
-        ),
-    )
-    deployment_coordinates = deployment["coordinates"]
-    digest = str(deployment_coordinates.get("worker_image_digest") or "").lower()
-    worker_id = str(deployment_coordinates.get("worker_deployment_id") or "")
-    runtime = str(deployment_coordinates.get("runtime_bundle_id") or "").lower()
-    api_deployment_id = str(deployment_coordinates.get("api_deployment_id") or "")
-    source_sha = str(deployment_coordinates.get("source_sha") or "").lower()
-    if not _IMAGE_DIGEST.fullmatch(digest):
-        raise ValueError("Worker deployment digest binding is invalid")
-    if not _COORDINATE.fullmatch(worker_id):
-        raise ValueError("Worker deployment ID is invalid")
-    if not _RUNTIME_ID.fullmatch(runtime):
-        raise ValueError("Worker deployment runtime bundle ID is invalid")
-    if not _COORDINATE.fullmatch(api_deployment_id) or not _SOURCE_SHA.fullmatch(source_sha):
-        raise ValueError("Worker API/source binding is invalid")
-    return {
-        "source_sha": source_sha,
-        "runtime_bundle_id": runtime,
-        "api_deployment_id": api_deployment_id,
-        "worker_deployment_id": worker_id,
-        "worker_image_digest": digest,
-    }
 
 
 def _deployment_id_from_report(path: Path) -> str:
@@ -895,15 +857,7 @@ def _advance_main(argv: list[str]) -> int:
             "migration_parent_run_id": args.migration_parent_run_id,
         }
         bindings: dict[str, Any] = {}
-        if args.phase == "WORKER_STAGED":
-            bindings.update(
-                _worker_bindings(Path(args.worker_deployment_report))
-            )
-            if source_sha != bindings["source_sha"]:
-                raise ValueError("Worker source argument/report mismatch")
-            if args.runtime_bundle_id and args.runtime_bundle_id != bindings["runtime_bundle_id"]:
-                raise ValueError("Worker runtime bundle argument/report mismatch")
-        elif args.phase in {"ROLLBACK_BASELINE_VERIFIED", "API_TARGET_STAGED"}:
+        if args.phase in {"ROLLBACK_BASELINE_VERIFIED", "API_TARGET_STAGED"}:
             expected_role = (
                 "private-compatible-baseline"
                 if args.phase == "ROLLBACK_BASELINE_VERIFIED"
@@ -993,7 +947,7 @@ def _advance_main(argv: list[str]) -> int:
 def _seal_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Seal one immutable COMMERCIAL_7A manifest")
     parser.add_argument("--kind", required=True, choices=("COMMERCIAL_7A",))
-    parser.add_argument("--expected-phase", required=True, choices=("WORKER_STAGED",))
+    parser.add_argument("--expected-phase", required=True, choices=("API_TARGET_STAGED",))
     parser.add_argument("--phase", required=True, choices=("MANIFEST_SEALED",))
     parser.add_argument("--source-sha")
     parser.add_argument("--manifest", required=True)
@@ -1080,7 +1034,7 @@ def _seal_main(argv: list[str]) -> int:
                 raise ValueError("stored manifest phase report hash drift")
             phase_report = json.loads(report_raw.decode("utf-8"))
         else:
-            previous_key = phase_object_key(prefix, "WORKER_STAGED")
+            previous_key = phase_object_key(prefix, "API_TARGET_STAGED")
             previous_raw = store.read(previous_key)
             if hashlib.sha256(previous_raw).hexdigest() != activation.get("report_sha256"):
                 raise ValueError("staged target phase report hash drift")
@@ -1225,17 +1179,18 @@ def _validate_preview_resolution(
         (_RUNTIME_ID, payload.get("runtime_bundle_id"), "runtime bundle ID"),
         (_SHA64, payload.get("manifest_sha256"), "manifest hash"),
         (_SHA64, payload.get("report_sha256"), "report hash"),
-        (_IMAGE_DIGEST, payload.get("worker_image_digest"), "Worker image digest"),
         (_COORDINATE, payload.get("api_deployment_id"), "API deployment ID"),
-        (_COORDINATE, payload.get("worker_deployment_id"), "Worker deployment ID"),
     )
     for pattern, value, label in checks:
         if not pattern.fullmatch(str(value or "")):
             raise ValueError(f"Preview {label} is invalid")
     if payload.get("api_role") != "PREVIEW_COMMERCIAL_API":
         raise ValueError("Preview API role mismatch")
-    if payload.get("worker_role") != "PREVIEW_COMMERCIAL_WORKER":
-        raise ValueError("Preview Worker role mismatch")
+    if any(
+        payload.get(field) is not None
+        for field in ("worker_deployment_id", "worker_role", "worker_image_digest")
+    ):
+        raise ValueError("Preview backend release must not contain Worker coordinates")
     _exact_https_url(str(payload.get("api_deployment_url") or ""))
     prefix = str(payload.get("private_evidence_prefix") or "").strip().strip("/\\")
     if not prefix or ".." in Path(prefix).parts or "latest" in {part.lower() for part in Path(prefix).parts}:
@@ -1284,7 +1239,9 @@ def build_production_reservation(
         "source_sha": source_sha,
         "runtime_bundle_id": None,
         "api_role": "COMMERCIAL_7A_API",
-        "worker_role": "COMMERCIAL_7A_WORKER",
+        "worker_deployment_id": None,
+        "worker_role": None,
+        "worker_image_digest": None,
         "workflow_run_id": clean_run,
         "workflow_attempt": workflow_attempt,
         "phase": "RESERVED",

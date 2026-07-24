@@ -16,11 +16,12 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.models.generation_attempt import GenerationAttemptStatus
+from app.models.generation_attempt import GenerationAttemptKind, GenerationAttemptStatus
 from app.models.generation_job import GenerationJobStatus
 from app.services import evolink_service as evolink_module
 from app.services.evolink_callback_service import (
     EvolinkCallbackError,
+    EvolinkCallbackResult,
     bind_evolink_callback_task,
 )
 from app.services.evolink_service import (
@@ -53,7 +54,14 @@ class EvolinkCallbackTest(unittest.IsolatedAsyncioTestCase):
         from app.routers import provider_callbacks
 
         db = SimpleNamespace(commit=AsyncMock())
-        bind = AsyncMock()
+        bind = AsyncMock(
+            return_value=EvolinkCallbackResult(
+                state="BOUND",
+                task_id="task-unified-1756817821-test",
+                job_id=JOB_ID,
+            )
+        )
+        reconcile = AsyncMock()
 
         async def database_override():
             yield db
@@ -66,7 +74,14 @@ class EvolinkCallbackTest(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_db] = database_override
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
         try:
-            with patch.object(provider_callbacks, "bind_evolink_callback_task", bind):
+            with (
+                patch.object(provider_callbacks, "bind_evolink_callback_task", bind),
+                patch.object(
+                    provider_callbacks,
+                    "reconcile_generation_job",
+                    reconcile,
+                ),
+            ):
                 async with httpx.AsyncClient(
                     transport=transport,
                     base_url="http://testserver",
@@ -97,14 +112,18 @@ class EvolinkCallbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["token"], token)
         self.assertEqual(call["fact"].task_id, "task-unified-1756817821-test")
         db.commit.assert_awaited_once_with()
+        reconcile.assert_awaited_once_with(JOB_ID)
 
     async def test_unknown_attempt_binds_once_and_reschedules_reconciliation(self) -> None:
         attempt = SimpleNamespace(
             id=ATTEMPT_ID,
             job_id=JOB_ID,
             provider="evolink",
+            kind=GenerationAttemptKind.INITIAL,
             status=GenerationAttemptStatus.UNKNOWN,
             provider_job_id=None,
+            submitted_at=None,
+            submission_accounting_state="NOT_CAPTURED",
         )
         job = SimpleNamespace(
             id=JOB_ID,
@@ -113,7 +132,10 @@ class EvolinkCallbackTest(unittest.IsolatedAsyncioTestCase):
             lease_owner=None,
             lease_claim_id=None,
             lease_expires_at=None,
+            heartbeat_at=None,
             next_retry_at=None,
+            last_error_code="provider_submission_human_required",
+            last_error_detail="submit_response_lost",
         )
         statements: list[str] = []
 
@@ -135,7 +157,12 @@ class EvolinkCallbackTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.state, "BOUND")
         self.assertEqual(attempt.provider_job_id, result.task_id)
+        self.assertEqual(attempt.status, GenerationAttemptStatus.SUBMITTED)
+        self.assertEqual(attempt.submitted_at, NOW)
+        self.assertEqual(attempt.submission_accounting_state, "PENDING")
         self.assertEqual(job.next_retry_at, NOW)
+        self.assertIsNone(job.last_error_code)
+        self.assertIsNone(job.last_error_detail)
         self.assertEqual(db.scalar.await_count, 3)
         self.assertIn("generation_attempts.job_id", statements[0])
         self.assertIn("FROM generation_jobs", statements[1])
@@ -160,9 +187,19 @@ class EvolinkCallbackTest(unittest.IsolatedAsyncioTestCase):
             provider="evolink",
             status=GenerationAttemptStatus.SUBMITTED,
             provider_job_id="task-unified-1756817821-test",
+            submitted_at=NOW,
         )
         token = build_evolink_callback_token(ATTEMPT_ID, secret_key=SECRET)
-        job = SimpleNamespace(id=JOB_ID)
+        job = SimpleNamespace(
+            id=JOB_ID,
+            active_attempt_id=ATTEMPT_ID,
+            status=GenerationJobStatus.RECONCILING,
+            lease_owner=None,
+            lease_claim_id=None,
+            lease_expires_at=None,
+            heartbeat_at=None,
+            next_retry_at=None,
+        )
         with patch.object(evolink_module.settings, "secret_key", SECRET):
             same_db = SimpleNamespace(
                 scalar=AsyncMock(side_effect=[JOB_ID, job, attempt])
@@ -183,6 +220,55 @@ class EvolinkCallbackTest(unittest.IsolatedAsyncioTestCase):
                     token=token,
                     fact=_terminal_fact("task-unified-1756817821-other"),
                 )
+
+    async def test_submitting_callback_becomes_submitted_without_stealing_live_lease(
+        self,
+    ) -> None:
+        claim_id = uuid.uuid4()
+        lease_expires_at = NOW.replace(hour=NOW.hour + 1)
+        attempt = SimpleNamespace(
+            id=ATTEMPT_ID,
+            job_id=JOB_ID,
+            provider="evolink",
+            kind=GenerationAttemptKind.INITIAL,
+            status=GenerationAttemptStatus.SUBMITTING,
+            provider_job_id=None,
+            submitted_at=None,
+            submission_accounting_state="NOT_CAPTURED",
+        )
+        job = SimpleNamespace(
+            id=JOB_ID,
+            active_attempt_id=ATTEMPT_ID,
+            status=GenerationJobStatus.ACTIVE,
+            lease_owner="api:active",
+            lease_claim_id=claim_id,
+            lease_expires_at=lease_expires_at,
+            heartbeat_at=NOW,
+            next_retry_at=None,
+            last_error_code=None,
+            last_error_detail=None,
+        )
+        db = SimpleNamespace(
+            scalar=AsyncMock(side_effect=[JOB_ID, job, attempt])
+        )
+        token = build_evolink_callback_token(ATTEMPT_ID, secret_key=SECRET)
+
+        with patch.object(evolink_module.settings, "secret_key", SECRET):
+            result = await bind_evolink_callback_task(
+                db,
+                attempt_id=ATTEMPT_ID,
+                token=token,
+                fact=_terminal_fact(),
+                now=NOW,
+            )
+
+        self.assertEqual(result.job_id, JOB_ID)
+        self.assertEqual(attempt.status, GenerationAttemptStatus.SUBMITTED)
+        self.assertEqual(attempt.submitted_at, NOW)
+        self.assertEqual(job.status, GenerationJobStatus.ACTIVE)
+        self.assertEqual(job.lease_owner, "api:active")
+        self.assertEqual(job.lease_claim_id, claim_id)
+        self.assertEqual(job.next_retry_at, NOW)
 
     async def test_nonterminal_callback_cannot_bind_a_provider_task(self) -> None:
         db = SimpleNamespace(scalar=AsyncMock())

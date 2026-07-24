@@ -1,0 +1,64 @@
+name: Production Generation Recovery
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: production-generation-recovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    name: Trigger bounded website-backend recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Advance durable generation work
+        shell: bash
+        env:
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          EXPECTED_PRODUCTION_ORIGIN: https://www.vowpic.com
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRODUCTION_BASE_URL"
+          test -n "$CLEANUP_CRON_TOKEN"
+          if [ "$PRODUCTION_BASE_URL" != "$EXPECTED_PRODUCTION_ORIGIN" ]; then
+            echo "PRODUCTION_BASE_URL must equal the repository-bound formal origin" >&2
+            exit 1
+          fi
+          RESPONSE_FILE="$RUNNER_TEMP/generation-maintenance.json"
+          curl \
+            --silent \
+            --show-error \
+            --fail-with-body \
+            --request POST \
+            --max-time 240 \
+            --max-redirs 0 \
+            --output "$RESPONSE_FILE" \
+            --header "Authorization: Bearer ${CLEANUP_CRON_TOKEN}" \
+            "${PRODUCTION_BASE_URL%/}/api/v1/ops/generation/maintain"
+          python - "$RESPONSE_FILE" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected = {"selected", "submitted", "reconciled", "failed", "human_required"}
+          if set(report) != expected or any(
+              not isinstance(report[key], int) or isinstance(report[key], bool) or report[key] < 0
+              for key in expected
+          ):
+              raise SystemExit("generation maintenance response is invalid")
+          if report["human_required"]:
+              raise SystemExit(
+                  f"{report['human_required']} generation submission(s) require operator settlement"
+              )
+          print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+          PY

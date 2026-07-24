@@ -6,9 +6,10 @@ VowPic is an overseas Web SaaS. This document describes the current repository a
 
 - `frontend/` is a Vue 3 and Uni-app browser application. `uni -p h5` is only Uni-app's Web build target token.
 - `api/` exposes the FastAPI application through Vercel. The API owns authentication exchange, business rules, order facts, private delivery, and sanitized public capability configuration.
-- `backend/app/worker.py` is the long-running Redis/ARQ Worker runtime. Vercel functions do not execute generation jobs.
+- The FastAPI website backend executes generation through `generation_executor_service.py`. Order creation performs one bounded immediate kick. The authenticated order page then calls `POST /api/v1/orders/{order_id}/progress`; each request advances at most one durable step, while the protected operations endpoint remains available for explicit recovery. There is no Vercel Cron dependency.
 - PostgreSQL is the authoritative store for identities, sessions, feature flags, credits, reservations, orders, attempts, media grants, release coordinates, and audit facts.
-- Redis carries queues, leases, heartbeat state, and bounded coordination. Protected commercial Preview requires an isolated Redis instance.
+- Redis is optional cache/session infrastructure only. It is not a generation queue, lease authority, deployment gate, or Production prerequisite.
+- `generation-job.v1` is the durable compatibility boundary across website deployments. The active backend authorizes Provider work against its own release activation, then resumes compatible older jobs without rewriting their origin stamps. Legacy or unstamped payloads stay outside the executor and are classified by the controlled generation backfill before activation.
 - Private object storage holds source media, masters, variants, and create-once release evidence. Public Vercel Blob is not a substitute for the required private acceptance store.
 
 ## External services
@@ -23,16 +24,16 @@ VowPic is an overseas Web SaaS. This document describes the current repository a
 Database access is split into distinct login roles on one database:
 
 - migration administrator: workflow-only schema and controlled release operations;
-- application runtime: normal API/Worker reads and business writes under RLS;
+- application runtime: normal website API reads and business writes under RLS;
 - control-plane writer: constrained feature-flag and release-state transitions;
 - control-plane reader: read-only release-coordinate resolution.
 
-The migration credential must never be injected into the API or Worker. The runtime and control-plane logins must be distinct, non-superuser, and non-`BYPASSRLS`.
+The migration credential must never be injected into the website API. The runtime and control-plane logins must be distinct, non-superuser, and non-`BYPASSRLS`.
 
 ## Release layers
 
-1. PR CI verifies locked dependencies, migrations, PostgreSQL RLS/concurrency, OpenAPI drift, frontend tests/build/accessibility, and the Worker image.
-2. Stage 5 binds a protected identity Preview and a separate commercial Preview to exact source, bundle, deployment, database, private storage, Redis, Provider, and cleanup evidence.
+1. PR CI verifies locked dependencies, migrations, PostgreSQL RLS/concurrency, OpenAPI drift, frontend tests/build/accessibility, and backend generation contracts.
+2. Stage 5 binds a protected identity Preview and a separate commercial Preview to exact source, bundle, deployment, database, private storage, Provider, and cleanup evidence.
 3. Stage 6 exercises the real SaaS journey, payment, private delivery, account deletion, Partner Invite, visual, responsive, and accessibility cases.
 4. Production uses a manual protected staged deployment, explicit promotion, observation, rollback rehearsal, and post-contract cleanup.
 

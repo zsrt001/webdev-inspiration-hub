@@ -47,6 +47,9 @@ _ATTEMPT_TRANSITIONS = {
         GenerationAttemptStatus.UNKNOWN,
     },
     GenerationAttemptStatus.UNKNOWN: {
+        # Used only by the protected operator settlement path after Provider
+        # evidence proves that the ambiguous submission was not accepted.
+        GenerationAttemptStatus.PREPARED,
         GenerationAttemptStatus.SUBMITTED,
         GenerationAttemptStatus.FINISHED,
         GenerationAttemptStatus.FAILED,

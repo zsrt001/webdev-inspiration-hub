@@ -30,6 +30,19 @@ class ProviderCapabilitiesTest(unittest.TestCase):
             document["providers"]["evolink"]["ambiguous_submission_policy"],
             "hold_without_resubmit",
         )
+        self.assertEqual(
+            document["providers"]["evolink"]["submit_endpoint"],
+            "/v1/images/generations",
+        )
+        self.assertIn(
+            "https://evolink.ai/docs/en/api-manual/image-series/"
+            "nanobanana/nanobanana-pro-image-generate",
+            document["providers"]["evolink"]["official_sources"],
+        )
+        self.assertNotIn(
+            "gpt-image-2",
+            " ".join(document["providers"]["evolink"]["official_sources"]),
+        )
         serialized = json.dumps(document, sort_keys=True)
         self.assertNotIn("tested_source_sha", serialized)
         self.assertNotIn("idempotency_key", serialized)

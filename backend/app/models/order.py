@@ -162,7 +162,7 @@ class Order(Base):
     task_id: Mapped[str | None] = mapped_column(
         String(128),
         nullable=True,
-        comment="ARQ/Celery task ID for tracking",
+        comment="Legacy/provider generation task identifier",
     )
     reservation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

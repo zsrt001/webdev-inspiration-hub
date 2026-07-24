@@ -8,7 +8,7 @@
     "backend/app/services/photometric_qa_service.py",
     "backend/app/services/identity_embedding_service.py",
     "backend/app/services/delivery_asset_service.py",
-    "backend/app/worker.py",
+    "backend/app/services/generation_executor_service.py",
     "frontend/src/stores/order.ts",
     "frontend/src/pages/create/**",
     "frontend/src/pages/preview/**",

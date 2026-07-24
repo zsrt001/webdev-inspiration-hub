@@ -5,6 +5,7 @@ import {
   completeGoogleLogin,
   exactKeys,
   idempotencyKey,
+  pollActionJson,
   pollJson,
   readProtectedAction,
   releaseBinding,
@@ -17,6 +18,7 @@ import {
   writeBrowserObservation,
   type JsonObject,
 } from './helpers/linked-acceptance';
+import { runUiMainJourney } from './helpers/ui-main-journey';
 
 
 const selectedPhase = String(process.env.LINKED_ACCEPTANCE_PHASE || '').trim();
@@ -68,9 +70,9 @@ async function createOrder(
 }
 
 async function readyOrder(page: Page, orderId: string, timeout: number): Promise<JsonObject> {
-  return pollJson<JsonObject>(
+  return pollActionJson<JsonObject>(
     page,
-    `/api/v1/orders/${orderId}`,
+    `/api/v1/orders/${orderId}/progress`,
     (body) => body.status === 'READY',
     timeout,
     `order ${orderId}`,
@@ -117,6 +119,21 @@ async function runQuality(page: Page, browser: Browser): Promise<void> {
     }
     if (caseId === 'partner_invite_remote_couple' && assetPaths.length !== 2) {
       throw new Error('remote partner quality case requires two distinct assets');
+    }
+    if (caseId === 'single_template') {
+      const uiJourney = await runUiMainJourney(page, {
+        templateId: requiredString(qualityCase.template_id, 'quality template'),
+        assetPaths: [resolveProtectedAsset(assetPaths[0])],
+        styleText: requiredString(qualityCase.style_text, 'quality style text', 1000),
+        mode: 'single',
+        timeout,
+      });
+      links.push({
+        id: caseId,
+        order_id: uiJourney.orderId,
+        ui_journey: true,
+      });
+      continue;
     }
     const uploaded: string[] = [];
     const primaryAssetPaths = caseId === 'partner_invite_remote_couple'

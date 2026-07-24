@@ -3,6 +3,11 @@
 from pathlib import Path
 import sys
 import unittest
+import uuid
+from unittest.mock import AsyncMock, patch
+
+from fastapi import HTTPException
+from starlette.requests import Request
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -30,6 +35,8 @@ class AdminManagementRoutesTest(unittest.TestCase):
         self.assertIn("/admin/orders", paths)
         self.assertIn("/admin/orders/{order_id}", paths)
         self.assertIn("/admin/orders/{order_id}/status", paths)
+        self.assertIn("/admin/generation/manual-settlements", paths)
+        self.assertIn("/admin/generation/manual-settlements/{job_id}/resolve", paths)
         self.assertIn("/admin/orders/{order_id}/regenerate", paths)
 
     def test_order_status_options_reuse_existing_enum(self) -> None:
@@ -40,6 +47,19 @@ class AdminManagementRoutesTest(unittest.TestCase):
         self.assertNotIn("PREVIEW_READY", admin.ORDER_STATUS_VALUES)
         self.assertNotIn("PAID", admin.ORDER_STATUS_VALUES)
         self.assertNotIn("UPSCALING", admin.ORDER_STATUS_VALUES)
+
+    def test_admin_orders_ui_cannot_coerce_generation_status_to_created(self) -> None:
+        source = (
+            BACKEND_DIR.parent / "frontend/src/pages/admin/orders.vue"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('v-if="!order.generation_managed"', source)
+        self.assertIn("if (order.generation_managed) return;", source)
+        self.assertIn("generation_managed: boolean;", source)
+        self.assertNotIn(
+            "orderStatusOptions.indexOf(status || 'CREATED')",
+            source,
+        )
 
     def test_legacy_public_routes_are_removed(self) -> None:
         from app.routers import api_router
@@ -191,6 +211,129 @@ class AdminManagementRoutesTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn("def grant_credits_to_user", service_source)
         self.assertNotIn("add_credits_async", service_source)
+
+
+class AdminOrderStatusMutationTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _request(order_id: uuid.UUID) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": f"/api/v1/admin/orders/{order_id}/status",
+                "headers": [],
+                "query_string": b"",
+                "server": ("testserver", 80),
+                "client": ("127.0.0.1", 50000),
+                "scheme": "http",
+            }
+        )
+
+    async def test_unknown_generation_order_rejects_all_ui_statuses_and_stays_visible(
+        self,
+    ) -> None:
+        from app.models.order import Order, OrderStatus
+        from app.routers import admin
+        from app.services import generation_manual_settlement_service as settlement
+
+        order = Order(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            status=OrderStatus.UNKNOWN_EXTERNAL_STATE,
+            generation_job_id=uuid.uuid4(),
+            reservation_id=uuid.uuid4(),
+            price_cents=0,
+        )
+        db = AsyncMock()
+        with (
+            patch.object(admin, "ensure_user_account_columns", AsyncMock()),
+            patch.object(admin, "_get_admin_order", AsyncMock(return_value=order)),
+        ):
+            for candidate in (
+                "CREATED",
+                "CHECKING",
+                "GENERATING",
+                "COMPLETED",
+                "FAILED",
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    await admin.update_order_status(
+                        str(order.id),
+                        admin.UpdateStatusRequest(status=candidate),
+                        self._request(order.id),
+                        db,
+                    )
+                self.assertEqual(caught.exception.status_code, 409)
+                self.assertEqual(
+                    caught.exception.detail["code"],
+                    "generation_status_requires_settlement_workflow",
+                )
+                self.assertEqual(
+                    order.status,
+                    OrderStatus.UNKNOWN_EXTERNAL_STATE,
+                )
+
+        listed = admin._order_item(order, None)
+        self.assertTrue(listed.generation_managed)
+        self.assertEqual(listed.status, "UNKNOWN_EXTERNAL_STATE")
+
+        class CountDb:
+            async def scalar(self, _statement):
+                return 1
+
+        self.assertEqual(
+            await settlement.count_generation_manual_cases(CountDb()),
+            1,
+        )
+
+    async def test_legacy_order_allows_only_state_machine_transition(self) -> None:
+        from app.models.order import Order, OrderStatus
+        from app.routers import admin
+
+        valid = Order(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            status=OrderStatus.CREATED,
+            price_cents=0,
+        )
+        invalid = Order(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            status=OrderStatus.CREATED,
+            price_cents=0,
+        )
+        db = AsyncMock()
+        db.get.return_value = None
+        with (
+            patch.object(admin, "ensure_user_account_columns", AsyncMock()),
+            patch.object(admin, "log_admin_action", AsyncMock()),
+            patch.object(
+                admin,
+                "_get_admin_order",
+                AsyncMock(side_effect=(valid, invalid)),
+            ),
+        ):
+            result = await admin.update_order_status(
+                str(valid.id),
+                admin.UpdateStatusRequest(status="CHECKING"),
+                self._request(valid.id),
+                db,
+            )
+            self.assertEqual(result.status, "CHECKING")
+
+            with self.assertRaises(HTTPException) as caught:
+                await admin.update_order_status(
+                    str(invalid.id),
+                    admin.UpdateStatusRequest(status="COMPLETED"),
+                    self._request(invalid.id),
+                    db,
+                )
+            self.assertEqual(caught.exception.status_code, 409)
+            self.assertEqual(
+                caught.exception.detail["code"],
+                "order_status_transition_invalid",
+            )
+            self.assertEqual(invalid.status, OrderStatus.CREATED)
 
 
 if __name__ == "__main__":

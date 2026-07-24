@@ -143,8 +143,8 @@ def decide_flag(
     if not context.runtime_bundle_id or context.runtime_bundle_id != _row_value(row, "runtime_bundle_id"):
         return _off_decision(known_capability, row, "runtime_bundle_mismatch")
     bound_worker = str(_row_value(row, "worker_image_digest") or "").strip()
-    if context.worker_image_digest is not None and context.worker_image_digest != bound_worker:
-        return _off_decision(known_capability, row, "worker_image_mismatch")
+    if bound_worker or context.worker_image_digest is not None:
+        return _off_decision(known_capability, row, "worker_coordinate_retired")
 
     if state is FeatureFlagState.ACCEPTANCE_COHORT:
         expires_at = _row_value(row, "expires_at")
@@ -333,28 +333,26 @@ async def require_request_capability(
     return decision
 
 
-async def require_worker_capability(
+async def require_backend_capability(
     db: AsyncSession,
     capability: Capability | str,
     *,
     deployment_id: str | None,
     runtime_bundle_id: str | None,
-    worker_image_digest: str | None,
     user_id: UUID | None,
 ) -> FeatureFlagDecision:
+    """Authorize persisted work only for the active website API deployment."""
     known_capability = coerce_capability(capability)
-    required = (deployment_id, runtime_bundle_id, worker_image_digest, user_id)
+    required = (deployment_id, runtime_bundle_id, user_id)
     if any(value is None or not str(value).strip() for value in required):
-        raise CapabilityDisabled(known_capability.value, "worker_stamp_missing")
+        raise CapabilityDisabled(known_capability.value, "backend_stamp_missing")
     if not settings.runtime_coordinates_valid:
-        raise CapabilityDisabled(known_capability.value, "worker_runtime_untrusted")
+        raise CapabilityDisabled(known_capability.value, "backend_runtime_untrusted")
     if (
         deployment_id != settings.deployment_id
         or runtime_bundle_id != settings.runtime_bundle_id.strip()
-        or not settings.worker_image_digest.strip()
-        or worker_image_digest != settings.worker_image_digest.strip()
     ):
-        raise CapabilityDisabled(known_capability.value, "worker_stamp_mismatch")
+        raise CapabilityDisabled(known_capability.value, "backend_stamp_mismatch")
     decision = await resolve_capability(
         db,
         known_capability,
@@ -362,7 +360,6 @@ async def require_worker_capability(
             environment=settings.runtime_environment,
             deployment_id=deployment_id,
             runtime_bundle_id=runtime_bundle_id,
-            worker_image_digest=worker_image_digest,
             user_id=user_id,
         ),
     )
@@ -429,6 +426,8 @@ async def set_capability_state(
         raise ValueError("environment must be preview or production")
     if not clean_actor or not clean_reason:
         raise ValueError("actor and reason are required")
+    if worker_image_digest is not None:
+        raise ValueError("worker image coordinates are retired")
     if environment == "production" and new_state is not FeatureFlagState.OFF and not allow_production_enable:
         raise ValueError("production capability mutation is OFF-only before commercial activation gates")
     if environment == "preview" and new_state is not FeatureFlagState.OFF and not allow_preview_enable:
@@ -486,7 +485,7 @@ async def set_capability_state(
     else:
         row.deployment_id = deployment_id
         row.runtime_bundle_id = runtime_bundle_id
-        row.worker_image_digest = worker_image_digest
+        row.worker_image_digest = None
         row.release_activation_id = release_activation_id
         row.target_manifest_sha256 = target_manifest_sha256
         row.cohort_user_ids = sorted({str(item) for item in cohort_user_ids})
@@ -522,7 +521,6 @@ async def set_capability_state(
             environment=environment,
             deployment_id=row.deployment_id,
             runtime_bundle_id=row.runtime_bundle_id,
-            worker_image_digest=row.worker_image_digest,
             user_id=next((UUID(value) for value in row.cohort_user_ids), None),
             verified_identity_hash=next(iter(row.verified_identity_hashes), None),
             now=current,

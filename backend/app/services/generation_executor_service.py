@@ -1,12 +1,12 @@
-"""Durable ARQ schedules and the generation-job v1 entrypoint."""
+"""Durable website-backend execution for generation-job v1."""
 
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
 import logging
-import os
-import socket
+import re
 import uuid
 from typing import Any, Awaitable
 
@@ -31,9 +31,12 @@ from app.services.delivery_asset_service import (
     build_delivery_assets,
     prepare_delivery_intents_for_terminal_cleanup,
 )
-from app.services.feature_flag_service import require_worker_capability
+from app.services.feature_flag_service import require_backend_capability
 from app.services.generation_attempt_service import ensure_accepted_submission_accounting
 from app.services.generation_candidate_service import persist_evolink_candidate
+from app.services.generation_manual_settlement_service import (
+    count_generation_manual_cases,
+)
 from app.services.generation_repair_service import (
     GENERATION_ATTEMPT_PAYLOAD_VERSION,
     QaDispositionKind,
@@ -47,15 +50,12 @@ from app.services.job_lease_service import (
     JobNotClaimable,
     JobRequiresReconciliation,
     StaleWorkerFence,
-    build_worker_runtime_heartbeat,
     claim_generation_reconciliation,
     claim_generation_job,
     heartbeat_generation_job,
     pause_generation_reconciliation,
-    publish_worker_runtime_heartbeat,
     require_current_generation_fence,
 )
-from app.services.outbox_service import publish_pending_generation_outbox
 from app.services.partner_invite_service import (
     settle_open_partner_consent_case_after_provider,
 )
@@ -70,76 +70,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _worker_id() -> str:
-    configured = str(os.getenv("WORKER_INSTANCE_ID") or "").strip()
-    value = configured or f"{socket.gethostname()}:{os.getpid()}"
-    if len(value) > 128:
-        raise RuntimeError("worker_instance_id_too_long")
-    return value
+def backend_executor_id() -> str:
+    """Return a stable, non-secret lease owner for the website API deployment."""
+    deployment_id = settings.deployment_id
+    if not deployment_id:
+        raise RuntimeError("backend_executor_deployment_missing")
+    digest = hashlib.sha256(deployment_id.encode("utf-8")).hexdigest()[:32]
+    return f"api:{digest}"
 
 
-async def startup_worker(ctx: dict[str, Any]) -> None:
-    """Establish process identity and fail closed unless release binding is valid."""
-    ctx["worker_id"] = _worker_id()
-    await publish_worker_heartbeat(ctx)
-
-
-async def publish_worker_heartbeat(ctx: dict[str, Any]) -> None:
-    redis = ctx.get("redis")
-    if redis is None:
-        raise RuntimeError("worker_redis_context_missing")
-    worker_id = str(ctx.get("worker_id") or "").strip()
-    if not worker_id:
-        raise RuntimeError("worker_identity_missing")
-    async with async_session_maker() as db:
-        heartbeat = await build_worker_runtime_heartbeat(db, worker_id=worker_id)
-    await publish_worker_runtime_heartbeat(redis, heartbeat)
-
-
-async def dispatch_generation_outbox(ctx: dict[str, Any]) -> None:
-    """Publish committed PostgreSQL facts using ARQ's deterministic job IDs."""
-    redis = ctx.get("redis")
-    if redis is None:
-        raise RuntimeError("worker_redis_context_missing")
-    async with async_session_maker() as db:
-        await publish_pending_generation_outbox(db, redis, limit=50)
-        await db.commit()
-
-
-async def dispatch_generation_reconciliation(
-    ctx: dict[str, Any],
-    *,
-    now: datetime | None = None,
-) -> None:
-    """Enqueue only due PostgreSQL facts; the fenced claim is authoritative."""
-
-    redis = ctx.get("redis")
-    if redis is None:
-        raise RuntimeError("worker_redis_context_missing")
-    current = now or _utcnow()
-    async with async_session_maker() as db:
-        jobs = list(
-            (
-                await db.scalars(
-                    select(GenerationJob)
-                    .where(
-                        GenerationJob.status == GenerationJobStatus.RECONCILING,
-                        GenerationJob.next_retry_at.is_not(None),
-                        GenerationJob.next_retry_at <= current,
-                    )
-                    .order_by(GenerationJob.next_retry_at.asc(), GenerationJob.id.asc())
-                    .limit(25)
-                )
-            ).all()
-        )
-    bucket = int(current.timestamp()) // 5
-    for job in jobs:
-        await redis.enqueue_job(
-            "reconcile_generation_v1",
-            str(job.id),
-            GENERATION_JOB_PAYLOAD_VERSION,
-            _job_id=f"generation-reconcile:v1:{job.id}:{bucket}",
-        )
+def backend_runtime_coordinates() -> tuple[str, str]:
+    """Return the exact deployment coordinates allowed to execute this batch."""
+    deployment_id = str(settings.vercel_deployment_id or "").strip()
+    runtime_bundle_id = str(settings.runtime_bundle_id or "").strip().lower()
+    if not deployment_id or len(deployment_id) > 128:
+        raise RuntimeError("backend_executor_deployment_missing")
+    if not re.fullmatch(r"rtb_[0-9a-f]{64}", runtime_bundle_id):
+        raise RuntimeError("backend_executor_runtime_bundle_invalid")
+    return deployment_id, runtime_bundle_id
 
 
 async def _load_capability_context(job_id: uuid.UUID) -> tuple[GenerationJob, uuid.UUID]:
@@ -154,12 +102,12 @@ async def _load_capability_context(job_id: uuid.UUID) -> tuple[GenerationJob, uu
         if row is None:
             raise JobNotClaimable("generation_job_not_found", job_id)
         job, user_id = row
-        await require_worker_capability(
+        deployment_id, runtime_bundle_id = backend_runtime_coordinates()
+        await require_backend_capability(
             db,
             Capability.GENERATION,
-            deployment_id=job.api_deployment_id,
-            runtime_bundle_id=job.runtime_bundle_id,
-            worker_image_digest=job.expected_worker_image_digest,
+            deployment_id=deployment_id,
+            runtime_bundle_id=runtime_bundle_id,
             user_id=user_id,
         )
         return job, user_id
@@ -186,15 +134,35 @@ async def _load_attempt_capability_context(
             or job.active_attempt_id != attempt.id
         ):
             raise JobNotClaimable("generation_attempt_not_active_repair", job.id)
-        await require_worker_capability(
+        deployment_id, runtime_bundle_id = backend_runtime_coordinates()
+        await require_backend_capability(
             db,
             Capability.GENERATION,
-            deployment_id=job.api_deployment_id,
-            runtime_bundle_id=job.runtime_bundle_id,
-            worker_image_digest=job.expected_worker_image_digest,
+            deployment_id=deployment_id,
+            runtime_bundle_id=runtime_bundle_id,
             user_id=user_id,
         )
         return job, attempt, user_id
+
+
+async def _load_reconciliation_context(
+    job_id: uuid.UUID,
+) -> tuple[GenerationJob, uuid.UUID]:
+    """Load accepted work for settlement without reopening submission authority."""
+
+    backend_runtime_coordinates()
+    async with async_session_maker() as db:
+        row = (
+            await db.execute(
+                select(GenerationJob, Order.user_id)
+                .join(Order, Order.id == GenerationJob.order_id)
+                .where(GenerationJob.id == job_id)
+            )
+        ).one_or_none()
+        if row is None:
+            raise JobNotClaimable("generation_job_not_found", job_id)
+        job, user_id = row
+        return job, user_id
 
 
 async def _load_reconciliation_attempt(
@@ -368,7 +336,7 @@ async def _run_with_heartbeat(lease: JobLease, operation: Awaitable[None]) -> No
     await asyncio.gather(*pending, return_exceptions=True)
     if heartbeat in done:
         await heartbeat
-        raise RuntimeError("generation_worker_heartbeat_stopped")
+        raise RuntimeError("generation_backend_heartbeat_stopped")
     await work
 
 
@@ -386,7 +354,7 @@ async def _execute_claimed_generation_attempt(
     user_id: uuid.UUID,
     attempt_id: uuid.UUID,
 ) -> None:
-    """Submit exactly the durable REPAIR row carried by the outbox message."""
+    """Submit exactly the durable REPAIR row selected from PostgreSQL."""
 
     try:
         from app.services.generation_attempt_service import execute_claimed_generation_attempt
@@ -592,7 +560,7 @@ async def generate_order_v1(
     job_id: str,
     payload_version: str,
 ) -> None:
-    """Claim one durable job; Redis contains no user, image, price, or secret."""
+    """Claim one durable PostgreSQL job in the website backend."""
     if payload_version != GENERATION_JOB_PAYLOAD_VERSION:
         raise ValueError("generation_job_payload_version_unsupported")
     try:
@@ -619,6 +587,11 @@ async def generate_order_v1(
             # The claim function durably routes ambiguous Provider work out of
             # the submission path. Committing here is part of that protocol.
             await db.commit()
+            await reconcile_generation_v1(
+                {"worker_id": worker_id},
+                str(parsed_job_id),
+                GENERATION_JOB_PAYLOAD_VERSION,
+            )
             return
         except (JobAlreadyLeased, JobNotClaimable):
             return
@@ -628,6 +601,11 @@ async def generate_order_v1(
     # The Task 18 boundary repeats both capability and fence validation directly
     # before every Provider submission; this entry check cannot authorize later I/O.
     await _run_with_heartbeat(lease, _execute_claimed_generation_job(lease, user_id))
+    await reconcile_generation_v1(
+        {"worker_id": worker_id},
+        str(parsed_job_id),
+        GENERATION_JOB_PAYLOAD_VERSION,
+    )
 
 
 async def generate_attempt_v1(
@@ -663,6 +641,11 @@ async def generate_attempt_v1(
             )
         except JobRequiresReconciliation:
             await db.commit()
+            await reconcile_generation_v1(
+                {"worker_id": worker_id},
+                str(job.id),
+                GENERATION_JOB_PAYLOAD_VERSION,
+            )
             return
         except (JobAlreadyLeased, JobNotClaimable):
             return
@@ -671,6 +654,11 @@ async def generate_attempt_v1(
     await _run_with_heartbeat(
         lease,
         _execute_claimed_generation_attempt(lease, user_id, parsed_attempt_id),
+    )
+    await reconcile_generation_v1(
+        {"worker_id": worker_id},
+        str(job.id),
+        GENERATION_JOB_PAYLOAD_VERSION,
     )
 
 
@@ -691,7 +679,7 @@ async def reconcile_generation_v1(
     if not worker_id:
         raise RuntimeError("worker_identity_missing")
 
-    job, user_id = await _load_capability_context(parsed_job_id)
+    job, user_id = await _load_reconciliation_context(parsed_job_id)
     if job.payload_version != GENERATION_JOB_PAYLOAD_VERSION:
         raise ValueError("generation_job_database_payload_version_unsupported")
     async with async_session_maker() as db:
@@ -713,3 +701,222 @@ async def reconcile_generation_v1(
             claim.attempt_id,
         ),
     )
+
+
+async def execute_generation_job(
+    job_id: uuid.UUID,
+    *,
+    executor_id: str | None = None,
+) -> None:
+    """Execute one initial job in the website backend without Redis."""
+    await generate_order_v1(
+        {"worker_id": executor_id or backend_executor_id()},
+        str(job_id),
+        GENERATION_JOB_PAYLOAD_VERSION,
+    )
+
+
+async def execute_generation_attempt(
+    attempt_id: uuid.UUID,
+    *,
+    executor_id: str | None = None,
+) -> None:
+    """Execute one already-persisted repair attempt in the website backend."""
+    await generate_attempt_v1(
+        {"worker_id": executor_id or backend_executor_id()},
+        str(attempt_id),
+        GENERATION_ATTEMPT_PAYLOAD_VERSION,
+    )
+
+
+async def reconcile_generation_job(
+    job_id: uuid.UUID,
+    *,
+    executor_id: str | None = None,
+) -> None:
+    """Advance one due Provider task without re-entering submission."""
+    await reconcile_generation_v1(
+        {"worker_id": executor_id or backend_executor_id()},
+        str(job_id),
+        GENERATION_JOB_PAYLOAD_VERSION,
+    )
+
+
+async def execute_order_generation_once(
+    *,
+    order_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    """Best-effort immediate submission after the order transaction commits."""
+    await advance_order_generation_once(order_id=order_id, user_id=user_id)
+
+
+async def advance_order_generation_once(
+    *,
+    order_id: uuid.UUID,
+    user_id: uuid.UUID,
+    executor_id: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Advance at most one durable step for one authenticated user's order."""
+
+    current = now or _utcnow()
+    async with async_session_maker() as db:
+        row = (
+            await db.execute(
+                select(GenerationJob, Order.user_id)
+                .join(Order, Order.id == GenerationJob.order_id)
+                .where(Order.id == order_id, Order.user_id == user_id)
+            )
+        ).one_or_none()
+        if row is None:
+            raise JobNotClaimable("generation_order_not_found", order_id)
+        job, owner_id = row
+        if owner_id != user_id:
+            raise JobNotClaimable("generation_order_not_found", order_id)
+
+        job_status = GenerationJobStatus(job.status)
+        action: tuple[str, uuid.UUID] | None = None
+        if (
+            job_status is GenerationJobStatus.RECONCILING
+            and job.next_retry_at is not None
+            and job.next_retry_at <= current
+        ):
+            action = ("reconcile", job.id)
+        elif job_status in {
+            GenerationJobStatus.QUEUED,
+            GenerationJobStatus.ACTIVE,
+        } and (
+            job.lease_expires_at is None or job.lease_expires_at <= current
+        ):
+            attempt = (
+                await db.get(GenerationAttempt, job.active_attempt_id)
+                if job.active_attempt_id is not None
+                else None
+            )
+            if (
+                attempt is not None
+                and GenerationAttemptKind(attempt.kind)
+                is GenerationAttemptKind.REPAIR
+                and GenerationAttemptStatus(attempt.status)
+                is GenerationAttemptStatus.PREPARED
+            ):
+                action = ("attempt", attempt.id)
+            else:
+                action = ("job", job.id)
+
+    if action is None:
+        return "idle"
+    kind, entity_id = action
+    active_executor = executor_id or backend_executor_id()
+    if kind == "reconcile":
+        await reconcile_generation_job(entity_id, executor_id=active_executor)
+    elif kind == "attempt":
+        await execute_generation_attempt(entity_id, executor_id=active_executor)
+    else:
+        await execute_generation_job(entity_id, executor_id=active_executor)
+    return kind
+
+
+async def _pending_backend_work(
+    *,
+    limit: int,
+    now: datetime,
+) -> list[tuple[str, uuid.UUID]]:
+    bounded = max(1, min(int(limit), 5))
+    # Validate the active backend before reading work. Runtime stamps on jobs
+    # remain immutable provenance; generation-job.v1 is the compatibility
+    # boundary that permits the active release to finish older work.
+    backend_runtime_coordinates()
+    async with async_session_maker() as db:
+        reconciling = list(
+            (
+                await db.scalars(
+                    select(GenerationJob.id)
+                    .where(
+                        GenerationJob.status == GenerationJobStatus.RECONCILING,
+                        GenerationJob.payload_version
+                        == GENERATION_JOB_PAYLOAD_VERSION,
+                        GenerationJob.next_retry_at.is_not(None),
+                        GenerationJob.next_retry_at <= now,
+                    )
+                    .order_by(GenerationJob.next_retry_at.asc(), GenerationJob.id.asc())
+                    .limit(bounded)
+                )
+            ).all()
+        )
+        remaining = bounded - len(reconciling)
+        if remaining <= 0:
+            return [("reconcile", item) for item in reconciling]
+        jobs = list(
+            (
+                await db.scalars(
+                    select(GenerationJob)
+                    .where(
+                        GenerationJob.status.in_(
+                            (GenerationJobStatus.QUEUED, GenerationJobStatus.ACTIVE)
+                        ),
+                        GenerationJob.payload_version
+                        == GENERATION_JOB_PAYLOAD_VERSION,
+                        (
+                            GenerationJob.lease_expires_at.is_(None)
+                            | (GenerationJob.lease_expires_at <= now)
+                        ),
+                    )
+                    .order_by(GenerationJob.created_at.asc(), GenerationJob.id.asc())
+                    .limit(remaining)
+                )
+            ).all()
+        )
+        work: list[tuple[str, uuid.UUID]] = [
+            ("reconcile", item) for item in reconciling
+        ]
+        for job in jobs:
+            attempt = (
+                await db.get(GenerationAttempt, job.active_attempt_id)
+                if job.active_attempt_id is not None
+                else None
+            )
+            if (
+                attempt is not None
+                and GenerationAttemptKind(attempt.kind) is GenerationAttemptKind.REPAIR
+                and GenerationAttemptStatus(attempt.status)
+                is GenerationAttemptStatus.PREPARED
+            ):
+                work.append(("attempt", attempt.id))
+            else:
+                work.append(("job", job.id))
+        return work
+
+
+async def run_backend_generation_maintenance(*, limit: int = 2) -> dict[str, int]:
+    """Run a small crash-recovery batch inside one Vercel function invocation."""
+    work = await _pending_backend_work(limit=limit, now=_utcnow())
+    counts = {
+        "selected": len(work),
+        "submitted": 0,
+        "reconciled": 0,
+        "failed": 0,
+        "human_required": 0,
+    }
+    executor_id = backend_executor_id()
+    for kind, entity_id in work:
+        try:
+            if kind == "reconcile":
+                await reconcile_generation_job(entity_id, executor_id=executor_id)
+                counts["reconciled"] += 1
+            elif kind == "attempt":
+                await execute_generation_attempt(entity_id, executor_id=executor_id)
+                counts["submitted"] += 1
+            else:
+                await execute_generation_job(entity_id, executor_id=executor_id)
+                counts["submitted"] += 1
+        except Exception as exc:
+            counts["failed"] += 1
+            logger.exception(
+                "backend_generation_maintenance_item_failed",
+                extra={"kind": kind, "error_type": type(exc).__name__},
+            )
+    async with async_session_maker() as db:
+        counts["human_required"] = await count_generation_manual_cases(db)
+    return counts

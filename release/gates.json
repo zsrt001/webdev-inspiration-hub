@@ -17,7 +17,7 @@
       "pr_frontend_unit",
       "pr_frontend_a11y",
       "pr_frontend_build",
-      "pr_worker_image_build",
+      "pr_backend_execution_contract",
       "pr_gate_aggregate"
     ],
     "stage5_foundation": [
@@ -30,14 +30,14 @@
       "pr_frontend_unit",
       "pr_frontend_a11y",
       "pr_frontend_build",
-      "pr_worker_image_build",
+      "pr_backend_execution_contract",
       "pr_gate_aggregate",
       "preview_google_session",
       "preview_private_media_owner_read",
       "preview_private_media_cross_user",
       "preview_private_media_delete",
       "preview_provider_sandbox_contract",
-      "preview_worker_heartbeat",
+      "preview_backend_runtime",
       "preview_provider_fetch",
       "preview_cleanup"
     ],
@@ -51,7 +51,7 @@
       "pr_frontend_unit",
       "pr_frontend_a11y",
       "pr_frontend_build",
-      "pr_worker_image_build",
+      "pr_backend_execution_contract",
       "pr_gate_aggregate",
       "preview_google_session",
       "preview_private_media_owner_read",
@@ -59,7 +59,7 @@
       "preview_private_media_delete",
       "preview_creem_test_contract",
       "preview_provider_sandbox_contract",
-      "preview_worker_heartbeat",
+      "preview_backend_runtime",
       "preview_provider_fetch",
       "preview_cleanup",
       "preview_main_journey",
@@ -189,7 +189,7 @@
       "capability": null
     },
     {
-      "id": "pr_worker_image_build",
+      "id": "pr_backend_execution_contract",
       "layer": "pr",
       "runtime_scope": "pr",
       "profiles": ["pr", "stage5_foundation", "release"],
@@ -285,7 +285,7 @@
       "capability": "generation"
     },
     {
-      "id": "preview_worker_heartbeat",
+      "id": "preview_backend_runtime",
       "layer": "preview",
       "runtime_scope": "preview_commercial",
       "profiles": ["stage5_foundation", "release"],

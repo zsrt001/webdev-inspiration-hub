@@ -103,31 +103,49 @@ class FeatureFlagDecisionTest(unittest.TestCase):
             rejected = flags.FeatureFlagContext(**values)
             self.assertFalse(service.decide_flag(flags.Capability.GENERATION, row, rejected).allowed)
 
-    def test_on_requires_exact_active_coordinates_and_worker_digest_when_bound(self) -> None:
+    def test_on_rejects_every_retired_worker_coordinate(self) -> None:
         flags = _flags_module()
         service = _service_module()
-        row = {
+        clean_row = {
             "environment": "production",
             "state": "ON",
             "deployment_id": "dpl_target",
             "runtime_bundle_id": "rtb_target",
-            "worker_image_digest": "sha256:" + "a" * 64,
         }
-        allowed = flags.FeatureFlagContext(
+        clean_context = flags.FeatureFlagContext(
             environment="production",
             deployment_id="dpl_target",
             runtime_bundle_id="rtb_target",
-            worker_image_digest="sha256:" + "a" * 64,
         )
-        self.assertTrue(service.decide_flag(flags.Capability.GENERATION, row, allowed).allowed)
+        self.assertTrue(
+            service.decide_flag(
+                flags.Capability.GENERATION,
+                clean_row,
+                clean_context,
+            ).allowed
+        )
 
-        wrong_worker = flags.FeatureFlagContext(
+        stale_row = {
+            **clean_row,
+            "worker_image_digest": "sha256:" + "a" * 64,
+        }
+        stale_context = flags.FeatureFlagContext(
             environment="production",
             deployment_id="dpl_target",
             runtime_bundle_id="rtb_target",
             worker_image_digest="sha256:" + "b" * 64,
         )
-        self.assertFalse(service.decide_flag(flags.Capability.GENERATION, row, wrong_worker).allowed)
+        for row, context in (
+            (stale_row, clean_context),
+            (clean_row, stale_context),
+        ):
+            decision = service.decide_flag(
+                flags.Capability.GENERATION,
+                row,
+                context,
+            )
+            self.assertFalse(decision.allowed)
+            self.assertEqual(decision.reason, "worker_coordinate_retired")
 
     def test_cohort_ttl_above_86400_is_rejected(self) -> None:
         service = _service_module()
@@ -142,6 +160,23 @@ class FeatureFlagDecisionTest(unittest.TestCase):
 
 
 class FeatureFlagAuthorityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_mutation_rejects_retired_worker_coordinate(self) -> None:
+        flags = _flags_module()
+        service = _service_module()
+        db = AsyncMock()
+
+        with self.assertRaisesRegex(ValueError, "worker image coordinates are retired"):
+            await service.set_capability_state(
+                db,
+                flags.Capability.GENERATION,
+                environment="preview",
+                state=flags.FeatureFlagState.OFF,
+                actor="google-admin:test",
+                reason="retired coordinate must fail closed",
+                worker_image_digest="sha256:" + "a" * 64,
+            )
+        db.execute.assert_not_awaited()
+
     async def test_admin_mutation_cannot_enable_preview_or_production_before_later_gates(self) -> None:
         flags = _flags_module()
         service = _service_module()

@@ -96,6 +96,30 @@ class OrderCreationServiceTest(unittest.TestCase):
         self.assertFalse(command.funding_policy.is_trial)
         self.assertEqual(command.funding_policy.allowed_lot_class, "PAID_ONLY")
 
+    def test_golden_anniversary_is_a_two_subject_paid_product(self) -> None:
+        request = self._request(
+            asset_count=2,
+            template_id="golden_vintage_studio_8090",
+        )
+        command = service.build_create_order_command(
+            request=request,
+            user_id=uuid.uuid4(),
+            idempotency_key="golden-once",
+            facts=self._facts(),
+        )
+
+        self.assertEqual(command.product_policy.subject_count, 2)
+        self.assertEqual(command.funding_policy.subject_count, 2)
+        self.assertEqual(command.credit_cost, 3)
+        self.assertEqual(command.product_policy.generation_mode, "golden_anniversary")
+        self.assertEqual(
+            command.product_policy.product_code,
+            "generation_golden_anniversary_base",
+        )
+        self.assertEqual(command.funding_policy.generation_mode, "golden_anniversary")
+        self.assertFalse(command.funding_policy.is_trial)
+        self.assertEqual(command.funding_policy.allowed_lot_class, "PAID_ONLY")
+
     def test_director_and_raw_reference_urls_cannot_consume_welcome_trial(self) -> None:
         director = self._request(director_mode=True, global_style_text="quiet editorial portrait")
         command = service.build_create_order_command(

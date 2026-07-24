@@ -81,10 +81,10 @@ def _expected_version(manifest: dict[str, Any]) -> dict[str, Any]:
         "runtime_environment": "preview" if role.startswith("PREVIEW_") else "production",
         "schema_revision": manifest["schema_revision"],
         "api_compatibility_version": manifest["api_compatibility_version"],
-        "worker_compatibility_version": manifest["worker_compatibility_version"],
+        "backend_execution_version": manifest["backend_execution_version"],
+        "backend_executor_digest": manifest["backend_executor_digest"],
         "job_payload_min": manifest["job_payload_min"],
         "job_payload_max": manifest["job_payload_max"],
-        "worker_image_digest": manifest["worker_image_digest"] or "",
         "provider_policy_hash": manifest["contract_hashes"]["provider"],
         "flag_contract_hash": manifest["contract_hashes"]["flag"],
     }
@@ -130,10 +130,10 @@ def collect_api_runtime_report(
         "api_deployment_id": normalized["api_deployment_id"],
         "schema_revision": normalized["schema_revision"],
         "api_compatibility_version": normalized["api_compatibility_version"],
-        "worker_compatibility_version": normalized["worker_compatibility_version"],
+        "backend_execution_version": normalized["backend_execution_version"],
+        "backend_executor_digest": normalized["backend_executor_digest"],
         "job_payload_min": normalized["job_payload_min"],
         "job_payload_max": normalized["job_payload_max"],
-        "worker_image_digest": normalized["worker_image_digest"],
         "provider_policy_hash": normalized["contract_hashes"]["provider"],
         "flag_contract_hash": normalized["contract_hashes"]["flag"],
         "liveness_response_sha256": liveness_sha,
@@ -154,6 +154,7 @@ def collect_api_runtime_coordinate_report(
     expected_source_sha: str,
     expected_schema: str,
     expected_release_role: str,
+    expected_runtime_environment: str,
     bypass_secret: str,
     signing_key: bytes,
     now: datetime | None = None,
@@ -163,12 +164,15 @@ def collect_api_runtime_coordinate_report(
     deployment_id = str(expected_deployment_id or "").strip()
     schema_revision = str(expected_schema or "").strip()
     release_role = str(expected_release_role or "").strip()
+    runtime_environment = str(expected_runtime_environment or "").strip().lower()
     if (
         not _SOURCE_SHA.fullmatch(source_sha)
         or not _RUNTIME_ID.fullmatch(runtime_bundle_id)
         or not _COORDINATE.fullmatch(deployment_id)
         or not _SCHEMA_REVISION.fullmatch(schema_revision)
-        or release_role not in {"COMMERCIAL_7A", "CONTRACT_7B", "SAFE_BASELINE"}
+        or release_role
+        not in {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B", "SAFE_BASELINE"}
+        or runtime_environment not in {"preview", "production"}
         or len(signing_key) < 32
     ):
         raise ValueError("runtime coordinate report inputs are invalid")
@@ -197,11 +201,18 @@ def collect_api_runtime_coordinate_report(
         "runtime_bundle_id": runtime_bundle_id,
         "deployment_id": deployment_id,
         "release_role": release_role,
-        "runtime_environment": "production",
+        "runtime_environment": runtime_environment,
         "schema_revision": schema_revision,
     }
     if any(version.get(field) != value for field, value in expected.items()):
         raise ValueError("runtime coordinates do not match the protected expectation")
+    backend_execution_version = str(version.get("backend_execution_version") or "")
+    backend_executor_digest = str(version.get("backend_executor_digest") or "").lower()
+    if (
+        backend_execution_version != "vowpic-backend-executor.v1"
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", backend_executor_digest)
+    ):
+        raise ValueError("website-backend executor identity is invalid")
     observed_at = (now or datetime.now(timezone.utc)).astimezone(
         timezone.utc
     ).isoformat()
@@ -213,6 +224,9 @@ def collect_api_runtime_coordinate_report(
         "api_deployment_id": deployment_id,
         "schema_revision": schema_revision,
         "release_role": release_role,
+        "runtime_environment": runtime_environment,
+        "backend_execution_version": backend_execution_version,
+        "backend_executor_digest": backend_executor_digest,
         "liveness_response_sha256": liveness_sha,
         "readiness_response_sha256": readiness_sha,
         "version_response_sha256": version_sha,
@@ -234,6 +248,7 @@ def main() -> int:
     parser.add_argument("--expected-source-sha")
     parser.add_argument("--expected-schema")
     parser.add_argument("--expected-release-role", default="COMMERCIAL_7A")
+    parser.add_argument("--expected-runtime-environment", default="production")
     parser.add_argument("--bypass-secret-env", default="VERCEL_AUTOMATION_BYPASS_SECRET")
     parser.add_argument("--signing-key-env", default="RELEASE_EVIDENCE_HMAC_KEY")
     parser.add_argument("--output", required=True)
@@ -276,6 +291,7 @@ def main() -> int:
                     expected_source_sha=args.expected_source_sha,
                     expected_schema=args.expected_schema,
                     expected_release_role=args.expected_release_role,
+                    expected_runtime_environment=args.expected_runtime_environment,
                     bypass_secret=os.environ.get(args.bypass_secret_env, ""),
                     signing_key=signing_key,
                 )

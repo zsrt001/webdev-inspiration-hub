@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import unittest
+from urllib.parse import urlsplit
 import uuid
 
 import httpx
@@ -15,7 +17,11 @@ from app.models.asset_access_grant import AssetAccessGrant
 from app.models.media_asset import MediaAsset, MediaAssetRole, MediaAssetStatus
 from app.services import media_asset_service
 from app.services.media_asset_service import AssetAccessError
-from app.core.error_response import SensitivePathLogFilter, redact_sensitive_path
+from app.core.error_response import (
+    SensitivePathLogFilter,
+    redact_sensitive_path,
+    redact_sentry_event,
+)
 from app.core.config import Settings
 from app.core.security_headers import (
     is_authenticated_provider_probe,
@@ -217,6 +223,53 @@ class ProviderAssetGrantTest(unittest.IsolatedAsyncioTestCase):
             redact_sensitive_path(path),
             "/api/v1/media/grants/[REDACTED]?ignored=1",
         )
+
+    def test_access_log_filter_never_emits_evolink_callback_token(self) -> None:
+        import logging
+
+        attempt_id = "00000000-0000-4000-8000-000000000074"
+        token = "a" * 64
+        path = f"/api/v1/provider-callbacks/evolink/{attempt_id}/{token}?ignored=1"
+        record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            1,
+            '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1", "POST", path, "1.1", 204),
+            None,
+        )
+
+        self.assertTrue(SensitivePathLogFilter().filter(record))
+        self.assertNotIn(token, record.getMessage())
+        self.assertEqual(
+            redact_sensitive_path(path),
+            (
+                "/api/v1/provider-callbacks/evolink/"
+                f"{attempt_id}/[REDACTED]?ignored=1"
+            ),
+        )
+
+    def test_sentry_event_never_contains_evolink_callback_token(self) -> None:
+        attempt_id = "00000000-0000-4000-8000-000000000074"
+        token = "b" * 64
+        url = (
+            "https://vowpic-evolink-example.vercel.app/"
+            f"api/v1/provider-callbacks/evolink/{attempt_id}/{token}"
+        )
+        event = {
+            "request": {"url": url},
+            "breadcrumbs": {
+                "values": [
+                    {"data": {"url": url, "path": urlsplit(url).path}},
+                ]
+            },
+        }
+
+        redacted = redact_sentry_event(event, {})
+
+        self.assertNotIn(token, json.dumps(redacted, sort_keys=True))
+        self.assertIn("[REDACTED]", redacted["request"]["url"])
 
     async def test_generation_grant_requires_exact_provider_purpose_and_lineage(self) -> None:
         asset = _asset()

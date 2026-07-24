@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import async_session_maker
 from app.core.feature_flags import Capability
 from app.models.credit_reservation import CreditReservation
@@ -36,7 +37,7 @@ from app.services.evolink_service import (
     EvolinkSubmitFact,
     evolink_service,
 )
-from app.services.feature_flag_service import require_worker_capability
+from app.services.feature_flag_service import require_backend_capability
 from app.services.generation_job_service import validate_attempt_transition, validate_job_transition
 from app.services.generation_policy import build_generation_negative_prompt, build_studio_generation_prompt
 from app.services.job_lease_service import (
@@ -52,6 +53,9 @@ from app.services.partner_invite_service import (
 from app.services.qa_rules import build_structured_qa_issues
 from app.services.repair_policy import should_include_previous_edit_result
 from app.services.template_service import get_template_by_id
+
+
+settings = get_settings()
 
 
 class GenerationAttemptBoundaryError(RuntimeError):
@@ -240,6 +244,8 @@ async def prepare_submission_boundary(
     attempt_id: uuid.UUID,
     lease: JobLease,
     user_id: uuid.UUID,
+    active_deployment_id: str,
+    active_runtime_bundle_id: str,
     now: datetime | None = None,
 ) -> PreparedSubmission:
     """Commit-ready SUBMITTING state; this function performs no Provider I/O."""
@@ -305,12 +311,11 @@ async def prepare_submission_boundary(
             repair_candidate_id = uuid.UUID(str(repair_snapshot["candidate_asset_id"]))
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise GenerationAttemptBoundaryError("generation_repair_snapshot_invalid") from exc
-    await require_worker_capability(
+    await require_backend_capability(
         db,
         Capability.GENERATION,
-        deployment_id=job.api_deployment_id,
-        runtime_bundle_id=job.runtime_bundle_id,
-        worker_image_digest=job.expected_worker_image_digest,
+        deployment_id=active_deployment_id,
+        runtime_bundle_id=active_runtime_bundle_id,
         user_id=user_id,
     )
 
@@ -453,7 +458,8 @@ async def mark_submission_unknown(
     attempt.status = validate_attempt_transition(attempt.status, GenerationAttemptStatus.UNKNOWN)
     job.status = validate_job_transition(job.status, GenerationJobStatus.RECONCILING)
     job.next_retry_at = current if attempt.provider_job_id else None
-    job.last_error_code = str(reason)[:64]
+    job.last_error_code = "provider_submission_human_required"
+    job.last_error_detail = str(reason or "submission_outcome_unknown")[:1000]
     job.lease_owner = None
     job.lease_claim_id = None
     job.lease_expires_at = None
@@ -726,13 +732,15 @@ async def submit_generation_attempt(
         attempt_id=attempt_id,
         lease=lease,
         user_id=user_id,
+        active_deployment_id=settings.deployment_id,
+        active_runtime_bundle_id=settings.runtime_bundle_id.strip(),
     )
     await db.commit()
     retries_used = 0
     while True:
         try:
             fact = await provider.submit(prepared.request, attempt_id=prepared.attempt_id)
-        except (httpx.TimeoutException, httpx.WriteError):
+        except httpx.TransportError:
             attempt = await mark_submission_unknown(
                 db,
                 attempt_id=attempt_id,
@@ -801,7 +809,7 @@ async def submit_generation_attempt(
 
 
 async def execute_claimed_generation_job(*, lease: JobLease, user_id: uuid.UUID) -> None:
-    """Worker-facing entry; unverified provider correlation stops before HTTP."""
+    """Backend-executor entry; unverified provider correlation stops before HTTP."""
     async with async_session_maker() as db:
         attempt = await prepare_initial_generation_attempt(db, lease=lease)
         await db.commit()

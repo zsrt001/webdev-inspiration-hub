@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove one real Evolink request fetched one activation-bound private grant."""
+"""Prove one backend Evolink request fetched one activation-bound private grant."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _canonical(payload: dict[str, Any]) -> bytes:
 def _validate_grant_reference(reference: dict[str, Any], *, expected_source_sha: str) -> None:
     required = {
         "schema", "activation_id", "case_id", "source_sha", "runtime_bundle_id", "api_deployment_id",
-        "worker_deployment_id", "worker_image_digest", "grant_id", "asset_id", "job_id",
+        "backend_executor_digest", "grant_id", "asset_id", "job_id",
         "attempt_id", "read_url",
     }
     if not isinstance(reference, dict) or set(reference) != required:
@@ -53,11 +53,10 @@ def _validate_grant_reference(reference: dict[str, Any], *, expected_source_sha:
         raise ValueError("Provider grant reference source SHA mismatch")
     if not _RUNTIME.fullmatch(str(reference.get("runtime_bundle_id") or "")):
         raise ValueError("Provider grant reference runtime ID is invalid")
-    for field in ("api_deployment_id", "worker_deployment_id"):
-        if not _DEPLOYMENT.fullmatch(str(reference.get(field) or "")):
-            raise ValueError(f"Provider grant reference {field} is invalid")
-    if not _DIGEST.fullmatch(str(reference.get("worker_image_digest") or "")):
-        raise ValueError("Provider grant reference Worker digest is invalid")
+    if not _DEPLOYMENT.fullmatch(str(reference.get("api_deployment_id") or "")):
+        raise ValueError("Provider grant reference API deployment ID is invalid")
+    if not _DIGEST.fullmatch(str(reference.get("backend_executor_digest") or "")):
+        raise ValueError("Provider grant reference backend executor digest is invalid")
     parsed = urlsplit(str(reference.get("read_url") or ""))
     if (
         parsed.scheme != "https"
@@ -260,8 +259,7 @@ def verify_provider_fetch(
         "source_sha": source,
         "runtime_bundle_id": grant_reference["runtime_bundle_id"],
         "api_deployment_id": grant_reference["api_deployment_id"],
-        "worker_deployment_id": grant_reference["worker_deployment_id"],
-        "worker_image_digest": grant_reference["worker_image_digest"],
+        "backend_executor_digest": grant_reference["backend_executor_digest"],
         "activation_id": grant_reference["activation_id"],
         "grant_id_hash": hashlib.sha256(str(grant_reference["grant_id"]).encode()).hexdigest(),
         "grant_reference_sha256": hashlib.sha256(_canonical(grant_reference)).hexdigest(),

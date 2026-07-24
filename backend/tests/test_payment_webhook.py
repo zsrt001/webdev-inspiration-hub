@@ -8,12 +8,12 @@ import json
 import unittest
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from app.models.credit_grant_lot import CreditGrantLot
 from app.models.credit_purchase import CreditPurchase, CreditPurchaseStatus, PurchaseIntentState
 from app.models.credit_transaction import CreditTransaction, CreditTransactionType
-from app.models.outbox_event import OutboxEvent
 from app.models.payment_event import PaymentCaptureFact, PaymentEvent, PaymentEventProcessingState
 from app.models.payment_reconciliation_case import PaymentReconciliationCase
 from app.models.user_credit import UserCredit
@@ -26,6 +26,7 @@ from app.services.creem_event_service import (
     parse_creem_raw_body,
     verify_creem_signature,
 )
+from app.schemas.payment import AcceptedPaymentEvent
 from app.services.payment_service import PaymentService
 
 
@@ -74,7 +75,6 @@ def _signature(raw_body: bytes) -> str:
 class _IngestDb:
     def __init__(self, *, fail_flush: bool = False):
         self.event: PaymentEvent | None = None
-        self.outbox: list[OutboxEvent] = []
         self.fail_flush = fail_flush
         self.commit_count = 0
         self.execute_count = 0
@@ -88,8 +88,6 @@ class _IngestDb:
     def add(self, value):
         if isinstance(value, PaymentEvent):
             self.event = value
-        elif isinstance(value, OutboxEvent):
-            self.outbox.append(value)
 
     async def flush(self):
         if self.fail_flush:
@@ -233,7 +231,7 @@ class PaymentWebhookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized.business_metadata["provider_payment_id"], "tran_1")
         self.assertEqual(normalized.business_metadata["provider_product_id"], "prod_pack_50")
 
-    async def test_duplicate_signed_event_is_one_event_and_one_outbox_fact(self) -> None:
+    async def test_duplicate_signed_event_is_one_durable_event(self) -> None:
         db = _IngestDb()
         raw_body = _raw(_checkout_payload())
         signature = _signature(raw_body)
@@ -253,9 +251,51 @@ class PaymentWebhookTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(first.created)
         self.assertFalse(second.created)
-        self.assertEqual(len(db.outbox), 1)
         self.assertEqual(db.commit_count, 1)
         self.assertEqual(db.event.raw_payload_sha256, hashlib.sha256(raw_body).hexdigest())
+
+    async def test_duplicate_webhook_retries_unapplied_event(self) -> None:
+        accepted = AcceptedPaymentEvent(
+            event_id="evt_checkout_1",
+            created=False,
+            processing_state="RECEIVED",
+        )
+        event = SimpleNamespace(
+            id=uuid.uuid4(),
+            processing_state=PaymentEventProcessingState.RECEIVED,
+        )
+        db = AsyncMock()
+        db.scalar.return_value = event
+        service = PaymentService()
+        with (
+            patch(
+                "app.services.payment_service.ingest_verified_creem_event",
+                new=AsyncMock(return_value=accepted),
+            ),
+            patch.object(service, "apply_payment_event", new=AsyncMock()) as apply,
+        ):
+            result = await service.process_webhook_event(
+                db,
+                body=b"{}",
+                signature_header="signed",
+            )
+
+        self.assertIs(result, accepted)
+        apply.assert_awaited_once_with(db, payment_event_id=event.id)
+        db.commit.assert_awaited_once()
+
+    async def test_reconciliation_required_event_is_terminal_for_replay(self) -> None:
+        db = AsyncMock()
+        db.scalar.return_value = SimpleNamespace(
+            processing_state=PaymentEventProcessingState.RECONCILIATION_REQUIRED,
+        )
+
+        result = await PaymentService().apply_payment_event(
+            db,
+            payment_event_id=uuid.uuid4(),
+        )
+
+        self.assertIsNone(result)
 
     async def test_same_event_id_with_different_signed_body_is_conflict(self) -> None:
         db = _IngestDb()

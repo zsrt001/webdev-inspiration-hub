@@ -1798,6 +1798,316 @@
         "title": "AdminFetchResponse",
         "type": "object"
       },
+      "AdminGenerationManualCase": {
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "attempt_kind": {
+            "title": "Attempt Kind",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "order_id": {
+            "format": "uuid",
+            "title": "Order Id",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "reason_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Detail"
+          },
+          "submit_started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submit Started At"
+          }
+        },
+        "required": [
+          "job_id",
+          "order_id",
+          "attempt_id",
+          "attempt_kind",
+          "reason_code"
+        ],
+        "title": "AdminGenerationManualCase",
+        "type": "object"
+      },
+      "AdminGenerationManualCasesResponse": {
+        "properties": {
+          "cases": {
+            "items": {
+              "$ref": "#/components/schemas/AdminGenerationManualCase"
+            },
+            "title": "Cases",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cases",
+          "total"
+        ],
+        "title": "AdminGenerationManualCasesResponse",
+        "type": "object"
+      },
+      "AdminGenerationManualEvidenceRequest": {
+        "properties": {
+          "action": {
+            "enum": [
+              "BIND_PROVIDER_TASK",
+              "CONFIRMED_NOT_ACCEPTED_RETRY",
+              "FAIL_AND_SETTLE"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "approval_id": {
+            "format": "uuid",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "observation_reference": {
+            "maxLength": 256,
+            "minLength": 4,
+            "title": "Observation Reference",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "operator_reason": {
+            "maxLength": 500,
+            "minLength": 8,
+            "title": "Operator Reason",
+            "type": "string"
+          },
+          "provider_accepted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Accepted"
+          },
+          "provider_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Task Id"
+          },
+          "source_type": {
+            "enum": [
+              "EVOLINK_API",
+              "EVOLINK_DASHBOARD",
+              "EVOLINK_SUPPORT"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "source_type",
+          "observation_reference",
+          "observed_at",
+          "approval_id",
+          "operator_reason"
+        ],
+        "title": "AdminGenerationManualEvidenceRequest",
+        "type": "object"
+      },
+      "AdminGenerationManualEvidenceResponse": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "provider_evidence_object_key": {
+            "title": "Provider Evidence Object Key",
+            "type": "string"
+          },
+          "provider_evidence_sha256": {
+            "title": "Provider Evidence Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider_evidence_object_key",
+          "provider_evidence_sha256",
+          "job_id",
+          "attempt_id",
+          "action"
+        ],
+        "title": "AdminGenerationManualEvidenceResponse",
+        "type": "object"
+      },
+      "AdminGenerationManualResolutionRequest": {
+        "properties": {
+          "action": {
+            "enum": [
+              "BIND_PROVIDER_TASK",
+              "CONFIRMED_NOT_ACCEPTED_RETRY",
+              "FAIL_AND_SETTLE"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "operator_reason": {
+            "maxLength": 500,
+            "minLength": 8,
+            "title": "Operator Reason",
+            "type": "string"
+          },
+          "provider_accepted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Accepted"
+          },
+          "provider_evidence_object_key": {
+            "pattern": "^operations/generation-manual-evidence/[0-9a-f-]{36}/[0-9a-f]{64}\\.json$",
+            "title": "Provider Evidence Object Key",
+            "type": "string"
+          },
+          "provider_evidence_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Provider Evidence Sha256",
+            "type": "string"
+          },
+          "provider_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Task Id"
+          }
+        },
+        "required": [
+          "action",
+          "provider_evidence_object_key",
+          "provider_evidence_sha256",
+          "operator_reason"
+        ],
+        "title": "AdminGenerationManualResolutionRequest",
+        "type": "object"
+      },
+      "AdminGenerationManualResolutionResponse": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "attempt_status": {
+            "title": "Attempt Status",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "job_status": {
+            "title": "Job Status",
+            "type": "string"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "order_id": {
+            "format": "uuid",
+            "title": "Order Id",
+            "type": "string"
+          },
+          "order_status": {
+            "title": "Order Status",
+            "type": "string"
+          },
+          "settlement_status": {
+            "title": "Settlement Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "order_id",
+          "attempt_id",
+          "action",
+          "job_status",
+          "attempt_status",
+          "order_status",
+          "settlement_status",
+          "next_action"
+        ],
+        "title": "AdminGenerationManualResolutionResponse",
+        "type": "object"
+      },
       "AdminGenerationRound": {
         "properties": {
           "billable": {
@@ -2121,6 +2431,11 @@
             ],
             "title": "Final Image Urls"
           },
+          "generation_managed": {
+            "default": false,
+            "title": "Generation Managed",
+            "type": "boolean"
+          },
           "generation_params": {
             "anyOf": [
               {
@@ -2376,6 +2691,11 @@
               }
             ],
             "title": "Failure Code"
+          },
+          "generation_managed": {
+            "default": false,
+            "title": "Generation Managed",
+            "type": "boolean"
           },
           "id": {
             "title": "Id",
@@ -3811,18 +4131,6 @@
               }
             ],
             "title": "Target Manifest Sha256"
-          },
-          "worker_image_digest": {
-            "anyOf": [
-              {
-                "maxLength": 80,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Worker Image Digest"
           }
         },
         "required": [
@@ -6289,6 +6597,158 @@
         ]
       }
     },
+    "/api/v1/admin/generation/manual-settlements": {
+      "get": {
+        "description": "List ambiguous submissions that cannot be automatically replayed.",
+        "operationId": "list_admin_generation_manual_settlements_api_v1_admin_generation_manual_settlements_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminGenerationManualCasesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Admin Generation Manual Settlements",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/generation/manual-settlements/{job_id}/evidence": {
+      "post": {
+        "description": "Persist one content-addressed Provider fact before any UNKNOWN mutation.",
+        "operationId": "create_admin_generation_manual_evidence_api_v1_admin_generation_manual_settlements__job_id__evidence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminGenerationManualEvidenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminGenerationManualEvidenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Admin Generation Manual Evidence",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/generation/manual-settlements/{job_id}/resolve": {
+      "post": {
+        "description": "Apply one audited Provider fact without replaying an ambiguous POST.",
+        "operationId": "resolve_admin_generation_manual_settlement_api_v1_admin_generation_manual_settlements__job_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminGenerationManualResolutionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminGenerationManualResolutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Admin Generation Manual Settlement",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/v1/admin/grant_credits": {
       "post": {
         "description": "Grant credits to a user (admin operation).",
@@ -6648,7 +7108,7 @@
     },
     "/api/v1/admin/orders/{order_id}/status": {
       "patch": {
-        "description": "Update an order status using the existing OrderStatus enum.",
+        "description": "Update only a legacy order through its validated state machine.",
         "operationId": "update_order_status_api_v1_admin_orders__order_id__status_patch",
         "parameters": [
           {
@@ -6699,7 +7159,7 @@
         ]
       },
       "post": {
-        "description": "Update an order status using the existing OrderStatus enum.",
+        "description": "Update only a legacy order through its validated state machine.",
         "operationId": "update_order_status_api_v1_admin_orders__order_id__status_post",
         "parameters": [
           {
@@ -7994,6 +8454,54 @@
         ]
       }
     },
+    "/api/v1/ops/generation/maintain": {
+      "post": {
+        "description": "Run one authenticated manual recovery batch in the website backend.",
+        "operationId": "maintain_generation_jobs_api_v1_ops_generation_maintain_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Maintain Generation Jobs",
+        "tags": [
+          "ops"
+        ]
+      }
+    },
     "/api/v1/ops/health": {
       "get": {
         "operationId": "readiness_api_v1_ops_health_get",
@@ -8010,11 +8518,11 @@
           },
           {
             "in": "query",
-            "name": "probe_generation_queue",
+            "name": "probe_generation_backend",
             "required": false,
             "schema": {
               "default": false,
-              "title": "Probe Generation Queue",
+              "title": "Probe Generation Backend",
               "type": "boolean"
             }
           },
@@ -8139,11 +8647,11 @@
           },
           {
             "in": "query",
-            "name": "probe_generation_queue",
+            "name": "probe_generation_backend",
             "required": false,
             "schema": {
               "default": false,
-              "title": "Probe Generation Queue",
+              "title": "Probe Generation Backend",
               "type": "boolean"
             }
           },
@@ -8522,6 +9030,49 @@
           }
         },
         "summary": "Get Order Funding",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/api/v1/orders/{order_id}/progress": {
+      "post": {
+        "description": "Advance one owned durable generation step and return the refreshed order.",
+        "operationId": "progress_order_api_v1_orders__order_id__progress_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Progress Order",
         "tags": [
           "orders"
         ]

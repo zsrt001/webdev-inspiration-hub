@@ -9,12 +9,20 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.generation_attempt import GenerationAttempt, GenerationAttemptStatus
+from app.models.generation_attempt import (
+    GenerationAttempt,
+    GenerationAttemptKind,
+    GenerationAttemptStatus,
+)
 from app.models.generation_job import GenerationJob, GenerationJobStatus
 from app.services.evolink_service import (
     EvolinkTaskFact,
     EvolinkTaskState,
     verify_evolink_callback_token,
+)
+from app.services.generation_job_service import (
+    validate_attempt_transition,
+    validate_job_transition,
 )
 
 
@@ -28,6 +36,7 @@ class EvolinkCallbackError(RuntimeError):
 class EvolinkCallbackResult:
     state: str
     task_id: str
+    job_id: uuid.UUID
 
 
 async def bind_evolink_callback_task(
@@ -38,7 +47,7 @@ async def bind_evolink_callback_task(
     fact: EvolinkTaskFact,
     now: datetime | None = None,
 ) -> EvolinkCallbackResult:
-    """Persist only the missing Provider correlation; Worker fencing owns all advancement."""
+    """Bind one terminal Provider fact and make it immediately reconcilable."""
 
     if not verify_evolink_callback_token(attempt_id, token):
         raise EvolinkCallbackError("evolink_callback_not_found")
@@ -74,22 +83,62 @@ async def bind_evolink_callback_task(
     }
     if status not in allowed:
         raise EvolinkCallbackError("evolink_callback_attempt_not_submitted")
+    if (
+        job.active_attempt_id != attempt.id
+        and status not in {GenerationAttemptStatus.FINISHED, GenerationAttemptStatus.FAILED}
+    ):
+        raise EvolinkCallbackError("evolink_callback_attempt_not_active")
+
     if attempt.provider_job_id is not None:
         if str(attempt.provider_job_id) != fact.task_id:
             raise EvolinkCallbackError("evolink_callback_task_conflict")
-        return EvolinkCallbackResult("UNCHANGED", fact.task_id)
-    if status in {GenerationAttemptStatus.FINISHED, GenerationAttemptStatus.FAILED}:
-        raise EvolinkCallbackError("evolink_callback_terminal_task_missing")
+        bound = False
+    else:
+        if status in {GenerationAttemptStatus.FINISHED, GenerationAttemptStatus.FAILED}:
+            raise EvolinkCallbackError("evolink_callback_terminal_task_missing")
+        attempt.provider_job_id = fact.task_id
+        bound = True
 
-    if job.active_attempt_id != attempt.id:
-        raise EvolinkCallbackError("evolink_callback_attempt_not_active")
-    attempt.provider_job_id = fact.task_id
-    if (
-        status is GenerationAttemptStatus.UNKNOWN
-        and GenerationJobStatus(job.status) is GenerationJobStatus.RECONCILING
-        and job.lease_owner is None
-        and job.lease_claim_id is None
-        and job.lease_expires_at is None
-    ):
-        job.next_retry_at = now or datetime.now(timezone.utc)
-    return EvolinkCallbackResult("BOUND", fact.task_id)
+    if status in {GenerationAttemptStatus.FINISHED, GenerationAttemptStatus.FAILED}:
+        return EvolinkCallbackResult("UNCHANGED", fact.task_id, job.id)
+
+    current = now or datetime.now(timezone.utc)
+    if status in {
+        GenerationAttemptStatus.SUBMITTING,
+        GenerationAttemptStatus.UNKNOWN,
+    }:
+        attempt.status = validate_attempt_transition(
+            status,
+            GenerationAttemptStatus.SUBMITTED,
+        )
+        attempt.submitted_at = attempt.submitted_at or current
+        if GenerationAttemptKind(attempt.kind) is GenerationAttemptKind.INITIAL:
+            attempt.submission_accounting_state = "PENDING"
+
+    job_status = GenerationJobStatus(job.status)
+    lease_active = (
+        job.lease_owner is not None
+        and job.lease_claim_id is not None
+        and job.lease_expires_at is not None
+        and job.lease_expires_at > current
+    )
+    if not lease_active:
+        if job_status is GenerationJobStatus.ACTIVE:
+            job.status = validate_job_transition(
+                job_status,
+                GenerationJobStatus.RECONCILING,
+            )
+        elif job_status is not GenerationJobStatus.RECONCILING:
+            raise EvolinkCallbackError("evolink_callback_job_not_reconcilable")
+        job.lease_owner = None
+        job.lease_claim_id = None
+        job.lease_expires_at = None
+        job.heartbeat_at = None
+    job.next_retry_at = current
+    job.last_error_code = None
+    job.last_error_detail = None
+    return EvolinkCallbackResult(
+        "BOUND" if bound else "UNCHANGED",
+        fact.task_id,
+        job.id,
+    )

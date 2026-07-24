@@ -1,33 +1,26 @@
-"""PostgreSQL-authoritative Worker leases, heartbeats, and fencing."""
+"""PostgreSQL-authoritative generation leases, heartbeats, and fencing."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
-import json
-import re
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.models.generation_attempt import GenerationAttempt, GenerationAttemptStatus
 from app.models.generation_job import GenerationJob, GenerationJobStatus
-from app.models.release_activation import ReleaseActivation
-from app.services.generation_job_service import validate_job_transition
+from app.models.order import Order, OrderStatus
+from app.services.generation_job_service import (
+    validate_attempt_transition,
+    validate_job_transition,
+)
 
 
 HEARTBEAT_INTERVAL_SECONDS = 30
 JOB_LEASE_SECONDS = 120
 MAX_INFRASTRUCTURE_ATTEMPTS = 3
-WORKER_HEARTBEAT_MAX_AGE_SECONDS = 120
-WORKER_HEARTBEAT_TTL_SECONDS = 150
-GENERATION_SCHEMA_REVISION = "20260710_0020"
-
-settings = get_settings()
 
 
 class JobLeaseError(RuntimeError):
@@ -51,163 +44,6 @@ class JobRequiresReconciliation(JobLeaseError):
 
 class StaleWorkerFence(JobLeaseError):
     pass
-
-
-class WorkerHeartbeatInvalid(RuntimeError):
-    pass
-
-
-class WorkerRuntimeHeartbeat(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-
-    contract_schema: str = Field(default="vowpic.worker-heartbeat.v1", alias="schema")
-    worker_id: str
-    environment: str
-    source_sha: str
-    runtime_bundle_id: str
-    api_deployment_id: str
-    worker_deployment_id: str
-    worker_image_digest: str
-    schema_revision: str
-    payload_min: str
-    payload_max: str
-    config_hash: str
-    current_feature_snapshot_hash: str
-    target_feature_snapshot_hash: str
-    published_at: datetime
-
-
-def worker_runtime_heartbeat_key(environment: str, runtime_bundle_id: str) -> str:
-    normalized_environment = str(environment or "").strip().lower()
-    normalized_bundle = str(runtime_bundle_id or "").strip().lower()
-    if normalized_environment not in {"preview", "production"}:
-        raise WorkerHeartbeatInvalid("worker_heartbeat_environment_invalid")
-    if not re.fullmatch(r"rtb_[0-9a-f]{64}", normalized_bundle):
-        raise WorkerHeartbeatInvalid("worker_heartbeat_runtime_bundle_invalid")
-    return f"vowpic:worker-heartbeat:v1:{normalized_environment}:{normalized_bundle}"
-
-
-def worker_runtime_config_hash() -> str:
-    """Hash only execution-affecting, non-secret Worker settings."""
-    payload = {
-        "environment": settings.runtime_environment,
-        "release_role": settings.release_role.strip(),
-        "generation_engine": settings.generation_engine,
-        "evolink_image_model": settings.evolink_image_model,
-        "evolink_image_quality": settings.evolink_image_quality,
-        "evolink_image_size": settings.evolink_image_size,
-        "evolink_poll_interval": settings.evolink_poll_interval,
-        "evolink_poll_timeout": settings.evolink_poll_timeout,
-        "qa_require_vision": settings.qa_require_vision,
-        "qa_require_identity_vision": settings.qa_require_identity_vision,
-        "qa_require_identity_embedding": settings.qa_require_identity_embedding,
-        "storage_provider": settings.effective_storage_provider,
-        "payload_version": "generation-job.v1",
-    }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _required_hex(value: object, code: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
-        raise WorkerHeartbeatInvalid(code)
-    return normalized
-
-
-async def build_worker_runtime_heartbeat(
-    db: AsyncSession,
-    *,
-    worker_id: str,
-    now: datetime | None = None,
-) -> WorkerRuntimeHeartbeat:
-    """Bind a heartbeat to a durable release activation, not process claims."""
-    current = now or _utcnow()
-    source_sha = settings.source_sha
-    runtime_bundle_id = settings.runtime_bundle_id.strip().lower()
-    worker_digest = settings.worker_image_digest.strip().lower()
-    api_deployment_id = settings.deployment_id
-    if not re.fullmatch(r"[0-9a-f]{40,64}", source_sha):
-        raise WorkerHeartbeatInvalid("worker_heartbeat_source_sha_invalid")
-    worker_runtime_heartbeat_key(settings.runtime_environment, runtime_bundle_id)
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", worker_digest):
-        raise WorkerHeartbeatInvalid("worker_heartbeat_image_digest_invalid")
-    if not api_deployment_id:
-        raise WorkerHeartbeatInvalid("worker_heartbeat_api_deployment_missing")
-    activation = await db.scalar(
-        select(ReleaseActivation)
-        .where(
-            ReleaseActivation.environment == settings.runtime_environment,
-            ReleaseActivation.source_sha == source_sha,
-            ReleaseActivation.runtime_bundle_id == runtime_bundle_id,
-            ReleaseActivation.api_deployment_id == api_deployment_id,
-            ReleaseActivation.worker_image_digest == worker_digest,
-            ReleaseActivation.phase.notin_(("FAILED", "CLEANED")),
-        )
-        .order_by(ReleaseActivation.updated_at.desc(), ReleaseActivation.id.desc())
-        .limit(1)
-    )
-    if activation is None:
-        raise WorkerHeartbeatInvalid("worker_release_activation_missing")
-    worker_deployment_id = str(activation.worker_deployment_id or "").strip()
-    if not worker_deployment_id:
-        raise WorkerHeartbeatInvalid("worker_deployment_id_missing")
-    return WorkerRuntimeHeartbeat(
-        worker_id=_validated_worker_id(worker_id),
-        environment=settings.runtime_environment,
-        source_sha=source_sha,
-        runtime_bundle_id=runtime_bundle_id,
-        api_deployment_id=api_deployment_id,
-        worker_deployment_id=worker_deployment_id,
-        worker_image_digest=worker_digest,
-        schema_revision=GENERATION_SCHEMA_REVISION,
-        payload_min="generation-job.v1",
-        payload_max="generation-job.v1",
-        config_hash=worker_runtime_config_hash(),
-        current_feature_snapshot_hash=_required_hex(
-            activation.current_snapshot_hash,
-            "worker_current_feature_snapshot_invalid",
-        ),
-        target_feature_snapshot_hash=_required_hex(
-            activation.target_snapshot_hash,
-            "worker_target_feature_snapshot_invalid",
-        ),
-        published_at=current,
-    )
-
-
-async def publish_worker_runtime_heartbeat(redis, heartbeat: WorkerRuntimeHeartbeat) -> None:
-    key = worker_runtime_heartbeat_key(heartbeat.environment, heartbeat.runtime_bundle_id)
-    result = await redis.set(
-        key,
-        heartbeat.model_dump_json(by_alias=True),
-        ex=WORKER_HEARTBEAT_TTL_SECONDS,
-    )
-    if result not in {True, "OK", b"OK"}:
-        raise WorkerHeartbeatInvalid("worker_heartbeat_publish_failed")
-
-
-async def read_worker_runtime_heartbeat(
-    redis,
-    *,
-    environment: str,
-    runtime_bundle_id: str,
-    now: datetime | None = None,
-) -> WorkerRuntimeHeartbeat:
-    current = now or _utcnow()
-    raw = await redis.get(worker_runtime_heartbeat_key(environment, runtime_bundle_id))
-    if raw is None:
-        raise WorkerHeartbeatInvalid("worker_heartbeat_missing")
-    try:
-        heartbeat = WorkerRuntimeHeartbeat.model_validate_json(raw)
-    except Exception as exc:
-        raise WorkerHeartbeatInvalid("worker_heartbeat_payload_invalid") from exc
-    if heartbeat.environment != environment or heartbeat.runtime_bundle_id != runtime_bundle_id:
-        raise WorkerHeartbeatInvalid("worker_heartbeat_coordinate_mismatch")
-    age = (current - heartbeat.published_at).total_seconds()
-    if age < -5 or age > WORKER_HEARTBEAT_MAX_AGE_SECONDS:
-        raise WorkerHeartbeatInvalid("worker_heartbeat_stale")
-    return heartbeat
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +224,27 @@ async def claim_generation_reconciliation(
     )
     if attempt is None:
         raise JobNotClaimable("generation_reconciliation_attempt_missing", job_id)
+
+    attempt_status = GenerationAttemptStatus(attempt.status)
+    if attempt_status is GenerationAttemptStatus.SUBMITTING:
+        if attempt.provider_job_id:
+            attempt.status = validate_attempt_transition(
+                attempt_status,
+                GenerationAttemptStatus.SUBMITTED,
+            )
+            attempt.submitted_at = attempt.submitted_at or current
+        else:
+            attempt.status = validate_attempt_transition(
+                attempt_status,
+                GenerationAttemptStatus.UNKNOWN,
+            )
+            job.last_error_code = "provider_submission_human_required"
+            job.last_error_detail = "submission_recovery_requires_provider_fact"
+            order = await db.scalar(
+                select(Order).where(Order.id == job.order_id).with_for_update()
+            )
+            if order is not None:
+                order.status = OrderStatus.UNKNOWN_EXTERNAL_STATE
 
     job.status = validate_job_transition(job.status, GenerationJobStatus.ACTIVE)
     job.lease_owner = owner

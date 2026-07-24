@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lease one deterministic Preview Provider-grant alias and remove it exactly."""
+"""Lease one deterministic backend Provider-grant alias and remove it exactly."""
 
 from __future__ import annotations
 
@@ -23,8 +23,6 @@ STATE_SCHEMA = "vowpic.preview-provider-grant-origin.v1"
 _SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 _RUNTIME_ID = re.compile(r"^rtb_[0-9a-f]{64}$")
 _DEPLOYMENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
-_WORKER_ID = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ALIAS = re.compile(r"^vowpic-provider-[0-9a-f]{12}-[1-9][0-9]{0,19}-[1-9][0-9]{0,9}\.vercel\.app$")
 
 
@@ -65,7 +63,6 @@ def _validate_activation(activation: dict[str, Any]) -> None:
         "environment": "preview",
         "kind": "PREVIEW_COMMERCIAL",
         "api_role": "PREVIEW_COMMERCIAL_API",
-        "worker_role": "PREVIEW_COMMERCIAL_WORKER",
         "phase": "COMPLETED",
     }
     if not isinstance(activation, dict) or any(activation.get(key) != value for key, value in expected.items()):
@@ -77,10 +74,11 @@ def _validate_activation(activation: dict[str, Any]) -> None:
         raise ValueError("Provider-grant activation runtime ID is invalid")
     if not _DEPLOYMENT_ID.fullmatch(str(activation.get("api_deployment_id") or "")):
         raise ValueError("Provider-grant API deployment ID is invalid")
-    if not _WORKER_ID.fullmatch(str(activation.get("worker_deployment_id") or "")):
-        raise ValueError("Provider-grant Worker deployment ID is invalid")
-    if not _DIGEST.fullmatch(str(activation.get("worker_image_digest") or "")):
-        raise ValueError("Provider-grant Worker digest is invalid")
+    if any(
+        activation.get(field) is not None
+        for field in ("worker_deployment_id", "worker_role", "worker_image_digest")
+    ):
+        raise ValueError("Provider-grant activation contains retired external Worker coordinates")
     _exact_preview_origin(activation.get("api_deployment_url"))
 
 
@@ -112,9 +110,6 @@ def build_origin_state(
         "api_deployment_id": activation["api_deployment_id"],
         "api_deployment_url": _exact_preview_origin(activation["api_deployment_url"]),
         "api_role": "PREVIEW_COMMERCIAL_API",
-        "worker_deployment_id": activation["worker_deployment_id"],
-        "worker_role": "PREVIEW_COMMERCIAL_WORKER",
-        "worker_image_digest": activation["worker_image_digest"],
         "phase": "COMPLETED",
         "workflow_run_id": str(activation["workflow_run_id"]),
         "workflow_attempt": int(activation["workflow_attempt"]),
@@ -128,8 +123,7 @@ def build_origin_state(
 def _validate_state(state: dict[str, Any]) -> None:
     required = {
         "schema", "activation_id", "environment", "kind", "source_sha", "runtime_bundle_id",
-        "api_deployment_id", "api_deployment_url", "api_role", "worker_deployment_id",
-        "worker_role", "worker_image_digest", "workflow_run_id", "workflow_attempt",
+        "api_deployment_id", "api_deployment_url", "api_role", "workflow_run_id", "workflow_attempt",
         "phase", "alias_host", "provider_grant_origin", "previous_alias_state", "created_at",
     }
     if not isinstance(state, dict) or set(state) != required or state.get("schema") != STATE_SCHEMA:

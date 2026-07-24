@@ -449,6 +449,140 @@ class ProviderSubmissionBoundaryTest(unittest.IsolatedAsyncioTestCase):
         mark_unknown.assert_awaited_once()
         self.assertEqual(db.commit.await_count, 2)  # SUBMITTING, then UNKNOWN.
 
+    async def test_read_and_protocol_transport_failures_are_never_reposted(
+        self,
+    ) -> None:
+        for error in (
+            httpx.ReadError("response lost"),
+            httpx.RemoteProtocolError("connection closed after request"),
+        ):
+            with self.subTest(error_type=type(error).__name__):
+                lease = _lease()
+                attempt_id = uuid.uuid4()
+                prepared = PreparedSubmission(
+                    attempt_id=attempt_id,
+                    job_id=lease.job_id,
+                    reservation_id=uuid.uuid4(),
+                    request=EvolinkGenerationRequest(
+                        model="gemini-3.1-flash-image-preview",
+                        prompt="Identity-safe wedding portrait",
+                        image_urls=(
+                            "https://grant.example.test/api/v1/media/grants/token",
+                        ),
+                        size="3:4",
+                        quality="2K",
+                        model_params={"web_search": False},
+                    ),
+                )
+                provider = SimpleNamespace(
+                    submit=AsyncMock(side_effect=error)
+                )
+                unknown = SimpleNamespace(
+                    id=attempt_id,
+                    status=GenerationAttemptStatus.UNKNOWN,
+                )
+                db = _Db()
+                with (
+                    patch(
+                        "app.services.generation_attempt_service.prepare_submission_boundary",
+                        new=AsyncMock(return_value=prepared),
+                    ),
+                    patch(
+                        "app.services.generation_attempt_service.mark_submission_unknown",
+                        new=AsyncMock(return_value=unknown),
+                    ) as mark_unknown,
+                ):
+                    result = await submit_generation_attempt(
+                        db,
+                        attempt_id=attempt_id,
+                        lease=lease,
+                        user_id=uuid.uuid4(),
+                        provider=provider,
+                    )
+
+                self.assertEqual(result.status, GenerationAttemptStatus.UNKNOWN)
+                provider.submit.assert_awaited_once()
+                mark_unknown.assert_awaited_once()
+
+    async def test_submit_boundary_receives_active_not_origin_coordinates(self) -> None:
+        lease = _lease()
+        attempt_id = uuid.uuid4()
+        current_runtime = "rtb_" + "c" * 64
+        prepared = PreparedSubmission(
+            attempt_id=attempt_id,
+            job_id=lease.job_id,
+            reservation_id=uuid.uuid4(),
+            request=EvolinkGenerationRequest(
+                model="gemini-3.1-flash-image-preview",
+                prompt="Identity-safe wedding portrait",
+                image_urls=("https://grant.example.test/input",),
+                size="3:4",
+                quality="2K",
+                model_params={"web_search": False},
+            ),
+        )
+        submitted = SimpleNamespace(
+            id=attempt_id,
+            status=GenerationAttemptStatus.SUBMITTED,
+        )
+        provider = SimpleNamespace(
+            submit=AsyncMock(
+                return_value=SimpleNamespace(
+                    task_id="task_current_runtime",
+                    cost_minor_units=4,
+                    currency="USD",
+                )
+            )
+        )
+        boundary = AsyncMock(return_value=prepared)
+        db = _Db()
+        with (
+            patch(
+                "app.services.generation_attempt_service.prepare_submission_boundary",
+                boundary,
+            ),
+            patch(
+                "app.services.generation_attempt_service.persist_submitted_fact",
+                AsyncMock(return_value=submitted),
+            ),
+            patch(
+                "app.services.generation_attempt_service.capture_initial_submission",
+                AsyncMock(return_value=submitted),
+            ),
+            patch.object(
+                __import__(
+                    "app.services.generation_attempt_service",
+                    fromlist=["settings"],
+                ).settings,
+                "vercel_deployment_id",
+                "dpl_current",
+            ),
+            patch.object(
+                __import__(
+                    "app.services.generation_attempt_service",
+                    fromlist=["settings"],
+                ).settings,
+                "runtime_bundle_id",
+                current_runtime,
+            ),
+        ):
+            await submit_generation_attempt(
+                db,
+                attempt_id=attempt_id,
+                lease=lease,
+                user_id=uuid.uuid4(),
+                provider=provider,
+            )
+
+        self.assertEqual(
+            boundary.await_args.kwargs["active_deployment_id"],
+            "dpl_current",
+        )
+        self.assertEqual(
+            boundary.await_args.kwargs["active_runtime_bundle_id"],
+            current_runtime,
+        )
+
     async def test_stale_fence_after_task_id_discards_response_without_capture(self) -> None:
         lease = _lease()
         attempt_id = uuid.uuid4()

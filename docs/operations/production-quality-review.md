@@ -73,10 +73,10 @@ timestamps, unknown defects, or a different request hash are rejected.
 The review workflow, not the reviewer workstation, reads the acceptance and
 quality signing keys. It binds the completed draft to the immutable request,
 creates `quality-human-review.json`, and uploads the reviewed artifact. No
-run-specific review is stored as a reusable GitHub Secret. The final
-acceptance job independently verifies the signature, release coordinates,
-request hash, case set, timestamps, rubric, and database lineage before it
-restores Worker dispatch.
+run-specific review is stored as a reusable GitHub Secret. The final acceptance
+job independently verifies the signature, release coordinates, request hash,
+case set, timestamps, rubric, and database lineage before it continues the
+website-backend activation sequence.
 
 ## Failure handling
 
@@ -84,7 +84,7 @@ restores Worker dispatch.
   failing scores or hard defects in the draft so the review workflow records
   a truthful failure.
 - If the request expires or the account/output cannot be inspected, cancel
-  the run. The release cleanup path keeps high-risk flags OFF, disables the
-  Worker, and reconciles the staged auth origin.
+  the run. The release cleanup path keeps high-risk flags OFF, keeps backend
+  generation disabled, and reconciles the staged auth origin.
 - Never paste raw credentials, cookies, signed download URLs, image bytes, or
   customer identity into the draft, workflow logs, or issue comments.

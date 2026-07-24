@@ -56,10 +56,12 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertFalse(settings.should_auto_create_tables)
 
-    def test_vercel_uses_durable_queue_generation_by_default(self) -> None:
+    def test_vercel_uses_website_backend_generation_by_default(self) -> None:
         settings = Settings(vercel="1", task_execution_mode="auto")
 
-        self.assertEqual(settings.generation_execution_mode, "arq")
+        self.assertEqual(settings.generation_execution_mode, "backend")
+        self.assertTrue(settings.using_backend_generation_execution)
+        self.assertFalse(settings.using_background_queue)
 
     def test_allowed_image_models_cannot_be_widened_by_env(self) -> None:
         settings = Settings(
@@ -327,21 +329,6 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
                 "_check_database_role",
                 AsyncMock(return_value=(True, "least-privilege")),
             ),
-            patch.object(
-                runtime_checks,
-                "_check_redis",
-                AsyncMock(return_value=(True, "not_required")),
-            ),
-            patch.object(
-                runtime_checks,
-                "_check_task_queue",
-                AsyncMock(return_value=(True, "not_required")),
-            ),
-            patch.object(
-                runtime_checks,
-                "_check_worker_heartbeat",
-                AsyncMock(return_value=(True, "not_required")),
-            ),
         ):
             report = await runtime_checks.run_core_readiness_checks(
                 strict_mode=True
@@ -381,9 +368,6 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
                 "_check_database_role",
                 AsyncMock(return_value=(True, "least-privilege")),
             ),
-            patch.object(runtime_checks, "_check_redis", healthy),
-            patch.object(runtime_checks, "_check_task_queue", healthy),
-            patch.object(runtime_checks, "_check_worker_heartbeat", healthy),
             patch.object(runtime_checks, "_check_generation_runtime", healthy),
             patch.object(
                 runtime_checks,
@@ -612,7 +596,7 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 503)
         readiness.assert_awaited_once_with(
             probe_storage=False,
-            probe_generation_queue=False,
+            probe_generation_backend=False,
             strict_mode=True,
         )
 

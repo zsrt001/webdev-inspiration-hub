@@ -24,7 +24,7 @@ The root [`.python-version`](../.python-version) fixes the Vercel Function
 runtime to Python 3.12. The root `requirements.txt` is generated, installed
 with hashes, dependency-checked, and entry-point imported in an exact Python
 3.12.13 Bookworm CI job. That Vercel API graph is intentionally separate from
-the Python 3.11 Worker/backend lock so version-conditional dependencies cannot
+the Python 3.11 backend test/integration lock so version-conditional dependencies cannot
 be hidden by the wrong resolver runtime.
 
 The root [`.vercelignore`](../.vercelignore) must keep its repository-level

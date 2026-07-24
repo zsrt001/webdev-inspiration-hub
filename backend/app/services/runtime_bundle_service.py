@@ -12,7 +12,7 @@ from app.core.config import Settings, get_settings
 
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNTIME_CONTRACT = ROOT / "release" / "runtime-contracts.json"
+RUNTIME_CONTRACT = ROOT / "backend" / "contracts" / "runtime-contracts.json"
 SAFE_BASELINE_CONTRACT = ROOT / "release" / "safe-baseline-contract.json"
 ACTIVATION_CONTRACT = ROOT / "release" / "activation-plan.json"
 PROVIDER_CAPABILITIES = ROOT / "release" / "provider-capabilities.json"
@@ -28,10 +28,10 @@ class PublicRuntimeBundle:
     runtime_environment: str
     schema_revision: str
     api_compatibility_version: str
-    worker_compatibility_version: str
+    backend_execution_version: str
+    backend_executor_digest: str
     job_payload_min: str
     job_payload_max: str
-    worker_image_digest: str
     provider_policy_hash: str
     flag_contract_hash: str
 
@@ -87,10 +87,10 @@ def public_runtime_bundle(settings_obj: Settings | None = None) -> PublicRuntime
         runtime_environment=active_settings.runtime_environment,
         schema_revision=schema_revision,
         api_compatibility_version=str(contract.get("api_compatibility_version") or ""),
-        worker_compatibility_version=str(contract.get("worker_compatibility_version") or ""),
+        backend_execution_version=str(contract.get("backend_execution_version") or ""),
+        backend_executor_digest=active_settings.backend_executor_digest,
         job_payload_min=payload_version,
         job_payload_max=payload_version,
-        worker_image_digest=active_settings.worker_image_digest.strip().lower(),
         provider_policy_hash=_file_sha256(PROVIDER_CAPABILITIES),
         flag_contract_hash=_file_sha256(ACTIVATION_CONTRACT),
     )

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,7 @@ from scripts.release.ensure_observation_cleanup_cycle import (  # noqa: E402
     validate_cleanup_report,
 )
 from scripts.release.observe_release import validate_metric_values  # noqa: E402
-from scripts.release.run_approved_worker_host import verify_report as verify_worker_host_report  # noqa: E402
+from scripts.release.collect_runtime_report import canonical_json_bytes  # noqa: E402
 
 
 DATABASE_METRIC_FIELDS = {
@@ -158,37 +159,40 @@ def _unresolved_p0_p1(*, repository: str, token: str) -> int:
     raise ValueError("GitHub incident query exceeded the bounded page limit")
 
 
-def _validate_worker_report(
+def _validate_backend_runtime_report(
     payload: dict[str, Any],
     *,
     signing_key: bytes,
     expected_source_sha: str,
     expected_runtime_bundle_id: str,
     expected_api_deployment_id: str,
-    expected_worker_deployment_id: str,
-    expected_worker_image_digest: str,
 ) -> float:
-    payload = verify_worker_host_report(
-        payload, action="status", signing_key=signing_key
-    )
-    coordinates = payload["coordinates"]
+    signature = str(payload.get("signature") or "")
+    unsigned = dict(payload)
+    unsigned.pop("signature", None)
+    expected_signature = "hmac-sha256:" + hmac.new(
+        signing_key,
+        canonical_json_bytes(unsigned),
+        hashlib.sha256,
+    ).hexdigest()
     if (
-        str(payload.get("state") or "").upper() != "RUNNING"
-        or coordinates.get("source_sha") != expected_source_sha
-        or coordinates.get("runtime_bundle_id") != expected_runtime_bundle_id
-        or coordinates.get("api_deployment_id") != expected_api_deployment_id
-        or coordinates.get("worker_deployment_id") != expected_worker_deployment_id
-        or coordinates.get("worker_image_digest") != expected_worker_image_digest
+        len(signing_key) < 32
+        or not hmac.compare_digest(signature, expected_signature)
+        or payload.get("schema") != "vowpic.api-runtime-coordinate-report.v1"
+        or payload.get("passed") is not True
+        or payload.get("source_sha") != expected_source_sha
+        or payload.get("runtime_bundle_id") != expected_runtime_bundle_id
+        or payload.get("api_deployment_id") != expected_api_deployment_id
     ):
-        raise ValueError("observation Worker status coordinates are invalid")
+        raise ValueError("observation backend runtime coordinates are invalid")
     observed = datetime.fromisoformat(
         str(payload["observed_at"]).replace("Z", "+00:00")
     )
     if observed.tzinfo is None:
-        raise ValueError("observation Worker heartbeat timestamp is not timezone-aware")
+        raise ValueError("observation backend runtime timestamp is not timezone-aware")
     age = (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds()
     if age < 0:
-        raise ValueError("observation Worker heartbeat is from the future")
+        raise ValueError("observation backend runtime report is from the future")
     return age
 
 
@@ -196,7 +200,10 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     database_metrics = _database_metrics(
         os.environ.get(args.database_url_env, ""), args.observation_run_id
     )
-    worker, _ = _bounded_json(args.worker_report, label="Worker heartbeat report")
+    backend_runtime, _ = _bounded_json(
+        args.backend_runtime_report,
+        label="backend runtime report",
+    )
     cleanup, cleanup_raw = _bounded_json(
         args.cleanup_report, label="cleanup cycle report"
     )
@@ -208,14 +215,12 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     }
     observation_key = os.environ.get(args.observation_signing_key_env, "").encode()
     validate_cleanup_report(cleanup, run=run, signing_key=observation_key)
-    worker_age = _validate_worker_report(
-        worker,
-        signing_key=os.environ.get(args.worker_signing_key_env, "").encode(),
+    backend_runtime_age = _validate_backend_runtime_report(
+        backend_runtime,
+        signing_key=os.environ.get(args.runtime_signing_key_env, "").encode(),
         expected_source_sha=args.expected_source_sha,
         expected_runtime_bundle_id=args.expected_runtime_bundle_id,
         expected_api_deployment_id=args.expected_api_deployment_id,
-        expected_worker_deployment_id=args.expected_worker_deployment_id,
-        expected_worker_image_digest=args.expected_worker_image_digest,
     )
     metrics: dict[str, Any] = {
         "unresolved_p0_p1": _unresolved_p0_p1(
@@ -223,7 +228,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
             token=os.environ.get(args.github_token_env, ""),
         ),
         **database_metrics,
-        "worker_heartbeat_age_seconds": round(worker_age, 3),
+        "backend_runtime_age_seconds": round(backend_runtime_age, 3),
         "cleanup_status": "PASS",
         "cleanup_cycle_sha256": hashlib.sha256(cleanup_raw).hexdigest(),
     }
@@ -243,14 +248,12 @@ def main() -> int:
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--expected-runtime-bundle-id", required=True)
     parser.add_argument("--expected-api-deployment-id", required=True)
-    parser.add_argument("--expected-worker-deployment-id", required=True)
-    parser.add_argument("--expected-worker-image-digest", required=True)
-    parser.add_argument("--worker-report", required=True)
+    parser.add_argument("--backend-runtime-report", required=True)
     parser.add_argument("--cleanup-report", required=True)
     parser.add_argument("--database-url-env", default="OBSERVATION_READ_DATABASE_URL")
     parser.add_argument("--github-token-env", default="GITHUB_TOKEN")
     parser.add_argument("--github-repository-env", default="GITHUB_REPOSITORY")
-    parser.add_argument("--worker-signing-key-env", default="WORKER_HOST_EVIDENCE_SIGNING_KEY")
+    parser.add_argument("--runtime-signing-key-env", default="RELEASE_EVIDENCE_HMAC_KEY")
     parser.add_argument("--observation-signing-key-env", default="OBSERVATION_SIGNING_KEY")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()

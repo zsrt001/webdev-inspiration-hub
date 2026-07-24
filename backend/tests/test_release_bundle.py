@@ -14,11 +14,12 @@ import httpx
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_SCRIPT = ROOT / "scripts" / "release" / "build_manifest.py"
+RELEASE_SCRIPTS = ROOT / "scripts" / "release"
+MANIFEST_SCRIPT = RELEASE_SCRIPTS / "build_manifest.py"
 EVIDENCE_SCRIPT = ROOT / "scripts" / "release" / "append_evidence_index.py"
-COLLECT_SCRIPT = ROOT / "scripts" / "release" / "collect_runtime_report.py"
-VERIFY_SCRIPT = ROOT / "scripts" / "release" / "verify_bundle.py"
-REGISTER_SCRIPT = ROOT / "scripts" / "release" / "register_bundle.py"
+COLLECT_SCRIPT = RELEASE_SCRIPTS / "collect_runtime_report.py"
+VERIFY_SCRIPT = RELEASE_SCRIPTS / "verify_bundle.py"
+REGISTER_SCRIPT = RELEASE_SCRIPTS / "register_bundle.py"
 
 
 def _load(path: Path, name: str):
@@ -44,11 +45,13 @@ def _manifest_payload(role: str = "PREVIEW_COMMERCIAL") -> dict[str, object]:
         "preview_id": "preview-123",
         "private_compatible_baseline_deployment_id": None,
         "staged_target_deployment_id": None,
-        "worker_image_digest": "sha256:" + "d" * 64,
-        "worker_deployment_id": "worker-preview-123",
+        "worker_image_digest": None,
+        "worker_deployment_id": None,
         "schema_revision": "20260710_0020",
         "api_compatibility_version": "vowpic-api.v1",
-        "worker_compatibility_version": "vowpic-worker.v1",
+        "backend_execution_version": "vowpic-backend-executor.v1",
+        "backend_executor_digest": "sha256:" + "d" * 64,
+        "worker_compatibility_version": None,
         "job_payload_min": "generation-job.v1",
         "job_payload_max": "generation-job.v1",
         "contract_hashes": {
@@ -67,18 +70,15 @@ def _manifest_payload(role: str = "PREVIEW_COMMERCIAL") -> dict[str, object]:
             "python": "3.11.9",
             "node": "22.17.0",
             "vercel": "56.2.0",
-            "docker": "27.5.1",
         },
     }
     if role == "COMMERCIAL_7A":
-        payload["contract_hashes"]["worker_host"] = "b" * 64
         payload.update(
             {
                 "api_deployment_id": "dpl_target",
                 "preview_id": None,
                 "private_compatible_baseline_deployment_id": "dpl_baseline",
                 "staged_target_deployment_id": "dpl_target",
-                "worker_deployment_id": "worker-production-123",
             }
         )
     return payload
@@ -136,37 +136,16 @@ class ReleaseBundleTest(unittest.TestCase):
                 {**_manifest_payload("COMMERCIAL_7A"), "preview_id": "preview-123"}
             )
 
-    def test_worker_report_must_match_bundle_and_be_fresh(self) -> None:
+    def test_backend_manifest_rejects_worker_coordinates(self) -> None:
         module = _load(MANIFEST_SCRIPT, "build_manifest")
-        now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
         manifest = _manifest_payload()
-        report = {
-            "schema": "vowpic.worker-runtime-report.v1",
-            "release_role": manifest["release_role"],
-            "source_sha": manifest["source_sha"],
-            "runtime_bundle_id": manifest["runtime_bundle_id"],
-            "worker_image_digest": manifest["worker_image_digest"],
-            "worker_deployment_id": manifest["worker_deployment_id"],
-            "schema_revision": manifest["schema_revision"],
-            "job_payload_min": manifest["job_payload_min"],
-            "job_payload_max": manifest["job_payload_max"],
-            "published_at": now.isoformat(),
-        }
-        module.verify_worker_report(manifest, report, now=now)
-
         for field, value in (
-            ("runtime_bundle_id", "rtb_" + "f" * 64),
             ("worker_image_digest", "sha256:" + "e" * 64),
-            ("release_role", "COMMERCIAL_7A"),
+            ("worker_deployment_id", "worker-preview-1"),
+            ("worker_compatibility_version", "vowpic-worker.v1"),
         ):
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                module.verify_worker_report(manifest, {**report, field: value}, now=now)
-        with self.assertRaises(ValueError):
-            module.verify_worker_report(
-                manifest,
-                {**report, "published_at": (now - timedelta(seconds=121)).isoformat()},
-                now=now,
-            )
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Worker"):
+                module.validate_manifest({**manifest, field: value})
 
     def test_evidence_index_is_manifest_bound_and_rejects_duplicate_case_ids(self) -> None:
         manifest_module = _load(MANIFEST_SCRIPT, "build_manifest_for_evidence")
@@ -231,6 +210,59 @@ class ReleaseBundleTest(unittest.TestCase):
             self.assertEqual(payload["$id"], schema_id)
             self.assertFalse(payload["additionalProperties"])
 
+    def test_bundle_manifest_schema_matches_the_canonical_backend_manifest(self) -> None:
+        manifest_module = _load(MANIFEST_SCRIPT, "build_manifest_for_schema")
+        schema = json.loads(
+            (ROOT / "release/bundle-manifest.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        canonical = json.loads(
+            manifest_module.canonical_manifest_bytes(_manifest_payload())
+        )
+
+        self.assertEqual(
+            set(schema["required"]),
+            manifest_module.MANIFEST_FIELDS,
+        )
+        self.assertEqual(
+            set(schema["properties"]),
+            manifest_module.MANIFEST_FIELDS,
+        )
+        self.assertEqual(set(canonical), set(schema["required"]))
+        self.assertEqual(
+            schema["properties"]["backend_execution_version"]["type"],
+            "string",
+        )
+        self.assertEqual(
+            schema["properties"]["backend_executor_digest"]["pattern"],
+            "^sha256:[0-9a-f]{64}$",
+        )
+        for retired in (
+            "worker_image_digest",
+            "worker_deployment_id",
+            "worker_compatibility_version",
+        ):
+            self.assertEqual(schema["properties"][retired]["type"], "null")
+            self.assertIsNone(canonical[retired])
+        contract_properties = set(
+            schema["properties"]["contract_hashes"]["properties"]
+        )
+        expected_contract_properties = set(
+            manifest_module.BASE_CONTRACT_HASH_FIELDS
+        ) | {"database_roles"}
+        self.assertEqual(contract_properties, expected_contract_properties)
+        self.assertNotIn("worker_host", contract_properties)
+
+        with self.assertRaises(ValueError):
+            manifest_module.canonical_manifest_bytes(
+                {**canonical, "worker_deployment_id": "worker-retired"}
+            )
+        with self.assertRaises(ValueError):
+            manifest_module.canonical_manifest_bytes(
+                {**canonical, "unexpected": "forbidden"}
+            )
+
     def test_api_runtime_report_uses_exact_endpoints_and_rejects_redirects_or_mismatch(self) -> None:
         collect = _load(COLLECT_SCRIPT, "collect_runtime_report")
         verify = _load(VERIFY_SCRIPT, "verify_bundle")
@@ -248,10 +280,10 @@ class ReleaseBundleTest(unittest.TestCase):
             "runtime_environment": "preview",
             "schema_revision": manifest["schema_revision"],
             "api_compatibility_version": manifest["api_compatibility_version"],
-            "worker_compatibility_version": manifest["worker_compatibility_version"],
+            "backend_execution_version": manifest["backend_execution_version"],
+            "backend_executor_digest": manifest["backend_executor_digest"],
             "job_payload_min": manifest["job_payload_min"],
             "job_payload_max": manifest["job_payload_max"],
-            "worker_image_digest": manifest["worker_image_digest"],
             "provider_policy_hash": manifest["contract_hashes"]["provider"],
             "flag_contract_hash": manifest["contract_hashes"]["flag"],
         }
@@ -324,6 +356,8 @@ class ReleaseBundleTest(unittest.TestCase):
             "runtime_environment": "production",
             "schema_revision": "20260710_0020",
             "api_compatibility_version": "api-v1",
+            "backend_execution_version": "vowpic-backend-executor.v1",
+            "backend_executor_digest": "sha256:" + "c" * 64,
         }
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -353,6 +387,7 @@ class ReleaseBundleTest(unittest.TestCase):
                 expected_source_sha=source_sha,
                 expected_schema="20260710_0020",
                 expected_release_role="COMMERCIAL_7A",
+                expected_runtime_environment="production",
                 bypass_secret="",
                 signing_key=signing_key,
                 now=now,
@@ -371,6 +406,7 @@ class ReleaseBundleTest(unittest.TestCase):
                 expected_source_sha=source_sha,
                 expected_schema="20260710_0020",
                 expected_release_role="COMMERCIAL_7A",
+                expected_runtime_environment="production",
                 bypass_secret="",
                 signing_key=signing_key,
                 now=now,
@@ -444,7 +480,7 @@ class ReleaseBundleTest(unittest.TestCase):
         self.assertEqual(record["environment"], "preview")
         self.assertEqual(record["kind"], "PREVIEW_COMMERCIAL")
         self.assertEqual(record["api_role"], "PREVIEW_COMMERCIAL_API")
-        self.assertEqual(record["worker_role"], "PREVIEW_COMMERCIAL_WORKER")
+        self.assertIsNone(record["worker_role"])
         self.assertEqual(record["phase"], "COMPLETED")
         for forbidden in ("vercel_token", "environment_variables", "deployment_env", "secret"):
             self.assertNotIn(forbidden, record)
@@ -463,9 +499,9 @@ class ReleaseBundleTest(unittest.TestCase):
             "api_deployment_id": "dpl_preview_commercial",
             "api_deployment_url": "https://preview-commercial.vercel.app",
             "api_role": "PREVIEW_COMMERCIAL_API",
-            "worker_deployment_id": "worker-preview-1",
-            "worker_role": "PREVIEW_COMMERCIAL_WORKER",
-            "worker_image_digest": "sha256:" + "e" * 64,
+            "worker_deployment_id": None,
+            "worker_role": None,
+            "worker_image_digest": None,
             "private_evidence_prefix": "artifacts/release/a/run/dpl/c",
             "workflow_run_id": "12345",
             "workflow_attempt": 1,
@@ -485,7 +521,7 @@ class ReleaseBundleTest(unittest.TestCase):
         self.assertEqual(record["reservation_expires_at"], now + timedelta(hours=2))
         self.assertEqual(record["runtime_bundle_id"], None)
         self.assertEqual(record["api_role"], "COMMERCIAL_7A_API")
-        self.assertEqual(record["worker_role"], "COMMERCIAL_7A_WORKER")
+        self.assertIsNone(record["worker_role"])
         self.assertRegex(preview_hash, r"^[0-9a-f]{64}$")
         for changed in (
             {"phase": "COMPLETED"},

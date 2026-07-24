@@ -18,7 +18,7 @@ from app.schemas.payment import (
     CreditPackCheckoutRequest,
     CreditPackStatusResponse,
 )
-from app.services.creem_event_service import CreemEventError, ingest_verified_creem_event
+from app.services.creem_event_service import CreemEventError
 from app.services.feature_flag_service import require_request_capability
 from app.services.payment_service import PaymentError, payment_service
 
@@ -91,13 +91,12 @@ async def creem_webhook(
     raw_body = await http_request.body()
     signature = http_request.headers.get("creem-signature")
     try:
-        return await ingest_verified_creem_event(
+        return await payment_service.process_webhook_event(
             db,
-            raw_body=raw_body,
-            signature=signature,
-            webhook_secret=str(settings.creem_webhook_secret or "").encode("utf-8"),
+            body=raw_body,
+            signature_header=signature,
         )
-    except CreemEventError as exc:
+    except (PaymentError, CreemEventError) as exc:
         _raise_payment_error(exc)
 
 

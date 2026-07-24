@@ -24,7 +24,7 @@ class SingleGenerationProviderTest(unittest.TestCase):
             for relative in (
                 "app/services/generation_service.py",
                 "app/services/evolink_service.py",
-                "app/worker_tasks.py",
+                "app/services/generation_executor_service.py",
                 "app/core/runtime_checks.py",
                 "scripts/preflight_production.py",
             )

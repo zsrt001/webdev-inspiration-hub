@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind exact PR, Preview Identity, and Preview Commercial evidence for Stage 5."""
+"""Bind exact PR, Preview Identity, and backend Preview Commercial evidence."""
 
 from __future__ import annotations
 
@@ -108,8 +108,13 @@ def composite_runtime_bundle_id(bindings: dict[str, str]) -> str:
     return "rtb_" + hashlib.sha256(encoded).hexdigest()
 
 
-def _require_coordinates(payload: dict[str, Any], expected: dict[str, str], *, label: str) -> None:
-    if not isinstance(payload, dict) or any(str(payload.get(key) or "") != value for key, value in expected.items()):
+def _require_coordinates(
+    payload: dict[str, Any], expected: dict[str, Any], *, label: str
+) -> None:
+    if not isinstance(payload, dict) or any(
+        (payload.get(key) is not None if value is None else str(payload.get(key) or "") != str(value))
+        for key, value in expected.items()
+    ):
         raise ValueError(f"{label} coordinates mismatch")
 
 
@@ -145,11 +150,10 @@ def build_stage5_materialization(
     identity_cleanup: dict[str, Any],
     activation: dict[str, Any],
     provider_capabilities: dict[str, Any],
-    worker_heartbeat: dict[str, Any],
+    backend_runtime: dict[str, Any],
     provider_fetch: dict[str, Any],
     provider_case_cleanup: dict[str, Any],
     provider_origin_cleanup: dict[str, Any],
-    worker_cleanup: dict[str, Any],
     commercial_cleanup: dict[str, Any],
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -186,26 +190,35 @@ def build_stage5_materialization(
         activation.get("activation_id"), label="Preview Commercial activation ID"
     )
     api_deployment_id = str(activation.get("api_deployment_id") or "")
-    worker_deployment_id = str(activation.get("worker_deployment_id") or "")
-    worker_digest = str(activation.get("worker_image_digest") or "")
     if (
         activation.get("source_sha") != source
         or not _DEPLOYMENT.fullmatch(api_deployment_id)
-        or not _DEPLOYMENT.fullmatch(worker_deployment_id)
-        or not re.fullmatch(r"sha256:[0-9a-f]{64}", worker_digest)
+        or any(
+            activation.get(field) is not None
+            for field in ("worker_deployment_id", "worker_role", "worker_image_digest")
+        )
     ):
         raise ValueError("Preview Commercial activation coordinates are invalid")
+    backend_digest = str(backend_runtime.get("backend_executor_digest") or "")
+    if (
+        backend_runtime.get("schema") != "vowpic.api-runtime-coordinate-report.v1"
+        or backend_runtime.get("passed") is not True
+        or backend_runtime.get("release_role") != "PREVIEW_COMMERCIAL"
+        or backend_runtime.get("runtime_environment") != "preview"
+        or backend_runtime.get("backend_execution_version")
+        != "vowpic-backend-executor.v1"
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", backend_digest)
+    ):
+        raise ValueError("Preview website-backend runtime report is invalid")
     runtime_coordinates = {
         "source_sha": source,
         "runtime_bundle_id": commercial_runtime,
         "api_deployment_id": api_deployment_id,
-        "worker_deployment_id": worker_deployment_id,
-        "worker_image_digest": worker_digest,
+        "backend_executor_digest": backend_digest,
     }
-    heartbeat_payload = worker_heartbeat.get("heartbeat") if isinstance(worker_heartbeat, dict) else None
-    if worker_heartbeat.get("state") != "RUNNING" or not isinstance(heartbeat_payload, dict):
-        raise ValueError("Worker heartbeat report is not RUNNING")
-    _require_coordinates(heartbeat_payload, runtime_coordinates, label="Worker heartbeat")
+    _require_coordinates(
+        backend_runtime, runtime_coordinates, label="website-backend runtime"
+    )
 
     validate_provider_capabilities(provider_capabilities)
     provider_capabilities_hash = hashlib.sha256(
@@ -225,33 +238,36 @@ def build_stage5_materialization(
     )
     if (
         provider_fetch.get("provider_capabilities_sha256") != provider_capabilities_hash
+        or provider_fetch.get("network_submit_count") != 1
         or provider_fetch.get("provider_fetch_count") != 1
         or provider_fetch.get("provider_task_terminal_status") not in {"completed", "failed"}
+        or provider_fetch.get("callback_recovery")
+        != "BOUND_FROM_PROVIDER_CALLBACK"
+        or provider_fetch.get("submitter_provider_task_write_count") != 0
+        or provider_fetch.get("callback_attempt_status") not in {"FINISHED", "FAILED"}
+        or provider_fetch.get("callback_job_status") not in {"FINISHED", "FAILED"}
     ):
-        raise ValueError("Provider fetch does not prove one read and a terminal task")
+        raise ValueError(
+            "Provider fetch does not prove one submit, one read, callback-only "
+            "recovery, and terminal settlement"
+        )
 
     _require_coordinates(
         provider_case_cleanup,
         {"state": "CLEANED", "activation_id": activation_id},
         label="Provider case cleanup",
     )
+    if (
+        provider_case_cleanup.get("provider_task_bound") is not True
+        or provider_case_cleanup.get("terminal_generation_graph_preserved") is not True
+    ):
+        raise ValueError(
+            "Provider case cleanup is not bound to the terminal callback task"
+        )
     _require_coordinates(
         provider_origin_cleanup,
         {"state": "REMOVED", "activation_id": activation_id},
         label="Provider origin cleanup",
-    )
-    _require_coordinates(
-        worker_cleanup,
-        {
-            "state": "STOPPED",
-            "source_sha": source,
-            "runtime_bundle_id": commercial_runtime,
-            "api_deployment_id": api_deployment_id,
-            "worker_deployment_id": worker_deployment_id,
-            "worker_image_digest": worker_digest,
-            "heartbeat_state": "ABSENT",
-        },
-        label="Worker cleanup",
     )
     _require_coordinates(
         commercial_cleanup,
@@ -261,7 +277,7 @@ def build_stage5_materialization(
             "source_sha": source,
             "runtime_bundle_id": commercial_runtime,
             "api_deployment_id": api_deployment_id,
-            "worker_deployment_id": worker_deployment_id,
+            "worker_deployment_id": None,
         },
         label="Preview Commercial cleanup",
     )
@@ -283,7 +299,7 @@ def build_stage5_materialization(
             now=current,
         ),
         _gate_evidence(
-            "preview_worker_heartbeat",
+            "preview_backend_runtime",
             source_sha=source,
             runtime_bundle_id=commercial_runtime,
             gate_contract_sha256=contract_hash,
@@ -366,11 +382,10 @@ def main() -> int:
             identity_cleanup=_load(Path(args.identity_cleanup_report)),
             activation=_load(commercial_root / "activation-report.json"),
             provider_capabilities=provider_capabilities,
-            worker_heartbeat=_load(commercial_root / "worker-heartbeat.json"),
+            backend_runtime=_load(commercial_root / "backend-runtime.json"),
             provider_fetch=_load(commercial_root / "provider-fetch.json"),
             provider_case_cleanup=_load(commercial_root / "provider-case-cleanup.json"),
             provider_origin_cleanup=_load(commercial_root / "provider-origin-removed.json"),
-            worker_cleanup=_load(commercial_root / "worker-stopped.json"),
             commercial_cleanup=_load(commercial_root / "cleanup-report.json"),
         )
         output = Path(args.output_base)

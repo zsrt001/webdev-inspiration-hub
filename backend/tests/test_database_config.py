@@ -54,6 +54,7 @@ class DatabaseConfigTest(unittest.TestCase):
             root_cert = Path(temp_dir) / "database-root.crt"
             root_cert.write_text("test certificate placeholder", encoding="utf-8")
             context = Mock()
+            context.verify_flags = int(getattr(ssl, "VERIFY_X509_STRICT", 0))
             with (
                 patch.dict(os.environ, {"PGSSLROOTCERT": str(root_cert)}),
                 patch.object(database_config.ssl, "create_default_context", return_value=context),
@@ -66,10 +67,13 @@ class DatabaseConfigTest(unittest.TestCase):
         context.load_verify_locations.assert_called_once_with(cafile=str(root_cert))
         self.assertTrue(context.check_hostname)
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        if hasattr(ssl, "VERIFY_X509_STRICT"):
+            self.assertTrue(context.verify_flags & ssl.VERIFY_X509_STRICT)
 
     def test_supabase_context_loads_the_bundled_root_when_runtime_path_is_unset(self) -> None:
         root_cert = database_config._BUNDLED_SUPABASE_ROOT_CERT
         context = Mock()
+        context.verify_flags = int(getattr(ssl, "VERIFY_X509_STRICT", 0))
         with (
             patch.dict(os.environ, {"PGSSLROOTCERT": ""}),
             patch.object(database_config.ssl, "create_default_context", return_value=context),
@@ -86,6 +90,8 @@ class DatabaseConfigTest(unittest.TestCase):
         )
         self.assertTrue(context.check_hostname)
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        if hasattr(ssl, "VERIFY_X509_STRICT"):
+            self.assertFalse(context.verify_flags & ssl.VERIFY_X509_STRICT)
 
     def test_non_supabase_context_does_not_trust_the_bundled_supabase_root(self) -> None:
         context = Mock()

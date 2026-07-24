@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a canonical, role-discriminated pre-deployment runtime identity."""
+"""Build a canonical, backend-role-discriminated pre-deployment runtime identity."""
 
 from __future__ import annotations
 
@@ -29,11 +29,10 @@ COMMON_REQUIRED = {
 ROLE_REQUIRED = {
     "SAFE_BASELINE": COMMON_REQUIRED | {"builder_contract_version"},
     "PREVIEW_IDENTITY": COMMON_REQUIRED | {"api_version"},
-    "PREVIEW_COMMERCIAL": COMMON_REQUIRED | {"worker_image_digest"},
-    "COMMERCIAL_7A": COMMON_REQUIRED | {"worker_image_digest", "builder_contract_version"},
+    "PREVIEW_COMMERCIAL": COMMON_REQUIRED,
+    "COMMERCIAL_7A": COMMON_REQUIRED | {"builder_contract_version"},
     "CONTRACT_7B": COMMON_REQUIRED
     | {
-        "worker_image_digest",
         "builder_contract_version",
         "schema_before",
         "schema_target",
@@ -48,13 +47,13 @@ ROLE_OPTIONAL = {
     "COMMERCIAL_7A": {"api_version"},
     "CONTRACT_7B": {"api_version"},
 }
-WORKER_BASE_CONTRACT_KEYS = {
+BACKEND_BASE_CONTRACT_KEYS = {
     "payload", "provider", "model", "policy", "catalog", "flag", "gate", "activation", "runtime"
 }
-WORKER_CONTRACT_KEYS_BY_ROLE = {
-    "PREVIEW_COMMERCIAL": WORKER_BASE_CONTRACT_KEYS | {"preview", "database_roles"},
-    "COMMERCIAL_7A": WORKER_BASE_CONTRACT_KEYS | {"database_roles", "worker_host"},
-    "CONTRACT_7B": WORKER_BASE_CONTRACT_KEYS | {"database_roles", "worker_host"},
+BACKEND_CONTRACT_KEYS_BY_ROLE = {
+    "PREVIEW_COMMERCIAL": BACKEND_BASE_CONTRACT_KEYS | {"preview", "database_roles"},
+    "COMMERCIAL_7A": BACKEND_BASE_CONTRACT_KEYS | {"database_roles"},
+    "CONTRACT_7B": BACKEND_BASE_CONTRACT_KEYS | {"database_roles"},
 }
 FORBIDDEN_LIVE_KEYS = {
     "deployment_id",
@@ -134,19 +133,15 @@ def _validate_payload(role: str, payload: dict[str, Any]) -> dict[str, Any]:
     if role == "PREVIEW_IDENTITY" and set(contracts) != {"identity_session_flag_preview"}:
         raise ValueError("PREVIEW_IDENTITY accepts only the identity/session/flag preview contract")
     if role in {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"}:
-        expected_contracts = WORKER_CONTRACT_KEYS_BY_ROLE[role]
+        expected_contracts = BACKEND_CONTRACT_KEYS_BY_ROLE[role]
         missing_contracts = expected_contracts - set(contracts)
         unexpected_contracts = set(contracts) - expected_contracts
         if missing_contracts:
-            raise ValueError(f"worker role is missing contracts: {', '.join(sorted(missing_contracts))}")
+            raise ValueError(f"backend role is missing contracts: {', '.join(sorted(missing_contracts))}")
         if unexpected_contracts:
             raise ValueError(
-                f"worker role has unrecognized contracts: {', '.join(sorted(unexpected_contracts))}"
+                f"backend role has unrecognized contracts: {', '.join(sorted(unexpected_contracts))}"
             )
-        digest = str(payload["worker_image_digest"] or "").strip().lower()
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-            raise ValueError("worker_image_digest must be a digest-pinned OCI image")
-        normalized["worker_image_digest"] = digest
     if role == "CONTRACT_7B":
         if payload["schema_before"] == payload["schema_target"]:
             raise ValueError("CONTRACT_7B requires distinct before and target revisions")
@@ -199,6 +194,7 @@ def _runtime_contract_hashes(path: str, *, schema_revision: str) -> dict[str, st
     required_sources = {
         "backend/app/models/generation_job.py",
         "backend/app/core/config.py",
+        "backend/app/services/generation_executor_service.py",
         "backend/app/services/generation_service.py",
         "backend/app/services/qa_pipeline.py",
     }
@@ -211,7 +207,16 @@ def _runtime_contract_hashes(path: str, *, schema_revision: str) -> dict[str, st
         if not name or name != raw_name:
             raise ValueError("runtime contract source name is invalid")
         validated[name] = _validate_sha(raw_digest)
-    repository_root = contract_path.parent.parent
+    repository_root = next(
+        (
+            parent
+            for parent in contract_path.parents
+            if (parent / "backend").is_dir() and (parent / "scripts").is_dir()
+        ),
+        None,
+    )
+    if repository_root is None:
+        raise ValueError("runtime contract is not inside the VowPic repository")
     for name, expected_digest in validated.items():
         source_path = (repository_root / name).resolve()
         try:
@@ -246,17 +251,13 @@ def _planned_commercial_contracts(args: argparse.Namespace) -> dict[str, str]:
         "activation": args.activation_plan,
         "database_roles": args.database_role_contract,
     }
-    if not any(planned_paths.values()) and not args.preview_contract and not args.worker_host_contract:
+    if not any(planned_paths.values()) and not args.preview_contract:
         return {}
     missing = [name for name, path in planned_paths.items() if not path]
     if args.release_role == "PREVIEW_COMMERCIAL" and not args.preview_contract:
         missing.append("preview")
-    if args.release_role in {"COMMERCIAL_7A", "CONTRACT_7B"} and not args.worker_host_contract:
-        missing.append("worker_host")
     if missing:
         raise ValueError(f"planned commercial contract paths are missing: {', '.join(sorted(missing))}")
-    if args.release_role == "PREVIEW_COMMERCIAL" and args.worker_host_contract:
-        raise ValueError("Preview runtime IDs cannot bind a Production Worker-host contract")
     if args.release_role in {"COMMERCIAL_7A", "CONTRACT_7B"} and args.preview_contract:
         raise ValueError("Production runtime IDs cannot bind a Preview contract")
     contracts = _runtime_contract_hashes(args.runtime_contract, schema_revision=args.schema)
@@ -272,8 +273,6 @@ def _planned_commercial_contracts(args: argparse.Namespace) -> dict[str, str]:
     )
     if args.release_role == "PREVIEW_COMMERCIAL":
         contracts["preview"] = _file_sha256(args.preview_contract)
-    else:
-        contracts["worker_host"] = _file_sha256(args.worker_host_contract)
     return contracts
 
 
@@ -304,7 +303,7 @@ def _build_cli_payload(args: argparse.Namespace) -> dict[str, Any]:
         "tool_version": args.tool_version,
     }
     for name in (
-        "builder_contract_version", "api_version", "worker_image_digest",
+        "builder_contract_version", "api_version",
         "schema_before", "schema_target", "compatibility_version",
     ):
         value = getattr(args, name)
@@ -333,11 +332,9 @@ def main() -> int:
     parser.add_argument("--flag-contract")
     parser.add_argument("--activation-plan")
     parser.add_argument("--database-role-contract")
-    parser.add_argument("--worker-host-contract")
     parser.add_argument("--builder-contract-version")
     parser.add_argument("--api-version")
     parser.add_argument("--tool-version", default="vowpic-release-tools.v1")
-    parser.add_argument("--worker-image-digest")
     parser.add_argument("--schema-before")
     parser.add_argument("--schema-target")
     parser.add_argument("--contract-migration")

@@ -38,12 +38,12 @@ GET http://127.0.0.1:8001/health/ready
 
 本地单进程调试可以使用上述单一 `DATABASE_URL`。受保护 Preview 和 Production 不得复用该简化方式，必须在同一个 Supabase/PostgreSQL 项目中提供彼此不同的登录角色：
 
-- `PREVIEW_RUNTIME_DATABASE_URL`：API 和 Worker 的应用运行角色；
+- `PREVIEW_RUNTIME_DATABASE_URL`：FastAPI 网站后端的应用运行角色；
 - `PREVIEW_CONTROL_PLANE_DATABASE_URL`：受约束的 feature/release 状态写入角色；
 - `PREVIEW_MIGRATION_DATABASE_URL`：仅工作流可用的 migration 管理角色；
 - `PREVIEW_CONTROL_READ_DATABASE_URL`：仅用于解析不可变 release 坐标的只读角色。
 
-运行角色和控制写入角色必须是非 owner、非 superuser、非 `BYPASSRLS`，且不能互相继承对方的固定角色组。migration URL 不得注入 Vercel API、Worker 或 Provider proof。受保护工作流会回读当前登录名、角色属性、组成员和目标数据库；角色不独立时直接失败。
+运行角色和控制写入角色必须是非 owner、非 superuser、非 `BYPASSRLS`，且不能互相继承对方的固定角色组。migration URL 不得注入 Vercel API、网站后端运行环境或 Provider proof。受保护工作流会回读当前登录名、角色属性、组成员和目标数据库；角色不独立时直接失败。
 
 ## Google 登录配置
 

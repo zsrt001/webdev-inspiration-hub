@@ -212,8 +212,10 @@ class WebSecurityBaselineTest(unittest.TestCase):
         self.assertNotIn('@router.get("/poll_pending_orders")', ops_source)
         self.assertIn('@router.post("/check_alerts")', ops_source)
         self.assertIn('@router.post("/poll_pending_orders")', ops_source)
-        vercel_config = (ROOT / "vercel.json").read_text(encoding="utf-8")
-        self.assertNotIn('"crons"', vercel_config)
+        self.assertIn('@router.post("/generation/maintain")', ops_source)
+        self.assertIn("_require_cron_auth(authorization)", ops_source)
+        vercel_config = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
+        self.assertFalse(vercel_config.get("crons"))
 
         edge_middleware = (ROOT / "middleware.ts").read_text(encoding="utf-8")
         for field in ("code", "message", "request_id", "retryable", "field_errors"):
