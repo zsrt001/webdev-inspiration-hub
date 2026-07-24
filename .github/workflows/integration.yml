@@ -388,7 +388,7 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --run-id "$GITHUB_RUN_ID" \
             --artifact-id "${{ steps.activation_evidence.outputs.artifact-id }}" \
-            --artifact-digest "${{ steps.activation_evidence.outputs.artifact-digest }}" \
+            --artifact-digest "sha256:${{ steps.activation_evidence.outputs.artifact-digest }}" \
             --report-name activation-report.json \
             --output "$RUNNER_TEMP/activation-evidence-reference.txt"
           python scripts/release/register_preview_activation.py complete \
@@ -1069,7 +1069,7 @@ jobs:
           python scripts/release/github_artifact_evidence.py build-reference \
             --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
             --artifact-id "${{ steps.commercial_activation_evidence.outputs.artifact-id }}" \
-            --artifact-digest "${{ steps.commercial_activation_evidence.outputs.artifact-digest }}" \
+            --artifact-digest "sha256:${{ steps.commercial_activation_evidence.outputs.artifact-digest }}" \
             --report-name activation-report.json \
             --output "$RUNNER_TEMP/commercial-evidence-reference.txt"
           python scripts/release/register_preview_activation.py complete \
