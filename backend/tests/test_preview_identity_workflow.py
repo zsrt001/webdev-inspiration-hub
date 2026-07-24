@@ -1602,6 +1602,22 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "--failure-stage artifacts/preview-failure-stage/failure-stage.json",
             cleanup,
         )
+        self.assertIn(
+            '--artifact-digest "sha256:${{ steps.activation_evidence.outputs.artifact-digest }}"',
+            register,
+        )
+        self.assertIn(
+            '--artifact-digest "sha256:${{ steps.commercial_activation_evidence.outputs.artifact-digest }}"',
+            workflow,
+        )
+        self.assertEqual(
+            workflow.count(
+                'github_artifact_evidence.py build-reference'
+            ),
+            workflow.count(
+                '--artifact-digest "sha256:${{ steps.'
+            ),
+        )
 
     def test_no_activation_cleanup_gate_is_strict_and_bound_to_register_failure(self) -> None:
         gate = _load(
