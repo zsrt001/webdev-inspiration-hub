@@ -57,6 +57,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -602,43 +603,18 @@ jobs:
             --output "$EVIDENCE_DIR/cleanup-report.json"
 
       - name: Materialize exact cleanup gate evidence
+        env:
+          REGISTER_RESULT: ${{ needs.register.result }}
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from datetime import datetime, timezone
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-
-          cleanup = json.loads(Path(os.environ["EVIDENCE_DIR"], "cleanup-report.json").read_text(encoding="utf-8"))
-          if cleanup.get("state") != "CLEANED" or cleanup.get("source_sha") != os.environ["SOURCE_SHA"]:
-              raise SystemExit("cleanup report does not prove the exact source activation")
-          root = Path(
-              "artifacts/release",
-              os.environ["SOURCE_SHA"],
-              f'{os.environ["GITHUB_RUN_ID"]}-{os.environ["GITHUB_RUN_ATTEMPT"]}',
-              str(cleanup["api_deployment_id"]),
-              "08-cleanup",
-          )
-          root.mkdir(parents=True, exist_ok=True)
-          payload = {
-              "schema": "vowpic.gate-evidence.v1",
-              "case_id": "preview_cleanup",
-              "status": "PASS",
-              "source_sha": os.environ["SOURCE_SHA"],
-              "runtime_bundle_id": cleanup["runtime_bundle_id"],
-              "gate_contract_sha256": hashlib.sha256(Path("release/gates.json").read_bytes()).hexdigest(),
-              "produced_at": datetime.now(timezone.utc).isoformat(),
-              "execution": "completed",
-              "test_count": 1,
-              "capability_enabled": False,
-          }
-          (root / "preview_cleanup.json").write_text(
-              json.dumps(payload, sort_keys=True, indent=2) + "\n",
-              encoding="utf-8",
-          )
-          PY
+          python scripts/release/materialize_preview_cleanup_gate.py \
+            --cleanup-report "$EVIDENCE_DIR/cleanup-report.json" \
+            --register-result "$REGISTER_RESULT" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --gate-contract release/gates.json \
+            --release-root artifacts/release
 
       - name: Persist cleanup evidence before failure injection
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
