@@ -130,8 +130,8 @@ def _validate_payload(role: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("SAFE_BASELINE requires ordered 0013 and 0014 migration checksums")
         if str(payload["builder_contract_version"]).strip() != "safe-baseline.v2":
             raise ValueError("SAFE_BASELINE builder contract must be safe-baseline.v2")
-    if role == "PREVIEW_IDENTITY" and set(contracts) != {"identity_session_flag_preview"}:
-        raise ValueError("PREVIEW_IDENTITY accepts only the identity/session/flag preview contract")
+    if role == "PREVIEW_IDENTITY" and set(contracts) != {"identity_private_media_preview"}:
+        raise ValueError("PREVIEW_IDENTITY accepts only the identity/private-media preview contract")
     if role in {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"}:
         expected_contracts = BACKEND_CONTRACT_KEYS_BY_ROLE[role]
         missing_contracts = expected_contracts - set(contracts)

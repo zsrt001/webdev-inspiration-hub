@@ -74,7 +74,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "source_sha": "d" * 40,
             "schema_revision": "20260710_0013",
             "migration_checksums": [{"revision": "20260710_0013", "sha256": "e" * 64}],
-            "contract_hashes": {"identity_session_flag_preview": "f" * 64},
+            "contract_hashes": {"identity_private_media_preview": "f" * 64},
             "api_version": "api.v1",
             "tool_version": "vowpic-release-tools.v1",
         }
@@ -97,6 +97,105 @@ class RuntimeBundleIdTest(unittest.TestCase):
             module.compute_runtime_bundle_id(
                 "PREVIEW_IDENTITY", {**payload, "worker_image_digest": "sha256:" + "1" * 64}
             )
+        with self.assertRaises(ValueError):
+            module.compute_runtime_bundle_id(
+                "PREVIEW_IDENTITY",
+                {
+                    **payload,
+                    "contract_hashes": {"identity_session_flag_preview": "f" * 64},
+                },
+            )
+
+    def test_preview_identity_cli_hashes_the_exact_current_workflow_contract(self) -> None:
+        migrations = (
+            ("20260710_0013", "20260710_0013_ops_feature_flags.py"),
+            ("20260712_0014", "20260712_0014_repair_click_stats_values.py"),
+            ("20260710_0014", "20260710_0014_web_identity_sessions.py"),
+            ("20260710_0015", "20260710_0015_private_media_assets.py"),
+            ("20260710_0016", "20260710_0016_commercial_ledger.py"),
+            ("20260710_0017", "20260710_0017_creem_payment_facts.py"),
+            ("20260710_0018", "20260710_0018_subscription_facts.py"),
+            ("20260710_0019", "20260710_0019_generation_jobs.py"),
+            ("20260710_0020", "20260710_0020_partner_consent.py"),
+        )
+        workflow = (ROOT / ".github" / "workflows" / "integration.yml").read_text(
+            encoding="utf-8"
+        )
+        runtime_step = workflow[
+            workflow.index("- name: Compute the PREVIEW_IDENTITY runtime ID") :
+            workflow.index("- name: Reserve one exact Preview activation")
+        ]
+        self.assertIn("--schema 20260710_0020", runtime_step)
+        self.assertIn(
+            "--contract identity_private_media_preview="
+            "release/preview-runtime-contract.json",
+            runtime_step,
+        )
+        self.assertIn(
+            "--api-version vowpic-web-identity-private-media.v3",
+            runtime_step,
+        )
+        preview_contract = json.loads(
+            (ROOT / "release" / "preview-runtime-contract.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(preview_contract["release_role"], "PREVIEW_IDENTITY")
+        self.assertEqual(preview_contract["schema_revision"], "20260710_0020")
+        self.assertEqual(
+            preview_contract["api_version"],
+            "vowpic-web-identity-private-media.v3",
+        )
+        for revision, filename in migrations:
+            expected_argument = (
+                f"--ops-migration backend/alembic/versions/{filename}"
+                if revision == "20260710_0013"
+                else f"--migration {revision}=backend/alembic/versions/{filename}"
+            )
+            with self.subTest(workflow_argument=revision):
+                self.assertIn(expected_argument, runtime_step)
+
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "--release-role",
+            "PREVIEW_IDENTITY",
+            "--source-sha",
+            "a" * 40,
+            "--schema",
+            "20260710_0020",
+        ]
+        for revision, filename in migrations:
+            command.extend(
+                [
+                    "--ops-migration" if revision == "20260710_0013" else "--migration",
+                    str(ROOT / "backend" / "alembic" / "versions" / filename)
+                    if revision == "20260710_0013"
+                    else f"{revision}="
+                    + str(ROOT / "backend" / "alembic" / "versions" / filename),
+                ]
+            )
+        command.extend(
+            [
+                "--contract",
+                "identity_private_media_preview="
+                + str(ROOT / "release" / "preview-runtime-contract.json"),
+                "--api-version",
+                "vowpic-web-identity-private-media.v3",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "preview-identity-runtime-id.txt"
+            result = subprocess.run(
+                [*command, "--output", str(output)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(output.read_text(encoding="utf-8").strip(), r"^rtb_[0-9a-f]{64}$")
 
     def test_backend_roles_reject_worker_and_live_coordinates(self) -> None:
         module = _module()
