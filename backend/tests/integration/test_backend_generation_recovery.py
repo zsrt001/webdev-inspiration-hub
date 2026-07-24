@@ -21,8 +21,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
 from app.models.admin_audit_log import AdminAuditLog
-from app.models.credit_reservation import CreditReservation, ReservationStatus
-from app.models.credit_transaction import CreditTransaction
+from app.models.credit_grant_lot import CreditGrantLot, GrantLotSourceType
+from app.models.credit_reservation import (
+    CreditReservation,
+    CreditReservationAllocation,
+    ReservationStatus,
+)
+from app.models.credit_transaction import CreditTransaction, CreditTransactionType
 from app.models.generation_attempt import (
     GenerationAttempt,
     GenerationAttemptKind,
@@ -30,6 +35,8 @@ from app.models.generation_attempt import (
 )
 from app.models.generation_job import GenerationJob, GenerationJobStatus
 from app.models.order import Order, OrderStatus
+from app.models.order_entitlement import OrderEntitlement
+from app.models.order_entitlement_funding import OrderEntitlementFunding
 from app.models.outbox_event import OutboxEvent, OutboxEventStatus
 from app.models.payment_event import PaymentEvent, PaymentEventProcessingState
 from app.models.user import User
@@ -255,6 +262,33 @@ class BackendGenerationRecoveryIntegrationTest(unittest.IsolatedAsyncioTestCase)
         )
         db.add(order)
         await db.flush()
+        grant_transaction = CreditTransaction(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            transaction_type=CreditTransactionType.ADMIN_GRANT,
+            amount=1,
+            balance_after=1,
+            source="postgres-integration",
+            source_id=f"grant:{order_id}",
+            request_id=f"grant:{order_id}",
+        )
+        db.add(grant_transaction)
+        await db.flush()
+        grant_lot = CreditGrantLot(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            root_transaction_id=grant_transaction.id,
+            source_type=GrantLotSourceType.ADMIN,
+            source_id=f"grant:{order_id}",
+            original_amount=1,
+            debt_offset_amount=0,
+            reversed_amount=0,
+            frozen_amount=0,
+            consumed_amount=0,
+            retention_tier="paid_90d",
+        )
+        db.add(grant_lot)
+        await db.flush()
 
         job = GenerationJob.queued(
             order_id=order_id,
@@ -301,6 +335,14 @@ class BackendGenerationRecoveryIntegrationTest(unittest.IsolatedAsyncioTestCase)
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         db.add(reservation)
+        db.add(
+            CreditReservationAllocation(
+                id=uuid.uuid4(),
+                reservation_id=reservation.id,
+                grant_lot_id=grant_lot.id,
+                amount=1,
+            )
+        )
         await db.flush()
 
         job.status = (
@@ -419,6 +461,81 @@ class BackendGenerationRecoveryIntegrationTest(unittest.IsolatedAsyncioTestCase)
             self.assertEqual(
                 await manual_settlement.count_generation_manual_cases(db),
                 0,
+            )
+
+    async def test_cross_table_commercial_guards_accept_matching_lineage(
+        self,
+    ) -> None:
+        async with self.sessions() as db:
+            _job_id, order_id, attempt_id, reservation_id = (
+                await self._create_manual_case(
+                    db,
+                    provider_job_id="task_guard_row_shape",
+                    manual=False,
+                )
+            )
+            reservation = await db.get(CreditReservation, reservation_id)
+            allocation = await db.scalar(
+                select(CreditReservationAllocation).where(
+                    CreditReservationAllocation.reservation_id == reservation_id
+                )
+            )
+            if reservation is None or allocation is None:
+                self.fail("matching reservation allocation was not persisted")
+            debit = CreditTransaction(
+                id=uuid.uuid4(),
+                user_id=reservation.user_id,
+                transaction_type=CreditTransactionType.GENERATION_DEBIT,
+                amount=-1,
+                balance_after=0,
+                source="postgres-integration",
+                source_id=f"capture:{reservation_id}",
+                request_id=f"capture:{reservation_id}",
+                provider_attempt_id=attempt_id,
+            )
+            db.add(debit)
+            await db.flush()
+            reservation.status = ReservationStatus.CAPTURED
+            reservation.provider_attempt_id = attempt_id
+            reservation.captured_transaction_id = debit.id
+            reservation.captured_at = datetime.now(timezone.utc)
+            reservation.captured_retention_tier = "paid_90d"
+            await db.flush()
+
+            entitlement = OrderEntitlement(
+                id=uuid.uuid4(),
+                order_id=order_id,
+                user_id=reservation.user_id,
+                reservation_id=reservation_id,
+                access_tier="standard",
+                retention_tier="paid_90d",
+                expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+            )
+            db.add(entitlement)
+            await db.flush()
+            db.add(
+                OrderEntitlementFunding(
+                    id=uuid.uuid4(),
+                    entitlement_id=entitlement.id,
+                    reservation_allocation_id=allocation.id,
+                    grant_lot_id=allocation.grant_lot_id,
+                    amount=allocation.amount,
+                )
+            )
+            await db.commit()
+
+            self.assertEqual(
+                reservation.status,
+                ReservationStatus.CAPTURED,
+            )
+            self.assertEqual(
+                await db.scalar(
+                    select(func.count(OrderEntitlementFunding.id)).where(
+                        OrderEntitlementFunding.entitlement_id
+                        == entitlement.id
+                    )
+                ),
+                1,
             )
 
     async def test_duplicate_and_concurrent_provider_task_binding_return_conflict(

@@ -1407,6 +1407,30 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             first_isolation,
             workflow.index("Apply the exact Preview schema"),
         )
+        schema_upgrade = workflow.index("Apply the exact Preview schema")
+        guard_repair = workflow.index(
+            "Repair and verify the exact schema-0020 cross-table commercial guards"
+        )
+        runtime_id = workflow.index("Compute the PREVIEW_IDENTITY runtime ID")
+        self.assertLess(schema_upgrade, guard_repair)
+        self.assertLess(guard_repair, runtime_id)
+        self.assertIn(
+            "python scripts/release/repair_commercial_guard_row_shapes.py",
+            workflow,
+        )
+        self.assertIn("--environment preview", workflow)
+        self.assertNotIn(
+            "--database-url-env PREVIEW_MIGRATION_DATABASE_URL",
+            workflow[schema_upgrade:runtime_id],
+        )
+        commercial_job = workflow[
+            workflow.index("  commercial:") :
+            workflow.index("  stage5:")
+        ]
+        self.assertIn("needs: [register, smoke, cleanup]", commercial_job)
+        self.assertIn("needs.register.result == 'success'", commercial_job)
+        self.assertIn("needs.smoke.result == 'success'", commercial_job)
+        self.assertIn("needs.cleanup.result == 'success'", commercial_job)
         self.assertLess(
             second_isolation,
             workflow.index("Build the exact website-backend runtime ID before deployment"),

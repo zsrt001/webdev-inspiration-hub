@@ -71,6 +71,7 @@ class MigrationInvocation:
     manifest_sha256: str
     release_manifest_path: Path
     script_path: Path
+    bound_script_paths: tuple[Path, ...]
     approval: str
     contract: MigrationContract
     report_path: Path
@@ -135,6 +136,7 @@ def load_invocation(
     *,
     script_path: Path,
     mode: str | None = None,
+    additional_script_paths: tuple[Path, ...] = (),
 ) -> MigrationInvocation:
     database_url = os.environ.get(args.database_url_env, "").strip()
     hmac_key = os.environ.get(args.inventory_hmac_key_env, "").encode("utf-8")
@@ -205,11 +207,15 @@ def load_invocation(
         else f"local-dry-{script_run_id}"
     )
     normalized_url, connect_args = normalize_database_url(database_url)
+    bound_script_paths = (
+        resolved_script_path,
+        *(path.resolve(strict=True) for path in additional_script_paths),
+    )
     contract = MigrationContract(
         parent_run_id=parent_run_id,
         script_run_id=script_run_id,
         mode=effective_mode,
-        script_sha256=script_sha256(str(resolved_script_path)),
+        script_sha256=_bound_script_sha256(bound_script_paths),
         inventory_sha256=normalized_inventory_sha256,
         manifest_sha256=normalized_manifest_sha256,
         runtime_bundle_id=manifest["runtime_bundle_id"],
@@ -230,6 +236,7 @@ def load_invocation(
         manifest_sha256=normalized_manifest_sha256,
         release_manifest_path=release_manifest_path,
         script_path=resolved_script_path,
+        bound_script_paths=bound_script_paths,
         approval=approval,
         contract=contract,
         report_path=Path(args.report),
@@ -237,6 +244,29 @@ def load_invocation(
         resume=bool(args.resume),
         write=write,
     )
+
+
+def _bound_script_sha256(paths: tuple[Path, ...]) -> str:
+    if not paths:
+        raise ValueError("migration script binding cannot be empty")
+    if len(paths) == 1:
+        return script_sha256(str(paths[0]))
+    digest = hashlib.sha256(b"vowpic-migration-script-bundle.v1\0")
+    for path in paths:
+        resolved = path.resolve(strict=True)
+        try:
+            relative = resolved.relative_to(ROOT.resolve()).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                "migration script dependency must stay inside the repository"
+            ) from exc
+        raw = resolved.read_bytes()
+        encoded_path = relative.encode("utf-8")
+        digest.update(len(encoded_path).to_bytes(8, "big"))
+        digest.update(encoded_path)
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+    return digest.hexdigest()
 
 
 def _revalidate_batch_evidence(invocation: MigrationInvocation) -> None:
@@ -263,10 +293,13 @@ def _revalidate_batch_evidence(invocation: MigrationInvocation) -> None:
     if manifest != invocation.manifest:
         raise ValueError("release manifest changed after invocation binding")
     if (
-        script_sha256(str(invocation.script_path))
+        _bound_script_sha256(invocation.bound_script_paths)
         != invocation.contract.script_sha256
     ):
-        raise ValueError("migration script changed after invocation binding")
+        raise ValueError(
+            "migration script changed after invocation binding, "
+            "or a bound dependency changed"
+        )
 
 
 def _scan_sensitive_keys(value: object, *, path: str = "report") -> None:

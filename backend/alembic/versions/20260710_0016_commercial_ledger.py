@@ -537,10 +537,14 @@ def _create_commercial_transition_guards() -> None:
                 required_amount integer;
                 allocated_amount bigint;
             BEGIN
-                target_id := CASE
-                    WHEN TG_TABLE_NAME = 'credit_reservations' THEN COALESCE(NEW.id, OLD.id)
-                    ELSE COALESCE(NEW.reservation_id, OLD.reservation_id)
-                END;
+                IF TG_TABLE_NAME = 'credit_reservations' THEN
+                    target_id := COALESCE(NEW.id, OLD.id);
+                ELSIF TG_TABLE_NAME = 'credit_reservation_allocations' THEN
+                    target_id := COALESCE(NEW.reservation_id, OLD.reservation_id);
+                ELSE
+                    RAISE EXCEPTION 'unexpected reservation allocation guard table: %',
+                        TG_TABLE_NAME USING ERRCODE = '23514';
+                END IF;
                 SELECT amount INTO required_amount FROM public.credit_reservations WHERE id = target_id;
                 IF required_amount IS NULL THEN
                     RETURN NULL;
@@ -592,10 +596,14 @@ def _create_commercial_transition_guards() -> None:
                 funding_amount bigint;
                 mismatch_count bigint;
             BEGIN
-                target_id := CASE
-                    WHEN TG_TABLE_NAME = 'order_entitlements' THEN COALESCE(NEW.id, OLD.id)
-                    ELSE COALESCE(NEW.entitlement_id, OLD.entitlement_id)
-                END;
+                IF TG_TABLE_NAME = 'order_entitlements' THEN
+                    target_id := COALESCE(NEW.id, OLD.id);
+                ELSIF TG_TABLE_NAME = 'order_entitlement_fundings' THEN
+                    target_id := COALESCE(NEW.entitlement_id, OLD.entitlement_id);
+                ELSE
+                    RAISE EXCEPTION 'unexpected entitlement funding guard table: %',
+                        TG_TABLE_NAME USING ERRCODE = '23514';
+                END IF;
                 SELECT reservation_id INTO target_reservation_id
                 FROM public.order_entitlements WHERE id = target_id;
                 IF target_reservation_id IS NULL THEN

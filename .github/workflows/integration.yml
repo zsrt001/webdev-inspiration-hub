@@ -170,6 +170,19 @@ jobs:
           DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
         run: alembic upgrade 20260710_0020
 
+      - name: Repair and verify the exact schema-0020 cross-table commercial guards
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
+          PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          PRODUCTION_SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+        run: |
+          python scripts/release/repair_commercial_guard_row_shapes.py \
+            --environment preview \
+            --output "$EVIDENCE_DIR/commercial-guard-row-shape-repair.json"
+
       - name: Compute the PREVIEW_IDENTITY runtime ID
         run: |
           mkdir -p "$EVIDENCE_DIR"
@@ -644,7 +657,11 @@ jobs:
 
   commercial:
     name: Build, bind, exercise, and clean Preview Commercial
-    needs: cleanup
+    needs: [register, smoke, cleanup]
+    if: >-
+      needs.register.result == 'success' &&
+      needs.smoke.result == 'success' &&
+      needs.cleanup.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: preview-commercial
