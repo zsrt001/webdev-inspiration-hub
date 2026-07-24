@@ -52,6 +52,26 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
+def _asyncpg_url(database_url: str) -> str:
+    parsed = make_url(str(database_url or "").strip())
+    if parsed.get_backend_name() != "postgresql":
+        raise ValueError("backend generation integration URL must be PostgreSQL")
+    return parsed.set(drivername="postgresql+asyncpg").render_as_string(
+        hide_password=False
+    )
+
+
+class BackendGenerationRecoveryUrlContractTest(unittest.TestCase):
+    def test_plain_ci_postgresql_url_is_upgraded_to_asyncpg(self) -> None:
+        normalized = make_url(
+            _asyncpg_url(
+                "postgresql://postgres:postgres@127.0.0.1:5432/vowpic_rls_test"
+            )
+        )
+        self.assertEqual(normalized.drivername, "postgresql+asyncpg")
+        self.assertEqual(normalized.database, "vowpic_rls_test")
+
+
 class _EvidenceStore:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
@@ -131,6 +151,7 @@ class BackendGenerationRecoveryIntegrationTest(unittest.IsolatedAsyncioTestCase)
         cls.database_name = f"vowpic_backend_it_{secrets.token_hex(6)}"
         temp_url = base_url.set(database=cls.database_name)
         cls.database_url = temp_url.render_as_string(hide_password=False)
+        cls.async_database_url = _asyncpg_url(cls.database_url)
         asyncio.run(_create_database(base_url, cls.database_name))
 
         migration_env = os.environ.copy()
@@ -167,7 +188,10 @@ class BackendGenerationRecoveryIntegrationTest(unittest.IsolatedAsyncioTestCase)
         super().tearDownClass()
 
     async def asyncSetUp(self) -> None:
-        self.engine = create_async_engine(self.database_url, pool_pre_ping=True)
+        self.engine = create_async_engine(
+            self.async_database_url,
+            pool_pre_ping=True,
+        )
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
 
     async def asyncTearDown(self) -> None:
