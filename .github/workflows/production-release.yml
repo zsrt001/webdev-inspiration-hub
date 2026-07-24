@@ -157,6 +157,13 @@ jobs:
           node-version: "24.17.0"
           cache: npm
           cache-dependency-path: scripts/release-tools/package-lock.json
+      - name: Install the Vercel-compatible uv build tool
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.11"
+          checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"
+          enable-cache: false
+          download-from-astral-mirror: false
       - name: Install pinned control-plane tools
         run: |
           set -euo pipefail
@@ -164,6 +171,7 @@ jobs:
           VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
           test -x "$VERCEL_CLI"
           test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          test "$(uv --version)" = "uv 0.10.11"
           echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
           mkdir -p "$EVIDENCE_DIR"
       - name: Read inventory, resolve exact Preview, and reserve the release lease

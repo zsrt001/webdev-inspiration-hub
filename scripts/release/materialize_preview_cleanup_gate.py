@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+from uuid import UUID
 
 
 class PreviewCleanupGateError(RuntimeError):
@@ -30,6 +31,54 @@ _NO_ACTIVATION_ORIGIN = {
     "origin_state_artifact": "ABSENT",
     "state": "NOT_REQUIRED",
 }
+_PREDEPLOYMENT_CLEANED_KEYS = frozenset(
+    {
+        "activation_id",
+        "api_deployment_id",
+        "bindings_revoked",
+        "business_rows",
+        "consumed_users",
+        "origin_cleanup",
+        "origin_restored",
+        "private_asset_prefix",
+        "refresh_tokens_revoked",
+        "runtime_bundle_id",
+        "second_binding",
+        "sessions_revoked",
+        "source_sha",
+        "state",
+        "storage_objects_deleted",
+        "storage_objects_remaining",
+        "worker_deployment_id",
+    }
+)
+_PREDEPLOYMENT_BUSINESS_KEYS = frozenset(
+    {
+        "account_risk_events",
+        "credit_grant_lots",
+        "credit_purchases",
+        "credit_transactions",
+        "live_portrait_jobs",
+        "orders",
+        "subscription_credit_grants",
+        "user_credits",
+        "user_subscriptions",
+        "welcome_grant_claims",
+    }
+)
+_FAILURE_STAGE_KEYS = frozenset(
+    {
+        "schema",
+        "source_sha",
+        "workflow_run_id",
+        "workflow_attempt",
+        "deploy_step_outcome",
+        "deploy_attempted",
+        "deployment_url_recorded",
+        "deployment_bound",
+        "safe_predeployment_cleanup",
+    }
+)
 _REGISTER_RESULTS = frozenset({"success", "failure", "cancelled", "skipped"})
 
 
@@ -87,9 +136,120 @@ def _required_text(report: dict[str, Any], field: str) -> str:
     return value.strip()
 
 
+def _required_uuid(report: dict[str, Any], field: str) -> str:
+    value = _required_text(report, field)
+    try:
+        canonical = str(UUID(value))
+    except ValueError as exc:
+        raise PreviewCleanupGateError(
+            f"cleanup report field {field} must be a canonical UUID"
+        ) from exc
+    if value != canonical:
+        raise PreviewCleanupGateError(
+            f"cleanup report field {field} must be a canonical UUID"
+        )
+    return canonical
+
+
+def verify_predeployment_cleaned_report(
+    report: Any,
+    *,
+    register_result: str,
+) -> str:
+    if register_result != "failure":
+        raise PreviewCleanupGateError(
+            "only a failed register job may clean a predeployment reservation"
+        )
+    if not isinstance(report, dict) or set(report) != _PREDEPLOYMENT_CLEANED_KEYS:
+        raise PreviewCleanupGateError(
+            "predeployment CLEANED cleanup schema is not exact"
+        )
+    if (
+        report.get("state") != "CLEANED"
+        or report.get("api_deployment_id") is not None
+        or report.get("worker_deployment_id") is not None
+        or report.get("origin_cleanup") != _NO_ACTIVATION_ORIGIN
+        or report.get("origin_restored") is not False
+        or report.get("second_binding") is not False
+        or report.get("private_asset_prefix") != []
+    ):
+        raise PreviewCleanupGateError(
+            "predeployment CLEANED cleanup contains unexpected runtime state"
+        )
+    for field in (
+        "bindings_revoked",
+        "consumed_users",
+        "refresh_tokens_revoked",
+        "sessions_revoked",
+        "storage_objects_deleted",
+        "storage_objects_remaining",
+    ):
+        if not _exact_zero(report.get(field)):
+            raise PreviewCleanupGateError(
+                f"predeployment CLEANED field {field} is not exact integer zero"
+            )
+    business_rows = report.get("business_rows")
+    if (
+        type(business_rows) is not dict
+        or set(business_rows) != _PREDEPLOYMENT_BUSINESS_KEYS
+        or any(not _exact_zero(value) for value in business_rows.values())
+    ):
+        raise PreviewCleanupGateError(
+            "predeployment CLEANED cleanup contains unexpected business rows"
+        )
+    return _required_uuid(report, "activation_id")
+
+
+def verify_safe_predeployment_stage(
+    stage: Any,
+    *,
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: str,
+) -> dict[str, Any]:
+    if not isinstance(stage, dict) or set(stage) != _FAILURE_STAGE_KEYS:
+        raise PreviewCleanupGateError("Preview failure-stage schema is not exact")
+    if stage.get("schema") != "vowpic.preview-deploy-stage.v1":
+        raise PreviewCleanupGateError("Preview failure-stage schema is invalid")
+    if (
+        stage.get("source_sha") != source_sha
+        or stage.get("workflow_run_id") != workflow_run_id
+        or type(stage.get("workflow_attempt")) is not int
+        or str(stage["workflow_attempt"]) != workflow_attempt
+    ):
+        raise PreviewCleanupGateError(
+            "Preview failure-stage workflow coordinates do not match"
+        )
+    if stage.get("deploy_step_outcome") not in {"failure", "skipped"}:
+        raise PreviewCleanupGateError(
+            "Preview failure-stage does not prove a failed or skipped deploy step"
+        )
+    for field in (
+        "deploy_attempted",
+        "deployment_url_recorded",
+        "deployment_bound",
+        "safe_predeployment_cleanup",
+    ):
+        if type(stage.get(field)) is not bool:
+            raise PreviewCleanupGateError(
+                f"Preview failure-stage field {field} must be boolean"
+            )
+    expected_safe = not (
+        stage["deploy_attempted"]
+        or stage["deployment_url_recorded"]
+        or stage["deployment_bound"]
+    )
+    if stage["safe_predeployment_cleanup"] is not expected_safe or not expected_safe:
+        raise PreviewCleanupGateError(
+            "Preview failure-stage does not prove deploy was never attempted"
+        )
+    return stage
+
+
 def materialize_cleanup_gate(
     report: Any,
     *,
+    failure_stage: Any | None = None,
     register_result: str,
     source_sha: str,
     workflow_run_id: str,
@@ -103,6 +263,12 @@ def materialize_cleanup_gate(
         raise PreviewCleanupGateError("workflow coordinates must be numeric")
     if isinstance(report, dict) and report.get("state") == "NO_ACTIVATION":
         verify_no_activation_report(report, register_result=register_result)
+        verify_safe_predeployment_stage(
+            failure_stage,
+            source_sha=source_sha,
+            workflow_run_id=workflow_run_id,
+            workflow_attempt=workflow_attempt,
+        )
         return None
     if not isinstance(report, dict) or report.get("state") != "CLEANED":
         raise PreviewCleanupGateError("cleanup report is neither CLEANED nor NO_ACTIVATION")
@@ -111,7 +277,21 @@ def materialize_cleanup_gate(
             "cleanup report does not prove the exact source activation"
         )
     runtime_bundle_id = _required_text(report, "runtime_bundle_id")
-    api_deployment_id = _required_text(report, "api_deployment_id")
+    raw_api_deployment_id = report.get("api_deployment_id")
+    if raw_api_deployment_id is None:
+        activation_id = verify_predeployment_cleaned_report(
+            report,
+            register_result=register_result,
+        )
+        verify_safe_predeployment_stage(
+            failure_stage,
+            source_sha=source_sha,
+            workflow_run_id=workflow_run_id,
+            workflow_attempt=workflow_attempt,
+        )
+        cleanup_coordinate = f"activation-{activation_id}"
+    else:
+        cleanup_coordinate = _required_text(report, "api_deployment_id")
     if not gate_contract.is_file():
         raise PreviewCleanupGateError("gate contract is missing")
 
@@ -119,7 +299,7 @@ def materialize_cleanup_gate(
         release_root
         / source_sha
         / f"{workflow_run_id}-{workflow_attempt}"
-        / api_deployment_id
+        / cleanup_coordinate
         / "08-cleanup"
     )
     root.mkdir(parents=True, exist_ok=False)
@@ -146,6 +326,7 @@ def materialize_cleanup_gate(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cleanup-report", type=Path, required=True)
+    parser.add_argument("--failure-stage", type=Path)
     parser.add_argument("--register-result", required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--workflow-run-id", required=True)
@@ -155,8 +336,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         report = json.loads(args.cleanup_report.read_text(encoding="utf-8"))
+        failure_stage = (
+            json.loads(args.failure_stage.read_text(encoding="utf-8"))
+            if args.failure_stage is not None and args.failure_stage.is_file()
+            else None
+        )
         output = materialize_cleanup_gate(
             report,
+            failure_stage=failure_stage,
             register_result=args.register_result,
             source_sha=args.source_sha,
             workflow_run_id=args.workflow_run_id,
