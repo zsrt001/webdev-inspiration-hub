@@ -39,6 +39,29 @@ class NoRuntimeDdlTest(unittest.TestCase):
 
 
 class ColdStartNoDdlTest(unittest.IsolatedAsyncioTestCase):
+    def test_schema_guard_uses_the_real_alembic_chain_not_string_order(
+        self,
+    ) -> None:
+        from app.services import schema_guard_service
+
+        self.assertIn(
+            schema_guard_service._MINIMUM_SCHEMA_REVISION,
+            schema_guard_service._RUNTIME_COMPATIBLE_SCHEMA_REVISIONS,
+        )
+        self.assertIn(
+            "20260710_0020",
+            schema_guard_service._RUNTIME_COMPATIBLE_SCHEMA_REVISIONS,
+        )
+        self.assertNotIn(
+            "20260710_0013",
+            schema_guard_service._RUNTIME_COMPATIBLE_SCHEMA_REVISIONS,
+        )
+        self.assertNotIn(
+            "20260710_0019",
+            schema_guard_service._RUNTIME_COMPATIBLE_SCHEMA_REVISIONS,
+        )
+        self.assertLess("20260710_0020", "20260712_0014")
+
     async def test_lifespan_does_not_open_schema_transaction_even_when_legacy_flag_is_true(self) -> None:
         from app import main
 

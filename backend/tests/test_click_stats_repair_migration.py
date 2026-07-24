@@ -49,6 +49,9 @@ class ClickStatsRepairMigrationContractTest(unittest.TestCase):
         source = _read("backend/app/services/schema_guard_service.py")
 
         self.assertIn('_MINIMUM_SCHEMA_REVISION = "20260712_0014"', source)
+        self.assertIn("_RUNTIME_COMPATIBLE_SCHEMA_REVISIONS", source)
+        self.assertIn('"20260710_0020"', source)
+        self.assertNotIn("max(revisions) < _MINIMUM_SCHEMA_REVISION", source)
         self.assertIn("_REQUIRED_CLICK_STATS_COLUMNS", source)
         self.assertIn("click_stats missing columns", source)
 
