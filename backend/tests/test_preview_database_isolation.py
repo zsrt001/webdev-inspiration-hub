@@ -80,6 +80,19 @@ class PreviewDatabaseIsolationTest(unittest.TestCase):
                 production_supabase_url=f"https://{PRODUCTION_REF}.supabase.co",
             )
 
+    def test_incomplete_url_names_only_the_role_and_missing_structure(self) -> None:
+        urls = _urls()
+        urls["migration"] = ""
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Preview migration database URL is incomplete: scheme, username, host, database",
+        ):
+            validate_preview_database_urls(
+                urls,
+                expected_preview_project_ref=PREVIEW_REF,
+                production_supabase_url=f"https://{PRODUCTION_REF}.supabase.co",
+            )
+
     def test_connection_facts_require_one_server_and_exact_roles(self) -> None:
         facts = {
             kind: {
