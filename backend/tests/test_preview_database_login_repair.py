@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import unittest
 
+import httpx
+
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -71,6 +73,65 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "RSA-3072"):
             repair.load_delivery_public_key(base64.b64encode(public_der).decode("ascii"))
 
+    def test_management_rotation_uses_parameters_and_always_drops_the_helper(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            self.assertEqual(request.headers["Authorization"], "Bearer management-token")
+            return httpx.Response(201, json=[])
+
+        runtime_password = "r" * 64
+        writer_password = "w" * 64
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            proof = repair.rotate_preview_logins_via_management_api(
+                client=client,
+                token="management-token",
+                project_ref="abcdefghijklmnopqrst",
+                source_sha="a" * 40,
+                runtime_password=runtime_password,
+                writer_password=writer_password,
+            )
+        self.assertEqual(proof["helper_dropped"], True)
+        self.assertEqual(len(requests), 3)
+        bodies = [json.loads(request.content) for request in requests]
+        create, rotate, drop = bodies
+        self.assertIn("SECURITY DEFINER", create["query"])
+        self.assertIn("REVOKE ALL ON FUNCTION", create["query"])
+        self.assertNotIn(runtime_password, create["query"])
+        self.assertNotIn(writer_password, create["query"])
+        self.assertIn("$1::text", rotate["query"])
+        self.assertIn("$2::text", rotate["query"])
+        self.assertNotIn(runtime_password, rotate["query"])
+        self.assertNotIn(writer_password, rotate["query"])
+        self.assertEqual(rotate["parameters"], [runtime_password, writer_password])
+        self.assertRegex(drop["query"], r"^DROP FUNCTION IF EXISTS public\.")
+
+    def test_management_rotation_drops_the_helper_after_a_failed_call(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if len(requests) == 2:
+                return httpx.Response(500, json={"error": "rejected"})
+            return httpx.Response(201, json=[])
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            with self.assertRaisesRegex(ValueError, "HTTP 500"):
+                repair.rotate_preview_logins_via_management_api(
+                    client=client,
+                    token="management-token",
+                    project_ref="abcdefghijklmnopqrst",
+                    source_sha="a" * 40,
+                    runtime_password="r" * 64,
+                    writer_password="w" * 64,
+                )
+        self.assertEqual(len(requests), 3)
+        self.assertIn(
+            "DROP FUNCTION IF EXISTS",
+            json.loads(requests[-1].content)["query"],
+        )
+
     def test_workflow_is_manual_main_only_preview_only_and_google_free(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^on:\s*\n\s+workflow_dispatch:\s*$")
@@ -80,7 +141,10 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         self.assertIn("if: always()", workflow)
         self.assertIn("delete_unbound_preview_deployment.py", workflow)
         self.assertIn("delivery_public_key_b64", workflow)
+        self.assertIn("SUPABASE_MANAGEMENT_TOKEN", workflow)
+        self.assertIn("PREVIEW_CONTROL_READ_DATABASE_URL", workflow)
         self.assertNotIn("PREVIEW_GOOGLE_", workflow)
+        self.assertNotIn("PREVIEW_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("PRODUCTION_RUNTIME_DATABASE_URL", workflow)
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", workflow)
         self.assertNotIn("pull_request:", workflow)

@@ -40,14 +40,18 @@ jobs:
 
       - name: Require only the exact protected repair inputs
         env:
-          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
           DELIVERY_PUBLIC_KEY_B64: ${{ inputs.delivery_public_key_b64 }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
         run: |
           set -euo pipefail
-          test -n "$PREVIEW_MIGRATION_DATABASE_URL"
+          test -n "$PREVIEW_CONTROL_READ_DATABASE_URL"
+          test -n "$SUPABASE_MANAGEMENT_TOKEN"
+          test -n "$SUPABASE_PROJECT_REF"
           test -n "$DELIVERY_PUBLIC_KEY_B64"
           test -n "$VERCEL_TOKEN"
           test -n "$VERCEL_PROJECT_ID"
@@ -60,7 +64,9 @@ jobs:
 
       - name: Rotate and prove the two provisioned Preview base logins
         env:
-          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
           DELIVERY_PUBLIC_KEY_B64: ${{ inputs.delivery_public_key_b64 }}
         run: |
           set -euo pipefail
