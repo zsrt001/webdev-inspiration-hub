@@ -127,26 +127,27 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         body = json.loads(requests[0].content)
         self.assertEqual(body, {"query": "SELECT 1 AS ok"})
 
-    def test_management_health_reads_only_the_db_service(self) -> None:
+    def test_management_status_reads_only_the_exact_project(self) -> None:
         requests: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             return httpx.Response(
                 200,
-                json=[{"name": "db", "healthy": False, "status": "UNHEALTHY"}],
+                json={"ref": "abcdefghijklmnopqrst", "status": "INACTIVE"},
             )
 
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-            health = repair.read_management_database_health(
+            status = repair.read_management_project_status(
                 client=client,
                 token="management-token",
                 project_ref="abcdefghijklmnopqrst",
             )
 
-        self.assertEqual(health["database_healthy"], False)
-        self.assertEqual(health["database_status"], "UNHEALTHY")
-        self.assertEqual(requests[0].url.params["services"], "db")
+        self.assertEqual(status["project_healthy"], False)
+        self.assertEqual(status["project_status"], "INACTIVE")
+        self.assertTrue(requests[0].url.path.endswith("/projects/abcdefghijklmnopqrst"))
+        self.assertEqual(str(requests[0].url.query), "b''")
         self.assertEqual(requests[0].method, "GET")
 
     def test_management_recovery_restarts_preview_and_proves_query_channel(self) -> None:
@@ -156,12 +157,12 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         def handler(request: httpx.Request) -> httpx.Response:
             nonlocal health_reads
             requests.append(request)
-            if request.url.path.endswith("/health"):
+            if request.method == "GET" and request.url.path.endswith("/projects/abcdefghijklmnopqrst"):
                 health_reads += 1
                 status = "UNHEALTHY" if health_reads == 1 else "ACTIVE_HEALTHY"
                 return httpx.Response(
                     200,
-                    json=[{"name": "db", "healthy": health_reads > 1, "status": status}],
+                    json={"ref": "abcdefghijklmnopqrst", "status": status},
                 )
             if request.url.path.endswith("/restart"):
                 return httpx.Response(200, json={})
@@ -180,8 +181,8 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
             )
 
         self.assertEqual(recovery["state"], "RECOVERED")
-        self.assertEqual(recovery["database_status_before"], "UNHEALTHY")
-        self.assertEqual(recovery["database_status_after"], "ACTIVE_HEALTHY")
+        self.assertEqual(recovery["project_status_before"], "UNHEALTHY")
+        self.assertEqual(recovery["project_status_after"], "ACTIVE_HEALTHY")
         self.assertEqual(recovery["read_only_probe"], "AVAILABLE")
         self.assertEqual([request.method for request in requests], ["GET", "POST", "GET", "POST"])
 
@@ -190,10 +191,10 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            if request.url.path.endswith("/health"):
+            if request.method == "GET" and request.url.path.endswith("/projects/abcdefghijklmnopqrst"):
                 return httpx.Response(
                     200,
-                    json=[{"name": "db", "healthy": True, "status": "ACTIVE_HEALTHY"}],
+                    json={"ref": "abcdefghijklmnopqrst", "status": "ACTIVE_HEALTHY"},
                 )
             if request.url.path.endswith("/database/query/read-only"):
                 return httpx.Response(201, json=[{"ok": 1}])
@@ -249,7 +250,7 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         self.assertIn("delivery_public_key_b64", workflow)
         self.assertIn("operation:", workflow)
         self.assertIn("--management-preflight-only", workflow)
-        self.assertIn("--management-health-only", workflow)
+        self.assertIn("--project-status-only", workflow)
         self.assertIn("--restart-unhealthy-project", workflow)
         self.assertIn("database channel without writes", workflow)
         self.assertIn("SUPABASE_MANAGEMENT_TOKEN", workflow)
