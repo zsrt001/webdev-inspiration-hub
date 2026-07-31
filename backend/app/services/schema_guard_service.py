@@ -109,9 +109,12 @@ async def validate_runtime_schema(db: AsyncSession) -> None:
     table_result = await db.execute(
         text(
             """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = current_schema()
+            SELECT relation.relname AS table_name
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relkind IN ('r', 'p')
             """
         )
     )
