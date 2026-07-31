@@ -181,10 +181,46 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
             )
 
         self.assertEqual(recovery["state"], "RECOVERED")
+        self.assertEqual(recovery["recovery_action"], "restart")
         self.assertEqual(recovery["project_status_before"], "UNHEALTHY")
         self.assertEqual(recovery["project_status_after"], "ACTIVE_HEALTHY")
         self.assertEqual(recovery["read_only_probe"], "AVAILABLE")
         self.assertEqual([request.method for request in requests], ["GET", "POST", "GET", "POST"])
+
+    def test_management_recovery_restores_an_inactive_preview_project(self) -> None:
+        status_reads = 0
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal status_reads
+            requests.append(request)
+            if request.method == "GET" and request.url.path.endswith("/projects/abcdefghijklmnopqrst"):
+                status_reads += 1
+                status = "INACTIVE" if status_reads == 1 else "ACTIVE_HEALTHY"
+                return httpx.Response(
+                    200,
+                    json={"ref": "abcdefghijklmnopqrst", "status": status},
+                )
+            if request.url.path.endswith("/restore"):
+                return httpx.Response(200, json={})
+            if request.url.path.endswith("/database/query/read-only"):
+                return httpx.Response(201, json=[{"ok": 1}])
+            return httpx.Response(404, json={})
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            recovery = repair.recover_management_database(
+                client=client,
+                token="management-token",
+                project_ref="abcdefghijklmnopqrst",
+                attempts=2,
+                interval_seconds=0,
+                sleep=lambda _: None,
+            )
+
+        self.assertEqual(recovery["state"], "RECOVERED")
+        self.assertEqual(recovery["recovery_action"], "restore")
+        self.assertEqual(recovery["restart_requested"], False)
+        self.assertTrue(requests[1].url.path.endswith("/restore"))
 
     def test_management_recovery_does_not_restart_an_already_healthy_project(self) -> None:
         requests: list[httpx.Request] = []
@@ -211,6 +247,7 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
             )
 
         self.assertEqual(recovery["state"], "ALREADY_HEALTHY")
+        self.assertEqual(recovery["recovery_action"], "none")
         self.assertEqual(recovery["restart_requested"], False)
         self.assertEqual([request.method for request in requests], ["GET", "POST"])
 

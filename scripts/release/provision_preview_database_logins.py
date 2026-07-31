@@ -364,13 +364,15 @@ def recover_management_database(
             return {
                 "schema": RECOVERY_SCHEMA,
                 "state": "ALREADY_HEALTHY",
+                "recovery_action": "none",
                 "restart_requested": False,
                 "project_status_before": before["project_status"],
                 "project_status_after": before["project_status"],
                 "read_only_probe": probe["state"],
             }
+    recovery_action = "restore" if before["project_status"] == "INACTIVE" else "restart"
     response = client.post(
-        f"{MANAGEMENT_API}/projects/{project_ref}/restart",
+        f"{MANAGEMENT_API}/projects/{project_ref}/{recovery_action}",
         headers={
             "Authorization": f"Bearer {token.strip()}",
             "Content-Type": "application/json",
@@ -378,9 +380,10 @@ def recover_management_database(
     )
     if response.status_code != 200:
         raise ValueError(
-            f"Supabase Preview project restart failed with HTTP {response.status_code}"
+            "Supabase Preview project "
+            f"{recovery_action} failed with HTTP {response.status_code}"
         )
-    last_status = "restart_requested"
+    last_status = f"{recovery_action}_requested"
     for attempt in range(attempts):
         if attempt:
             sleep(interval_seconds)
@@ -410,7 +413,8 @@ def recover_management_database(
             return {
                 "schema": RECOVERY_SCHEMA,
                 "state": "RECOVERED",
-                "restart_requested": True,
+                "recovery_action": recovery_action,
+                "restart_requested": recovery_action == "restart",
                 "project_status_before": before["project_status"],
                 "project_status_after": last_status,
                 "read_only_probe": probe["state"],
