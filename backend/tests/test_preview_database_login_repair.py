@@ -127,6 +127,92 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         body = json.loads(requests[0].content)
         self.assertEqual(body, {"query": "SELECT 1 AS ok"})
 
+    def test_management_health_reads_only_the_db_service(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json=[{"name": "db", "healthy": False, "status": "UNHEALTHY"}],
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            health = repair.read_management_database_health(
+                client=client,
+                token="management-token",
+                project_ref="abcdefghijklmnopqrst",
+            )
+
+        self.assertEqual(health["database_healthy"], False)
+        self.assertEqual(health["database_status"], "UNHEALTHY")
+        self.assertEqual(requests[0].url.params["services"], "db")
+        self.assertEqual(requests[0].method, "GET")
+
+    def test_management_recovery_restarts_preview_and_proves_query_channel(self) -> None:
+        health_reads = 0
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal health_reads
+            requests.append(request)
+            if request.url.path.endswith("/health"):
+                health_reads += 1
+                status = "UNHEALTHY" if health_reads == 1 else "ACTIVE_HEALTHY"
+                return httpx.Response(
+                    200,
+                    json=[{"name": "db", "healthy": health_reads > 1, "status": status}],
+                )
+            if request.url.path.endswith("/restart"):
+                return httpx.Response(200, json={})
+            if request.url.path.endswith("/database/query/read-only"):
+                return httpx.Response(201, json=[{"ok": 1}])
+            return httpx.Response(404, json={})
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            recovery = repair.recover_management_database(
+                client=client,
+                token="management-token",
+                project_ref="abcdefghijklmnopqrst",
+                attempts=2,
+                interval_seconds=0,
+                sleep=lambda _: None,
+            )
+
+        self.assertEqual(recovery["state"], "RECOVERED")
+        self.assertEqual(recovery["database_status_before"], "UNHEALTHY")
+        self.assertEqual(recovery["database_status_after"], "ACTIVE_HEALTHY")
+        self.assertEqual(recovery["read_only_probe"], "AVAILABLE")
+        self.assertEqual([request.method for request in requests], ["GET", "POST", "GET", "POST"])
+
+    def test_management_recovery_does_not_restart_an_already_healthy_project(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path.endswith("/health"):
+                return httpx.Response(
+                    200,
+                    json=[{"name": "db", "healthy": True, "status": "ACTIVE_HEALTHY"}],
+                )
+            if request.url.path.endswith("/database/query/read-only"):
+                return httpx.Response(201, json=[{"ok": 1}])
+            return httpx.Response(500, json={})
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            recovery = repair.recover_management_database(
+                client=client,
+                token="management-token",
+                project_ref="abcdefghijklmnopqrst",
+                attempts=1,
+                interval_seconds=0,
+                sleep=lambda _: None,
+            )
+
+        self.assertEqual(recovery["state"], "ALREADY_HEALTHY")
+        self.assertEqual(recovery["restart_requested"], False)
+        self.assertEqual([request.method for request in requests], ["GET", "POST"])
+
     def test_management_rotation_drops_the_helper_after_a_failed_call(self) -> None:
         requests: list[httpx.Request] = []
 
@@ -163,6 +249,8 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         self.assertIn("delivery_public_key_b64", workflow)
         self.assertIn("operation:", workflow)
         self.assertIn("--management-preflight-only", workflow)
+        self.assertIn("--management-health-only", workflow)
+        self.assertIn("--restart-unhealthy-project", workflow)
         self.assertIn("database channel without writes", workflow)
         self.assertIn("SUPABASE_MANAGEMENT_TOKEN", workflow)
         self.assertIn("PREVIEW_CONTROL_READ_DATABASE_URL", workflow)
