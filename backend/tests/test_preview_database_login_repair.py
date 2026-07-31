@@ -127,6 +127,34 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         body = json.loads(requests[0].content)
         self.assertEqual(body, {"query": "SELECT 1 AS ok"})
 
+    def test_management_error_reports_stage_and_redacts_secrets(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                text=(
+                    '{"message":"password secret-password rejected",'
+                    '"token":"management-token"}'
+                ),
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            with self.assertRaises(ValueError) as raised:
+                repair._management_query(
+                    client=client,
+                    token="management-token",
+                    project_ref="abcdefghijklmnopqrst",
+                    query="SELECT $1::text",
+                    parameters=["secret-password"],
+                    stage="invoke_rotation_helper",
+                )
+
+        message = str(raised.exception)
+        self.assertIn("stage 'invoke_rotation_helper'", message)
+        self.assertIn("HTTP 400", message)
+        self.assertNotIn("secret-password", message)
+        self.assertNotIn("management-token", message)
+        self.assertIn("[REDACTED]", message)
+
     def test_management_status_reads_only_the_exact_project(self) -> None:
         requests: list[httpx.Request] = []
 
