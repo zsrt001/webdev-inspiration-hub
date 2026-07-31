@@ -107,6 +107,26 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         self.assertEqual(rotate["parameters"], [runtime_password, writer_password])
         self.assertRegex(drop["query"], r"^DROP FUNCTION IF EXISTS public\.")
 
+    def test_rotation_accepts_sealed_nologin_roles_before_credential_install(self) -> None:
+        helper = repair._rotation_helper_sql(
+            "vowpic_preview_login_repair_aaaaaaaaaaaa"
+        )
+        login_baseline = helper.split(
+            "Preview database group role baseline is unsafe", 1
+        )[1].split("Preview database login baseline is unsafe", 1)[0]
+
+        self.assertNotIn("NOT rolcanlogin", login_baseline)
+        self.assertIn("rolsuper OR rolcreatedb OR rolcreaterole", login_baseline)
+        self.assertIn("rolreplication OR rolbypassrls OR NOT rolinherit", login_baseline)
+        self.assertIn(
+            "ALTER ROLE vowpic_app_runtime WITH LOGIN PASSWORD",
+            helper,
+        )
+        self.assertIn(
+            "ALTER ROLE vowpic_control_writer_login WITH LOGIN PASSWORD",
+            helper,
+        )
+
     def test_management_preflight_uses_the_official_read_only_endpoint(self) -> None:
         requests: list[httpx.Request] = []
 

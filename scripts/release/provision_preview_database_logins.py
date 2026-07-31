@@ -185,7 +185,7 @@ BEGIN
         FROM pg_roles
         WHERE rolname IN ('vowpic_app_runtime', 'vowpic_control_writer_login')
           AND (
-              NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole
+              rolsuper OR rolcreatedb OR rolcreaterole
               OR rolreplication OR rolbypassrls OR NOT rolinherit
           )
     ) THEN
