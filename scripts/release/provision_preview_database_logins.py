@@ -38,6 +38,7 @@ from provision_production_database_logins import (  # noqa: E402
 
 ENVELOPE_SCHEMA = "vowpic.preview-database-credentials-envelope.v1"
 PROOF_SCHEMA = "vowpic.preview-database-login-repair-proof.v1"
+PREFLIGHT_SCHEMA = "vowpic.preview-management-database-preflight.v1"
 PLAINTEXT_SCHEMA = "vowpic.preview-database-credentials.v1"
 TEMPLATE_LOGIN = "vowpic_inventory_login"
 MANAGEMENT_API = "https://api.supabase.com/v1"
@@ -244,19 +245,18 @@ def _management_query(
     project_ref: str,
     query: str,
     parameters: list[str],
+    read_only: bool = False,
 ) -> Any:
     if not token.strip():
         raise ValueError("Supabase Management token is missing")
     if not re.fullmatch(r"[a-z0-9]{20}", project_ref):
         raise ValueError("Supabase Preview project ref is invalid")
-    body: dict[str, Any] = {
-        "query": query,
-        "read_only": False,
-    }
+    body: dict[str, Any] = {"query": query}
     if parameters:
         body["parameters"] = parameters
+    endpoint = "database/query/read-only" if read_only else "database/query"
     response = client.post(
-        f"{MANAGEMENT_API}/projects/{project_ref}/database/query",
+        f"{MANAGEMENT_API}/projects/{project_ref}/{endpoint}",
         headers={
             "Authorization": f"Bearer {token.strip()}",
             "Content-Type": "application/json",
@@ -264,8 +264,10 @@ def _management_query(
         json=body,
     )
     if response.status_code != 201:
+        channel = "read-only" if read_only else "write"
         raise ValueError(
-            f"Supabase Management database query failed with HTTP {response.status_code}"
+            "Supabase Management "
+            f"{channel} database query failed with HTTP {response.status_code}"
         )
     try:
         payload = response.json()
@@ -274,6 +276,23 @@ def _management_query(
     if isinstance(payload, dict) and payload.get("error"):
         raise ValueError("Supabase Management database query returned an error")
     return payload
+
+
+def probe_management_database(
+    *,
+    client: httpx.Client,
+    token: str,
+    project_ref: str,
+) -> dict[str, str]:
+    _management_query(
+        client=client,
+        token=token,
+        project_ref=project_ref,
+        query="SELECT 1 AS ok",
+        parameters=[],
+        read_only=True,
+    )
+    return {"schema": PREFLIGHT_SCHEMA, "state": "AVAILABLE"}
 
 
 def rotate_preview_logins_via_management_api(
@@ -383,9 +402,10 @@ def main() -> int:
     parser.add_argument("--management-token-env", default="SUPABASE_MANAGEMENT_TOKEN")
     parser.add_argument("--project-ref-env", default="SUPABASE_PROJECT_REF")
     parser.add_argument("--public-key-env", default="DELIVERY_PUBLIC_KEY_B64")
-    parser.add_argument("--source-sha", required=True)
-    parser.add_argument("--encrypted-output", type=Path, required=True)
-    parser.add_argument("--proof-output", type=Path, required=True)
+    parser.add_argument("--management-preflight-only", action="store_true")
+    parser.add_argument("--source-sha")
+    parser.add_argument("--encrypted-output", type=Path)
+    parser.add_argument("--proof-output", type=Path)
     args = parser.parse_args()
     template_url = os.environ.get(args.template_url_env, "").strip()
     management_token = os.environ.get(args.management_token_env, "").strip()
@@ -393,10 +413,23 @@ def main() -> int:
     public_key_value = os.environ.get(args.public_key_env, "").strip()
     runtime_url = writer_url = runtime_password = writer_password = ""
     try:
-        if not template_url:
-            raise ValueError("Preview control-read URL template is missing")
         if not management_token:
             raise ValueError("Supabase Management token is missing")
+        with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+            preflight = probe_management_database(
+                client=client,
+                token=management_token,
+                project_ref=project_ref,
+            )
+        if args.management_preflight_only:
+            print(json.dumps(preflight, sort_keys=True))
+            return 0
+        if not template_url:
+            raise ValueError("Preview control-read URL template is missing")
+        if not args.source_sha:
+            raise ValueError("source SHA is required for credential repair")
+        if args.encrypted_output is None or args.proof_output is None:
+            raise ValueError("credential repair output paths are required")
         template_ref = _pooler_project_ref(template_url, TEMPLATE_LOGIN)
         if template_ref != project_ref:
             raise ValueError("Preview control-read URL and project ref do not match")
