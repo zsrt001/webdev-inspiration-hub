@@ -94,7 +94,7 @@ jobs:
           python scripts/release/provision_preview_database_logins.py \
             --management-preflight-only
 
-      - name: Inspect the exact Preview database service health
+      - name: Inspect the exact Preview project status without writes
         if: ${{ inputs.operation == 'health' }}
         env:
           SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
@@ -102,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/release/provision_preview_database_logins.py \
-            --management-health-only
+            --project-status-only
 
       - name: Restart only the unhealthy Preview project and prove recovery
         if: ${{ inputs.operation == 'recover' }}

@@ -40,7 +40,7 @@ from provision_production_database_logins import (  # noqa: E402
 ENVELOPE_SCHEMA = "vowpic.preview-database-credentials-envelope.v1"
 PROOF_SCHEMA = "vowpic.preview-database-login-repair-proof.v1"
 PREFLIGHT_SCHEMA = "vowpic.preview-management-database-preflight.v1"
-HEALTH_SCHEMA = "vowpic.preview-management-database-health.v1"
+PROJECT_STATUS_SCHEMA = "vowpic.preview-management-project-status.v1"
 RECOVERY_SCHEMA = "vowpic.preview-management-database-recovery.v1"
 PLAINTEXT_SCHEMA = "vowpic.preview-database-credentials.v1"
 TEMPLATE_LOGIN = "vowpic_inventory_login"
@@ -298,7 +298,7 @@ def probe_management_database(
     return {"schema": PREFLIGHT_SCHEMA, "state": "AVAILABLE"}
 
 
-def read_management_database_health(
+def read_management_project_status(
     *,
     client: httpx.Client,
     token: str,
@@ -309,8 +309,7 @@ def read_management_database_health(
     if not re.fullmatch(r"[a-z0-9]{20}", project_ref):
         raise ValueError("Supabase Preview project ref is invalid")
     response = client.get(
-        f"{MANAGEMENT_API}/projects/{project_ref}/health",
-        params={"services": "db", "timeout_ms": "10000"},
+        f"{MANAGEMENT_API}/projects/{project_ref}",
         headers={
             "Authorization": f"Bearer {token.strip()}",
             "Accept": "application/json",
@@ -318,27 +317,22 @@ def read_management_database_health(
     )
     if response.status_code != 200:
         raise ValueError(
-            f"Supabase Management database health failed with HTTP {response.status_code}"
+            f"Supabase Management project status failed with HTTP {response.status_code}"
         )
     try:
         payload = response.json()
     except ValueError as exc:
-        raise ValueError("Supabase Management database health returned invalid JSON") from exc
-    if not isinstance(payload, list):
-        raise ValueError("Supabase Management database health returned an invalid payload")
-    database_items = [item for item in payload if isinstance(item, dict) and item.get("name") == "db"]
-    if len(database_items) != 1:
-        raise ValueError("Supabase Management database health did not identify one db service")
-    database = database_items[0]
-    healthy = database.get("healthy")
-    status = str(database.get("status") or "").strip()
-    if not isinstance(healthy, bool) or not status:
-        raise ValueError("Supabase Management database health is incomplete")
+        raise ValueError("Supabase Management project status returned invalid JSON") from exc
+    if not isinstance(payload, dict) or payload.get("ref") != project_ref:
+        raise ValueError("Supabase Management project status returned an invalid payload")
+    status = str(payload.get("status") or "").strip()
+    if not status:
+        raise ValueError("Supabase Management project status is incomplete")
     return {
-        "schema": HEALTH_SCHEMA,
+        "schema": PROJECT_STATUS_SCHEMA,
         "state": "OBSERVED",
-        "database_healthy": healthy,
-        "database_status": status,
+        "project_healthy": status == "ACTIVE_HEALTHY",
+        "project_status": status,
     }
 
 
@@ -351,12 +345,12 @@ def recover_management_database(
     interval_seconds: float = 10.0,
     sleep: Any = time.sleep,
 ) -> dict[str, Any]:
-    before = read_management_database_health(
+    before = read_management_project_status(
         client=client,
         token=token,
         project_ref=project_ref,
     )
-    if before["database_healthy"] and before["database_status"] == "ACTIVE_HEALTHY":
+    if before["project_healthy"] and before["project_status"] == "ACTIVE_HEALTHY":
         try:
             probe = probe_management_database(
                 client=client,
@@ -371,8 +365,8 @@ def recover_management_database(
                 "schema": RECOVERY_SCHEMA,
                 "state": "ALREADY_HEALTHY",
                 "restart_requested": False,
-                "database_status_before": before["database_status"],
-                "database_status_after": before["database_status"],
+                "project_status_before": before["project_status"],
+                "project_status_after": before["project_status"],
                 "read_only_probe": probe["state"],
             }
     response = client.post(
@@ -391,7 +385,7 @@ def recover_management_database(
         if attempt:
             sleep(interval_seconds)
         try:
-            after = read_management_database_health(
+            after = read_management_project_status(
                 client=client,
                 token=token,
                 project_ref=project_ref,
@@ -406,8 +400,8 @@ def recover_management_database(
                 raise
             last_status = message.rsplit(" ", 1)[-1]
             continue
-        last_status = str(after["database_status"])
-        if after["database_healthy"] and last_status == "ACTIVE_HEALTHY":
+        last_status = str(after["project_status"])
+        if after["project_healthy"] and last_status == "ACTIVE_HEALTHY":
             probe = probe_management_database(
                 client=client,
                 token=token,
@@ -417,8 +411,8 @@ def recover_management_database(
                 "schema": RECOVERY_SCHEMA,
                 "state": "RECOVERED",
                 "restart_requested": True,
-                "database_status_before": before["database_status"],
-                "database_status_after": last_status,
+                "project_status_before": before["project_status"],
+                "project_status_after": last_status,
                 "read_only_probe": probe["state"],
             }
     raise ValueError(
@@ -536,7 +530,7 @@ def main() -> int:
     parser.add_argument("--public-key-env", default="DELIVERY_PUBLIC_KEY_B64")
     operation = parser.add_mutually_exclusive_group()
     operation.add_argument("--management-preflight-only", action="store_true")
-    operation.add_argument("--management-health-only", action="store_true")
+    operation.add_argument("--project-status-only", action="store_true")
     operation.add_argument("--restart-unhealthy-project", action="store_true")
     parser.add_argument("--source-sha")
     parser.add_argument("--encrypted-output", type=Path)
@@ -551,13 +545,13 @@ def main() -> int:
         if not management_token:
             raise ValueError("Supabase Management token is missing")
         with httpx.Client(timeout=30.0, follow_redirects=False) as client:
-            if args.management_health_only:
-                health = read_management_database_health(
+            if args.project_status_only:
+                status = read_management_project_status(
                     client=client,
                     token=management_token,
                     project_ref=project_ref,
                 )
-                print(json.dumps(health, sort_keys=True))
+                print(json.dumps(status, sort_keys=True))
                 return 0
             if args.restart_unhealthy_project:
                 recovery = recover_management_database(
