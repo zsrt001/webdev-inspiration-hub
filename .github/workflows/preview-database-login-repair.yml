@@ -10,6 +10,8 @@ on:
         type: choice
         options:
           - probe
+          - health
+          - recover
           - repair
       delivery_public_key_b64:
         description: Ephemeral RSA public key in base64 DER form
@@ -62,7 +64,7 @@ jobs:
           test -n "$SUPABASE_MANAGEMENT_TOKEN"
           test -n "$SUPABASE_PROJECT_REF"
           case "$OPERATION" in
-            probe)
+            probe|health|recover)
               ;;
             repair)
               test -n "$PREVIEW_CONTROL_READ_DATABASE_URL"
@@ -83,6 +85,7 @@ jobs:
           python -m pip check
 
       - name: Probe the Supabase Management database channel without writes
+        if: ${{ inputs.operation == 'probe' || inputs.operation == 'repair' }}
         env:
           SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
@@ -90,6 +93,26 @@ jobs:
           set -euo pipefail
           python scripts/release/provision_preview_database_logins.py \
             --management-preflight-only
+
+      - name: Inspect the exact Preview database service health
+        if: ${{ inputs.operation == 'health' }}
+        env:
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          python scripts/release/provision_preview_database_logins.py \
+            --management-health-only
+
+      - name: Restart only the unhealthy Preview project and prove recovery
+        if: ${{ inputs.operation == 'recover' }}
+        env:
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          python scripts/release/provision_preview_database_logins.py \
+            --restart-unhealthy-project
 
       - name: Rotate and prove the two provisioned Preview base logins
         if: ${{ inputs.operation == 'repair' }}

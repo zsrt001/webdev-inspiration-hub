@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import sys
+import time
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -39,6 +40,8 @@ from provision_production_database_logins import (  # noqa: E402
 ENVELOPE_SCHEMA = "vowpic.preview-database-credentials-envelope.v1"
 PROOF_SCHEMA = "vowpic.preview-database-login-repair-proof.v1"
 PREFLIGHT_SCHEMA = "vowpic.preview-management-database-preflight.v1"
+HEALTH_SCHEMA = "vowpic.preview-management-database-health.v1"
+RECOVERY_SCHEMA = "vowpic.preview-management-database-recovery.v1"
 PLAINTEXT_SCHEMA = "vowpic.preview-database-credentials.v1"
 TEMPLATE_LOGIN = "vowpic_inventory_login"
 MANAGEMENT_API = "https://api.supabase.com/v1"
@@ -295,6 +298,135 @@ def probe_management_database(
     return {"schema": PREFLIGHT_SCHEMA, "state": "AVAILABLE"}
 
 
+def read_management_database_health(
+    *,
+    client: httpx.Client,
+    token: str,
+    project_ref: str,
+) -> dict[str, Any]:
+    if not token.strip():
+        raise ValueError("Supabase Management token is missing")
+    if not re.fullmatch(r"[a-z0-9]{20}", project_ref):
+        raise ValueError("Supabase Preview project ref is invalid")
+    response = client.get(
+        f"{MANAGEMENT_API}/projects/{project_ref}/health",
+        params={"services": "db", "timeout_ms": "10000"},
+        headers={
+            "Authorization": f"Bearer {token.strip()}",
+            "Accept": "application/json",
+        },
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            f"Supabase Management database health failed with HTTP {response.status_code}"
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("Supabase Management database health returned invalid JSON") from exc
+    if not isinstance(payload, list):
+        raise ValueError("Supabase Management database health returned an invalid payload")
+    database_items = [item for item in payload if isinstance(item, dict) and item.get("name") == "db"]
+    if len(database_items) != 1:
+        raise ValueError("Supabase Management database health did not identify one db service")
+    database = database_items[0]
+    healthy = database.get("healthy")
+    status = str(database.get("status") or "").strip()
+    if not isinstance(healthy, bool) or not status:
+        raise ValueError("Supabase Management database health is incomplete")
+    return {
+        "schema": HEALTH_SCHEMA,
+        "state": "OBSERVED",
+        "database_healthy": healthy,
+        "database_status": status,
+    }
+
+
+def recover_management_database(
+    *,
+    client: httpx.Client,
+    token: str,
+    project_ref: str,
+    attempts: int = 60,
+    interval_seconds: float = 10.0,
+    sleep: Any = time.sleep,
+) -> dict[str, Any]:
+    before = read_management_database_health(
+        client=client,
+        token=token,
+        project_ref=project_ref,
+    )
+    if before["database_healthy"] and before["database_status"] == "ACTIVE_HEALTHY":
+        try:
+            probe = probe_management_database(
+                client=client,
+                token=token,
+                project_ref=project_ref,
+            )
+        except ValueError as exc:
+            if "HTTP 544" not in str(exc):
+                raise
+        else:
+            return {
+                "schema": RECOVERY_SCHEMA,
+                "state": "ALREADY_HEALTHY",
+                "restart_requested": False,
+                "database_status_before": before["database_status"],
+                "database_status_after": before["database_status"],
+                "read_only_probe": probe["state"],
+            }
+    response = client.post(
+        f"{MANAGEMENT_API}/projects/{project_ref}/restart",
+        headers={
+            "Authorization": f"Bearer {token.strip()}",
+            "Content-Type": "application/json",
+        },
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            f"Supabase Preview project restart failed with HTTP {response.status_code}"
+        )
+    last_status = "restart_requested"
+    for attempt in range(attempts):
+        if attempt:
+            sleep(interval_seconds)
+        try:
+            after = read_management_database_health(
+                client=client,
+                token=token,
+                project_ref=project_ref,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            transient = any(
+                f"HTTP {status}" in message
+                for status in (500, 502, 503, 504, 544)
+            )
+            if not transient:
+                raise
+            last_status = message.rsplit(" ", 1)[-1]
+            continue
+        last_status = str(after["database_status"])
+        if after["database_healthy"] and last_status == "ACTIVE_HEALTHY":
+            probe = probe_management_database(
+                client=client,
+                token=token,
+                project_ref=project_ref,
+            )
+            return {
+                "schema": RECOVERY_SCHEMA,
+                "state": "RECOVERED",
+                "restart_requested": True,
+                "database_status_before": before["database_status"],
+                "database_status_after": last_status,
+                "read_only_probe": probe["state"],
+            }
+    raise ValueError(
+        "Supabase Preview database did not recover within the bounded wait; "
+        f"last status {last_status}"
+    )
+
+
 def rotate_preview_logins_via_management_api(
     *,
     client: httpx.Client,
@@ -402,7 +534,10 @@ def main() -> int:
     parser.add_argument("--management-token-env", default="SUPABASE_MANAGEMENT_TOKEN")
     parser.add_argument("--project-ref-env", default="SUPABASE_PROJECT_REF")
     parser.add_argument("--public-key-env", default="DELIVERY_PUBLIC_KEY_B64")
-    parser.add_argument("--management-preflight-only", action="store_true")
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument("--management-preflight-only", action="store_true")
+    operation.add_argument("--management-health-only", action="store_true")
+    operation.add_argument("--restart-unhealthy-project", action="store_true")
     parser.add_argument("--source-sha")
     parser.add_argument("--encrypted-output", type=Path)
     parser.add_argument("--proof-output", type=Path)
@@ -416,6 +551,22 @@ def main() -> int:
         if not management_token:
             raise ValueError("Supabase Management token is missing")
         with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+            if args.management_health_only:
+                health = read_management_database_health(
+                    client=client,
+                    token=management_token,
+                    project_ref=project_ref,
+                )
+                print(json.dumps(health, sort_keys=True))
+                return 0
+            if args.restart_unhealthy_project:
+                recovery = recover_management_database(
+                    client=client,
+                    token=management_token,
+                    project_ref=project_ref,
+                )
+                print(json.dumps(recovery, sort_keys=True))
+                return 0
             preflight = probe_management_database(
                 client=client,
                 token=management_token,
