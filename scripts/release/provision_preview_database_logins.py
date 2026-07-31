@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import psycopg2
+import httpx
 
 
 RELEASE_DIR = Path(__file__).resolve().parent
@@ -29,13 +30,18 @@ if str(RELEASE_DIR) not in sys.path:
 
 from production_database_login_proof import RUNTIME_LOGIN, WRITER_LOGIN  # noqa: E402
 from provision_production_database_logins import (  # noqa: E402
-    provision_database_logins,
+    database_url_for_login,
+    load_database_role_contract,
+    prove_database_logins_after_pooler_propagation,
 )
 
 
 ENVELOPE_SCHEMA = "vowpic.preview-database-credentials-envelope.v1"
 PROOF_SCHEMA = "vowpic.preview-database-login-repair-proof.v1"
 PLAINTEXT_SCHEMA = "vowpic.preview-database-credentials.v1"
+TEMPLATE_LOGIN = "vowpic_inventory_login"
+MANAGEMENT_API = "https://api.supabase.com/v1"
+HELPER_EXPIRES_AT = "2026-08-03 00:00:00+00"
 
 
 def load_delivery_public_key(value: str) -> tuple[rsa.RSAPublicKey, str]:
@@ -114,6 +120,208 @@ def _pooler_project_ref(url: str, expected_login: str) -> str:
     return project_ref
 
 
+def _helper_name(source_sha: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise ValueError("source SHA is invalid")
+    return f"vowpic_preview_login_repair_{source_sha[:12]}"
+
+
+def _rotation_helper_sql(helper_name: str) -> str:
+    if not re.fullmatch(r"vowpic_preview_login_repair_[0-9a-f]{12}", helper_name):
+        raise ValueError("Preview rotation helper name is invalid")
+    return f"""
+BEGIN;
+CREATE OR REPLACE FUNCTION public.{helper_name}(
+    runtime_password text,
+    writer_password text
+) RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $repair$
+BEGIN
+    IF clock_timestamp() >= TIMESTAMPTZ '{HELPER_EXPIRES_AT}' THEN
+        RAISE EXCEPTION 'one-time Preview database login repair has expired';
+    END IF;
+    IF length(runtime_password) < 64
+       OR length(writer_password) < 64
+       OR runtime_password = writer_password THEN
+        RAISE EXCEPTION 'Preview database login repair passwords are invalid';
+    END IF;
+    IF (
+        SELECT count(*)
+        FROM pg_roles
+        WHERE rolname IN (
+            'vowpic_runtime',
+            'vowpic_control_writer',
+            'vowpic_identity_service',
+            'vowpic_app_runtime',
+            'vowpic_control_writer_login'
+        )
+    ) <> 5 THEN
+        RAISE EXCEPTION 'Preview database role baseline is incomplete';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname IN (
+            'vowpic_runtime',
+            'vowpic_control_writer',
+            'vowpic_identity_service'
+        )
+          AND (
+              rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole
+              OR rolreplication OR rolbypassrls OR NOT rolinherit
+          )
+    ) THEN
+        RAISE EXCEPTION 'Preview database group role baseline is unsafe';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname IN ('vowpic_app_runtime', 'vowpic_control_writer_login')
+          AND (
+              NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole
+              OR rolreplication OR rolbypassrls OR NOT rolinherit
+          )
+    ) THEN
+        RAISE EXCEPTION 'Preview database login baseline is unsafe';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_auth_members membership
+        JOIN pg_roles member ON member.oid = membership.member
+        JOIN pg_roles parent ON parent.oid = membership.roleid
+        WHERE (
+            member.rolname = 'vowpic_app_runtime'
+            AND parent.rolname NOT IN ('vowpic_runtime', 'vowpic_identity_service')
+        ) OR (
+            member.rolname = 'vowpic_control_writer_login'
+            AND parent.rolname <> 'vowpic_control_writer'
+        )
+    ) THEN
+        RAISE EXCEPTION 'Preview database login has an unexpected membership';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_roles role
+        WHERE role.rolname IN ('vowpic_app_runtime', 'vowpic_control_writer_login')
+          AND (
+              EXISTS (SELECT 1 FROM pg_database item WHERE item.datdba = role.oid)
+              OR EXISTS (SELECT 1 FROM pg_namespace item WHERE item.nspowner = role.oid)
+              OR EXISTS (SELECT 1 FROM pg_class item WHERE item.relowner = role.oid)
+              OR EXISTS (SELECT 1 FROM pg_proc item WHERE item.proowner = role.oid)
+          )
+    ) THEN
+        RAISE EXCEPTION 'Preview database login owns database objects';
+    END IF;
+    EXECUTE format(
+        'ALTER ROLE vowpic_app_runtime WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
+        runtime_password
+    );
+    EXECUTE format(
+        'ALTER ROLE vowpic_control_writer_login WITH LOGIN PASSWORD %L VALID UNTIL ''infinity''',
+        writer_password
+    );
+    REVOKE vowpic_control_writer FROM vowpic_app_runtime;
+    REVOKE vowpic_runtime FROM vowpic_control_writer_login;
+    REVOKE vowpic_identity_service FROM vowpic_control_writer_login;
+    GRANT vowpic_runtime TO vowpic_app_runtime;
+    GRANT vowpic_identity_service TO vowpic_app_runtime;
+    GRANT vowpic_control_writer TO vowpic_control_writer_login;
+    RETURN true;
+END
+$repair$;
+REVOKE ALL ON FUNCTION public.{helper_name}(text, text) FROM PUBLIC;
+COMMIT;
+""".strip()
+
+
+def _management_query(
+    *,
+    client: httpx.Client,
+    token: str,
+    project_ref: str,
+    query: str,
+    parameters: list[str],
+) -> Any:
+    if not token.strip():
+        raise ValueError("Supabase Management token is missing")
+    if not re.fullmatch(r"[a-z0-9]{20}", project_ref):
+        raise ValueError("Supabase Preview project ref is invalid")
+    body: dict[str, Any] = {
+        "query": query,
+        "read_only": False,
+    }
+    if parameters:
+        body["parameters"] = parameters
+    response = client.post(
+        f"{MANAGEMENT_API}/projects/{project_ref}/database/query",
+        headers={
+            "Authorization": f"Bearer {token.strip()}",
+            "Content-Type": "application/json",
+        },
+        json=body,
+    )
+    if response.status_code != 201:
+        raise ValueError(
+            f"Supabase Management database query failed with HTTP {response.status_code}"
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("Supabase Management database query returned invalid JSON") from exc
+    if isinstance(payload, dict) and payload.get("error"):
+        raise ValueError("Supabase Management database query returned an error")
+    return payload
+
+
+def rotate_preview_logins_via_management_api(
+    *,
+    client: httpx.Client,
+    token: str,
+    project_ref: str,
+    source_sha: str,
+    runtime_password: str,
+    writer_password: str,
+) -> dict[str, Any]:
+    helper_name = _helper_name(source_sha)
+    created = False
+    rotated = False
+    try:
+        _management_query(
+            client=client,
+            token=token,
+            project_ref=project_ref,
+            query=_rotation_helper_sql(helper_name),
+            parameters=[],
+        )
+        created = True
+        _management_query(
+            client=client,
+            token=token,
+            project_ref=project_ref,
+            query=f"SELECT public.{helper_name}($1::text, $2::text) AS rotated",
+            parameters=[runtime_password, writer_password],
+        )
+        rotated = True
+    finally:
+        if created:
+            _management_query(
+                client=client,
+                token=token,
+                project_ref=project_ref,
+                query=f"DROP FUNCTION IF EXISTS public.{helper_name}(text, text)",
+                parameters=[],
+            )
+    if not rotated:
+        raise ValueError("Preview database login rotation did not complete")
+    return {
+        "credential_rotation": "supabase_management_api_parameterized_helper",
+        "helper_dropped": True,
+    }
+
+
 async def _asyncpg_login_facts(url: str, expected_login: str) -> dict[str, Any]:
     connection = await asyncpg.connect(
         url.replace("postgresql+asyncpg://", "postgresql://", 1),
@@ -171,23 +379,44 @@ def _write_create_once(path: Path, payload: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database-url-env", default="PREVIEW_MIGRATION_DATABASE_URL")
+    parser.add_argument("--template-url-env", default="PREVIEW_CONTROL_READ_DATABASE_URL")
+    parser.add_argument("--management-token-env", default="SUPABASE_MANAGEMENT_TOKEN")
+    parser.add_argument("--project-ref-env", default="SUPABASE_PROJECT_REF")
     parser.add_argument("--public-key-env", default="DELIVERY_PUBLIC_KEY_B64")
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--encrypted-output", type=Path, required=True)
     parser.add_argument("--proof-output", type=Path, required=True)
     args = parser.parse_args()
-    migration_url = os.environ.get(args.database_url_env, "").strip()
+    template_url = os.environ.get(args.template_url_env, "").strip()
+    management_token = os.environ.get(args.management_token_env, "").strip()
+    project_ref = os.environ.get(args.project_ref_env, "").strip().lower()
     public_key_value = os.environ.get(args.public_key_env, "").strip()
-    runtime_url = writer_url = ""
+    runtime_url = writer_url = runtime_password = writer_password = ""
     try:
-        if not migration_url:
-            raise ValueError("Preview migration database URL is missing")
-        if not re.fullmatch(r"[0-9a-f]{40}", args.source_sha):
-            raise ValueError("source SHA is invalid")
+        if not template_url:
+            raise ValueError("Preview control-read URL template is missing")
+        if not management_token:
+            raise ValueError("Supabase Management token is missing")
+        template_ref = _pooler_project_ref(template_url, TEMPLATE_LOGIN)
+        if template_ref != project_ref:
+            raise ValueError("Preview control-read URL and project ref do not match")
         public_key, public_key_sha256 = load_delivery_public_key(public_key_value)
-        runtime_url, writer_url, database_proof = provision_database_logins(
-            migration_url
+        runtime_password = secrets.token_urlsafe(48)
+        writer_password = secrets.token_urlsafe(48)
+        with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+            rotation = rotate_preview_logins_via_management_api(
+                client=client,
+                token=management_token,
+                project_ref=project_ref,
+                source_sha=args.source_sha,
+                runtime_password=runtime_password,
+                writer_password=writer_password,
+            )
+        runtime_url = database_url_for_login(
+            template_url, RUNTIME_LOGIN, runtime_password
+        )
+        writer_url = database_url_for_login(
+            template_url, WRITER_LOGIN, writer_password
         )
         runtime_ref = _pooler_project_ref(runtime_url, RUNTIME_LOGIN)
         writer_ref = _pooler_project_ref(writer_url, WRITER_LOGIN)
@@ -201,6 +430,12 @@ def main() -> int:
             writer_url=writer_url,
         )
         _write_create_once(args.encrypted_output, envelope)
+        business_privileges = load_database_role_contract()
+        role_proof = prove_database_logins_after_pooler_propagation(
+            runtime_url,
+            writer_url,
+            business_privileges,
+        )
         asyncpg_proof = asyncio.run(prove_asyncpg_logins(runtime_url, writer_url))
         proof = {
             "schema": PROOF_SCHEMA,
@@ -212,8 +447,10 @@ def main() -> int:
             ).hexdigest(),
             "runtime_login": RUNTIME_LOGIN,
             "control_writer_login": WRITER_LOGIN,
-            "database": str(database_proof["database"]),
-            "credential_rotation": str(database_proof["credential_rotation"]),
+            "database": str(asyncpg_proof["database"]),
+            "credential_rotation": rotation["credential_rotation"],
+            "helper_dropped": rotation["helper_dropped"],
+            "database_role_contract": sorted(role_proof),
             "asyncpg": asyncpg_proof,
         }
         _write_create_once(args.proof_output, proof)
@@ -226,9 +463,17 @@ def main() -> int:
         json.JSONDecodeError,
         psycopg2.Error,
         asyncpg.PostgresError,
+        httpx.HTTPError,
     ) as exc:
         detail = str(exc)
-        for secret_value in (migration_url, runtime_url, writer_url):
+        for secret_value in (
+            template_url,
+            management_token,
+            runtime_url,
+            writer_url,
+            runtime_password,
+            writer_password,
+        ):
             if secret_value:
                 detail = detail.replace(secret_value, "[REDACTED]")
         detail = re.sub(r"postgres(?:ql)?://\S+", "[REDACTED]", detail)
