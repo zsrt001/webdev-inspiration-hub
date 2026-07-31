@@ -249,6 +249,7 @@ def _management_query(
     query: str,
     parameters: list[str],
     read_only: bool = False,
+    stage: str = "query",
 ) -> Any:
     if not token.strip():
         raise ValueError("Supabase Management token is missing")
@@ -268,9 +269,17 @@ def _management_query(
     )
     if response.status_code != 201:
         channel = "read-only" if read_only else "write"
+        detail = response.text.strip()
+        for secret_value in (token, *parameters):
+            if secret_value:
+                detail = detail.replace(secret_value, "[REDACTED]")
+        detail = re.sub(r"postgres(?:ql)?://\S+", "[REDACTED]", detail)
+        detail = " ".join(detail.split())[:1200]
+        suffix = f": {detail}" if detail else ""
         raise ValueError(
             "Supabase Management "
-            f"{channel} database query failed with HTTP {response.status_code}"
+            f"{channel} database query stage {stage!r} failed with HTTP "
+            f"{response.status_code}{suffix}"
         )
     try:
         payload = response.json()
@@ -444,6 +453,7 @@ def rotate_preview_logins_via_management_api(
             project_ref=project_ref,
             query=_rotation_helper_sql(helper_name),
             parameters=[],
+            stage="create_rotation_helper",
         )
         created = True
         _management_query(
@@ -452,6 +462,7 @@ def rotate_preview_logins_via_management_api(
             project_ref=project_ref,
             query=f"SELECT public.{helper_name}($1::text, $2::text) AS rotated",
             parameters=[runtime_password, writer_password],
+            stage="invoke_rotation_helper",
         )
         rotated = True
     finally:
@@ -462,6 +473,7 @@ def rotate_preview_logins_via_management_api(
                 project_ref=project_ref,
                 query=f"DROP FUNCTION IF EXISTS public.{helper_name}(text, text)",
                 parameters=[],
+                stage="drop_rotation_helper",
             )
     if not rotated:
         raise ValueError("Preview database login rotation did not complete")
