@@ -130,6 +130,17 @@ class ColdStartNoDdlTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(statements), 5)
         self.assertTrue(all(statement.lstrip().upper().startswith("SELECT") for statement in statements))
         self.assertTrue(all(DDL_PATTERN.search(statement) is None for statement in statements))
+        self.assertIn("pg_catalog.pg_class", statements[1])
+        self.assertIn("pg_catalog.pg_namespace", statements[1])
+        self.assertNotIn("information_schema.tables", statements[1])
+        self.assertIn(
+            "release_observation_recoveries",
+            schema_guard_service._REQUIRED_TABLES,
+        )
+        self.assertIn(
+            "release_auth_origin_leases",
+            schema_guard_service._REQUIRED_TABLES,
+        )
 
     async def test_schema_validation_fails_traceably_instead_of_repairing_or_continuing(self) -> None:
         from app.services import schema_guard_service
