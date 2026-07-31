@@ -979,6 +979,10 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             == "Build once and deploy one staged website-backend target"
         )
         deploy_run = deploy_step["run"]
+        self.assertNotIn(
+            "VERCEL_AUTOMATION_BYPASS_SECRET",
+            json.dumps(deploy_step, sort_keys=True),
+        )
         self.assertEqual(deploy_run.count("${DEPLOY_ENV_ARGS[@]}"), 1)
         self.assertEqual(deploy_run.count("${DEPLOY_META_ARGS[@]}"), 1)
         for binding in (
