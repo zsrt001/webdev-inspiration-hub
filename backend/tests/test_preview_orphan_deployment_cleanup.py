@@ -51,6 +51,20 @@ class _Client:
         return _Response(204)
 
 
+class _AbsentClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def get(self, *_args, **_kwargs):
+        return _Response(404)
+
+    def delete(self, *_args, **_kwargs):
+        raise AssertionError("an already absent deployment must not be deleted again")
+
+
 class PreviewOrphanDeploymentCleanupTests(unittest.TestCase):
     source_sha = "a" * 40
     deployment_url = "https://vowpic-preview-example.vercel.app"
@@ -100,6 +114,25 @@ class PreviewOrphanDeploymentCleanupTests(unittest.TestCase):
                 )
             self.assertEqual(proof["state"], "DELETED")
             self.assertEqual(proof["delete_status"], 204)
+            self.assertEqual(proof["readback_status"], 404)
+
+    def test_accepts_an_exact_deployment_that_is_already_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stage = Path(directory) / "stage.json"
+            self._stage(stage)
+            with mock.patch.object(cleanup.httpx, "Client", return_value=_AbsentClient()):
+                proof = cleanup.delete_unbound_preview_deployment(
+                    stage_path=stage,
+                    token="secret",
+                    expected_project_id="prj_Example123",
+                    expected_team_id="team_Example123",
+                    source_sha=self.source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="1",
+                )
+            self.assertEqual(proof["state"], "ALREADY_ABSENT")
+            self.assertIsNone(proof["deployment_id"])
+            self.assertEqual(proof["delete_status"], 404)
             self.assertEqual(proof["readback_status"], 404)
 
     def test_rejects_a_deployment_from_another_project(self) -> None:

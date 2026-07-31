@@ -94,6 +94,19 @@ def delete_unbound_preview_deployment(
             headers=headers,
             params=params,
         )
+        if lookup.status_code == 404:
+            return {
+                "schema": SCHEMA,
+                "state": "ALREADY_ABSENT",
+                "source_sha": source_sha,
+                "workflow_run_id": workflow_run_id,
+                "workflow_attempt": int(workflow_attempt),
+                "deployment_id": None,
+                "deployment_url": deployment_url,
+                "project_id": project_id,
+                "delete_status": 404,
+                "readback_status": 404,
+            }
         lookup.raise_for_status()
         deployment = lookup.json()
         deployment_id = _require_identifier(
@@ -172,7 +185,12 @@ def main() -> int:
         with args.output.open("x", encoding="utf-8", newline="\n") as handle:
             json.dump(proof, handle, indent=2, sort_keys=True)
             handle.write("\n")
-        print(json.dumps({"schema": SCHEMA, "state": "DELETED"}, sort_keys=True))
+        print(
+            json.dumps(
+                {"schema": SCHEMA, "state": proof["state"]},
+                sort_keys=True,
+            )
+        )
         return 0
     except (OSError, ValueError, json.JSONDecodeError, httpx.HTTPError) as exc:
         detail = str(exc).replace(token, "[REDACTED]") if token else str(exc)

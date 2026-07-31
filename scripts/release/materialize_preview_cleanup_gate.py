@@ -305,23 +305,31 @@ def verify_orphan_deployment_cleanup(
         raise PreviewCleanupGateError(
             "orphan Preview deployment cleanup schema is not exact"
         )
-    if (
+    common_proof_is_invalid = (
         cleanup.get("schema") != "vowpic.preview-orphan-deployment-cleanup.v1"
-        or cleanup.get("state") != "DELETED"
         or cleanup.get("source_sha") != source_sha
         or cleanup.get("workflow_run_id") != workflow_run_id
         or type(cleanup.get("workflow_attempt")) is not int
         or str(cleanup["workflow_attempt"]) != workflow_attempt
         or cleanup.get("deployment_url") != stage.get("deployment_url")
-        or cleanup.get("delete_status") not in {200, 204}
         or cleanup.get("readback_status") != 404
-    ):
+    )
+    deleted = (
+        cleanup.get("state") == "DELETED"
+        and cleanup.get("delete_status") in {200, 204}
+        and re.fullmatch(
+            r"dpl_[A-Za-z0-9]+", str(cleanup.get("deployment_id") or "")
+        )
+        is not None
+    )
+    already_absent = (
+        cleanup.get("state") == "ALREADY_ABSENT"
+        and cleanup.get("deployment_id") is None
+        and cleanup.get("delete_status") == 404
+    )
+    if common_proof_is_invalid or not (deleted or already_absent):
         raise PreviewCleanupGateError(
             "orphan Preview deployment cleanup does not prove exact deletion"
-        )
-    if not re.fullmatch(r"dpl_[A-Za-z0-9]+", str(cleanup.get("deployment_id") or "")):
-        raise PreviewCleanupGateError(
-            "orphan Preview deployment cleanup has an invalid deployment ID"
         )
     if not re.fullmatch(r"prj_[A-Za-z0-9]+", str(cleanup.get("project_id") or "")):
         raise PreviewCleanupGateError(
