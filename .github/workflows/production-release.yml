@@ -226,6 +226,9 @@ jobs:
             --job-env "$GITHUB_ENV"
       - name: Validate the complete immutable Production runtime before external deployment
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           RUNTIME_ENVIRONMENT: production
           RELEASE_ROLE: COMMERCIAL_7A
           TASK_EXECUTION_MODE: backend
@@ -243,7 +246,6 @@ jobs:
           SECRET_KEY: ${{ secrets.PRODUCTION_SECRET_KEY }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_BLOB_READ_WRITE_TOKEN }}
-          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
           EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
           EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
           PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
@@ -265,8 +267,12 @@ jobs:
           PRODUCTION_CANARY_MAX_COST_MINOR: ${{ vars.PRODUCTION_CANARY_MAX_COST_MINOR }}
         run: |
           set -euo pipefail
+          python scripts/release/verify_vercel_runtime_secret.py \
+            --secret-name EVOLINK_API_KEY --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/vercel-evolink-secret.json"
           python scripts/release/validate_production_runtime_environment.py \
-            --source-sha "$SOURCE_SHA"
+            --source-sha "$SOURCE_SHA" \
+            --vercel-runtime-secret-report "$RUNNER_TEMP/vercel-evolink-secret.json"
       - name: Derive the immutable website-backend runtime bundle
         run: |
           set -euo pipefail
@@ -310,7 +316,6 @@ jobs:
           SECRET_KEY: ${{ secrets.PRODUCTION_SECRET_KEY }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_BLOB_READ_WRITE_TOKEN }}
-          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
           EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
           EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
           PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
@@ -351,7 +356,6 @@ jobs:
             --env "WEBHOOK_BASE_URL=$WEBHOOK_BASE_URL"
             --env "CORS_ALLOW_ORIGINS=$CORS_ALLOW_ORIGINS"
             --env "GENERATION_ENGINE=evolink"
-            --env "EVOLINK_API_KEY=$EVOLINK_API_KEY"
             --env "EVOLINK_API_BASE_URL=$EVOLINK_API_BASE_URL"
             --env "EVOLINK_IMAGE_MODEL=$EVOLINK_IMAGE_MODEL"
             --env "EVOLINK_CALLBACK_BASE_URL=$EVOLINK_CALLBACK_BASE_URL"
@@ -1298,8 +1302,10 @@ jobs:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
-          PRODUCTION_GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_CANARY_GOOGLE_STORAGE_STATE_BASE64 }}
-          PRODUCTION_CANARY_INPUT_BUNDLE_BASE64: ${{ secrets.PRODUCTION_CANARY_INPUT_BUNDLE_BASE64 }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          PRODUCTION_GOOGLE_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_EMAIL }}
+          PRODUCTION_GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64 }}
           PRIVATE_EVIDENCE_STORE_ID: ${{ secrets.PRIVATE_EVIDENCE_STORE_ID }}
           PRIVATE_EVIDENCE_WRITE_TOKEN: ${{ secrets.PRIVATE_EVIDENCE_WRITE_TOKEN }}
         run: |
@@ -1314,15 +1320,10 @@ jobs:
           . "$RUNNER_TEMP/release.env"
           set +a
           cat "$RUNNER_TEMP/release.env" >> "$GITHUB_ENV"
-          printf '%s' "$PRODUCTION_CANARY_INPUT_BUNDLE_BASE64" | base64 --decode > "$RUNNER_TEMP/production-canaries.tar.gz"
-          python scripts/release/extract_production_canary_bundle.py \
-            --archive "$RUNNER_TEMP/production-canaries.tar.gz" \
-            --output-directory "$RUNNER_TEMP/production-canaries" \
-            --output "$RUNNER_TEMP/production-canary-bundle-extraction.json"
           printf '%s' "$PRODUCTION_GOOGLE_STORAGE_STATE_BASE64" | base64 --decode > "$RUNNER_TEMP/google-canary-state.json"
           chmod 600 "$RUNNER_TEMP/google-canary-state.json"
           export PRODUCTION_GOOGLE_STORAGE_STATE_PATH="$RUNNER_TEMP/google-canary-state.json"
-          export PRODUCTION_CANARY_INPUT_ROOT="$RUNNER_TEMP/production-canaries"
+          export LINKED_ACCEPTANCE_ACTION_ROOT="$GITHUB_WORKSPACE/release/linked-acceptance-actions"
           python scripts/release/activate_with_canaries.py \
             --release-role COMMERCIAL_7A --phase formal-on \
             --manifest "$RUNNER_TEMP/release-manifest.json" \

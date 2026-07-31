@@ -8,13 +8,11 @@ import hashlib
 import hmac
 import importlib.util
 import importlib
-from io import BytesIO
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -29,8 +27,7 @@ PRIVATE_STORE = ROOT / "scripts" / "release" / "private_evidence_store.py"
 AUTH_ORIGIN = ROOT / "scripts" / "release" / "configure_staged_auth_origin.py"
 BINDING_CLEANUP = ROOT / "scripts" / "release" / "cleanup_acceptance_bindings.py"
 ACTIVATION_PLAN = ROOT / "scripts" / "release" / "apply_activation_plan.py"
-CANARY_EXTRACTOR = ROOT / "scripts" / "release" / "extract_production_canary_bundle.py"
-CANARY_TMP = ROOT / ".tmp" / "production-canary-extractor"
+ACTIVATE_CANARIES = ROOT / "scripts" / "release" / "activate_with_canaries.py"
 PRODUCTION_RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "production-release.yml"
 OBSERVATION_LOGIN_WORKFLOW = (
     ROOT
@@ -123,77 +120,100 @@ class ProductionReleaseCredentialContractTest(unittest.TestCase):
         self.assertNotIn("PRODUCTION_CONTROL_PLANE_DATABASE_URL", workflow)
 
 
-class ProductionCanaryBundleExtractorTest(unittest.TestCase):
-    def setUp(self) -> None:
-        shutil.rmtree(CANARY_TMP, ignore_errors=True)
-        CANARY_TMP.mkdir(parents=True)
-
-    def tearDown(self) -> None:
-        shutil.rmtree(CANARY_TMP, ignore_errors=True)
-        if CANARY_TMP.parent.exists() and not any(CANARY_TMP.parent.iterdir()):
-            CANARY_TMP.parent.rmdir()
-
+class ProductionCanaryCleanupTest(unittest.TestCase):
     @staticmethod
-    def _input_bytes(capability: str) -> bytes:
-        return (
-            json.dumps(
+    def _activation() -> dict:
+        return {
+            "source_sha": "a" * 40,
+            "runtime_bundle_id": f"rtb_{'b' * 64}",
+            "api_deployment_id": "dpl_exactCanary",
+            "manifest_sha256": "c" * 64,
+        }
+
+    def test_cleanup_report_is_signed_and_exactly_release_bound(self) -> None:
+        module = _path_module("activate_with_canaries", ACTIVATE_CANARIES)
+        activation = self._activation()
+        key = b"k" * 32
+        unsigned = {
+            "schema": "vowpic.production-canary-cleanup.v1",
+            "passed": True,
+            "source_sha": activation["source_sha"],
+            "runtime_bundle_id": activation["runtime_bundle_id"],
+            "deployment_id": activation["api_deployment_id"],
+            "manifest_sha256": activation["manifest_sha256"],
+            "user_id": str(uuid.uuid4()),
+            "user_subject_hmac_sha256": "d" * 64,
+            "observations": {
+                "account_closed": True,
+                "media_cleanup_requested": True,
+                "post_close_session_denied": True,
+            },
+            "produced_at": datetime.now(timezone.utc).isoformat(),
+        }
+        signature = hmac.new(
+            key,
+            module._canonical(unsigned),
+            hashlib.sha256,
+        ).hexdigest()
+        validated = module._validate_cleanup_report(
+            {**unsigned, "signature": f"hmac-sha256:{signature}"},
+            activation=activation,
+            signing_key=key,
+        )
+        self.assertEqual(validated["user_id"], unsigned["user_id"])
+        wrong_binding = {**unsigned, "source_sha": "e" * 40}
+        wrong_signature = hmac.new(
+            key,
+            module._canonical(wrong_binding),
+            hashlib.sha256,
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "release binding mismatch"):
+            module._validate_cleanup_report(
                 {
-                    "schema": "vowpic.production-capability-canary-input.v1",
-                    "capability": capability,
+                    **wrong_binding,
+                    "signature": f"hmac-sha256:{wrong_signature}",
                 },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            + b"\n"
-        )
+                activation=activation,
+                signing_key=key,
+            )
 
-    def _archive(self, name: str, *, extra_member: tarfile.TarInfo | None = None) -> Path:
-        module = _path_module("extract_production_canary_bundle", CANARY_EXTRACTOR)
-        path = CANARY_TMP / name
-        with tarfile.open(path, "w:gz") as bundle:
-            for capability in module.CAPABILITIES:
-                raw = self._input_bytes(capability)
-                member = tarfile.TarInfo(f"{capability}.json")
-                member.size = len(raw)
-                bundle.addfile(member, BytesIO(raw))
-            if extra_member is not None:
-                raw = b"escape\n"
-                extra_member.size = len(raw)
-                bundle.addfile(extra_member, BytesIO(raw))
-        return path
-
-    def test_extracts_only_the_exact_capability_inputs(self) -> None:
-        module = _path_module("extract_production_canary_bundle", CANARY_EXTRACTOR)
-        archive = self._archive("valid.tar.gz")
-        destination = CANARY_TMP / "inputs"
-        with patch.dict(os.environ, {"RUNNER_TEMP": str(CANARY_TMP)}):
-            report = module.extract_bundle(archive, destination)
-        self.assertTrue(report["passed"])
-        self.assertEqual(
-            set(report["capability_input_sha256"]), set(module.CAPABILITIES)
-        )
-        self.assertEqual(
-            {path.name for path in destination.iterdir()},
-            {f"{capability}.json" for capability in module.CAPABILITIES},
-        )
-
-    def test_rejects_path_traversal_without_writing_outside_the_destination(self) -> None:
-        module = _path_module("extract_production_canary_bundle", CANARY_EXTRACTOR)
-        archive = self._archive("traversal.tar.gz", extra_member=tarfile.TarInfo("../escape.txt"))
-        with patch.dict(os.environ, {"RUNNER_TEMP": str(CANARY_TMP)}):
-            with self.assertRaisesRegex(ValueError, "escaped"):
-                module.extract_bundle(archive, CANARY_TMP / "traversal")
-        self.assertFalse((CANARY_TMP / "escape.txt").exists())
-
-    def test_rejects_links_and_other_non_regular_members(self) -> None:
-        module = _path_module("extract_production_canary_bundle", CANARY_EXTRACTOR)
-        link = tarfile.TarInfo("assets/link")
-        link.type = tarfile.SYMTYPE
-        link.linkname = "../google_auth.json"
-        archive = self._archive("link.tar.gz", extra_member=link)
-        with patch.dict(os.environ, {"RUNNER_TEMP": str(CANARY_TMP)}):
-            with self.assertRaisesRegex(ValueError, "non-regular"):
-                module.extract_bundle(archive, CANARY_TMP / "links")
+    def test_cleanup_absence_requires_physical_not_found_proof(self) -> None:
+        module = _path_module("activate_with_canaries_absence", ACTIVATE_CANARIES)
+        activation = self._activation()
+        cleanup_report = {
+            "user_id": str(uuid.uuid4()),
+            "user_subject_hmac_sha256": "d" * 64,
+            "source_sha": activation["source_sha"],
+            "runtime_bundle_id": activation["runtime_bundle_id"],
+            "deployment_id": activation["api_deployment_id"],
+            "manifest_sha256": activation["manifest_sha256"],
+        }
+        absence = {
+            "schema": "vowpic.acceptance-media-absence.v1",
+            "passed": True,
+            "source_sha": activation["source_sha"],
+            "runtime_bundle_id": activation["runtime_bundle_id"],
+            "deployment_id": activation["api_deployment_id"],
+            "manifest_sha256": activation["manifest_sha256"],
+            "user_subject_hmac_sha256": "d" * 64,
+            "verified_asset_count": 2,
+            "storage_read_outcome": "NOT_FOUND",
+            "facts_sha256": "f" * 64,
+        }
+        with patch.object(
+            module,
+            "_post_json",
+            side_effect=[(200, {"success": True}), (200, absence)],
+        ):
+            result = module._verify_cleanup_absence(
+                base_url="https://www.vowpic.com",
+                cleanup_report=cleanup_report,
+                cron_token="t" * 24,
+                attempts=1,
+            )
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["storage_read_outcome"], "NOT_FOUND")
+        self.assertEqual(result["verified_asset_count"], 2)
 
 
 class BackendExecutionContractTest(unittest.TestCase):
@@ -867,7 +887,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             workflow.count(
                 'LINKED_ACCEPTANCE_ACTION_ROOT="$GITHUB_WORKSPACE/release/linked-acceptance-actions"'
             ),
-            2,
+            3,
         )
         self.assertIn("LINKED_ACCEPTANCE_PHASE=account_finalize", workflow)
         self.assertIn('--account-cleanup-report "$RUNNER_TEMP/commercial-chain.json"', workflow)
@@ -925,7 +945,9 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "PRODUCTION_SECRET_KEY",
             "ACCEPTANCE_IDENTITY_HMAC_KEY",
             "PRIVATE_BLOB_READ_WRITE_TOKEN",
-            "EVOLINK_API_KEY",
+            "VERCEL_TOKEN",
+            "VERCEL_PROJECT_ID",
+            "VERCEL_ORG_ID",
             "PRODUCTION_WENWEN_VISION_API_KEY",
             "CREEM_API_KEY",
             "CREEM_WEBHOOK_SECRET",
@@ -936,6 +958,9 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "PRODUCTION_CANARY_MAX_COST_MINOR",
         ):
             self.assertIn(name, json.dumps(preflight, sort_keys=True))
+        self.assertIn("verify_vercel_runtime_secret.py", preflight_run)
+        self.assertIn("--secret-name EVOLINK_API_KEY", preflight_run)
+        self.assertNotIn("secrets.EVOLINK_API_KEY", json.dumps(preflight, sort_keys=True))
 
         coordinate_step = next(
             step
@@ -963,7 +988,6 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             'CONTROL_PLANE_DATABASE_URL=$CONTROL_PLANE_DATABASE_URL',
             'TASK_EXECUTION_MODE=backend',
             'STORAGE_PROVIDER=vercel',
-            'EVOLINK_API_KEY=$EVOLINK_API_KEY',
             'WENWEN_VISION_API_KEY=$WENWEN_VISION_API_KEY',
             'CREEM_API_KEY=$CREEM_API_KEY',
             'SUPABASE_URL=$SUPABASE_URL',
@@ -971,6 +995,7 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             'CRON_SECRET=$CLEANUP_CRON_TOKEN',
         ):
             self.assertIn(binding, deploy_run)
+        self.assertNotIn('EVOLINK_API_KEY=$EVOLINK_API_KEY', deploy_run)
 
     def test_migrations_cleanup_reconciliation_and_observation_are_separate(self) -> None:
         workflow = (ROOT / ".github/workflows/production-release.yml").read_text(
@@ -1121,12 +1146,30 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         )
         self.assertIn("python -m pip check", action)
 
-    def test_protected_canary_bundle_and_failure_cleanup_are_fail_closed(self) -> None:
+    def test_run_bound_canaries_and_failure_cleanup_are_fail_closed(self) -> None:
         workflow = (ROOT / ".github/workflows/production-release.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("extract_production_canary_bundle.py", workflow)
-        self.assertNotIn("tar -xzf", workflow)
+        self.assertNotIn("PRODUCTION_CANARY_INPUT_BUNDLE_BASE64", workflow)
+        self.assertNotIn("PRODUCTION_CANARY_GOOGLE_STORAGE_STATE_BASE64", workflow)
+        self.assertNotIn("extract_production_canary_bundle.py", workflow)
+        self.assertIn(
+            "secrets.PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64",
+            workflow,
+        )
+        self.assertIn("secrets.PRODUCTION_GOOGLE_PARTNER_EMAIL", workflow)
+        canary = (ROOT / "frontend/e2e/production-canary.spec.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("PRODUCTION_CANARY_STATE_PATH", canary)
+        self.assertIn("return value(asset || {}, 'id');", canary)
+        self.assertIn("@cleanup close the exact Production canary account", canary)
+        self.assertIn("media_cleanup_pending", canary)
+        activation = (ROOT / "scripts/release/activate_with_canaries.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_verify_cleanup_absence", activation)
+        self.assertIn('"storage_read_outcome": "NOT_FOUND"', activation)
         self.assertIn("configure_staged_auth_origin.py cleanup", workflow)
         self.assertIn("cleanup_acceptance_bindings.py", workflow)
         self.assertIn('test "$ACCEPTANCE_CLEANUP_STATUS" -eq 0', workflow)
