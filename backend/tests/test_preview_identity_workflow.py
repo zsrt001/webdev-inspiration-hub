@@ -1805,6 +1805,25 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                 release_root=root / "release-unbound-deleted",
             )
             self.assertIsNotNone(unbound_output)
+
+            already_absent_cleanup = {
+                **orphan_cleanup,
+                "state": "ALREADY_ABSENT",
+                "deployment_id": None,
+                "delete_status": 404,
+            }
+            already_absent_output = gate.materialize_cleanup_gate(
+                report,
+                failure_stage=unbound_stage,
+                orphan_deployment_cleanup=already_absent_cleanup,
+                register_result="failure",
+                source_sha=source_sha,
+                workflow_run_id="123",
+                workflow_attempt="1",
+                gate_contract=gate_contract,
+                release_root=root / "release-unbound-already-absent",
+            )
+            self.assertIsNotNone(already_absent_output)
             with self.assertRaisesRegex(
                 gate.PreviewCleanupGateError,
                 "orphan Preview deployment cleanup",
