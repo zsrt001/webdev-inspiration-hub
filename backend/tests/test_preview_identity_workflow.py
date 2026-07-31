@@ -1224,6 +1224,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "environment: preview-identity",
             "ci_run_id:",
             "ci_run_attempt:",
+            "acceptance_scope:",
+            'default: runtime_only',
+            'inputs.acceptance_scope == \'full\'',
             "verify_github_ref.py",
             "build_runtime_bundle_id.py",
             "--release-role PREVIEW_IDENTITY",
@@ -1429,6 +1432,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             workflow.index("  stage5:")
         ]
         self.assertIn("needs: [register, smoke, cleanup]", commercial_job)
+        self.assertIn("inputs.acceptance_scope == 'full'", commercial_job)
         self.assertIn("needs.register.result == 'success'", commercial_job)
         self.assertIn("needs.smoke.result == 'success'", commercial_job)
         self.assertIn("needs.cleanup.result == 'success'", commercial_job)
@@ -1560,6 +1564,13 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             workflow.index("  cleanup:\n") :
             workflow.index("  commercial:\n")
         ]
+        smoke = workflow[
+            workflow.index("  smoke:\n") :
+            workflow.index("  cleanup:\n")
+        ]
+        stage5 = workflow[workflow.index("  stage5:\n") :]
+        self.assertIn("if: inputs.acceptance_scope == 'full'", smoke)
+        self.assertIn("inputs.acceptance_scope == 'full'", stage5)
         deploy = register[
             register.index("- name: Build and deploy the exact Vercel Preview output") :
             register.index("- name: Persist the create-once activation report")
@@ -1584,6 +1595,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             '"safe_predeployment_cleanup": not (',
             deploy,
         )
+        self.assertIn('"deployment_url": deployment_url', deploy)
         self.assertIn(
             "vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-failure-stage",
             deploy,
@@ -1601,6 +1613,11 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
         self.assertIn(
             "--failure-stage artifacts/preview-failure-stage/failure-stage.json",
+            cleanup,
+        )
+        self.assertIn("delete_unbound_preview_deployment.py", cleanup)
+        self.assertIn(
+            '--orphan-deployment-cleanup "$EVIDENCE_DIR/orphan-deployment-cleanup.json"',
             cleanup,
         )
         self.assertIn(
@@ -1723,6 +1740,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "workflow_attempt": 1,
             "deploy_step_outcome": "failure",
             "deploy_attempted": False,
+            "deployment_url": None,
             "deployment_url_recorded": False,
             "deployment_bound": False,
             "safe_predeployment_cleanup": True,
@@ -1754,6 +1772,53 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             self.assertEqual(payload["case_id"], "preview_cleanup")
             self.assertEqual(payload["status"], "PASS")
             self.assertFalse(payload["capability_enabled"])
+
+            unbound_stage = {
+                **failure_stage,
+                "deploy_step_outcome": "success",
+                "deploy_attempted": True,
+                "deployment_url": "https://vowpic-preview-example.vercel.app",
+                "deployment_url_recorded": True,
+                "safe_predeployment_cleanup": False,
+            }
+            orphan_cleanup = {
+                "schema": "vowpic.preview-orphan-deployment-cleanup.v1",
+                "state": "DELETED",
+                "source_sha": source_sha,
+                "workflow_run_id": "123",
+                "workflow_attempt": 1,
+                "deployment_id": "dpl_Example123",
+                "deployment_url": unbound_stage["deployment_url"],
+                "project_id": "prj_Example123",
+                "delete_status": 204,
+                "readback_status": 404,
+            }
+            unbound_output = gate.materialize_cleanup_gate(
+                report,
+                failure_stage=unbound_stage,
+                orphan_deployment_cleanup=orphan_cleanup,
+                register_result="failure",
+                source_sha=source_sha,
+                workflow_run_id="123",
+                workflow_attempt="1",
+                gate_contract=gate_contract,
+                release_root=root / "release-unbound-deleted",
+            )
+            self.assertIsNotNone(unbound_output)
+            with self.assertRaisesRegex(
+                gate.PreviewCleanupGateError,
+                "orphan Preview deployment cleanup",
+            ):
+                gate.materialize_cleanup_gate(
+                    report,
+                    failure_stage=unbound_stage,
+                    register_result="failure",
+                    source_sha=source_sha,
+                    workflow_run_id="123",
+                    workflow_attempt="1",
+                    gate_contract=gate_contract,
+                    release_root=root / "release-unbound-not-deleted",
+                )
 
             with self.assertRaises(gate.PreviewCleanupGateError):
                 gate.materialize_cleanup_gate(
@@ -1814,6 +1879,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                     {
                         **failure_stage,
                         "deployment_url_recorded": True,
+                        "deployment_url": "https://vowpic-preview-example.vercel.app",
                         "safe_predeployment_cleanup": False,
                     },
                 ),

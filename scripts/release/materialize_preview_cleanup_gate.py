@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 
@@ -74,9 +75,24 @@ _FAILURE_STAGE_KEYS = frozenset(
         "workflow_attempt",
         "deploy_step_outcome",
         "deploy_attempted",
+        "deployment_url",
         "deployment_url_recorded",
         "deployment_bound",
         "safe_predeployment_cleanup",
+    }
+)
+_ORPHAN_DEPLOYMENT_CLEANUP_KEYS = frozenset(
+    {
+        "schema",
+        "state",
+        "source_sha",
+        "workflow_run_id",
+        "workflow_attempt",
+        "deployment_id",
+        "deployment_url",
+        "project_id",
+        "delete_status",
+        "readback_status",
     }
 )
 _REGISTER_RESULTS = frozenset({"success", "failure", "cancelled", "skipped"})
@@ -220,10 +236,9 @@ def verify_safe_predeployment_stage(
         raise PreviewCleanupGateError(
             "Preview failure-stage workflow coordinates do not match"
         )
-    if stage.get("deploy_step_outcome") not in {"failure", "skipped"}:
-        raise PreviewCleanupGateError(
-            "Preview failure-stage does not prove a failed or skipped deploy step"
-        )
+    outcome = stage.get("deploy_step_outcome")
+    if outcome not in {"success", "failure", "skipped"}:
+        raise PreviewCleanupGateError("Preview failure-stage deploy outcome is invalid")
     for field in (
         "deploy_attempted",
         "deployment_url_recorded",
@@ -234,22 +249,92 @@ def verify_safe_predeployment_stage(
             raise PreviewCleanupGateError(
                 f"Preview failure-stage field {field} must be boolean"
             )
-    expected_safe = not (
-        stage["deploy_attempted"]
-        or stage["deployment_url_recorded"]
-        or stage["deployment_bound"]
-    )
-    if stage["safe_predeployment_cleanup"] is not expected_safe or not expected_safe:
+    raw_url = stage.get("deployment_url")
+    if raw_url is not None and type(raw_url) is not str:
         raise PreviewCleanupGateError(
-            "Preview failure-stage does not prove deploy was never attempted"
+            "Preview failure-stage deployment URL must be a string or null"
+        )
+    deployment_url = str(raw_url or "").strip()
+    if bool(deployment_url) is not stage["deployment_url_recorded"]:
+        raise PreviewCleanupGateError(
+            "Preview failure-stage deployment URL record is inconsistent"
+        )
+    if deployment_url:
+        parsed = urlsplit(deployment_url)
+        if (
+            parsed.scheme != "https"
+            or not (parsed.hostname or "").endswith(".vercel.app")
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise PreviewCleanupGateError(
+                "Preview failure-stage deployment URL is invalid"
+            )
+
+    no_deployment = (
+        outcome in {"failure", "skipped"}
+        and not stage["deploy_attempted"]
+        and not stage["deployment_url_recorded"]
+        and not stage["deployment_bound"]
+        and stage["safe_predeployment_cleanup"]
+    )
+    unbound_deployment = (
+        outcome == "success"
+        and stage["deploy_attempted"]
+        and stage["deployment_url_recorded"]
+        and not stage["deployment_bound"]
+        and not stage["safe_predeployment_cleanup"]
+    )
+    if not (no_deployment or unbound_deployment):
+        raise PreviewCleanupGateError(
+            "Preview failure-stage does not prove a safe cleanup boundary"
         )
     return stage
+
+
+def verify_orphan_deployment_cleanup(
+    cleanup: Any,
+    *,
+    stage: dict[str, Any],
+    source_sha: str,
+    workflow_run_id: str,
+    workflow_attempt: str,
+) -> dict[str, Any]:
+    if not isinstance(cleanup, dict) or set(cleanup) != _ORPHAN_DEPLOYMENT_CLEANUP_KEYS:
+        raise PreviewCleanupGateError(
+            "orphan Preview deployment cleanup schema is not exact"
+        )
+    if (
+        cleanup.get("schema") != "vowpic.preview-orphan-deployment-cleanup.v1"
+        or cleanup.get("state") != "DELETED"
+        or cleanup.get("source_sha") != source_sha
+        or cleanup.get("workflow_run_id") != workflow_run_id
+        or type(cleanup.get("workflow_attempt")) is not int
+        or str(cleanup["workflow_attempt"]) != workflow_attempt
+        or cleanup.get("deployment_url") != stage.get("deployment_url")
+        or cleanup.get("delete_status") not in {200, 204}
+        or cleanup.get("readback_status") != 404
+    ):
+        raise PreviewCleanupGateError(
+            "orphan Preview deployment cleanup does not prove exact deletion"
+        )
+    if not re.fullmatch(r"dpl_[A-Za-z0-9]+", str(cleanup.get("deployment_id") or "")):
+        raise PreviewCleanupGateError(
+            "orphan Preview deployment cleanup has an invalid deployment ID"
+        )
+    if not re.fullmatch(r"prj_[A-Za-z0-9]+", str(cleanup.get("project_id") or "")):
+        raise PreviewCleanupGateError(
+            "orphan Preview deployment cleanup has an invalid project ID"
+        )
+    return cleanup
 
 
 def materialize_cleanup_gate(
     report: Any,
     *,
     failure_stage: Any | None = None,
+    orphan_deployment_cleanup: Any | None = None,
     register_result: str,
     source_sha: str,
     workflow_run_id: str,
@@ -263,12 +348,16 @@ def materialize_cleanup_gate(
         raise PreviewCleanupGateError("workflow coordinates must be numeric")
     if isinstance(report, dict) and report.get("state") == "NO_ACTIVATION":
         verify_no_activation_report(report, register_result=register_result)
-        verify_safe_predeployment_stage(
+        stage = verify_safe_predeployment_stage(
             failure_stage,
             source_sha=source_sha,
             workflow_run_id=workflow_run_id,
             workflow_attempt=workflow_attempt,
         )
+        if stage.get("deployment_url") is not None:
+            raise PreviewCleanupGateError(
+                "NO_ACTIVATION cleanup cannot leave an unbound deployment"
+            )
         return None
     if not isinstance(report, dict) or report.get("state") != "CLEANED":
         raise PreviewCleanupGateError("cleanup report is neither CLEANED nor NO_ACTIVATION")
@@ -283,12 +372,20 @@ def materialize_cleanup_gate(
             report,
             register_result=register_result,
         )
-        verify_safe_predeployment_stage(
+        stage = verify_safe_predeployment_stage(
             failure_stage,
             source_sha=source_sha,
             workflow_run_id=workflow_run_id,
             workflow_attempt=workflow_attempt,
         )
+        if stage.get("deployment_url") is not None:
+            verify_orphan_deployment_cleanup(
+                orphan_deployment_cleanup,
+                stage=stage,
+                source_sha=source_sha,
+                workflow_run_id=workflow_run_id,
+                workflow_attempt=workflow_attempt,
+            )
         cleanup_coordinate = f"activation-{activation_id}"
     else:
         cleanup_coordinate = _required_text(report, "api_deployment_id")
@@ -327,6 +424,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cleanup-report", type=Path, required=True)
     parser.add_argument("--failure-stage", type=Path)
+    parser.add_argument("--orphan-deployment-cleanup", type=Path)
     parser.add_argument("--register-result", required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--workflow-run-id", required=True)
@@ -341,9 +439,16 @@ def main() -> int:
             if args.failure_stage is not None and args.failure_stage.is_file()
             else None
         )
+        orphan_deployment_cleanup = (
+            json.loads(args.orphan_deployment_cleanup.read_text(encoding="utf-8"))
+            if args.orphan_deployment_cleanup is not None
+            and args.orphan_deployment_cleanup.is_file()
+            else None
+        )
         output = materialize_cleanup_gate(
             report,
             failure_stage=failure_stage,
+            orphan_deployment_cleanup=orphan_deployment_cleanup,
             register_result=args.register_result,
             source_sha=args.source_sha,
             workflow_run_id=args.workflow_run_id,

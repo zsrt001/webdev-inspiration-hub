@@ -31,6 +31,21 @@ def _urls(project_ref: str = PREVIEW_REF) -> dict[str, str]:
 
 
 class PreviewDatabaseIsolationTest(unittest.TestCase):
+    def test_runtime_and_writer_use_the_provisioned_base_logins(self) -> None:
+        self.assertEqual(EXPECTED_SESSIONS["runtime"], "vowpic_app_runtime")
+        self.assertEqual(
+            EXPECTED_SESSIONS["control_writer"],
+            "vowpic_control_writer_login",
+        )
+        self.assertEqual(
+            EXPECTED_SESSIONS["runtime"],
+            EXPECTED_CURRENT_USERS["runtime"],
+        )
+        self.assertEqual(
+            EXPECTED_SESSIONS["control_writer"],
+            EXPECTED_CURRENT_USERS["control_writer"],
+        )
+
     def test_urls_bind_distinct_scoped_logins_to_preview_not_production(self) -> None:
         proof = validate_preview_database_urls(
             _urls(),

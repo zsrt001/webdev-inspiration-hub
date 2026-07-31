@@ -26,8 +26,8 @@ ENVIRONMENTS = {
 }
 EXPECTED_SESSIONS = {
     "migration": "vowpic_migration_login",
-    "runtime": "vowpic_release_runtime_login",
-    "control_writer": "vowpic_release_control_login",
+    "runtime": "vowpic_app_runtime",
+    "control_writer": "vowpic_control_writer_login",
     "control_reader": "vowpic_inventory_login",
 }
 EXPECTED_CURRENT_USERS = {

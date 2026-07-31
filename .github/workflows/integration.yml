@@ -11,6 +11,14 @@ on:
         description: Successful CI run attempt containing the exact PR gate artifact
         required: true
         type: string
+      acceptance_scope:
+        description: Run backend deployment proof now; defer Google and Commercial journeys until the final acceptance run
+        required: true
+        default: runtime_only
+        type: choice
+        options:
+          - "runtime_only"
+          - "full"
       failure_boundary:
         description: Optional cleanup failure-injection proof
         required: true
@@ -338,6 +346,11 @@ jobs:
           attempted = Path(sys.argv[1]).is_file()
           url_recorded = Path(sys.argv[2]).is_file()
           deployment_bound = Path(sys.argv[3]).is_file()
+          deployment_url = (
+              Path(sys.argv[2]).read_text(encoding="utf-8").strip()
+              if url_recorded
+              else None
+          )
           payload = {
               "schema": "vowpic.preview-deploy-stage.v1",
               "source_sha": os.environ["SOURCE_SHA"],
@@ -345,6 +358,7 @@ jobs:
               "workflow_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "deploy_step_outcome": os.environ["DEPLOY_STEP_OUTCOME"],
               "deploy_attempted": attempted,
+              "deployment_url": deployment_url,
               "deployment_url_recorded": url_recorded,
               "deployment_bound": deployment_bound,
               "safe_predeployment_cleanup": not (
@@ -406,6 +420,7 @@ jobs:
 
   smoke:
     name: Resolve fresh coordinates and run real Google session smoke
+    if: inputs.acceptance_scope == 'full'
     needs: register
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -712,6 +727,25 @@ jobs:
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
             --output "$EVIDENCE_DIR/cleanup-report.json"
 
+      - name: Delete an exact unbound Preview deployment before cleanup can pass
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          set -euo pipefail
+          stage="artifacts/preview-failure-stage/failure-stage.json"
+          if test -f "$stage" && python -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8")).get("deployment_url") else 1)' "$stage"; then
+            python scripts/release/delete_unbound_preview_deployment.py \
+              --failure-stage "$stage" \
+              --expected-project-id "$VERCEL_PROJECT_ID" \
+              --expected-team-id "$VERCEL_ORG_ID" \
+              --source-sha "$SOURCE_SHA" \
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+              --output "$EVIDENCE_DIR/orphan-deployment-cleanup.json"
+          fi
+
       - name: Materialize exact cleanup gate evidence
         env:
           REGISTER_RESULT: ${{ needs.register.result }}
@@ -720,6 +754,7 @@ jobs:
           python scripts/release/materialize_preview_cleanup_gate.py \
             --cleanup-report "$EVIDENCE_DIR/cleanup-report.json" \
             --failure-stage artifacts/preview-failure-stage/failure-stage.json \
+            --orphan-deployment-cleanup "$EVIDENCE_DIR/orphan-deployment-cleanup.json" \
             --register-result "$REGISTER_RESULT" \
             --source-sha "$SOURCE_SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
@@ -733,6 +768,7 @@ jobs:
           name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-cleanup
           path: |
             artifacts/preview-identity/cleanup-report.json
+            artifacts/preview-identity/orphan-deployment-cleanup.json
             artifacts/release/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/*/08-cleanup/preview_cleanup.json
           if-no-files-found: error
           retention-days: 30
@@ -746,6 +782,7 @@ jobs:
     name: Build, bind, exercise, and clean Preview Commercial
     needs: [register, smoke, cleanup]
     if: >-
+      inputs.acceptance_scope == 'full' &&
       needs.register.result == 'success' &&
       needs.smoke.result == 'success' &&
       needs.cleanup.result == 'success'
@@ -1385,7 +1422,9 @@ jobs:
 
   stage5:
     name: Aggregate exact multi-runtime Stage-5 evidence
-    if: always()
+    if: >-
+      always() &&
+      inputs.acceptance_scope == 'full'
     needs: [cleanup, commercial]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
