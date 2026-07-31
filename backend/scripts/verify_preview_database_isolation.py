@@ -45,14 +45,27 @@ def _sync_url(value: str) -> str:
 def _project_ref_from_database_url(
     value: str,
     *,
+    credential_kind: str,
     expected_login: str,
 ) -> tuple[str, dict[str, Any]]:
     parsed = urlsplit(_sync_url(value))
     username = unquote(parsed.username or "")
     database = parsed.path.lstrip("/")
     host = (parsed.hostname or "").lower()
-    if parsed.scheme != "postgresql" or not username or not host or not database:
-        raise ValueError("Preview database URL is incomplete")
+    incomplete = []
+    if parsed.scheme != "postgresql":
+        incomplete.append("scheme")
+    if not username:
+        incomplete.append("username")
+    if not host:
+        incomplete.append("host")
+    if not database:
+        incomplete.append("database")
+    if incomplete:
+        raise ValueError(
+            f"Preview {credential_kind} database URL is incomplete: "
+            + ", ".join(incomplete)
+        )
     if parse_qs(parsed.query).get("sslmode") != ["require"]:
         raise ValueError("Preview database URL must require TLS")
 
@@ -117,6 +130,7 @@ def validate_preview_database_urls(
     for kind, expected_login in EXPECTED_SESSIONS.items():
         project_ref, parsed = _project_ref_from_database_url(
             urls[kind],
+            credential_kind=kind,
             expected_login=expected_login,
         )
         parsed_urls[kind] = parsed
