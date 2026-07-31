@@ -107,6 +107,26 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         self.assertEqual(rotate["parameters"], [runtime_password, writer_password])
         self.assertRegex(drop["query"], r"^DROP FUNCTION IF EXISTS public\.")
 
+    def test_management_preflight_uses_the_official_read_only_endpoint(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(201, json=[{"ok": 1}])
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            proof = repair.probe_management_database(
+                client=client,
+                token="management-token",
+                project_ref="abcdefghijklmnopqrst",
+            )
+
+        self.assertEqual(proof, {"schema": repair.PREFLIGHT_SCHEMA, "state": "AVAILABLE"})
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(requests[0].url.path.endswith("/database/query/read-only"))
+        body = json.loads(requests[0].content)
+        self.assertEqual(body, {"query": "SELECT 1 AS ok"})
+
     def test_management_rotation_drops_the_helper_after_a_failed_call(self) -> None:
         requests: list[httpx.Request] = []
 
@@ -138,9 +158,12 @@ class PreviewDatabaseLoginRepairTests(unittest.TestCase):
         self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
         self.assertIn("environment: preview-identity", workflow)
         self.assertIn("provision_preview_database_logins.py", workflow)
-        self.assertIn("if: always()", workflow)
+        self.assertIn("always() && inputs.operation == 'repair'", workflow)
         self.assertIn("delete_unbound_preview_deployment.py", workflow)
         self.assertIn("delivery_public_key_b64", workflow)
+        self.assertIn("operation:", workflow)
+        self.assertIn("--management-preflight-only", workflow)
+        self.assertIn("database channel without writes", workflow)
         self.assertIn("SUPABASE_MANAGEMENT_TOKEN", workflow)
         self.assertIn("PREVIEW_CONTROL_READ_DATABASE_URL", workflow)
         self.assertNotIn("PREVIEW_GOOGLE_", workflow)
