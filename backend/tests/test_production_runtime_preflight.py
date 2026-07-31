@@ -99,6 +99,42 @@ class ProductionRuntimePreflightTest(unittest.TestCase):
         )
         self.assertFalse(any("REDIS_URL" in error for error in errors))
 
+    def test_vercel_sensitive_metadata_can_supply_the_unreadable_evolink_key(self) -> None:
+        environment = _valid_environment()
+        environment.pop("EVOLINK_API_KEY")
+        environment["VERCEL_PROJECT_ID"] = "prj_project"
+        environment["VERCEL_ORG_ID"] = "team_owner"
+        report = {
+            "schema": "vowpic.vercel-runtime-secret-metadata.v1",
+            "passed": True,
+            "secret_name": "EVOLINK_API_KEY",
+            "vercel_secret_type": "sensitive",
+            "vercel_target": ["preview", "production"],
+            "vercel_value_readable": False,
+            "project_id": "prj_project",
+            "team_id": "team_owner",
+            "source_sha": SOURCE_SHA,
+        }
+
+        errors = self.module.validate_environment(
+            environment,
+            source_sha=SOURCE_SHA,
+            vercel_runtime_secret_report=report,
+        )
+
+        self.assertEqual(errors, [])
+
+    def test_missing_evolink_key_and_metadata_fail_closed(self) -> None:
+        environment = _valid_environment()
+        environment.pop("EVOLINK_API_KEY")
+
+        errors = self.module.validate_environment(environment, source_sha=SOURCE_SHA)
+
+        self.assertIn(
+            "EVOLINK_API_KEY requires a valid Vercel Production Sensitive metadata report",
+            errors,
+        )
+
     def test_cost_cap_and_source_sha_fail_closed(self) -> None:
         environment = _valid_environment()
         environment["PRODUCTION_CANARY_MAX_COST_MINOR"] = "0"

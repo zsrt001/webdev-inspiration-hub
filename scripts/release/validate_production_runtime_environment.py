@@ -71,6 +71,7 @@ def validate_environment(
     environ: dict[str, str],
     *,
     source_sha: str,
+    vercel_runtime_secret_report: dict[str, object] | None = None,
 ) -> list[str]:
     errors = _validate_expected_values(environ)
     errors.extend(_validate_positive_cost_cap(environ))
@@ -85,7 +86,28 @@ def validate_environment(
         errors.append("Production runtime validator could not be imported")
         return sorted(set(errors))
 
-    with _temporary_environment(environ):
+    effective_environment = dict(environ)
+    if not str(effective_environment.get("EVOLINK_API_KEY", "")).strip():
+        report = vercel_runtime_secret_report or {}
+        if (
+            report.get("schema") == "vowpic.vercel-runtime-secret-metadata.v1"
+            and report.get("passed") is True
+            and report.get("secret_name") == "EVOLINK_API_KEY"
+            and report.get("vercel_secret_type") == "sensitive"
+            and report.get("vercel_value_readable") is False
+            and isinstance(report.get("vercel_target"), list)
+            and "production" in report["vercel_target"]
+            and report.get("project_id") == environ.get("VERCEL_PROJECT_ID")
+            and report.get("team_id") == environ.get("VERCEL_ORG_ID")
+            and report.get("source_sha") == source_sha
+        ):
+            effective_environment["EVOLINK_API_KEY"] = "vercel-managed-sensitive-runtime"
+        else:
+            errors.append(
+                "EVOLINK_API_KEY requires a valid Vercel Production Sensitive metadata report"
+            )
+
+    with _temporary_environment(effective_environment):
         try:
             settings = Settings(
                 _env_file=None,
@@ -111,8 +133,21 @@ def main() -> int:
         description="Validate the immutable COMMERCIAL_7A runtime environment"
     )
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--vercel-runtime-secret-report")
     args = parser.parse_args()
-    errors = validate_environment(dict(os.environ), source_sha=args.source_sha)
+    secret_report = None
+    if args.vercel_runtime_secret_report:
+        payload = json.loads(
+            Path(args.vercel_runtime_secret_report).read_text(encoding="utf-8")
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Vercel runtime secret report must be an object")
+        secret_report = payload
+    errors = validate_environment(
+        dict(os.environ),
+        source_sha=args.source_sha,
+        vercel_runtime_secret_report=secret_report,
+    )
     payload = {
         "schema": "vowpic.production-runtime-preflight.v1",
         "ok": not errors,
