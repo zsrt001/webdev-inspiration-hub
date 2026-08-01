@@ -30,8 +30,8 @@ async function cookieValue(page: Page, name: string) {
 
 async function completeGoogleLogin(page: Page) {
   await page.goto('/pages/auth/login');
-  await expect(page.locator('button.google-button')).toBeVisible();
-  await page.locator('button.google-button').click();
+  await expect(page.locator('.google-button')).toBeVisible();
+  await page.locator('.google-button').click();
   await page.waitForURL(
     (url) => url.origin === baseURL || url.hostname.endsWith('google.com'),
     { timeout: 60_000 },

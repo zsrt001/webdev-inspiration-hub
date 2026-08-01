@@ -40,7 +40,7 @@ async function welcomeSnapshot(page: Page) {
 
 async function completeGoogleLogin(page: Page, email = identityEmail) {
   await page.goto('/pages/auth/login');
-  const googleButton = page.locator('button.google-button');
+  const googleButton = page.locator('.google-button');
   try {
     await expect(googleButton).toBeVisible({ timeout: 30_000 });
   } catch (error) {

@@ -320,7 +320,7 @@ export async function uploadProtectedAsset(
 export async function completeGoogleLogin(page: Page, identityEmail: string): Promise<void> {
   const base = new URL(protectedBaseUrl());
   await page.goto('/pages/auth/login');
-  const button = page.locator('button.google-button');
+  const button = page.locator('.google-button');
   await expect(button).toBeVisible();
   await button.click();
   await page.waitForURL(
