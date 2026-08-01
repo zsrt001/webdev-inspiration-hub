@@ -201,6 +201,18 @@ jobs:
             --environment preview \
             --output "$EVIDENCE_DIR/commercial-guard-row-shape-repair.json"
 
+      - name: Prove the Vercel runtime can read Preview feature-flag authority
+        env:
+          DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
+          CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
+          RUNTIME_ENVIRONMENT: preview
+          VERCEL: '1'
+          SUPABASE_POOLER_REGION: ${{ env.PREVIEW_SUPABASE_POOLER_REGION }}
+        run: |
+          PYTHONPATH=backend python backend/scripts/verify_preview_runtime_authority.py \
+            --timeout-seconds 15 \
+            --output "$EVIDENCE_DIR/preview-runtime-authority.json"
+
       - name: Compute the PREVIEW_IDENTITY runtime ID
         run: |
           mkdir -p "$EVIDENCE_DIR"
@@ -267,6 +279,7 @@ jobs:
             --env "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY" \
             --env "SUPABASE_URL=$PREVIEW_SUPABASE_URL" \
             --env "SUPABASE_ANON_KEY=$PREVIEW_SUPABASE_PUBLISHABLE_KEY" \
+            --env "SUPABASE_POOLER_REGION=$PREVIEW_SUPABASE_POOLER_REGION" \
             --env "STORAGE_PROVIDER=vercel" \
             --env "PRIVATE_BLOB_READ_WRITE_TOKEN=$PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN" \
             --meta "vowpicSourceSha=$SOURCE_SHA" \
@@ -914,6 +927,18 @@ jobs:
             --job-env "$GITHUB_ENV" \
             --output "$COMMERCIAL_EVIDENCE_DIR/preview-supabase-runtime.json"
 
+      - name: Re-prove the Vercel runtime feature-flag authority for Commercial
+        env:
+          DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
+          CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
+          RUNTIME_ENVIRONMENT: preview
+          VERCEL: '1'
+          SUPABASE_POOLER_REGION: ${{ env.PREVIEW_SUPABASE_POOLER_REGION }}
+        run: |
+          PYTHONPATH=backend python backend/scripts/verify_preview_runtime_authority.py \
+            --timeout-seconds 15 \
+            --output "$COMMERCIAL_EVIDENCE_DIR/preview-runtime-authority.json"
+
       - name: Build the exact website-backend runtime ID before deployment
         run: |
           set -euo pipefail
@@ -1007,6 +1032,7 @@ jobs:
             --env "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY" \
             --env "SUPABASE_URL=$PREVIEW_SUPABASE_URL" \
             --env "SUPABASE_ANON_KEY=$PREVIEW_SUPABASE_PUBLISHABLE_KEY" \
+            --env "SUPABASE_POOLER_REGION=$PREVIEW_SUPABASE_POOLER_REGION" \
             --env "SECRET_KEY=$PREVIEW_SECRET_KEY" \
             --env "GENERATION_ENGINE=evolink" \
             --env "EVOLINK_API_KEY=$EVOLINK_API_KEY" \
