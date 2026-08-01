@@ -1608,7 +1608,12 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         stage5 = workflow[workflow.index("  stage5:\n") :]
         self.assertIn("if: inputs.acceptance_scope == 'full'", smoke)
         self.assertIn("runs-on: [self-hosted, Windows, X64, vowpic-edge]", smoke)
-        self.assertIn("shell: bash", smoke)
+        self.assertIn(
+            "shell: '\"C:\\Program Files\\Git\\bin\\bash.exe\" "
+            "--noprofile --norc -e -o pipefail {0}'",
+            smoke,
+        )
+        self.assertIn('python-version: "3.11.9"', smoke)
         self.assertIn("PLAYWRIGHT_BROWSER_CHANNEL: msedge", smoke)
         self.assertNotIn("npm run playwright:install", smoke)
         self.assertIn("inputs.acceptance_scope == 'full'", stage5)
