@@ -1230,6 +1230,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "verify_github_ref.py",
             "build_runtime_bundle_id.py",
             "--release-role PREVIEW_IDENTITY",
+            '--builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v1"',
             "register_preview_activation.py reserve",
             "register_preview_activation.py deployed",
             "register_preview_activation.py complete",

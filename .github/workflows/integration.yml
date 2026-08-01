@@ -218,6 +218,7 @@ jobs:
             --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
             --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
             --contract identity_private_media_preview=release/preview-runtime-contract.json \
+            --builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v1" \
             --api-version vowpic-web-identity-private-media.v3 \
             --output "$RUNNER_TEMP/preview-runtime-id.txt"
 
