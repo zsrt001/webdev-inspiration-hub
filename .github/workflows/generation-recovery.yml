@@ -4,6 +4,19 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Run recovery or copy its existing protected token
+        required: true
+        type: choice
+        options:
+          - recover
+          - sync-maintenance-secret
+        default: recover
+      required_main_sha:
+        description: Exact main commit allowed to copy the protected token
+        required: false
+        type: string
 
 concurrency:
   group: production-generation-recovery
@@ -13,11 +26,55 @@ permissions:
   contents: read
 
 jobs:
-  recover:
-    name: Trigger bounded website-backend recovery
+  sync-maintenance-secret:
+    name: Copy the existing cleanup token into the unattended environment
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'sync-maintenance-secret'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: production
+    steps:
+      - name: Publish the existing token without exposing its value
+        env:
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          GH_TOKEN: ${{ secrets.ONE_TIME_MAINTENANCE_SECRET_PUBLISH_TOKEN }}
+          REQUIRED_MAIN_SHA: ${{ inputs.required_main_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUIRED_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$REQUIRED_MAIN_SHA"
+          test -n "$CLEANUP_CRON_TOKEN"
+          test -n "$GH_TOKEN"
+          printf '%s' "$CLEANUP_CRON_TOKEN" \
+            | gh secret set CLEANUP_CRON_TOKEN \
+                --repo "$GITHUB_REPOSITORY" \
+                --env production-observation
+          UPDATED_AT="$(
+            gh secret list --repo "$GITHUB_REPOSITORY" \
+              --env production-observation --json name,updatedAt \
+              --jq '.[] | select(.name == "CLEANUP_CRON_TOKEN") | .updatedAt'
+          )"
+          test -n "$UPDATED_AT"
+      - name: Remove the one-time GitHub publishing credential
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.ONE_TIME_MAINTENANCE_SECRET_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh secret delete ONE_TIME_MAINTENANCE_SECRET_PUBLISH_TOKEN \
+            --repo "$GITHUB_REPOSITORY" \
+            --env production
+
+  recover:
+    name: Trigger bounded website-backend recovery
+    if: >-
+      github.event_name == 'schedule' ||
+      inputs.operation == 'recover'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-observation
     steps:
       - name: Advance durable generation work
         shell: bash
@@ -28,11 +85,22 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$PRODUCTION_BASE_URL"
-          test -n "$CLEANUP_CRON_TOKEN"
           if [ "$PRODUCTION_BASE_URL" != "$EXPECTED_PRODUCTION_ORIGIN" ]; then
             echo "PRODUCTION_BASE_URL must equal the repository-bound formal origin" >&2
             exit 1
           fi
+          RELEASE_ROLE="$(
+            curl --silent --show-error --fail-with-body \
+              --max-time 30 --max-redirs 0 \
+              "${PRODUCTION_BASE_URL%/}/api/v1/version" \
+              | python -c 'import json,sys; print(json.load(sys.stdin)["release_role"])'
+          )"
+          if [ "$RELEASE_ROLE" = "SAFE_BASELINE" ]; then
+            echo '{"state":"SAFE_BASELINE","recovery":"not_required"}'
+            exit 0
+          fi
+          test "$RELEASE_ROLE" = "COMMERCIAL_7A"
+          test -n "$CLEANUP_CRON_TOKEN"
           RESPONSE_FILE="$RUNNER_TEMP/generation-maintenance.json"
           curl \
             --silent \
