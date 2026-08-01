@@ -549,7 +549,7 @@ jobs:
             --subjects-file "$RUNNER_TEMP/preview-google-subjects.json" \
             --environment preview \
             --deployment-id "$PREVIEW_API_DEPLOYMENT_ID" \
-            --ttl-seconds 3600 \
+            --ttl-seconds 3900 \
             --actor "github-actions:$GITHUB_RUN_ID" \
             --reason "protected Preview identity smoke" \
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
@@ -1186,7 +1186,7 @@ jobs:
             --subjects-file "$RUNNER_TEMP/preview-commercial-google-subjects.json" \
             --environment preview \
             --deployment-id "$COMMERCIAL_API_DEPLOYMENT_ID" \
-            --ttl-seconds 5400 \
+            --ttl-seconds 5700 \
             --actor "github-actions:$GITHUB_RUN_ID" \
             --reason "protected Preview Commercial acceptance" \
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \

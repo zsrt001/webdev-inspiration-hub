@@ -1274,6 +1274,30 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, workflow)
+        identity_provision = workflow[
+            workflow.index("Provision exactly two hash-only acceptance identities") :
+            workflow.index("Enable only bounded GOOGLE_AUTH and AUTHENTICATED_UPLOAD cohorts")
+        ]
+        identity_cohort = workflow[
+            workflow.index("Enable only bounded GOOGLE_AUTH and AUTHENTICATED_UPLOAD cohorts") :
+            workflow.index("Run the real PKCE, private-media isolation, refresh, and logout journey")
+        ]
+        self.assertIn("--ttl-seconds 3900", identity_provision)
+        self.assertIn("--ttl-seconds 3600", identity_cohort)
+
+        commercial_binding = workflow[
+            workflow.index("Bind the exact commercial callback, Supabase callback, identities, and cohorts") :
+            workflow.index("Resolve the primary Provider owner from the consumed Identity binding")
+        ]
+        commercial_provision = commercial_binding[
+            commercial_binding.index("provision_acceptance_identity.py") :
+            commercial_binding.index("configure_preview_commercial_flags.py")
+        ]
+        commercial_cohort = commercial_binding[
+            commercial_binding.index("configure_preview_commercial_flags.py") :
+        ]
+        self.assertIn("--ttl-seconds 5700", commercial_provision)
+        self.assertIn("--ttl-seconds 5400", commercial_cohort)
         self.assertNotIn("PREVIEW_PROVIDER_INPUT_B64", workflow)
         aggregate_position = workflow.index("--profile stage5_foundation")
         self.assertGreater(
