@@ -324,7 +324,10 @@ export async function completeGoogleLogin(page: Page, identityEmail: string): Pr
   await expect(button).toBeVisible();
   await button.click();
   await page.waitForURL(
-    (url) => url.origin === base.origin || url.hostname.endsWith('google.com'),
+    (url) => (
+      url.hostname.endsWith('google.com')
+      || (url.origin === base.origin && !url.pathname.endsWith('/auth/login'))
+    ),
     { timeout: 60_000 },
   );
   if (new URL(page.url()).hostname.endsWith('google.com')) {
