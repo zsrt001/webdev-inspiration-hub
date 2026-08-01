@@ -230,7 +230,7 @@ jobs:
             --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
             --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
             --contract identity_private_media_preview=release/preview-runtime-contract.json \
-            --builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v1" \
+            --builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v2.run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --api-version vowpic-web-identity-private-media.v3 \
             --output "$RUNNER_TEMP/preview-runtime-id.txt"
 
@@ -975,7 +975,7 @@ jobs:
             --flag-contract release/gates.json \
             --activation-plan release/activation-plan.json \
             --database-role-contract release/commercial-7a-database-role-contract.json \
-            --builder-contract-version preview-commercial.v1 \
+            --builder-contract-version "preview-commercial.v2.run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output "$RUNNER_TEMP/commercial-runtime-id.txt"
           echo "COMMERCIAL_RUNTIME_BUNDLE_ID=$(tr -d '\r\n' < "$RUNNER_TEMP/commercial-runtime-id.txt")" >> "$GITHUB_ENV"
 
