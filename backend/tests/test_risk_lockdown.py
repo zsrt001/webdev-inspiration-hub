@@ -82,6 +82,7 @@ class RiskLockdownTest(unittest.TestCase):
         account_source = (frontend / "pages" / "account" / "index.vue").read_text(encoding="utf-8")
         orders_source = (frontend / "pages" / "orders" / "orders.vue").read_text(encoding="utf-8")
         preview_source = (frontend / "pages" / "preview" / "preview.vue").read_text(encoding="utf-8")
+        supabase_source = (frontend / "utils" / "supabase.ts").read_text(encoding="utf-8")
 
         for capability in (
             "google_auth: false",
@@ -119,9 +120,12 @@ class RiskLockdownTest(unittest.TestCase):
         self.assertIn("await opsStore.fetchPublicConfig();", create_source)
 
         for auth_source in (login_source, register_source):
-            self.assertIn('v-if="googleAuthAvailable && supabaseEnabled"', auth_source)
-            self.assertIn("if (!googleAuthAvailable.value) return;", auth_source)
-            self.assertIn("await opsStore.fetchPublicConfig();", auth_source)
+            self.assertIn('v-if="supabaseEnabled"', auth_source)
+            self.assertIn("if (!supabaseEnabled.value) return;", auth_source)
+            self.assertIn("refreshSupabaseConfig(true)", auth_source)
+            self.assertNotIn("opsStore.fetchPublicConfig()", auth_source)
+        self.assertIn("if (!isWebRuntime() || !config?.google_oauth_enabled) return false;", supabase_source)
+        self.assertIn("if (!config.supabase_url || !config.supabase_publishable_key) return false;", supabase_source)
 
         self.assertGreaterEqual(account_source.count('v-if="creationAvailable"'), 2)
         self.assertIn("!accountAuthed && googleAuthAvailable && supabaseEnabled", account_source)
