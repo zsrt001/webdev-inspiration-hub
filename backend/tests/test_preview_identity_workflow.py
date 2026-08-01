@@ -1607,6 +1607,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ]
         stage5 = workflow[workflow.index("  stage5:\n") :]
         self.assertIn("if: inputs.acceptance_scope == 'full'", smoke)
+        self.assertIn("runs-on: [self-hosted, Windows, X64, vowpic-edge]", smoke)
+        self.assertIn("shell: bash", smoke)
+        self.assertIn("PLAYWRIGHT_BROWSER_CHANNEL: msedge", smoke)
+        self.assertNotIn("npm run playwright:install", smoke)
         self.assertIn("inputs.acceptance_scope == 'full'", stage5)
         deploy = register[
             register.index("- name: Build and deploy the exact Vercel Preview output") :
