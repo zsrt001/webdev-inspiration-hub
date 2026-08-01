@@ -39,6 +39,9 @@ async function welcomeSnapshot(page: Page) {
 }
 
 async function completeGoogleLogin(page: Page, email = identityEmail) {
+  if (!/^[^\s"\\]+@[^\s"\\]+$/.test(email)) {
+    throw new Error('GOOGLE_IDENTITY_EMAIL_INVALID');
+  }
   await page.goto('/pages/auth/login');
   const googleButton = page.locator('.google-button');
   try {
@@ -82,18 +85,59 @@ async function completeGoogleLogin(page: Page, email = identityEmail) {
     { timeout: 60_000 },
   );
   if (new URL(page.url()).hostname.endsWith('google.com')) {
-    const account = page.getByText(email, { exact: false }).first();
-    if (await account.isVisible({ timeout: 15_000 }).catch(() => false)) {
+    const escapedEmail = email.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const account = page.locator(`[data-identifier="${escapedEmail}"]`);
+    const accountVisible = await account.waitFor({ state: 'visible', timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (accountVisible) {
+      const accountCount = await account.count();
+      if (accountCount !== 1) {
+        throw new Error('GOOGLE_ACCOUNT_SELECTOR_AMBIGUOUS');
+      }
       await account.click();
     }
-    const continueButton = page.getByRole('button', { name: /continue|allow/i }).last();
-    if (await continueButton.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await continueButton.click();
+    const consentButtons = page.getByRole('button', {
+      name: /^(continue|allow|confirm|继续|允许|同意|确认)$/i,
+    });
+    const consentVisible = await consentButtons.last()
+      .waitFor({ state: 'visible', timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (consentVisible) {
+      const consentButtonCount = await consentButtons.count();
+      for (let index = consentButtonCount - 1; index >= 0; index -= 1) {
+        const candidate = consentButtons.nth(index);
+        if (await candidate.isVisible().catch(() => false)) {
+          await candidate.click();
+          break;
+        }
+      }
     }
   }
-  await page.waitForURL((url) => url.origin === baseURL && !url.pathname.endsWith('/auth/login'), {
-    timeout: 90_000,
-  });
+  try {
+    await page.waitForURL((url) => url.origin === baseURL && !url.pathname.endsWith('/auth/login'), {
+      timeout: 90_000,
+    });
+  } catch (error) {
+    const current = new URL(page.url());
+    const pageState = await page.evaluate(() => ({
+      account_rows: document.querySelectorAll('[data-identifier]').length,
+      email_field: Boolean(document.querySelector('input[type="email"]')),
+      password_field: Boolean(document.querySelector('input[type="password"]')),
+      verification_code_field: Boolean(
+        document.querySelector('input[autocomplete="one-time-code"], input[type="tel"]'),
+      ),
+    }));
+    throw new Error(
+      `GOOGLE_AUTH_RETURN_TIMEOUT: ${JSON.stringify({
+        hostname: current.hostname,
+        pathname: current.pathname,
+        ...pageState,
+      })}`,
+      { cause: error },
+    );
+  }
 }
 
 test('real Google PKCE and private media enforce two-user isolation', async ({ page, browser }) => {

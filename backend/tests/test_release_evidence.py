@@ -162,6 +162,15 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         self.assertNotIn("route.fulfill", self.preview_test)
         self.assertNotIn("mock", self.preview_test.lower())
 
+    def test_preview_google_login_uses_exact_account_identity_and_safe_failure_evidence(self) -> None:
+        self.assertIn('[data-identifier="${escapedEmail}"]', self.preview_test)
+        self.assertIn("GOOGLE_ACCOUNT_SELECTOR_AMBIGUOUS", self.preview_test)
+        self.assertIn("GOOGLE_AUTH_RETURN_TIMEOUT", self.preview_test)
+        self.assertIn("password_field", self.preview_test)
+        self.assertIn("verification_code_field", self.preview_test)
+        self.assertIn("继续|允许|同意|确认", self.preview_test)
+        self.assertNotIn("page.getByText(email, { exact: false }).first()", self.preview_test)
+
     def test_preview_emits_only_real_pass_cases_for_the_full_release_scope(self) -> None:
         for case_id in (
             "preview_google_session",
