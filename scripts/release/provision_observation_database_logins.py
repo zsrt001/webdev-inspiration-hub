@@ -46,6 +46,20 @@ OBSERVATION_GITHUB_SECRETS = {
     "OBSERVATION_READ_DATABASE_URL": OBSERVATION_READER_LOGIN,
     "OBSERVATION_WRITE_DATABASE_URL": OBSERVATION_WRITER_LOGIN,
 }
+OBSERVATION_SCHEMA = "20260710_0020"
+
+
+def _require_observation_schema(cursor: RealDictCursor) -> str:
+    cursor.execute("SELECT version_num FROM public.alembic_version")
+    row = cursor.fetchone() or {}
+    schema_revision = str(row.get("version_num") or "")
+    if schema_revision != OBSERVATION_SCHEMA:
+        raise ValueError(
+            "observation database login provisioning requires schema "
+            f"{OBSERVATION_SCHEMA}; current schema is "
+            f"{schema_revision or 'missing'}"
+        )
+    return schema_revision
 
 
 def _resolve_cli(value: str) -> str:
@@ -191,6 +205,7 @@ def provision_observation_database_logins(
                 raise ValueError(
                     "observation provisioning requires an independent authority"
                 )
+            schema_revision = _require_observation_schema(cursor)
             _validate_group(cursor, OBSERVATION_READER_GROUP)
             _validate_group(cursor, OBSERVATION_WRITER_GROUP)
             cursor.execute(
@@ -262,6 +277,7 @@ def provision_observation_database_logins(
     )
     proof = {
         "database": authority["current_database"],
+        "schema_revision": schema_revision,
         "credential_rotation": credential_rotation,
         "roles": prove_observation_logins_after_pooler_propagation(
             reader_url,
@@ -321,6 +337,7 @@ def main() -> int:
             "schema": "vowpic.observation-database-logins.v1",
             "state": "PROVISIONED",
             "database": proof["database"],
+            "schema_revision": proof["schema_revision"],
             "credential_rotation": proof["credential_rotation"],
             "roles": proof["roles"],
             "github": github,

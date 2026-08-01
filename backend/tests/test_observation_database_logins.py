@@ -83,6 +83,29 @@ def _observation_facts(
 
 
 class ObservationDatabaseRoleContractTest(unittest.TestCase):
+    def test_provisioning_requires_schema_0020_before_rotation(self) -> None:
+        cursor = mock.Mock()
+        cursor.fetchone.return_value = {"version_num": "20260712_0014"}
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires schema 20260710_0020; current schema is 20260712_0014",
+        ):
+            provision._require_observation_schema(cursor)
+
+        cursor.execute.assert_called_once_with(
+            "SELECT version_num FROM public.alembic_version"
+        )
+
+    def test_provisioning_accepts_schema_0020(self) -> None:
+        cursor = mock.Mock()
+        cursor.fetchone.return_value = {"version_num": "20260710_0020"}
+
+        self.assertEqual(
+            provision._require_observation_schema(cursor),
+            "20260710_0020",
+        )
+
     def test_additive_bootstrap_never_rotates_existing_production_credentials(self) -> None:
         source = OBSERVATION_BOOTSTRAP_SQL.read_text(encoding="utf-8")
         for required in (
