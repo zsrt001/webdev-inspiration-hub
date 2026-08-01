@@ -1,0 +1,76 @@
+name: Protected one-time Supabase management token promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      required_main_sha:
+        description: Exact main commit allowed to promote the existing token
+        required: true
+        type: string
+      required_production_project_ref:
+        description: Exact Production Supabase project to verify before promotion
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vowpic-supabase-management-token-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Verify Production access and publish the existing token
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: preview-commercial
+    steps:
+      - name: Verify exact main and read Production Auth configuration
+        env:
+          GH_TOKEN: ${{ secrets.ONE_TIME_SUPABASE_SECRET_PUBLISH_TOKEN }}
+          REQUIRED_MAIN_SHA: ${{ inputs.required_main_sha }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ inputs.required_production_project_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUIRED_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SUPABASE_PROJECT_REF" =~ ^[a-z0-9]{10,40}$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$REQUIRED_MAIN_SHA"
+          test -n "$SUPABASE_MANAGEMENT_TOKEN"
+          test -n "$GH_TOKEN"
+          curl --silent --show-error --fail-with-body \
+            --max-time 30 --max-redirs 0 \
+            --output "$RUNNER_TEMP/production-auth-config.json" \
+            --header "Authorization: Bearer ${SUPABASE_MANAGEMENT_TOKEN}" \
+            --header "Accept: application/json" \
+            "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/config/auth"
+          python - "$RUNNER_TEMP/production-auth-config.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if not isinstance(payload, dict) or not payload:
+              raise SystemExit("Production Supabase Auth configuration is invalid")
+          PY
+          printf '%s' "$SUPABASE_MANAGEMENT_TOKEN" \
+            | gh secret set SUPABASE_AUTH_CONFIG_TOKEN \
+                --repo "$GITHUB_REPOSITORY" \
+                --env production
+          UPDATED_AT="$(
+            gh secret list --repo "$GITHUB_REPOSITORY" \
+              --env production --json name,updatedAt \
+              --jq '.[] | select(.name == "SUPABASE_AUTH_CONFIG_TOKEN") | .updatedAt'
+          )"
+          test -n "$UPDATED_AT"
+      - name: Remove the one-time GitHub publishing credential
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.ONE_TIME_SUPABASE_SECRET_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh secret delete ONE_TIME_SUPABASE_SECRET_PUBLISH_TOKEN \
+            --repo "$GITHUB_REPOSITORY" \
+            --env preview-commercial
