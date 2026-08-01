@@ -68,6 +68,20 @@ class BackendEvolinkRuntimeContractTest(unittest.TestCase):
             'if [ "$PRODUCTION_BASE_URL" != "$EXPECTED_PRODUCTION_ORIGIN" ]',
             recovery,
         )
+        self.assertIn("environment: production-observation", recovery)
+        self.assertIn('if [ "$RELEASE_ROLE" = "SAFE_BASELINE" ]', recovery)
+        self.assertIn('test "$RELEASE_ROLE" = "COMMERCIAL_7A"', recovery)
+        self.assertIn("sync-maintenance-secret", recovery)
+        self.assertIn(
+            "secrets.ONE_TIME_MAINTENANCE_SECRET_PUBLISH_TOKEN",
+            recovery,
+        )
+        self.assertIn("--env production-observation", recovery)
+        self.assertIn(
+            "gh secret delete ONE_TIME_MAINTENANCE_SECRET_PUBLISH_TOKEN",
+            recovery,
+        )
+        self.assertIn('test "$GITHUB_SHA" = "$REQUIRED_MAIN_SHA"', recovery)
         self.assertIn("--max-redirs 0", recovery)
         self.assertIn('"human_required"', recovery)
         self.assertNotIn("Evolink", recovery)
