@@ -33,7 +33,10 @@ async function completeGoogleLogin(page: Page) {
   await expect(page.locator('.google-button')).toBeVisible();
   await page.locator('.google-button').click();
   await page.waitForURL(
-    (url) => url.origin === baseURL || url.hostname.endsWith('google.com'),
+    (url) => (
+      url.hostname.endsWith('google.com')
+      || (url.origin === baseURL && !url.pathname.endsWith('/auth/login'))
+    ),
     { timeout: 60_000 },
   );
   if (new URL(page.url()).hostname.endsWith('google.com')) {

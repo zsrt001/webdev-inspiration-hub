@@ -75,7 +75,10 @@ async function completeGoogleLogin(page: Page, email = identityEmail) {
   }
   await googleButton.click();
   await page.waitForURL(
-    (url) => url.origin === baseURL || url.hostname.endsWith('google.com'),
+    (url) => (
+      url.hostname.endsWith('google.com')
+      || (url.origin === baseURL && !url.pathname.endsWith('/auth/login'))
+    ),
     { timeout: 60_000 },
   );
   if (new URL(page.url()).hostname.endsWith('google.com')) {
