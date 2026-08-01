@@ -103,7 +103,15 @@ async def public_config(db: AsyncSession = Depends(get_db)):
     capability_states: dict[str, bool] = {}
     for capability in Capability:
         decision = await resolve_request_capability(db, capability)
-        capability_states[capability.value] = decision.allowed
+        capability_states[capability.value] = bool(
+            decision.allowed
+            or (
+                # The verified subject is only available after OAuth; the exchange
+                # endpoint still enforces the exact acceptance binding.
+                capability is Capability.GOOGLE_AUTH
+                and decision.reason == "cohort_identity_missing"
+            )
+        )
     config["capabilities"] = capability_states
     auth = config.get("auth") if isinstance(config.get("auth"), dict) else {}
     auth["google_oauth_enabled"] = bool(

@@ -9,7 +9,7 @@
     "backend/app/main.py": "b87575d8a787ecdb7c41a854d2ca487ed0726643e94832409dd8b1d32bc38d7b",
     "backend/app/models/generation_job.py": "7fb595b3b8b01811af3bc84429f6147623fc730713aed7b3daeaa23375485bcf",
     "backend/app/routers/admin.py": "774c11578f7b02db6a739a74ea957b5524648e267bdbaaa23bdf4d5d05c347c2",
-    "backend/app/routers/ops.py": "db064f955e76c7aced48c8cec6234c353922a77155bb21f59f3ab5ce3af3d99e",
+    "backend/app/routers/ops.py": "c3f65b03808f87331e8319545996d16066bfed96b453704ca870613f0bbe9ff7",
     "backend/app/routers/ops_admin.py": "e7a56d8102e59a2c5d947b69c2496fcda005f5cb82eb1fce668834b6d698b14a",
     "backend/app/routers/orders.py": "3a4f6ad5b9ec9a77c47f9df6842e87d25d647bc877db6fd8e73197d442f41912",
     "backend/app/routers/provider_callbacks.py": "970a6d980c3bbcd075bc3d7ef1d44419a2a40704f81e564553a0c90eb9ef2386",

@@ -176,6 +176,53 @@ class FeatureFlagRouteSourceTest(unittest.TestCase):
 
 
 class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_public_config_exposes_google_entry_before_acceptance_identity_is_known(self) -> None:
+        ops = importlib.import_module("app.routers.ops")
+        database = AsyncMock()
+
+        def decision_for(_database, capability):
+            if capability is ops.Capability.GOOGLE_AUTH:
+                return SimpleNamespace(allowed=False, reason="cohort_identity_missing")
+            return SimpleNamespace(allowed=False, reason="disabled")
+
+        with (
+            patch.object(
+                ops,
+                "resolve_request_capability",
+                new=AsyncMock(side_effect=decision_for),
+            ),
+            patch.multiple(
+                ops.settings,
+                supabase_url="https://example.supabase.co",
+                supabase_anon_key="anon-key",
+            ),
+        ):
+            config = await ops.public_config(database)
+
+        self.assertTrue(config["capabilities"]["google_auth"])
+        self.assertTrue(config["auth"]["google_oauth_enabled"])
+        self.assertFalse(config["capabilities"]["authenticated_upload"])
+
+    async def test_public_config_keeps_globally_disabled_google_entry_hidden(self) -> None:
+        ops = importlib.import_module("app.routers.ops")
+        disabled = SimpleNamespace(allowed=False, reason="disabled")
+        with (
+            patch.object(
+                ops,
+                "resolve_request_capability",
+                new=AsyncMock(return_value=disabled),
+            ),
+            patch.multiple(
+                ops.settings,
+                supabase_url="https://example.supabase.co",
+                supabase_anon_key="anon-key",
+            ),
+        ):
+            config = await ops.public_config(AsyncMock())
+
+        self.assertFalse(config["capabilities"]["google_auth"])
+        self.assertFalse(config["auth"]["google_oauth_enabled"])
+
     async def test_google_exchange_fails_closed_before_identity_schema_access(self) -> None:
         google = importlib.import_module("app.routers.auth.google")
         payload = importlib.import_module("app.schemas.auth").SupabaseSessionRequest(
