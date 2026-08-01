@@ -19,7 +19,7 @@
           <text v-if="error" class="error-text">{{ error }}</text>
 
           <button
-            v-if="googleAuthAvailable && supabaseEnabled"
+            v-if="supabaseEnabled"
             class="btn btn-primary auth-button google-button"
             :disabled="submitting"
             @tap="googleSignIn"
@@ -50,23 +50,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useI18nStore } from '../../stores/i18n';
-import { useOpsStore } from '../../stores/ops';
 import { signInWithGoogle } from '../../utils/auth';
 import { refreshSupabaseConfig } from '../../utils/supabase';
 
 const i18nStore = useI18nStore();
-const opsStore = useOpsStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
-const googleAuthAvailable = computed(() => opsStore.googleAuthAvailable);
 
 const supabaseEnabled = ref(false);
 const submitting = ref(false);
 const error = ref('');
 
 async function googleSignIn() {
-  if (!googleAuthAvailable.value) return;
+  if (!supabaseEnabled.value) return;
   if (submitting.value) return;
   submitting.value = true;
   error.value = '';
@@ -87,11 +84,6 @@ function goHome() {
 }
 
 onMounted(async () => {
-  await opsStore.fetchPublicConfig();
-  if (!googleAuthAvailable.value) {
-    error.value = tr('当前部署暂未开放登录。', 'Sign-in is temporarily unavailable on this deployment.');
-    return;
-  }
   supabaseEnabled.value = await refreshSupabaseConfig(true);
   if (!supabaseEnabled.value) {
     error.value = tr('Google sign-in is not configured on this deployment.', 'Google sign-in is not configured on this deployment.');

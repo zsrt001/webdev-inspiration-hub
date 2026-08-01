@@ -38,13 +38,13 @@ export async function refreshSupabaseConfig(force = false): Promise<boolean> {
     if (!force && authConfig) return isUsableConfig(authConfig);
     if (!force && configRequest) return configRequest;
 
-    configRequest = uni.request({
-        url: `${API_BASE_URL}/ops/public_config`,
+    configRequest = fetch(`${API_BASE_URL}/ops/public_config`, {
         method: 'GET',
-        withCredentials: true,
-    }).then((response) => {
-        authConfig = response.statusCode >= 200 && response.statusCode < 300
-            ? normalizedAuthConfig(response.data)
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+    }).then(async (response) => {
+        authConfig = response.ok
+            ? normalizedAuthConfig(await response.json())
             : null;
         if (!isUsableConfig(authConfig)) client = null;
         return isUsableConfig(authConfig);
