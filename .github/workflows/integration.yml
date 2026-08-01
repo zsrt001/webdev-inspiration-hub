@@ -436,9 +436,12 @@ jobs:
     name: Resolve fresh coordinates and run real Google session smoke
     if: inputs.acceptance_scope == 'full'
     needs: register
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Windows, X64, vowpic-edge]
     timeout-minutes: 30
     environment: preview-identity
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -491,7 +494,6 @@ jobs:
           python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
           python -m pip check
           npm ci --prefix frontend --ignore-scripts
-          npm run playwright:install --prefix frontend
 
       - name: Resolve only service-owned PREVIEW_IDENTITY coordinates
         env:
@@ -596,6 +598,7 @@ jobs:
           PREVIEW_SECOND_GOOGLE_STORAGE_STATE_PATH: ${{ runner.temp }}/second-google-storage-state.json
           PREVIEW_PRIVATE_MEDIA_REPORT_PATH: ${{ github.workspace }}/artifacts/preview-identity/private-media-report.json
           PREVIEW_FAILURE_BOUNDARY: ${{ inputs.failure_boundary }}
+          PLAYWRIGHT_BROWSER_CHANNEL: msedge
         run: |
           export PREVIEW_BASE_URL="$PREVIEW_API_DEPLOYMENT_URL"
           mkdir -p "$GITHUB_WORKSPACE/artifacts/preview-identity"
