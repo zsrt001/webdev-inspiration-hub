@@ -40,8 +40,40 @@ async function welcomeSnapshot(page: Page) {
 
 async function completeGoogleLogin(page: Page, email = identityEmail) {
   await page.goto('/pages/auth/login');
-  await expect(page.locator('button.google-button')).toBeVisible();
-  await page.locator('button.google-button').click();
+  const googleButton = page.locator('button.google-button');
+  try {
+    await expect(googleButton).toBeVisible({ timeout: 30_000 });
+  } catch (error) {
+    const availability = await page.evaluate(async () => {
+      try {
+        const response = await fetch('/api/v1/ops/public_config', {
+          credentials: 'include',
+          signal: AbortSignal.timeout(15_000),
+        });
+        const payload = await response.json().catch(() => ({}));
+        return {
+          status: response.status,
+          google_auth: payload?.capabilities?.google_auth === true,
+          google_oauth_enabled: payload?.auth?.google_oauth_enabled === true,
+          supabase_url_present: Boolean(payload?.auth?.supabase_url),
+          publishable_key_present: Boolean(payload?.auth?.supabase_publishable_key),
+          page_path: window.location.pathname,
+        };
+      } catch (requestError) {
+        return {
+          request_error: requestError instanceof Error
+            ? requestError.name
+            : 'UnknownError',
+          page_path: window.location.pathname,
+        };
+      }
+    });
+    throw new Error(
+      `GOOGLE_ENTRY_UNAVAILABLE: ${JSON.stringify(availability)}`,
+      { cause: error },
+    );
+  }
+  await googleButton.click();
   await page.waitForURL(
     (url) => url.origin === baseURL || url.hostname.endsWith('google.com'),
     { timeout: 60_000 },

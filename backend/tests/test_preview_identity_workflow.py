@@ -1371,6 +1371,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             'test -n "$PREVIEW_CONTROL_PLANE_DATABASE_URL"',
             'test -n "$PREVIEW_CONTROL_READ_DATABASE_URL"',
             "verify_preview_database_isolation.py",
+            "verify_preview_runtime_authority.py",
             "PRODUCTION_SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}",
         ):
             with self.subTest(required=required):
@@ -1417,6 +1418,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                     "SUPABASE_ANON_KEY=$PREVIEW_SUPABASE_PUBLISHABLE_KEY",
                     runtime_block,
                 )
+                self.assertIn(
+                    "SUPABASE_POOLER_REGION=$PREVIEW_SUPABASE_POOLER_REGION",
+                    runtime_block,
+                )
                 self.assertNotIn("DATABASE_URL=$PREVIEW_MIGRATION_DATABASE_URL", runtime_block)
         self.assertEqual(
             workflow.count("backend/scripts/resolve_preview_supabase_runtime.py"),
@@ -1440,9 +1445,13 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         guard_repair = workflow.index(
             "Repair and verify the exact schema-0020 cross-table commercial guards"
         )
+        runtime_authority = workflow.index(
+            "Prove the Vercel runtime can read Preview feature-flag authority"
+        )
         runtime_id = workflow.index("Compute the PREVIEW_IDENTITY runtime ID")
         self.assertLess(schema_upgrade, guard_repair)
-        self.assertLess(guard_repair, runtime_id)
+        self.assertLess(guard_repair, runtime_authority)
+        self.assertLess(runtime_authority, runtime_id)
         self.assertIn(
             "python scripts/release/repair_commercial_guard_row_shapes.py",
             workflow,

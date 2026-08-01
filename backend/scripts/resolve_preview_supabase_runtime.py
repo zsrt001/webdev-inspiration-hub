@@ -17,6 +17,7 @@ import httpx
 MANAGEMENT_API = "https://api.supabase.com"
 REPORT_SCHEMA = "vowpic.preview-supabase-runtime.v1"
 PROJECT_REF_RE = re.compile(r"[a-z0-9]{10,40}")
+REGION_RE = re.compile(r"[a-z]{2}-[a-z]+-[1-9][0-9]*")
 
 
 def validate_project_ref(value: object) -> str:
@@ -31,6 +32,44 @@ def _validate_public_key(value: object) -> str:
     if len(clean) < 20 or any(char.isspace() for char in clean):
         raise ValueError("Supabase public API key is absent or malformed")
     return clean
+
+
+def validate_region(value: object) -> str:
+    clean = str(value or "").strip().lower()
+    if not REGION_RE.fullmatch(clean):
+        raise ValueError("Supabase project region is absent or malformed")
+    return clean
+
+
+def read_project_region(
+    project_ref: str,
+    *,
+    token: str,
+    client: httpx.Client,
+) -> str:
+    clean_ref = validate_project_ref(project_ref)
+    clean_token = token.strip()
+    if not clean_token:
+        raise ValueError("Supabase Management API token is required")
+    response = client.get(
+        f"{MANAGEMENT_API}/v1/projects/{clean_ref}",
+        headers={
+            "Authorization": f"Bearer {clean_token}",
+            "Accept": "application/json",
+            "User-Agent": "vowpic-preview-supabase-runtime/1",
+        },
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            f"Supabase project read failed with HTTP {response.status_code}"
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("Supabase project read returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Supabase project read returned an invalid record")
+    return validate_region(payload.get("region"))
 
 
 def select_public_key(payload: object) -> dict[str, str]:
@@ -102,6 +141,8 @@ def build_report(
     project_ref: str,
     supabase_url: str,
     public_key: dict[str, str],
+    *,
+    pooler_region: str,
 ) -> dict[str, str]:
     clean_ref = validate_project_ref(project_ref)
     expected_url = f"https://{clean_ref}.supabase.co"
@@ -111,6 +152,7 @@ def build_report(
     return {
         "schema": REPORT_SCHEMA,
         "project_ref": clean_ref,
+        "pooler_region": validate_region(pooler_region),
         "supabase_url": expected_url,
         "public_key_id": str(public_key.get("id") or ""),
         "public_key_name": str(public_key.get("name") or ""),
@@ -120,13 +162,21 @@ def build_report(
     }
 
 
-def write_job_env(path: Path, *, supabase_url: str, api_key: str) -> None:
+def write_job_env(
+    path: Path,
+    *,
+    supabase_url: str,
+    api_key: str,
+    pooler_region: str,
+) -> None:
     clean_key = _validate_public_key(api_key)
+    clean_region = validate_region(pooler_region)
     if "\n" in supabase_url or "\r" in supabase_url:
         raise ValueError("Supabase runtime URL contains a line break")
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(f"PREVIEW_SUPABASE_URL={supabase_url}\n")
         handle.write(f"PREVIEW_SUPABASE_PUBLISHABLE_KEY={clean_key}\n")
+        handle.write(f"PREVIEW_SUPABASE_POOLER_REGION={clean_region}\n")
 
 
 def main() -> int:
@@ -139,12 +189,22 @@ def main() -> int:
 
     token = os.environ.get(args.token_env, "")
     with httpx.Client(timeout=30.0) as client:
+        pooler_region = read_project_region(
+            args.project_ref,
+            token=token,
+            client=client,
+        )
         supabase_url, public_key = read_public_runtime(
             args.project_ref,
             token=token,
             client=client,
         )
-    report = build_report(args.project_ref, supabase_url, public_key)
+    report = build_report(
+        args.project_ref,
+        supabase_url,
+        public_key,
+        pooler_region=pooler_region,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, sort_keys=True, indent=2) + "\n",
@@ -153,7 +213,12 @@ def main() -> int:
     api_key = public_key["api_key"]
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::add-mask::{api_key}")
-    write_job_env(args.job_env, supabase_url=supabase_url, api_key=api_key)
+    write_job_env(
+        args.job_env,
+        supabase_url=supabase_url,
+        api_key=api_key,
+        pooler_region=pooler_region,
+    )
     return 0
 
 

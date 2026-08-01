@@ -61,10 +61,36 @@ class PreviewSupabaseRuntimeTests(unittest.TestCase):
             "zyrxfcdqszfmkkkicgqq",
             "https://zyrxfcdqszfmkkkicgqq.supabase.co",
             selected,
+            pooler_region="eu-west-2",
         )
         self.assertNotIn(public_key, json.dumps(report))
         self.assertEqual(report["public_key_type"], "publishable")
         self.assertRegex(report["public_key_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(report["pooler_region"], "eu-west-2")
+
+    def test_project_region_is_read_from_the_exact_management_record(self) -> None:
+        seen: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["method"] = request.method
+            seen["url"] = str(request.url)
+            seen["authorization"] = request.headers.get("authorization")
+            return httpx.Response(200, json={"region": "eu-west-2"})
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            region = self.module.read_project_region(
+                "zyrxfcdqszfmkkkicgqq",
+                token="management-token",
+                client=client,
+            )
+
+        self.assertEqual(region, "eu-west-2")
+        self.assertEqual(seen["method"], "GET")
+        self.assertEqual(
+            seen["url"],
+            "https://api.supabase.com/v1/projects/zyrxfcdqszfmkkkicgqq",
+        )
+        self.assertEqual(seen["authorization"], "Bearer management-token")
 
     def test_legacy_anon_is_the_only_allowed_fallback(self) -> None:
         anon = "eyJ" + ("d" * 80)
@@ -159,12 +185,14 @@ class PreviewSupabaseRuntimeTests(unittest.TestCase):
                 path,
                 supabase_url="https://zyrxfcdqszfmkkkicgqq.supabase.co",
                 api_key=public_key,
+                pooler_region="eu-west-2",
             )
             value = path.read_text(encoding="utf-8")
         self.assertEqual(
             value,
             "PREVIEW_SUPABASE_URL=https://zyrxfcdqszfmkkkicgqq.supabase.co\n"
-            f"PREVIEW_SUPABASE_PUBLISHABLE_KEY={public_key}\n",
+            f"PREVIEW_SUPABASE_PUBLISHABLE_KEY={public_key}\n"
+            "PREVIEW_SUPABASE_POOLER_REGION=eu-west-2\n",
         )
         self.assertNotIn("service_role", value)
         self.assertNotIn("sb_secret_", value)
