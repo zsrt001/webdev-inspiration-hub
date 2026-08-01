@@ -79,6 +79,15 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "tool_version": "vowpic-release-tools.v1",
         }
         preview_id = module.compute_runtime_bundle_id("PREVIEW_IDENTITY", payload)
+        runtime_only_id = module.compute_runtime_bundle_id(
+            "PREVIEW_IDENTITY",
+            {**payload, "builder_contract_version": "preview-identity.runtime_only.v1"},
+        )
+        full_id = module.compute_runtime_bundle_id(
+            "PREVIEW_IDENTITY",
+            {**payload, "builder_contract_version": "preview-identity.full.v1"},
+        )
+        self.assertNotEqual(runtime_only_id, full_id)
         self.assertNotEqual(
             preview_id,
             module.compute_runtime_bundle_id("SAFE_BASELINE", {
@@ -133,6 +142,10 @@ class RuntimeBundleIdTest(unittest.TestCase):
         )
         self.assertIn(
             "--api-version vowpic-web-identity-private-media.v3",
+            runtime_step,
+        )
+        self.assertIn(
+            '--builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v1"',
             runtime_step,
         )
         preview_contract = json.loads(
