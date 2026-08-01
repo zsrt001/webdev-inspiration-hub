@@ -1046,8 +1046,16 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             'test -n "$OBSERVATION_READ_DATABASE_URL"',
             observation_source,
         )
-        self.assertNotIn(
+        self.assertIn(
             'if test -z "$OBSERVATION_READ_DATABASE_URL"',
+            observation_source,
+        )
+        self.assertIn(
+            'test "$RELEASE_ROLE" = "SAFE_BASELINE"',
+            observation_source,
+        )
+        self.assertIn(
+            '${PRODUCTION_BASE_URL%/}/api/v1/version',
             observation_source,
         )
         self.assertIn("environment: production-observation", observation_source)

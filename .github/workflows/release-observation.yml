@@ -45,9 +45,22 @@ jobs:
         id: resolve
         env:
           OBSERVATION_READ_DATABASE_URL: ${{ secrets.OBSERVATION_READ_DATABASE_URL }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           REQUESTED_OBSERVATION_RUN_ID: ${{ inputs.observation_run_id }}
         run: |
           set -euo pipefail
+          if test -z "$OBSERVATION_READ_DATABASE_URL"; then
+            test "$PRODUCTION_BASE_URL" = "https://www.vowpic.com"
+            RELEASE_ROLE="$(
+              curl --silent --show-error --fail-with-body \
+                --max-time 30 --max-redirs 0 \
+                "${PRODUCTION_BASE_URL%/}/api/v1/version" \
+                | jq -er '.release_role'
+            )"
+            test "$RELEASE_ROLE" = "SAFE_BASELINE"
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           test -n "$OBSERVATION_READ_DATABASE_URL"
           RESULT="$(
             psql "$OBSERVATION_READ_DATABASE_URL" -X -v ON_ERROR_STOP=1 -At \
