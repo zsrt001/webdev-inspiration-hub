@@ -87,7 +87,16 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "PREVIEW_IDENTITY",
             {**payload, "builder_contract_version": "preview-identity.full.v1"},
         )
+        first_run_id = module.compute_runtime_bundle_id(
+            "PREVIEW_IDENTITY",
+            {**payload, "builder_contract_version": "preview-identity.full.v2.run-123-1"},
+        )
+        second_run_id = module.compute_runtime_bundle_id(
+            "PREVIEW_IDENTITY",
+            {**payload, "builder_contract_version": "preview-identity.full.v2.run-124-1"},
+        )
         self.assertNotEqual(runtime_only_id, full_id)
+        self.assertNotEqual(first_run_id, second_run_id)
         self.assertNotEqual(
             preview_id,
             module.compute_runtime_bundle_id("SAFE_BASELINE", {
@@ -145,7 +154,8 @@ class RuntimeBundleIdTest(unittest.TestCase):
             runtime_step,
         )
         self.assertIn(
-            '--builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v1"',
+            '--builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v2.run-'
+            '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
             runtime_step,
         )
         preview_contract = json.loads(

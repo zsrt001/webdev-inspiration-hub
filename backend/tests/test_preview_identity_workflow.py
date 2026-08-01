@@ -1230,7 +1230,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "verify_github_ref.py",
             "build_runtime_bundle_id.py",
             "--release-role PREVIEW_IDENTITY",
-            '--builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v1"',
+            '--builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v2.run-'
+            '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
             "register_preview_activation.py reserve",
             "register_preview_activation.py deployed",
             "register_preview_activation.py complete",
@@ -1252,6 +1253,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "commercial:",
             "environment: preview-commercial",
             "--release-role PREVIEW_COMMERCIAL",
+            '--builder-contract-version "preview-commercial.v2.run-'
+            '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
             "snapshot_preview_commercial_flags.py",
             "TASK_EXECUTION_MODE=backend",
             "collect_runtime_report.py",
