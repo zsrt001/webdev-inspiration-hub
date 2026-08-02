@@ -1629,6 +1629,17 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertIn('rm -rf "$RUNNER_TEMP/vowpic-python"', smoke)
         self.assertIn("PLAYWRIGHT_BROWSER_CHANNEL: msedge", smoke)
         self.assertNotIn("npm run playwright:install", smoke)
+        self.assertIn("connected_edge_consent:", workflow)
+        self.assertIn("default: false", workflow)
+        self.assertIn(
+            "Hold the exact Preview for connected Microsoft Edge consent",
+            smoke,
+        )
+        self.assertIn("if: inputs.connected_edge_consent", smoke)
+        self.assertIn("vowpic.connected-edge-consent.v1", smoke)
+        self.assertIn("for _ in $(seq 1 180)", smoke)
+        self.assertIn("CONNECTED_EDGE_CONSENT_TIMEOUT", smoke)
+        self.assertIn('rm -f "$RUNNER_TEMP"/vowpic-connected-edge-*.ready', smoke)
         smoke_lock = (
             ROOT
             / "scripts/release/preview_identity_smoke.requirements.windows.lock.txt"
