@@ -1615,14 +1615,29 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
         self.assertNotIn("actions/setup-python", smoke)
         self.assertIn(
-            "Create an isolated Python 3.11 runtime from the preinstalled interpreter",
+            "Create an isolated Python 3.13 runtime from the preinstalled interpreter",
             smoke,
         )
-        self.assertIn('py -3.11 -m venv "$RUNNER_TEMP/vowpic-python"', smoke)
+        self.assertIn('py -3.13 -m venv "$RUNNER_TEMP/vowpic-python"', smoke)
         self.assertIn('"$VOWPIC_PYTHON" -m pip --version', smoke)
+        self.assertIn(
+            "--require-hashes -r "
+            "scripts/release/preview_identity_smoke.requirements.windows.lock.txt",
+            smoke,
+        )
+        self.assertNotIn("-r backend/requirements.lock.txt", smoke)
         self.assertIn('rm -rf "$RUNNER_TEMP/vowpic-python"', smoke)
         self.assertIn("PLAYWRIGHT_BROWSER_CHANNEL: msedge", smoke)
         self.assertNotIn("npm run playwright:install", smoke)
+        smoke_lock = (
+            ROOT
+            / "scripts/release/preview_identity_smoke.requirements.windows.lock.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("pip-compile with Python 3.13", smoke_lock)
+        for package in ("asyncpg", "fastapi", "httpx", "redis", "sqlalchemy", "vercel"):
+            self.assertRegex(smoke_lock, rf"(?m)^{package}==[^\s]+ \\")
+        for unrelated in ("insightface", "onnxruntime", "opencv-python-headless"):
+            self.assertNotIn(unrelated, smoke_lock)
         self.assertIn("inputs.acceptance_scope == 'full'", stage5)
         deploy = register[
             register.index("- name: Build and deploy the exact Vercel Preview output") :

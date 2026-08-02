@@ -137,6 +137,50 @@ jobs:
           & "$venv\Scripts\python.exe" -m pip check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.9"
+          cache: pip
+          cache-dependency-path: requirements-resolver.windows.txt
+      - name: Resolve the Windows Preview identity smoke lock twice
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = python -c "import platform; print(platform.python_version())"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($version.Trim() -ne "3.13.9") { throw "Expected Python 3.13.9, got $version" }
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements-resolver.windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CUSTOM_COMPILE_COMMAND = 'python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --output-file=scripts/release/preview_identity_smoke.requirements.windows.lock.txt scripts/release/preview_identity_smoke.requirements.in'
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=scripts/release/preview_identity_smoke.requirements.windows.lock.txt scripts/release/preview_identity_smoke.requirements.in --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $first = (Get-FileHash -Algorithm SHA256 scripts/release/preview_identity_smoke.requirements.windows.lock.txt).Hash
+          python -m piptools compile --generate-hashes --resolver=backtracking --strip-extras --newline=lf --index-url=https://pypi.org/simple --no-emit-index-url --output-file=scripts/release/preview_identity_smoke.requirements.windows.lock.txt scripts/release/preview_identity_smoke.requirements.in --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $second = (Get-FileHash -Algorithm SHA256 scripts/release/preview_identity_smoke.requirements.windows.lock.txt).Hash
+          if ($first -ne $second) { throw "Windows Preview identity smoke lock is not byte-identical" }
+          git diff --exit-code -- scripts/release/preview_identity_smoke.requirements.windows.lock.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prove the Windows Preview identity smoke lock and release imports
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP "vowpic-preview-identity-lock"
+          python -m venv $venv
+          $python = Join-Path $venv "Scripts\python.exe"
+          & $python -m pip install --disable-pip-version-check --timeout 120 --retries 3 --require-hashes -r scripts/release/preview_identity_smoke.requirements.windows.lock.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($script in @(
+            "scripts/release/resolve_release_coordinates.py",
+            "scripts/release/configure_preview_auth_origin.py",
+            "scripts/release/provision_acceptance_identity.py",
+            "scripts/release/configure_preview_identity_flag.py"
+          )) {
+            & $python $script --help *> $null
+            if ($LASTEXITCODE -ne 0) { throw "Release script startup failed: $script" }
+          }
+
   backend-test:
     runs-on: ubuntu-24.04
     services:
