@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { rewritePreauthenticatedGoogleOAuthUrl } from '../../e2e/helpers/google-oauth-acceptance';
+import {
+  rewritePreauthenticatedSupabaseGoogleOAuthUrl,
+} from '../../e2e/helpers/google-oauth-acceptance';
 
 function providerUrl(overrides: Record<string, string> = {}): string {
-  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  const url = new URL('https://project-ref.supabase.co/auth/v1/authorize');
   const parameters = {
-    client_id: 'client.apps.googleusercontent.com',
-    redirect_uri: 'https://project.supabase.co/auth/v1/callback',
-    response_type: 'code',
-    scope: 'openid email profile',
-    state: 'opaque-state',
+    provider: 'google',
+    redirect_to: 'https://preview.example.com/pages/auth/callback',
+    code_challenge: 'a'.repeat(43),
+    code_challenge_method: 's256',
     prompt: 'select_account',
     ...overrides,
   };
@@ -21,26 +22,42 @@ describe('protected Google OAuth acceptance navigation', () => {
   it('uses a silent exact-identity redirect without changing the PKCE request binding', () => {
     const original = new URL(providerUrl());
     const rewritten = new URL(
-      rewritePreauthenticatedGoogleOAuthUrl(original.toString(), 'acceptance@example.com'),
+      rewritePreauthenticatedSupabaseGoogleOAuthUrl(
+        original.toString(),
+        'acceptance@example.com',
+      ),
     );
 
     expect(rewritten.searchParams.get('prompt')).toBe('none');
     expect(rewritten.searchParams.get('login_hint')).toBe('acceptance@example.com');
-    for (const parameter of ['client_id', 'redirect_uri', 'response_type', 'scope', 'state']) {
+    for (const parameter of [
+      'provider',
+      'redirect_to',
+      'code_challenge',
+      'code_challenge_method',
+    ]) {
       expect(rewritten.searchParams.get(parameter)).toBe(original.searchParams.get(parameter));
     }
   });
 
   it('fails closed for an unrelated endpoint, invalid identity, or incomplete OAuth request', () => {
-    expect(() => rewritePreauthenticatedGoogleOAuthUrl(
+    expect(() => rewritePreauthenticatedSupabaseGoogleOAuthUrl(
       'https://accounts.google.com/v3/signin/rejected',
       'acceptance@example.com',
-    )).toThrow('GOOGLE_OAUTH_ENDPOINT_INVALID');
-    expect(() => rewritePreauthenticatedGoogleOAuthUrl(providerUrl(), 'not-an-email'))
+    )).toThrow('SUPABASE_GOOGLE_OAUTH_ENDPOINT_INVALID');
+    expect(() => rewritePreauthenticatedSupabaseGoogleOAuthUrl(providerUrl(), 'not-an-email'))
       .toThrow('GOOGLE_IDENTITY_EMAIL_INVALID');
-    expect(() => rewritePreauthenticatedGoogleOAuthUrl(
-      providerUrl({ state: '' }),
+    expect(() => rewritePreauthenticatedSupabaseGoogleOAuthUrl(
+      providerUrl({ provider: 'github' }),
       'acceptance@example.com',
-    )).toThrow('GOOGLE_OAUTH_PARAMETER_MISSING:state');
+    )).toThrow('SUPABASE_GOOGLE_OAUTH_PROVIDER_INVALID');
+    expect(() => rewritePreauthenticatedSupabaseGoogleOAuthUrl(
+      providerUrl({ redirect_to: 'http://preview.example.com/pages/auth/callback' }),
+      'acceptance@example.com',
+    )).toThrow('SUPABASE_GOOGLE_OAUTH_REDIRECT_INVALID');
+    expect(() => rewritePreauthenticatedSupabaseGoogleOAuthUrl(
+      providerUrl({ code_challenge: '' }),
+      'acceptance@example.com',
+    )).toThrow('SUPABASE_GOOGLE_OAUTH_PKCE_INVALID');
   });
 });
