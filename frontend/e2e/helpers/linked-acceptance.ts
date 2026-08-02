@@ -9,6 +9,8 @@ import {
 import path from 'node:path';
 import { expect, type Page } from '@playwright/test';
 
+import { preparePreauthenticatedGoogleOAuth } from './google-oauth-acceptance';
+
 const SENSITIVE_KEY = /(email|token|cookie|password|secret|authorization|raw_url|object_key|permanent_url|card|cvc)/i;
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const JWT = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/;
@@ -319,6 +321,7 @@ export async function uploadProtectedAsset(
 
 export async function completeGoogleLogin(page: Page, identityEmail: string): Promise<void> {
   const base = new URL(protectedBaseUrl());
+  await preparePreauthenticatedGoogleOAuth(page, identityEmail);
   await page.goto('/pages/auth/login');
   const button = page.locator('.google-button');
   await expect(button).toBeVisible();

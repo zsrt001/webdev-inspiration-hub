@@ -92,6 +92,18 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         self.preview_test = (
             ROOT / "frontend/e2e/google-session-smoke.spec.ts"
         ).read_text(encoding="utf-8")
+        self.main_flow_test = (
+            ROOT / "frontend/e2e/main-flow.spec.ts"
+        ).read_text(encoding="utf-8")
+        self.linked_acceptance = (
+            ROOT / "frontend/e2e/helpers/linked-acceptance.ts"
+        ).read_text(encoding="utf-8")
+        self.google_oauth_acceptance = (
+            ROOT / "frontend/e2e/helpers/google-oauth-acceptance.ts"
+        ).read_text(encoding="utf-8")
+        self.browser_auth = (
+            ROOT / "frontend/src/services/auth.ts"
+        ).read_text(encoding="utf-8")
         self.cleanup = (
             ROOT / "scripts/release/cleanup_preview_identity_smoke.py"
         ).read_text(encoding="utf-8")
@@ -159,6 +171,19 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.preview_test)
+
+    def test_protected_google_acceptance_is_silent_and_exact_without_changing_user_login(self) -> None:
+        self.assertIn("url.searchParams.set('prompt', 'none')", self.google_oauth_acceptance)
+        self.assertIn("url.searchParams.set('login_hint', identityEmail)", self.google_oauth_acceptance)
+        self.assertIn("{ times: 1 }", self.google_oauth_acceptance)
+        self.assertIn("queryParams: { prompt: 'select_account' }", self.browser_auth)
+        for source in (
+            self.preview_test,
+            self.main_flow_test,
+            self.linked_acceptance,
+        ):
+            with self.subTest(source=source[:80]):
+                self.assertIn("preparePreauthenticatedGoogleOAuth", source)
         self.assertNotIn("route.fulfill", self.preview_test)
         self.assertNotIn("mock", self.preview_test.lower())
 
