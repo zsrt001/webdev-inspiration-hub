@@ -1609,11 +1609,18 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertIn("if: inputs.acceptance_scope == 'full'", smoke)
         self.assertIn("runs-on: [self-hosted, Windows, X64, vowpic-edge]", smoke)
         self.assertIn(
-            "shell: '\"C:\\Program Files\\Git\\bin\\bash.exe\" "
-            "--noprofile --norc -e -o pipefail {0}'",
+            "shell: C:\\Progra~1\\Git\\bin\\bash.exe "
+            "--noprofile --norc -e -o pipefail {0}",
             smoke,
         )
-        self.assertIn('python-version: "3.11.9"', smoke)
+        self.assertNotIn("actions/setup-python", smoke)
+        self.assertIn(
+            "Create an isolated Python 3.11 runtime from the preinstalled interpreter",
+            smoke,
+        )
+        self.assertIn('py -3.11 -m venv "$RUNNER_TEMP/vowpic-python"', smoke)
+        self.assertIn('"$VOWPIC_PYTHON" -m pip --version', smoke)
+        self.assertIn('rm -rf "$RUNNER_TEMP/vowpic-python"', smoke)
         self.assertIn("PLAYWRIGHT_BROWSER_CHANNEL: msedge", smoke)
         self.assertNotIn("npm run playwright:install", smoke)
         self.assertIn("inputs.acceptance_scope == 'full'", stage5)
