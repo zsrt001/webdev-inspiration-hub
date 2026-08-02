@@ -38,6 +38,11 @@ on:
           - "refresh"
           - "logout"
           - "cleanup"
+      connected_edge_consent:
+        description: Hold the protected Preview for one-time consent in the already logged-in Microsoft Edge
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -588,6 +593,26 @@ jobs:
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
             --output "$RUNNER_TEMP/google-auth-cohort.json"
 
+      - name: Hold the exact Preview for connected Microsoft Edge consent
+        if: inputs.connected_edge_consent
+        run: |
+          set -euo pipefail
+          ready="$RUNNER_TEMP/vowpic-connected-edge-${GITHUB_RUN_ID}.ready"
+          done="$RUNNER_TEMP/vowpic-connected-edge-${GITHUB_RUN_ID}.done"
+          test ! -e "$ready"
+          test ! -e "$done"
+          printf '{"schema":"vowpic.connected-edge-consent.v1","workflow_run_id":"%s","source_sha":"%s","deployment_id":"%s","base_url":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$SOURCE_SHA" "$PREVIEW_API_DEPLOYMENT_ID" "$PREVIEW_API_DEPLOYMENT_URL" > "$ready"
+          for _ in $(seq 1 180); do
+            if test -f "$done"; then
+              rm -f "$ready" "$done"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "CONNECTED_EDGE_CONSENT_TIMEOUT" >&2
+          exit 97
+
       - name: Run the real PKCE, private-media isolation, refresh, and logout journey
         working-directory: frontend
         env:
@@ -664,6 +689,7 @@ jobs:
         if: always()
         run: |
           rm -f "$RUNNER_TEMP/google-storage-state.json" "$RUNNER_TEMP/second-google-storage-state.json" "$RUNNER_TEMP/preview-google-subjects.json"
+          rm -f "$RUNNER_TEMP"/vowpic-connected-edge-*.ready "$RUNNER_TEMP"/vowpic-connected-edge-*.done
           rm -rf "$RUNNER_TEMP/vowpic-python"
 
   cleanup:
