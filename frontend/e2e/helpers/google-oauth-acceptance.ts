@@ -1,23 +1,40 @@
 import type { Page } from '@playwright/test';
 
-const GOOGLE_OAUTH_ENDPOINT = /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth(?:\?|$)/;
+const SUPABASE_GOOGLE_OAUTH_ENDPOINT = (
+  /^https:\/\/[a-z0-9-]+\.supabase\.co\/auth\/v1\/authorize(?:\?|$)/i
+);
 const GOOGLE_IDENTITY_EMAIL = /^[^\s"\\]+@[^\s"\\]+$/;
+const PKCE_CODE_CHALLENGE = /^[A-Za-z0-9_-]{43,128}$/;
 
-export function rewritePreauthenticatedGoogleOAuthUrl(
+export function rewritePreauthenticatedSupabaseGoogleOAuthUrl(
   requestUrl: string,
   identityEmail: string,
 ): string {
   if (!GOOGLE_IDENTITY_EMAIL.test(identityEmail)) {
     throw new Error('GOOGLE_IDENTITY_EMAIL_INVALID');
   }
-  if (!GOOGLE_OAUTH_ENDPOINT.test(requestUrl)) {
-    throw new Error('GOOGLE_OAUTH_ENDPOINT_INVALID');
+  if (!SUPABASE_GOOGLE_OAUTH_ENDPOINT.test(requestUrl)) {
+    throw new Error('SUPABASE_GOOGLE_OAUTH_ENDPOINT_INVALID');
   }
   const url = new URL(requestUrl);
-  for (const parameter of ['client_id', 'redirect_uri', 'response_type', 'scope', 'state']) {
-    if (!url.searchParams.get(parameter)) {
-      throw new Error(`GOOGLE_OAUTH_PARAMETER_MISSING:${parameter}`);
-    }
+  if (url.searchParams.get('provider') !== 'google') {
+    throw new Error('SUPABASE_GOOGLE_OAUTH_PROVIDER_INVALID');
+  }
+  let redirectTo: URL;
+  try {
+    redirectTo = new URL(url.searchParams.get('redirect_to') || '');
+  } catch {
+    throw new Error('SUPABASE_GOOGLE_OAUTH_REDIRECT_INVALID');
+  }
+  if (redirectTo.protocol !== 'https:' || redirectTo.username || redirectTo.password) {
+    throw new Error('SUPABASE_GOOGLE_OAUTH_REDIRECT_INVALID');
+  }
+  const codeChallenge = url.searchParams.get('code_challenge') || '';
+  if (
+    !PKCE_CODE_CHALLENGE.test(codeChallenge)
+    || url.searchParams.get('code_challenge_method') !== 's256'
+  ) {
+    throw new Error('SUPABASE_GOOGLE_OAUTH_PKCE_INVALID');
   }
   url.searchParams.set('prompt', 'none');
   url.searchParams.set('login_hint', identityEmail);
@@ -32,10 +49,13 @@ export async function preparePreauthenticatedGoogleOAuth(
     throw new Error('GOOGLE_IDENTITY_EMAIL_INVALID');
   }
   await page.route(
-    GOOGLE_OAUTH_ENDPOINT,
+    SUPABASE_GOOGLE_OAUTH_ENDPOINT,
     async (route) => {
       await route.continue({
-        url: rewritePreauthenticatedGoogleOAuthUrl(route.request().url(), identityEmail),
+        url: rewritePreauthenticatedSupabaseGoogleOAuthUrl(
+          route.request().url(),
+          identityEmail,
+        ),
       });
     },
     { times: 1 },
