@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { API_BASE_URL, isWebRuntime } from './apiConfig';
 
 const SUPABASE_PKCE_STORAGE_KEY = 'vowpic_supabase_pkce';
+const SUPABASE_PKCE_CODE_VERIFIER_KEY = `${SUPABASE_PKCE_STORAGE_KEY}-code-verifier`;
 
 interface PublicAuthConfig {
     google_oauth_enabled?: boolean;
@@ -12,6 +13,24 @@ interface PublicAuthConfig {
 let authConfig: PublicAuthConfig | null = null;
 let configRequest: Promise<boolean> | null = null;
 let client: SupabaseClient | null = null;
+
+const pkceOnlySessionStorage = {
+    getItem(key: string): string | null {
+        return key === SUPABASE_PKCE_CODE_VERIFIER_KEY
+            ? window.sessionStorage.getItem(key)
+            : null;
+    },
+    setItem(key: string, value: string): void {
+        if (key === SUPABASE_PKCE_CODE_VERIFIER_KEY) {
+            window.sessionStorage.setItem(key, value);
+        }
+    },
+    removeItem(key: string): void {
+        if (key === SUPABASE_PKCE_CODE_VERIFIER_KEY) {
+            window.sessionStorage.removeItem(key);
+        }
+    },
+};
 
 function normalizedAuthConfig(payload: any): PublicAuthConfig {
     const source = payload?.auth && typeof payload.auth === 'object' ? payload.auth : {};
@@ -67,10 +86,12 @@ export async function getSupabaseClient(): Promise<SupabaseClient> {
         client = createClient(authConfig.supabase_url, authConfig.supabase_publishable_key, {
             auth: {
                 flowType: 'pkce',
-                persistSession: false,
+                // auth-js only honors a custom storage adapter when persistence is enabled.
+                // The adapter persists the cross-navigation PKCE verifier and rejects session tokens.
+                persistSession: true,
                 autoRefreshToken: false,
                 detectSessionInUrl: false,
-                storage: window.sessionStorage,
+                storage: pkceOnlySessionStorage,
                 storageKey: SUPABASE_PKCE_STORAGE_KEY,
             },
         });
@@ -85,6 +106,6 @@ export function discardSupabaseClient(): void {
 export function clearSupabaseTransientStorage(): void {
     if (!isWebRuntime()) return;
     window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}`);
-    window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}-code-verifier`);
+    window.sessionStorage.removeItem(SUPABASE_PKCE_CODE_VERIFIER_KEY);
     window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}-user`);
 }
