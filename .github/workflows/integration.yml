@@ -448,10 +448,10 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Create an isolated Python 3.11 runtime from the preinstalled interpreter
+      - name: Create an isolated Python 3.13 runtime from the preinstalled interpreter
         run: |
-          py -3.11 -c 'import sys; assert sys.version_info[:2] == (3, 11), sys.version'
-          py -3.11 -m venv "$RUNNER_TEMP/vowpic-python"
+          py -3.13 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
+          py -3.13 -m venv "$RUNNER_TEMP/vowpic-python"
           VOWPIC_PYTHON="$(cygpath -w "$RUNNER_TEMP/vowpic-python/Scripts/python.exe")"
           printf 'VOWPIC_PYTHON=%s\n' "$VOWPIC_PYTHON" >> "$GITHUB_ENV"
           "$VOWPIC_PYTHON" -m pip --version
@@ -493,7 +493,7 @@ jobs:
 
       - name: Install the fresh-job resolver and browser harness
         run: |
-          "$VOWPIC_PYTHON" -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          "$VOWPIC_PYTHON" -m pip install --disable-pip-version-check --timeout 120 --retries 3 --require-hashes -r scripts/release/preview_identity_smoke.requirements.windows.lock.txt
           "$VOWPIC_PYTHON" -m pip check
           npm ci --prefix frontend --ignore-scripts
 

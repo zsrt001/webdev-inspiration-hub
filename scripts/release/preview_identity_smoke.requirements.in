@@ -1,0 +1,10 @@
+# Runtime used only by the protected Preview identity smoke on Windows.
+# Keep this limited to imports reached by the release coordinate, Supabase,
+# feature-flag, and Vercel Private Blob helpers.
+asyncpg==0.31.0
+fastapi==0.139.0
+httpx==0.28.1
+pydantic-settings==2.14.2
+redis==5.3.1
+sqlalchemy[asyncio]==2.0.51
+vercel==0.6.0
