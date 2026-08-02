@@ -3,6 +3,8 @@ import { chmodSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, request, test, type Page } from '@playwright/test';
 
+import { preparePreauthenticatedGoogleOAuth } from './helpers/google-oauth-acceptance';
+
 const previewRun = process.env.RUN_PREVIEW_E2E === '1';
 const productionRun = process.env.RUN_PRODUCTION_E2E === '1';
 const protectedRun = previewRun || productionRun;
@@ -29,6 +31,7 @@ async function cookieValue(page: Page, name: string) {
 }
 
 async function completeGoogleLogin(page: Page) {
+  await preparePreauthenticatedGoogleOAuth(page, identityEmail);
   await page.goto('/pages/auth/login');
   await expect(page.locator('.google-button')).toBeVisible();
   await page.locator('.google-button').click();

@@ -1,6 +1,8 @@
 import { expect, request, test, type Page } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 
+import { preparePreauthenticatedGoogleOAuth } from './helpers/google-oauth-acceptance';
+
 const baseURL = String(process.env.PREVIEW_BASE_URL || '').trim().replace(/\/$/, '');
 const identityEmail = String(process.env.PREVIEW_GOOGLE_EMAIL || '').trim();
 const secondIdentityEmail = String(process.env.PREVIEW_SECOND_GOOGLE_EMAIL || '').trim();
@@ -42,6 +44,7 @@ async function completeGoogleLogin(page: Page, email = identityEmail) {
   if (!/^[^\s"\\]+@[^\s"\\]+$/.test(email)) {
     throw new Error('GOOGLE_IDENTITY_EMAIL_INVALID');
   }
+  await preparePreauthenticatedGoogleOAuth(page, email);
   await page.goto('/pages/auth/login');
   const googleButton = page.locator('.google-button');
   try {
