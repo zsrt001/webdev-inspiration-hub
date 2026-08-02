@@ -1634,7 +1634,15 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             / "scripts/release/preview_identity_smoke.requirements.windows.lock.txt"
         ).read_text(encoding="utf-8")
         self.assertIn("pip-compile with Python 3.13", smoke_lock)
-        for package in ("asyncpg", "fastapi", "httpx", "redis", "sqlalchemy", "vercel"):
+        for package in (
+            "asyncpg",
+            "fastapi",
+            "httpx",
+            "psycopg2-binary",
+            "redis",
+            "sqlalchemy",
+            "vercel",
+        ):
             self.assertRegex(smoke_lock, rf"(?m)^{package}==[^\s]+ \\")
         for unrelated in ("insightface", "onnxruntime", "opencv-python-headless"):
             self.assertNotIn(unrelated, smoke_lock)

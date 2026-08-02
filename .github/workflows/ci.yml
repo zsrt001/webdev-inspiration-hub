@@ -171,6 +171,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m pip check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -c "import psycopg2; from vercel.blob import get, put"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($script in @(
             "scripts/release/resolve_release_coordinates.py",
             "scripts/release/configure_preview_auth_origin.py",
