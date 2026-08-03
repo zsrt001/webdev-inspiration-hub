@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 import json
 import unittest
 from uuid import UUID
@@ -11,11 +12,30 @@ import httpx
 
 from backend.scripts.verify_preview_evolink_callback_recovery import (
     _is_fresh_prepared_graph,
+    _prepare_unknown,
     verify_callback_recovery,
 )
 
 
 class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
+    def test_lost_response_probe_uses_only_legal_generation_transitions(self) -> None:
+        source = inspect.getsource(_prepare_unknown)
+        transitions = (
+            "SET status = 'ACTIVE'",
+            "SET status = 'SUBMITTING'",
+            "SET status = 'GENERATING'",
+            "SET status = 'UNKNOWN'",
+            "SET status = 'RECONCILING'",
+            "SET status = 'UNKNOWN_EXTERNAL_STATE'",
+        )
+        positions = [source.index(transition) for transition in transitions]
+
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("WHERE id = %s AND status = 'SUBMITTING'", source)
+        self.assertIn("WHERE id = %s AND status = 'ACTIVE'", source)
+        self.assertIn("WHERE generation_job_id = %s AND status = 'GENERATING'", source)
+        self.assertNotIn("SET status = 'UNKNOWN',\n                    submit_started_at", source)
+
     def test_fresh_graph_accepts_psycopg_uuid_text_or_registered_uuid(self) -> None:
         reference = {
             "attempt_id": "00000000-0000-4000-8000-000000000076",
