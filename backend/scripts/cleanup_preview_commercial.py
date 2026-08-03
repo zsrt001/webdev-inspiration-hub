@@ -62,6 +62,12 @@ def _validate_activation(activation: ReleaseActivation, args: argparse.Namespace
         raise ValueError("Preview Commercial cleanup coordinates are invalid")
 
 
+def _validate_expected_identity_count(value: int) -> int:
+    if value not in {0, 2}:
+        raise ValueError("Preview Commercial cleanup expects either zero or two identities")
+    return value
+
+
 async def cleanup(args: argparse.Namespace) -> dict[str, object]:
     database_url = os.environ.get(args.database_url_env, "").strip()
     if not database_url:
@@ -70,6 +76,9 @@ async def cleanup(args: argparse.Namespace) -> dict[str, object]:
     engine = create_async_engine(normalized_url, connect_args=connect_args)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     activation_id = UUID(args.activation_id)
+    expected_identity_count = _validate_expected_identity_count(
+        args.expected_consumed_identities
+    )
     now = datetime.now(timezone.utc)
     try:
         async with session_factory() as db:
@@ -100,9 +109,9 @@ async def cleanup(args: argparse.Namespace) -> dict[str, object]:
                     .with_for_update()
                 )
                 bindings = list(binding_result.scalars())
-                if len(bindings) != 2:
+                if len(bindings) != expected_identity_count:
                     raise ValueError(
-                        "Preview Commercial cleanup requires exactly two identity bindings"
+                        "Preview Commercial cleanup identity binding count mismatch"
                     )
                 user_ids = tuple(
                     sorted(
@@ -114,23 +123,25 @@ async def cleanup(args: argparse.Namespace) -> dict[str, object]:
                         key=str,
                     )
                 )
-                if len(user_ids) != 2:
+                if len(user_ids) != expected_identity_count:
                     raise ValueError(
-                        "both Preview Commercial identities must have been consumed"
+                        "Preview Commercial consumed identity count mismatch"
                     )
                 for binding in bindings:
                     if binding.consumed_user_id is None and binding.revoked_at is None:
                         binding.revoked_at = now
-                session_result = await db.execute(
-                    select(AuthSession)
-                    .where(
-                        AuthSession.acceptance_binding_id.in_(
-                            [binding.id for binding in bindings]
+                sessions = []
+                if bindings:
+                    session_result = await db.execute(
+                        select(AuthSession)
+                        .where(
+                            AuthSession.acceptance_binding_id.in_(
+                                [binding.id for binding in bindings]
+                            )
                         )
+                        .with_for_update()
                     )
-                    .with_for_update()
-                )
-                sessions = list(session_result.scalars())
+                    sessions = list(session_result.scalars())
                 session_ids = [session.id for session in sessions]
                 for session in sessions:
                     if session.revoked_at is None:
@@ -197,7 +208,7 @@ async def cleanup(args: argparse.Namespace) -> dict[str, object]:
             )
             expected_flags = {capability.value for capability in Capability}
             if (
-                tombstones != 2
+                tombstones != expected_identity_count
                 or active_sessions != 0
                 or nonterminal_jobs != 0
                 or {flag.capability for flag in flags} != expected_flags
@@ -237,7 +248,7 @@ async def cleanup(args: argparse.Namespace) -> dict[str, object]:
             "runtime_bundle_id": args.runtime_bundle_id,
             "api_deployment_id": args.deployment_id,
             "worker_deployment_id": None,
-            "identity_count": 2,
+            "identity_count": expected_identity_count,
             "closed_identity_count": tombstones,
             "active_session_count": active_sessions,
             "nonterminal_generation_job_count": nonterminal_jobs,
@@ -265,6 +276,12 @@ def main() -> int:
     parser.add_argument("--workflow-attempt", type=int, required=True)
     parser.add_argument("--actor", required=True)
     parser.add_argument("--reason", required=True)
+    parser.add_argument(
+        "--expected-consumed-identities",
+        type=int,
+        choices=(0, 2),
+        default=2,
+    )
     parser.add_argument(
         "--database-url-env",
         default="PREVIEW_MIGRATION_DATABASE_URL",
