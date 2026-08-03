@@ -1611,7 +1611,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
         schema_upgrade = workflow.index("Apply the exact Preview schema")
         guard_repair = workflow.index(
-            "Repair and verify the exact schema-0020 cross-table commercial guards"
+            "Repair and verify the exact schema-0020 cross-table guards"
         )
         runtime_authority = workflow.index(
             "Prove the Vercel runtime can read Preview feature-flag authority"

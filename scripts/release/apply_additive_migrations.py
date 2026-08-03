@@ -120,7 +120,7 @@ async def _run(args: argparse.Namespace) -> None:
         "contract_sha256": database_role_contract_sha256,
     }
     guard_repair_report: dict[str, object] = {
-        "schema": "vowpic.commercial-guard-row-shape-repair.v1",
+        "schema": "vowpic.schema-0020-cross-table-guard-repair.v2",
         "changed": False,
         "status": "NOT_RUN",
     }

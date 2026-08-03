@@ -374,7 +374,7 @@ def _create_transition_guards() -> None:
         sa.text(
             """
             CREATE OR REPLACE FUNCTION public.guard_generation_job_transition()
-            RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+            RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
             SET search_path = pg_catalog, public
             AS $guard_generation_job_transition$
             BEGIN
@@ -424,7 +424,7 @@ def _create_transition_guards() -> None:
         sa.text(
             """
             CREATE OR REPLACE FUNCTION public.guard_generation_attempt_transition()
-            RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+            RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
             SET search_path = pg_catalog, public
             AS $guard_generation_attempt_transition$
             DECLARE job_correlation text;
@@ -493,7 +493,7 @@ def _create_transition_guards() -> None:
         sa.text(
             """
             CREATE OR REPLACE FUNCTION public.qa_verdict_append_only_guard()
-            RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+            RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
             SET search_path = pg_catalog, public
             AS $qa_verdict_append_only_guard$
             BEGIN
