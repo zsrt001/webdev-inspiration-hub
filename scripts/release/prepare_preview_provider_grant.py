@@ -229,7 +229,7 @@ def _write_private_create_once(path: Path, payload: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-reference", required=True)
-    parser.add_argument("--database-url-env", default="PREVIEW_CONTROL_DATABASE_URL")
+    parser.add_argument("--database-url-env", default="PREVIEW_RUNTIME_DATABASE_URL")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     try:
