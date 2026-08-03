@@ -103,6 +103,96 @@ class PreviewProviderOwnerTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 module._validate_expected_identity_count(invalid)
 
+    def test_cleanup_accepts_precompletion_activation_coordinates(self) -> None:
+        cleanup_script = ROOT / "backend" / "scripts" / "cleanup_preview_commercial.py"
+        spec = importlib.util.spec_from_file_location(
+            "cleanup_preview_commercial_activation",
+            cleanup_script,
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("Preview Commercial cleanup is missing")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = SimpleNamespace(
+            source_sha="a" * 40,
+            runtime_bundle_id="rtb_" + "b" * 64,
+            deployment_id="dpl_preview_exact",
+            workflow_run_id="12345",
+            workflow_attempt=2,
+        )
+        base = {
+            "environment": "preview",
+            "kind": "PREVIEW_COMMERCIAL",
+            "api_role": "PREVIEW_COMMERCIAL_API",
+            "source_sha": args.source_sha,
+            "runtime_bundle_id": args.runtime_bundle_id,
+            "workflow_run_id": args.workflow_run_id,
+            "workflow_attempt": args.workflow_attempt,
+            "worker_role": None,
+            "worker_image_digest": None,
+            "worker_deployment_id": None,
+        }
+        module._validate_activation(
+            SimpleNamespace(**base, phase="RESERVED", api_deployment_id=None),
+            args,
+        )
+        module._validate_activation(
+            SimpleNamespace(
+                **base,
+                phase="DEPLOYED",
+                api_deployment_id=args.deployment_id,
+            ),
+            args,
+        )
+        module._validate_activation(
+            SimpleNamespace(**base, phase="CLEANED", api_deployment_id=None),
+            args,
+        )
+
+    def test_cleanup_rejects_inexact_precompletion_deployment_coordinates(self) -> None:
+        cleanup_script = ROOT / "backend" / "scripts" / "cleanup_preview_commercial.py"
+        spec = importlib.util.spec_from_file_location(
+            "cleanup_preview_commercial_mismatch",
+            cleanup_script,
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("Preview Commercial cleanup is missing")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = SimpleNamespace(
+            source_sha="a" * 40,
+            runtime_bundle_id="rtb_" + "b" * 64,
+            deployment_id="dpl_preview_exact",
+            workflow_run_id="12345",
+            workflow_attempt=2,
+        )
+        base = {
+            "environment": "preview",
+            "kind": "PREVIEW_COMMERCIAL",
+            "api_role": "PREVIEW_COMMERCIAL_API",
+            "source_sha": args.source_sha,
+            "runtime_bundle_id": args.runtime_bundle_id,
+            "workflow_run_id": args.workflow_run_id,
+            "workflow_attempt": args.workflow_attempt,
+            "worker_role": None,
+            "worker_image_digest": None,
+            "worker_deployment_id": None,
+        }
+        for activation in (
+            SimpleNamespace(
+                **base,
+                phase="RESERVED",
+                api_deployment_id="dpl_unregistered",
+            ),
+            SimpleNamespace(
+                **base,
+                phase="DEPLOYED",
+                api_deployment_id="dpl_other",
+            ),
+        ):
+            with self.subTest(phase=activation.phase), self.assertRaises(ValueError):
+                module._validate_activation(activation, args)
+
     def test_job_environment_receives_only_the_resolved_uuid(self) -> None:
         owner = uuid.uuid4()
         with tempfile.TemporaryDirectory() as directory:
