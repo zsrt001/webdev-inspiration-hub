@@ -170,8 +170,32 @@ async def _require_acceptance_owner(db, owner_user_id: uuid.UUID) -> None:
         raise ValueError("Provider case owner lacks a consumed Google acceptance binding")
 
 
-async def validate_acceptance_owner(
+def _activation_matches(activation_row: ReleaseActivation | None, activation: dict[str, Any]) -> bool:
+    expected = {
+        "environment": "preview",
+        "kind": "PREVIEW_COMMERCIAL",
+        "phase": "COMPLETED",
+        "source_sha": activation["source_sha"],
+        "runtime_bundle_id": activation["runtime_bundle_id"],
+        "api_deployment_id": activation["api_deployment_id"],
+        "worker_deployment_id": None,
+        "worker_role": None,
+        "worker_image_digest": None,
+    }
+    return bool(
+        activation_row is not None
+        and not any(
+            str(getattr(activation_row, key)) != str(value)
+            for key, value in expected.items()
+        )
+        and activation_row.current_snapshot_hash is not None
+        and activation_row.current_snapshot_hash == activation_row.target_snapshot_hash
+    )
+
+
+async def validate_acceptance_context(
     owner_read_database_url: str,
+    activation: dict[str, Any],
     owner_user_id: uuid.UUID,
 ) -> None:
     normalized_url, connect_args = normalize_database_url(owner_read_database_url)
@@ -180,6 +204,13 @@ async def validate_acceptance_owner(
     try:
         async with session_factory() as db:
             async with db.begin():
+                activation_row = await db.scalar(
+                    select(ReleaseActivation).where(
+                        ReleaseActivation.id == uuid.UUID(activation["activation_id"])
+                    )
+                )
+                if not _activation_matches(activation_row, activation):
+                    raise ValueError("Provider case activation is not exact and all-OFF")
                 await _require_acceptance_owner(db, owner_user_id)
     finally:
         await engine.dispose()
@@ -264,7 +295,11 @@ async def prepare_case(
     else:
         raise ValueError("Provider case image must be JPEG, PNG, or WebP")
     image = validate_and_reencode_image(image_bytes, declared_content_type=declared_mime)
-    await validate_acceptance_owner(owner_read_database_url, owner_user_id)
+    await validate_acceptance_context(
+        owner_read_database_url,
+        normalized,
+        owner_user_id,
+    )
     case_id = case_id_for_activation(normalized["activation_id"])
     object_key = provider_case_object_key(normalized["activation_id"], case_id)
     normalized_url, connect_args = normalize_database_url(database_url)
@@ -274,29 +309,6 @@ async def prepare_case(
     try:
         async with session_factory() as db:
             async with db.begin():
-                activation_row = await db.scalar(
-                    select(ReleaseActivation)
-                    .where(ReleaseActivation.id == uuid.UUID(normalized["activation_id"]))
-                    .with_for_update()
-                )
-                exact = {
-                    "environment": "preview",
-                    "kind": "PREVIEW_COMMERCIAL",
-                    "phase": "COMPLETED",
-                    "source_sha": normalized["source_sha"],
-                    "runtime_bundle_id": normalized["runtime_bundle_id"],
-                    "api_deployment_id": normalized["api_deployment_id"],
-                    "worker_deployment_id": None,
-                    "worker_role": None,
-                    "worker_image_digest": None,
-                }
-                if (
-                    activation_row is None
-                    or any(str(getattr(activation_row, key)) != str(value) for key, value in exact.items())
-                    or activation_row.current_snapshot_hash is None
-                    or activation_row.current_snapshot_hash != activation_row.target_snapshot_hash
-                ):
-                    raise ValueError("Provider case activation is not exact and all-OFF")
                 asset = await db.scalar(
                     select(MediaAsset).where(MediaAsset.object_key == object_key).with_for_update()
                 )

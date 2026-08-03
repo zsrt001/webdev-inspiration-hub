@@ -119,48 +119,68 @@ def _runtime_matches(reference: dict[str, Any]) -> bool:
     )
 
 
-async def prepare_grant(
-    database_url: str,
+def _activation_matches(activation: ReleaseActivation | None, reference: dict[str, Any]) -> bool:
+    expected = {
+        "environment": "preview",
+        "kind": "PREVIEW_COMMERCIAL",
+        "phase": "COMPLETED",
+        "source_sha": reference["source_sha"],
+        "runtime_bundle_id": reference["runtime_bundle_id"],
+        "api_deployment_id": reference["api_deployment_id"],
+        "worker_deployment_id": None,
+        "worker_role": None,
+        "worker_image_digest": None,
+    }
+    return bool(
+        activation is not None
+        and not any(
+            str(getattr(activation, key)) != str(value)
+            for key, value in expected.items()
+        )
+        and activation.current_snapshot_hash is not None
+        and activation.current_snapshot_hash == activation.target_snapshot_hash
+    )
+
+
+async def validate_activation(
+    activation_read_database_url: str,
     reference: dict[str, Any],
-    *,
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    normalized = validate_input_reference(reference)
-    if not _runtime_matches(normalized):
-        raise ValueError("Preview Provider input does not match this process runtime")
-    current = now or datetime.now(timezone.utc)
-    normalized_url, connect_args = normalize_database_url(database_url)
+) -> None:
+    normalized_url, connect_args = normalize_database_url(activation_read_database_url)
     engine = create_async_engine(normalized_url, connect_args=connect_args)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with session_factory() as db:
             async with db.begin():
                 activation = await db.scalar(
-                    select(ReleaseActivation)
-                    .where(ReleaseActivation.id == UUID(normalized["activation_id"]))
-                    .with_for_update()
-                )
-                activation_expected = {
-                    "environment": "preview",
-                    "kind": "PREVIEW_COMMERCIAL",
-                    "phase": "COMPLETED",
-                    "source_sha": normalized["source_sha"],
-                    "runtime_bundle_id": normalized["runtime_bundle_id"],
-                    "api_deployment_id": normalized["api_deployment_id"],
-                    "worker_deployment_id": None,
-                    "worker_role": None,
-                    "worker_image_digest": None,
-                }
-                if (
-                    activation is None
-                    or any(
-                        str(getattr(activation, key)) != str(value)
-                        for key, value in activation_expected.items()
+                    select(ReleaseActivation).where(
+                        ReleaseActivation.id == UUID(reference["activation_id"])
                     )
-                    or activation.current_snapshot_hash is None
-                    or activation.current_snapshot_hash != activation.target_snapshot_hash
-                ):
+                )
+                if not _activation_matches(activation, reference):
                     raise ValueError("Preview Provider activation is not exact and all-OFF")
+    finally:
+        await engine.dispose()
+
+
+async def prepare_grant(
+    database_url: str,
+    reference: dict[str, Any],
+    *,
+    activation_read_database_url: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    normalized = validate_input_reference(reference)
+    if not _runtime_matches(normalized):
+        raise ValueError("Preview Provider input does not match this process runtime")
+    current = now or datetime.now(timezone.utc)
+    await validate_activation(activation_read_database_url, normalized)
+    normalized_url, connect_args = normalize_database_url(database_url)
+    engine = create_async_engine(normalized_url, connect_args=connect_args)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as db:
+            async with db.begin():
                 job = await db.scalar(
                     select(GenerationJob)
                     .where(GenerationJob.id == UUID(normalized["job_id"]))
@@ -230,6 +250,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-reference", required=True)
     parser.add_argument("--database-url-env", default="PREVIEW_RUNTIME_DATABASE_URL")
+    parser.add_argument(
+        "--activation-read-database-url-env",
+        default="PREVIEW_CONTROL_READ_DATABASE_URL",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     try:
@@ -239,7 +263,19 @@ def main() -> int:
         database_url = os.environ.get(args.database_url_env, "").strip()
         if not database_url:
             raise ValueError("Preview Provider database URL is required")
-        result = asyncio.run(prepare_grant(database_url, reference))
+        activation_read_database_url = os.environ.get(
+            args.activation_read_database_url_env,
+            "",
+        ).strip()
+        if not activation_read_database_url:
+            raise ValueError("Preview Provider activation-read database URL is required")
+        result = asyncio.run(
+            prepare_grant(
+                database_url,
+                reference,
+                activation_read_database_url=activation_read_database_url,
+            )
+        )
         _write_private_create_once(Path(args.output), result)
         print(
             json.dumps(

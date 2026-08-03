@@ -82,7 +82,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         )
 
         self.assertIn("owner_read_database_url", prepare_source)
-        self.assertIn("await validate_acceptance_owner", prepare_source)
+        self.assertIn("await validate_acceptance_context", prepare_source)
         self.assertNotIn("SET LOCAL ROLE", inspect.getsource(prepare))
         self.assertIn(
             "--owner-read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL",
@@ -121,6 +121,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "--read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL",
             provider_block,
         )
+        self.assertIn(
+            "--activation-read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL",
+            provider_block,
+        )
         self.assertNotIn("PREVIEW_MIGRATION_DATABASE_URL", cleanup_block)
         self.assertIn(
             "--database-url-env PREVIEW_RUNTIME_DATABASE_URL",
@@ -142,6 +146,24 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                     'default="PREVIEW_MIGRATION_DATABASE_URL"',
                     source,
                 )
+
+        grant_source = (
+            ROOT / "scripts/release/prepare_preview_provider_grant.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'default="PREVIEW_CONTROL_READ_DATABASE_URL"',
+            grant_source,
+        )
+        self.assertIn("await validate_activation", grant_source)
+        self.assertNotIn(
+            "select(ReleaseActivation)",
+            inspect.getsource(
+                _load(
+                    "prepare_preview_provider_grant_business_write_contract",
+                    "scripts/release/prepare_preview_provider_grant.py",
+                ).prepare_grant
+            ),
+        )
 
     def test_exact_preview_identity_recovery_is_coordinate_bound_and_fail_closed(self) -> None:
         recovery_path = ROOT / ".github" / "workflows" / "preview-identity-recovery.yml"
