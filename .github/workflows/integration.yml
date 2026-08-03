@@ -1505,10 +1505,25 @@ jobs:
           STORAGE_PROVIDER: vercel
           PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN }}
         run: |
+          set -euo pipefail
           expected_identities=0
           if [[ "${{ inputs.acceptance_scope }}" == "full" ]]; then
             expected_identities=2
           fi
+          if ! test -s "$RUNNER_TEMP/commercial-activation-id.txt"; then
+            python scripts/release/cleanup_preview_identity_smoke.py \
+              --role PREVIEW_COMMERCIAL \
+              --source-sha "$SOURCE_SHA" \
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+              --actor "github-actions:$GITHUB_RUN_ID" \
+              --reason "protected Preview Commercial pre-activation cleanup" \
+              --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+              --output "$COMMERCIAL_EVIDENCE_DIR/cleanup-report.json"
+            exit 0
+          fi
+          test -n "${COMMERCIAL_RUNTIME_BUNDLE_ID:-}"
+          test -n "${COMMERCIAL_API_DEPLOYMENT_ID:-}"
           python backend/scripts/cleanup_preview_commercial.py \
             --activation-id "$(tr -d '\r\n' < "$RUNNER_TEMP/commercial-activation-id.txt")" \
             --source-sha "$SOURCE_SHA" \
