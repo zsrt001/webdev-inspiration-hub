@@ -328,6 +328,7 @@ async def adjust_user_credits_by_admin(
             expires_at=datetime.now(timezone.utc) + timedelta(days=retention_days),
         )
         db.add(transaction)
+        await db.flush()
         db.add(lot)
         credit.balance = next_balance
         await db.flush()

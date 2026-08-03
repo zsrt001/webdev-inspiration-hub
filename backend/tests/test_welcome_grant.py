@@ -25,6 +25,8 @@ class _Db:
         self.claim: WelcomeGrantClaim | None = None
         self.transactions: list[CreditTransaction] = []
         self.lots: list[CreditGrantLot] = []
+        self.persisted_transaction_ids: set[uuid.UUID] = set()
+        self.persisted_lot_ids: set[uuid.UUID] = set()
 
     async def scalar(self, statement):
         source = str(statement)
@@ -49,6 +51,19 @@ class _Db:
             raise AssertionError(type(value))
 
     async def flush(self):
+        for lot in self.lots:
+            if (
+                lot.id not in self.persisted_lot_ids
+                and lot.root_transaction_id not in self.persisted_transaction_ids
+            ):
+                raise AssertionError("grant_lot_flushed_before_root_transaction")
+        if self.claim is not None:
+            if self.claim.credit_transaction_id not in self.persisted_transaction_ids:
+                raise AssertionError("welcome_claim_flushed_before_root_transaction")
+            if self.claim.grant_lot_id not in self.persisted_lot_ids:
+                raise AssertionError("welcome_claim_flushed_before_grant_lot")
+        self.persisted_transaction_ids.update(item.id for item in self.transactions)
+        self.persisted_lot_ids.update(item.id for item in self.lots)
         return None
 
 

@@ -785,7 +785,9 @@ class PaymentService:
             occurred_at=event.occurred_at,
         )
         db.add(root)
+        await db.flush()
         db.add(lot)
+        await db.flush()
         db.add(capture)
         credit.balance = next_balance
         purchase.provider_payment_id = provider_payment_id
