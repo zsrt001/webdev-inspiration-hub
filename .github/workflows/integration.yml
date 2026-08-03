@@ -1361,6 +1361,7 @@ jobs:
           python scripts/release/prepare_preview_provider_grant.py \
             --input-reference "$RUNNER_TEMP/provider-input.json" \
             --database-url-env PREVIEW_RUNTIME_DATABASE_URL \
+            --activation-read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL \
             --output "$RUNNER_TEMP/provider-grant-reference.json"
           python backend/scripts/verify_preview_evolink_callback_recovery.py \
             --capabilities release/provider-capabilities.json \
