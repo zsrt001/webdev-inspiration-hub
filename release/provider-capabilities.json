@@ -4,10 +4,13 @@
     "evolink": {
       "submit_endpoint": "/v1/images/generations",
       "task_query_endpoint": "/v1/tasks/{task_id}",
+      "credit_endpoint": "/v1/credits",
+      "acceptance_minimum_credits": "10",
       "ambiguous_submission_policy": "hold_without_resubmit",
       "official_sources": [
         "https://evolink.ai/docs/en/api-manual/image-series/nanobanana/nanobanana-pro-image-generate",
-        "https://docs.evolink.ai/en/api-manual/task-management/get-task-detail"
+        "https://docs.evolink.ai/en/api-manual/task-management/get-task-detail",
+        "https://docs.evolink.ai/en/api-manual/account-management/get-credits"
       ],
       "implemented_by": [
         "backend/app/services/evolink_service.py",

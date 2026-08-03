@@ -34,9 +34,21 @@ class ProviderCapabilitiesTest(unittest.TestCase):
             document["providers"]["evolink"]["submit_endpoint"],
             "/v1/images/generations",
         )
+        self.assertEqual(
+            document["providers"]["evolink"]["credit_endpoint"],
+            "/v1/credits",
+        )
+        self.assertEqual(
+            document["providers"]["evolink"]["acceptance_minimum_credits"],
+            "10",
+        )
         self.assertIn(
             "https://evolink.ai/docs/en/api-manual/image-series/"
             "nanobanana/nanobanana-pro-image-generate",
+            document["providers"]["evolink"]["official_sources"],
+        )
+        self.assertIn(
+            "https://docs.evolink.ai/en/api-manual/account-management/get-credits",
             document["providers"]["evolink"]["official_sources"],
         )
         self.assertNotIn(

@@ -108,6 +108,8 @@ class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
                 "evolink": {
                     "submit_endpoint": "/v1/images/generations",
                     "task_query_endpoint": "/v1/tasks/{task_id}",
+                    "credit_endpoint": "/v1/credits",
+                    "acceptance_minimum_credits": "10",
                     "ambiguous_submission_policy": "hold_without_resubmit",
                     "official_sources": [
                         "https://docs.evolink.ai/en/api-manual/image-series/nanobanana/nanobanana-pro-image-generate",
@@ -208,6 +210,8 @@ class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
                 api_key="provider-key",
                 api_base_url="https://api.evolink.ai",
                 image_model="gemini-3.1-flash-image-preview",
+                image_quality="2K",
+                image_size="3:4",
                 callback_origin=(
                     "https://vowpic-evolink-aaaaaaaaaaaa-123-1.vercel.app"
                 ),
@@ -229,6 +233,8 @@ class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
         self.assertEqual([request.method for request in requests], ["POST", "GET"])
         submitted = json.loads(requests[0].content)
         self.assertIn("callback_url", submitted)
+        self.assertEqual(submitted["quality"], "2K")
+        self.assertEqual(submitted["size"], "3:4")
         self.assertEqual(report["network_submit_count"], 1)
         self.assertEqual(report["submitter_provider_task_write_count"], 0)
         self.assertEqual(
@@ -282,6 +288,8 @@ class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
                         api_key="provider-key",
                         api_base_url="https://api.evolink.ai",
                         image_model="gemini-3.1-flash-image-preview",
+                        image_quality="2K",
+                        image_size="3:4",
                         callback_origin=(
                             "https://vowpic-evolink-aaaaaaaaaaaa-123-1.vercel.app"
                         ),

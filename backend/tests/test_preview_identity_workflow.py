@@ -1781,6 +1781,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "backend/scripts/cleanup_preview_commercial.py",
             "backend/scripts/materialize_preview_release_evidence.py",
             "backend/scripts/verify_preview_release_package.py",
+            "scripts/release/verify_evolink_credits.py",
             "frontend/e2e/helpers/creem-hosted-checkout.ts",
             "frontend/e2e/preview-commercial-flow.spec.ts",
         )
@@ -1803,6 +1804,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "e2e/preview-commercial-flow.spec.ts",
             "materialize_preview_release_evidence.py",
             "verify_preview_release_package.py build",
+            "verify_evolink_credits.py",
+            "--capabilities release/provider-capabilities.json",
             "vowpic-preview-release-${{ github.run_id }}-${{ github.run_attempt }}-evidence",
         ):
             with self.subTest(required=required):
@@ -1824,6 +1827,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
 
         self.assertNotIn("explicit Stage-6 NOT_RUN evidence", workflow)
         self.assertNotIn('"status": "PASS" if passed else "NOT_RUN"', workflow)
+        self.assertLess(
+            workflow.index("Prove EvoLink can fund one Preview image before mutation"),
+            workflow.index("Re-prove Preview Supabase isolation before Commercial mutation"),
+        )
         self.assertLess(
             workflow.index("configure_preview_commercial_auth_origin.py"),
             workflow.index("e2e/preview-commercial-flow.spec.ts"),

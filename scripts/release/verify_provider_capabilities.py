@@ -22,6 +22,8 @@ EXPECTED = {
     "evolink": {
         "submit_endpoint": "/v1/images/generations",
         "task_query_endpoint": "/v1/tasks/{task_id}",
+        "credit_endpoint": "/v1/credits",
+        "acceptance_minimum_credits": "10",
         "ambiguous_submission_policy": "hold_without_resubmit",
         "official_hosts": {"evolink.ai", "docs.evolink.ai"},
         "implemented_by": {

@@ -123,6 +123,8 @@ def verify_callback_recovery(
     api_key: str,
     api_base_url: str,
     image_model: str,
+    image_quality: str,
+    image_size: str,
     callback_origin: str,
     callback_secret: str,
     approval_ref: str,
@@ -146,10 +148,31 @@ def verify_callback_recovery(
     api_origin = _api_origin(api_base_url)
     exact_callback_origin = _callback_origin(callback_origin)
     model = str(image_model or "").strip()
+    quality = str(image_quality or "").strip()
+    size = str(image_size or "").strip()
     approval = str(approval_ref or "").strip()
     if (
         not str(api_key or "").strip()
         or not model
+        or quality not in {"0.5K", "1K", "2K", "4K"}
+        or size
+        not in {
+            "auto",
+            "1:1",
+            "1:4",
+            "4:1",
+            "1:8",
+            "8:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "4:5",
+            "5:4",
+            "9:16",
+            "16:9",
+            "21:9",
+        }
         or len(str(callback_secret or "").encode("utf-8")) < 32
         or not approval
         or len(signing_key) < 32
@@ -184,8 +207,8 @@ def verify_callback_recovery(
                 "source image; no publication."
             ),
             "image_urls": [grant_reference["read_url"]],
-            "size": "3:4",
-            "quality": "standard",
+            "size": size,
+            "quality": quality,
             "model_params": {"web_search": False},
             "callback_url": callback_url,
         },
@@ -638,6 +661,8 @@ def main() -> int:
     parser.add_argument("--api-key-env", default="EVOLINK_API_KEY")
     parser.add_argument("--api-base-url-env", default="EVOLINK_API_BASE_URL")
     parser.add_argument("--image-model-env", default="EVOLINK_IMAGE_MODEL")
+    parser.add_argument("--image-quality-env", default="EVOLINK_IMAGE_QUALITY")
+    parser.add_argument("--image-size-env", default="EVOLINK_IMAGE_SIZE")
     parser.add_argument(
         "--callback-origin-env",
         default="EVOLINK_CALLBACK_BASE_URL",
@@ -668,6 +693,8 @@ def main() -> int:
                     api_key=os.environ.get(args.api_key_env, ""),
                     api_base_url=os.environ.get(args.api_base_url_env, ""),
                     image_model=os.environ.get(args.image_model_env, ""),
+                    image_quality=os.environ.get(args.image_quality_env, "2K") or "2K",
+                    image_size=os.environ.get(args.image_size_env, "3:4") or "3:4",
                     callback_origin=os.environ.get(args.callback_origin_env, ""),
                     callback_secret=os.environ.get(args.callback_secret_env, ""),
                     approval_ref=os.environ.get(args.approval_id_env, ""),
