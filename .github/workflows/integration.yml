@@ -644,7 +644,7 @@ jobs:
           printf '%s' "$PREVIEW_GOOGLE_STORAGE_STATE_B64" | base64 --decode > "$PREVIEW_GOOGLE_STORAGE_STATE_PATH"
           printf '%s' "$PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64" | base64 --decode > "$PREVIEW_SECOND_GOOGLE_STORAGE_STATE_PATH"
           chmod 600 "$PREVIEW_GOOGLE_STORAGE_STATE_PATH" "$PREVIEW_SECOND_GOOGLE_STORAGE_STATE_PATH"
-          npm run test:e2e -- e2e/google-session-smoke.spec.ts
+          npm run test:e2e -- --headed e2e/google-session-smoke.spec.ts
 
       - name: Materialize exact Preview Identity PASS evidence
         run: |
