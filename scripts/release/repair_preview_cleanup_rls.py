@@ -117,6 +117,12 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _pg_char(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("ascii")
+    return str(value)
+
+
 def _policy_name(table: str, command: str) -> str:
     return f"{table}_preview_cleanup_migration_{command.lower()}"
 
@@ -223,8 +229,9 @@ async def _inspect(db: AsyncSession) -> dict[str, Any]:
             using_expr = str(row["using_expr"])
             check_expr = str(row["check_expr"])
             roles = list(row["roles"] or [])
+            command_code = _pg_char(row["polcmd"])
             exact_policies = exact_policies and (
-                str(row["polcmd"]) == expected_cmd
+                command_code == expected_cmd
                 and roles == [MIGRATION_OWNER]
                 and "acceptance_identity_bindings" in using_expr
                 and "'preview'::text" in using_expr
@@ -239,7 +246,7 @@ async def _inspect(db: AsyncSession) -> dict[str, Any]:
             policy_hashes[name] = _sha256(
                 json.dumps(
                     {
-                        "command": row["polcmd"],
+                        "command": command_code,
                         "roles": roles,
                         "using": using_expr,
                         "check": check_expr,

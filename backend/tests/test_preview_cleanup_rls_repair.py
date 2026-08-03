@@ -103,6 +103,14 @@ class PreviewCleanupRlsRepairTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "trusted workflow"):
                 repair._require_trusted_preview_workflow()
 
+    def test_postgresql_internal_char_is_normalized_before_json_evidence(self) -> None:
+        repair = importlib.import_module(
+            "scripts.release.repair_preview_cleanup_rls"
+        )
+
+        self.assertEqual(repair._pg_char(b"r"), "r")
+        self.assertEqual(repair._pg_char("w"), "w")
+
     def test_integration_and_exact_recovery_install_and_persist_the_repair(self) -> None:
         integration = INTEGRATION.read_text(encoding="utf-8")
         recovery = RECOVERY.read_text(encoding="utf-8")
