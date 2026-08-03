@@ -165,17 +165,30 @@ class WebSecurityBaselineTest(unittest.TestCase):
         callback_source = (FRONTEND / "pages" / "auth" / "callback.vue").read_text(encoding="utf-8")
         combined = "\n".join([auth_source, supabase_source, callback_source])
         self.assertIn("flowType: 'pkce'", supabase_source)
-        self.assertIn("persistSession: false", supabase_source)
+        self.assertIn("persistSession: true", supabase_source)
         self.assertIn("autoRefreshToken: false", supabase_source)
         self.assertIn("detectSessionInUrl: false", supabase_source)
         self.assertIn("SUPABASE_PKCE_STORAGE_KEY", supabase_source)
+        self.assertIn("SUPABASE_PKCE_CODE_VERIFIER_KEY", supabase_source)
+        self.assertIn("const pkceOnlySessionStorage", supabase_source)
+        self.assertIn("key === SUPABASE_PKCE_CODE_VERIFIER_KEY", supabase_source)
+        self.assertIn("window.sessionStorage.setItem(key, value)", supabase_source)
+        self.assertIn("storage: pkceOnlySessionStorage", supabase_source)
+        self.assertNotIn("storage: window.sessionStorage", supabase_source)
         self.assertIn("storageKey: SUPABASE_PKCE_STORAGE_KEY", supabase_source)
         self.assertIn("export function clearSupabaseTransientStorage", supabase_source)
-        for suffix in ("", "-code-verifier", "-user"):
-            self.assertIn(
-                f"window.sessionStorage.removeItem(`${{SUPABASE_PKCE_STORAGE_KEY}}{suffix}`)",
-                supabase_source,
-            )
+        self.assertIn(
+            "window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}`)",
+            supabase_source,
+        )
+        self.assertIn(
+            "window.sessionStorage.removeItem(SUPABASE_PKCE_CODE_VERIFIER_KEY)",
+            supabase_source,
+        )
+        self.assertIn(
+            "window.sessionStorage.removeItem(`${SUPABASE_PKCE_STORAGE_KEY}-user`)",
+            supabase_source,
+        )
         self.assertIn("exchangeCodeForSession", combined)
         self.assertIn("sessionStorage", combined)
         self.assertIn("new URLSearchParams(window.location.hash.slice(1))", auth_source)

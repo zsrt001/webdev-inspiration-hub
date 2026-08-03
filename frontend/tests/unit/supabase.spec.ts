@@ -15,6 +15,7 @@ describe('Supabase public browser config', () => {
     vi.resetModules();
     fetchMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);
+    window.sessionStorage.clear();
   });
 
   it('uses the browser fetch path and accepts one enabled public config', async () => {
@@ -49,5 +50,34 @@ describe('Supabase public browser config', () => {
 
     await expect(refreshSupabaseConfig(true)).resolves.toBe(false);
     await expect(refreshSupabaseConfig(true)).resolves.toBe(false);
+  });
+
+  it('persists only the PKCE verifier across the OAuth navigation', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, {
+      auth: {
+        google_oauth_enabled: true,
+        supabase_url: 'https://preview.supabase.co/',
+        supabase_publishable_key: 'public-key',
+      },
+    }));
+    const { clearSupabaseTransientStorage, getSupabaseClient } = await import('../../src/utils/supabase');
+    const supabase = await getSupabaseClient();
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: 'https://preview.example.com/pages/auth/callback',
+        skipBrowserRedirect: true,
+      },
+    });
+
+    expect(error).toBeNull();
+    expect(data.url).toContain('code_challenge=');
+    expect(window.sessionStorage.getItem('vowpic_supabase_pkce-code-verifier')).toBeTruthy();
+    expect(window.sessionStorage.getItem('vowpic_supabase_pkce')).toBeNull();
+    expect(window.sessionStorage.getItem('vowpic_supabase_pkce-user')).toBeNull();
+
+    clearSupabaseTransientStorage();
+    expect(window.sessionStorage.getItem('vowpic_supabase_pkce-code-verifier')).toBeNull();
   });
 });
