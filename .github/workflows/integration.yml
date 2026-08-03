@@ -206,6 +206,18 @@ jobs:
             --environment preview \
             --output "$EVIDENCE_DIR/commercial-guard-row-shape-repair.json"
 
+      - name: Install and verify the bounded Preview-cleanup RLS surface
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
+          PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          PRODUCTION_SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+        run: |
+          python scripts/release/repair_preview_cleanup_rls.py \
+            --output "$EVIDENCE_DIR/preview-cleanup-rls-repair.json"
+
       - name: Prove the Vercel runtime can read Preview feature-flag authority
         env:
           DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}

@@ -102,6 +102,19 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ steps.coordinates.outputs.target_run_id }}
 
+      - name: Install and verify the bounded Preview-cleanup RLS surface
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
+          PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          PRODUCTION_SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+        run: |
+          mkdir -p artifacts/preview-identity
+          python scripts/release/repair_preview_cleanup_rls.py \
+            --output artifacts/preview-identity/cleanup-rls-repair.json
+
       - name: Restore the database and callback state for the exact activation
         env:
           TARGET_SOURCE_SHA: ${{ steps.coordinates.outputs.source_sha }}
@@ -144,6 +157,7 @@ jobs:
         with:
           name: vowpic-preview-identity-recovery-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            artifacts/preview-identity/cleanup-rls-repair.json
             artifacts/preview-identity/cleanup-report.json
             artifacts/release/${{ steps.coordinates.outputs.source_sha }}/${{ steps.coordinates.outputs.target_run_id }}-${{ steps.coordinates.outputs.target_run_attempt }}/*/08-cleanup/preview_cleanup.json
           if-no-files-found: error
