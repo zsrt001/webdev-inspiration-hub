@@ -282,6 +282,20 @@ def _database_url(value: object) -> str:
     return clean
 
 
+def _is_fresh_prepared_graph(row: dict[str, Any] | None, reference: dict[str, Any]) -> bool:
+    if row is None or row.get("provider_job_id") is not None:
+        return False
+    expected = {
+        "attempt_status": "PREPARED",
+        "job_status": "QUEUED",
+        "active_attempt_id": reference["attempt_id"],
+        "runtime_bundle_id": reference["runtime_bundle_id"],
+        "api_deployment_id": reference["api_deployment_id"],
+        "order_status": "QUEUED",
+    }
+    return not any(str(row.get(key) or "") != value for key, value in expected.items())
+
+
 def _prepare_unknown(database_url: str, reference: dict[str, Any]) -> None:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -309,16 +323,7 @@ def _prepare_unknown(database_url: str, reference: dict[str, Any]) -> None:
                 ),
             )
             row = cursor.fetchone()
-            expected = {
-                "attempt_status": "PREPARED",
-                "provider_job_id": None,
-                "job_status": "QUEUED",
-                "active_attempt_id": UUID(reference["attempt_id"]),
-                "runtime_bundle_id": reference["runtime_bundle_id"],
-                "api_deployment_id": reference["api_deployment_id"],
-                "order_status": "QUEUED",
-            }
-            if row is None or any(row.get(key) != value for key, value in expected.items()):
+            if not _is_fresh_prepared_graph(row, reference):
                 raise ValueError(
                     "Preview callback recovery graph is not a fresh prepared case"
                 )
