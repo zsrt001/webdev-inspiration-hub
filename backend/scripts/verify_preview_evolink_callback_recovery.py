@@ -329,8 +329,20 @@ def _prepare_unknown(database_url: str, reference: dict[str, Any]) -> None:
                 )
             cursor.execute(
                 """
+                UPDATE generation_jobs
+                SET status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'QUEUED'
+                  AND active_attempt_id = %s
+                RETURNING id
+                """,
+                (reference["job_id"], reference["attempt_id"]),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Preview callback job activation lost its fence")
+            cursor.execute(
+                """
                 UPDATE generation_attempts
-                SET status = 'UNKNOWN',
+                SET status = 'SUBMITTING',
                     submit_started_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s AND status = 'PREPARED'
@@ -340,7 +352,31 @@ def _prepare_unknown(database_url: str, reference: dict[str, Any]) -> None:
                 (reference["attempt_id"],),
             )
             if cursor.fetchone() is None:
-                raise ValueError("Preview callback attempt transition lost its fence")
+                raise ValueError("Preview callback attempt submission transition lost its fence")
+            cursor.execute(
+                """
+                UPDATE orders
+                SET status = 'GENERATING', updated_at = CURRENT_TIMESTAMP
+                WHERE generation_job_id = %s AND status = 'QUEUED'
+                RETURNING id
+                """,
+                (reference["job_id"],),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Preview callback order activation lost its fence")
+            cursor.execute(
+                """
+                UPDATE generation_attempts
+                SET status = 'UNKNOWN',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'SUBMITTING'
+                  AND provider_job_id IS NULL
+                RETURNING id
+                """,
+                (reference["attempt_id"],),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Preview callback attempt unknown transition lost its fence")
             cursor.execute(
                 """
                 UPDATE generation_jobs
@@ -353,26 +389,26 @@ def _prepare_unknown(database_url: str, reference: dict[str, Any]) -> None:
                     lease_expires_at = NULL,
                     heartbeat_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND status = 'QUEUED'
+                WHERE id = %s AND status = 'ACTIVE'
                   AND active_attempt_id = %s
                 RETURNING id
                 """,
                 (reference["job_id"], reference["attempt_id"]),
             )
             if cursor.fetchone() is None:
-                raise ValueError("Preview callback job transition lost its fence")
+                raise ValueError("Preview callback job reconciliation transition lost its fence")
             cursor.execute(
                 """
                 UPDATE orders
                 SET status = 'UNKNOWN_EXTERNAL_STATE',
                     updated_at = CURRENT_TIMESTAMP
-                WHERE generation_job_id = %s AND status = 'QUEUED'
+                WHERE generation_job_id = %s AND status = 'GENERATING'
                 RETURNING id
                 """,
                 (reference["job_id"],),
             )
             if cursor.fetchone() is None:
-                raise ValueError("Preview callback order transition lost its fence")
+                raise ValueError("Preview callback order unknown transition lost its fence")
 
 
 def _binding_probe(database_url: str, reference: dict[str, Any]) -> dict[str, Any] | None:
