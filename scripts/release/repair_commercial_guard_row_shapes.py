@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repair the two schema-0020 guards shared by tables with different row shapes."""
+"""Repair schema-0020 cross-table guards without widening database privileges."""
 
 from __future__ import annotations
 
@@ -36,6 +36,17 @@ FUNCTION_SIGNATURES = {
     ),
     "commercial_entitlement_funding_guard": (
         "public.commercial_entitlement_funding_guard()"
+    ),
+}
+GENERATION_GUARD_SIGNATURES = {
+    "guard_generation_job_transition": (
+        "public.guard_generation_job_transition()"
+    ),
+    "guard_generation_attempt_transition": (
+        "public.guard_generation_attempt_transition()"
+    ),
+    "qa_verdict_append_only_guard": (
+        "public.qa_verdict_append_only_guard()"
     ),
 }
 
@@ -201,6 +212,41 @@ async def inspect_commercial_guard_row_shapes(
             "search_path_locked": "search_path=pg_catalog, public" in settings,
             "fixed_row_shape_dispatch": _definition_is_fixed(name, definition),
         }
+    generation_guards: dict[str, dict[str, object]] = {}
+    for name, signature in GENERATION_GUARD_SIGNATURES.items():
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    pg_get_functiondef(procedure.oid) AS definition,
+                    pg_get_userbyid(procedure.proowner) AS owner,
+                    procedure.prosecdef AS security_definer,
+                    COALESCE(procedure.proconfig, ARRAY[]::text[]) AS settings,
+                    COALESCE(procedure.proacl::text, '') AS acl
+                FROM pg_catalog.pg_proc procedure
+                WHERE procedure.oid =
+                    to_regprocedure(:function_signature)::oid
+                """
+            ),
+            {"function_signature": signature},
+        )
+        row = result.mappings().one_or_none()
+        definition = str(row["definition"] if row is not None else "")
+        settings = list(row["settings"] if row is not None else [])
+        generation_guards[name] = {
+            "exists": row is not None,
+            "owner_sha256": _sha256(
+                str(row["owner"] if row is not None else "")
+            ),
+            "definition_sha256": _sha256(definition),
+            "acl_sha256": _sha256(
+                str(row["acl"] if row is not None else "")
+            ),
+            "security_invoker": not bool(
+                row["security_definer"] if row is not None else True
+            ),
+            "search_path_locked": "search_path=pg_catalog, public" in settings,
+        }
     return {
         "revision": revision,
         "passed": revision == TARGET_REVISION
@@ -210,8 +256,15 @@ async def inspect_commercial_guard_row_shapes(
             and bool(item["search_path_locked"])
             and bool(item["fixed_row_shape_dispatch"])
             for item in functions.values()
+        )
+        and all(
+            bool(item["exists"])
+            and bool(item["security_invoker"])
+            and bool(item["search_path_locked"])
+            for item in generation_guards.values()
         ),
         "functions": functions,
+        "generation_guards": generation_guards,
     }
 
 
@@ -228,20 +281,26 @@ async def repair_commercial_guard_row_shapes(
         )
     await db.execute(text(RESERVATION_ALLOCATION_GUARD_SQL))
     await db.execute(text(ENTITLEMENT_FUNDING_GUARD_SQL))
+    for signature in GENERATION_GUARD_SIGNATURES.values():
+        await db.execute(text(f"ALTER FUNCTION {signature} SECURITY INVOKER"))
     after = await inspect_commercial_guard_row_shapes(db)
     if not after["passed"]:
         raise RuntimeError("commercial guard row-shape repair did not verify")
     owner_and_acl_preserved = all(
-        before["functions"][name]["owner_sha256"]
-        == after["functions"][name]["owner_sha256"]
-        and before["functions"][name]["acl_sha256"]
-        == after["functions"][name]["acl_sha256"]
-        for name in FUNCTION_SIGNATURES
+        before[group][name]["owner_sha256"]
+        == after[group][name]["owner_sha256"]
+        and before[group][name]["acl_sha256"]
+        == after[group][name]["acl_sha256"]
+        for group, signatures in (
+            ("functions", FUNCTION_SIGNATURES),
+            ("generation_guards", GENERATION_GUARD_SIGNATURES),
+        )
+        for name in signatures
     )
     if not owner_and_acl_preserved:
         raise RuntimeError("commercial guard ownership or ACL changed")
     return {
-        "schema": "vowpic.commercial-guard-row-shape-repair.v1",
+        "schema": "vowpic.schema-0020-cross-table-guard-repair.v2",
         "before": before,
         "after": after,
         "owner_and_acl_preserved": owner_and_acl_preserved,
@@ -249,6 +308,11 @@ async def repair_commercial_guard_row_shapes(
             before["functions"][name]["definition_sha256"]
             != after["functions"][name]["definition_sha256"]
             for name in FUNCTION_SIGNATURES
+        )
+        or any(
+            before["generation_guards"][name]["security_invoker"]
+            != after["generation_guards"][name]["security_invoker"]
+            for name in GENERATION_GUARD_SIGNATURES
         ),
     }
 

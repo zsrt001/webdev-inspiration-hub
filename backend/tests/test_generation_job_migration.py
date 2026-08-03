@@ -39,6 +39,10 @@ class GenerationJobMigrationTest(unittest.TestCase):
             "vowpic_generation_service",
         ):
             self.assertIn(token, source)
+        self.assertEqual(
+            source.count("RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER"),
+            3,
+        )
 
     def test_models_expose_runtime_fencing_attempt_and_verdict_lineage(self) -> None:
         for column in (

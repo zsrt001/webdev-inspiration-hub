@@ -126,6 +126,15 @@ class CommercialLedgerMigrationTest(unittest.TestCase):
             2,
         )
         self.assertIn("owner_and_acl_preserved", repair)
+        for guard in (
+            "guard_generation_job_transition",
+            "guard_generation_attempt_transition",
+            "qa_verdict_append_only_guard",
+        ):
+            self.assertIn(guard, repair)
+        self.assertIn("SECURITY INVOKER", repair)
+        self.assertIn('"security_invoker"', repair)
+        self.assertNotIn("CREATE POLICY", repair)
         self.assertIn('"owner_sha256"', repair)
         self.assertNotIn('"owner":', repair)
         self.assertIn("SET LOCAL lock_timeout = '5s'", repair)

@@ -194,7 +194,7 @@ jobs:
           DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
         run: alembic upgrade 20260710_0020
 
-      - name: Repair and verify the exact schema-0020 cross-table commercial guards
+      - name: Repair and verify the exact schema-0020 cross-table guards
         env:
           PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
           PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
