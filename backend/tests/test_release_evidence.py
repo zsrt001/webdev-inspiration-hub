@@ -172,8 +172,8 @@ class WorkflowFalseGreenTest(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.preview_test)
 
-    def test_protected_google_acceptance_is_silent_and_exact_without_changing_user_login(self) -> None:
-        self.assertIn("url.searchParams.set('prompt', 'none')", self.google_oauth_acceptance)
+    def test_protected_google_acceptance_selects_the_exact_account_without_changing_user_login(self) -> None:
+        self.assertIn("url.searchParams.set('prompt', 'select_account')", self.google_oauth_acceptance)
         self.assertIn("url.searchParams.set('login_hint', identityEmail)", self.google_oauth_acceptance)
         self.assertIn("{ times: 1 }", self.google_oauth_acceptance)
         self.assertIn("queryParams: { prompt: 'select_account' }", self.browser_auth)
