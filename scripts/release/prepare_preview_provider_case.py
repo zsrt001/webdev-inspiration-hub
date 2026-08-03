@@ -24,7 +24,7 @@ for entry in (str(ROOT), str(BACKEND)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import select, text  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
@@ -149,16 +149,23 @@ def _runtime_matches(activation: dict[str, Any]) -> bool:
 
 
 async def _require_acceptance_owner(db, owner_user_id: uuid.UUID) -> None:
-    user = await db.scalar(select(User).where(User.id == owner_user_id).with_for_update())
+    # The Preview migration login intentionally reaches the identity tables only
+    # through the non-inherited identity-owner role.  Keep that RLS boundary
+    # intact instead of granting the migration role a broad users policy.
+    await db.execute(text("SET LOCAL ROLE vowpic_identity_owner"))
+    try:
+        user = await db.scalar(select(User).where(User.id == owner_user_id))
+        identity_id = await db.scalar(
+            select(UserIdentity.id).where(
+                UserIdentity.user_id == owner_user_id,
+                UserIdentity.provider == "supabase",
+                UserIdentity.revoked_at.is_(None),
+            ).limit(1)
+        )
+    finally:
+        await db.execute(text("SET LOCAL ROLE vowpic_migration_owner"))
     if user is None or str(user.status or "").lower() != "active":
         raise ValueError("Provider case owner is not an active user")
-    identity_id = await db.scalar(
-        select(UserIdentity.id).where(
-            UserIdentity.user_id == owner_user_id,
-            UserIdentity.provider == "supabase",
-            UserIdentity.revoked_at.is_(None),
-        ).limit(1)
-    )
     binding_id = await db.scalar(
         select(AcceptanceIdentityBinding.id).where(
             AcceptanceIdentityBinding.consumed_user_id == owner_user_id,
