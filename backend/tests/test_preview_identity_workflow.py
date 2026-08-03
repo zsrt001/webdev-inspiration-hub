@@ -1806,6 +1806,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "verify_preview_release_package.py build",
             "verify_evolink_credits.py",
             "--capabilities release/provider-capabilities.json",
+            "protected Preview Commercial pre-activation cleanup",
             "vowpic-preview-release-${{ github.run_id }}-${{ github.run_attempt }}-evidence",
         ):
             with self.subTest(required=required):
@@ -1830,6 +1831,19 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertLess(
             workflow.index("Prove EvoLink can fund one Preview image before mutation"),
             workflow.index("Re-prove Preview Supabase isolation before Commercial mutation"),
+        )
+        commercial_cleanup = workflow[
+            workflow.index("Return the database-owned Preview Commercial activation to CLEANED") :
+            workflow.index("Persist only sanitized Commercial evidence")
+        ]
+        self.assertIn(
+            'if ! test -s "$RUNNER_TEMP/commercial-activation-id.txt"',
+            commercial_cleanup,
+        )
+        self.assertIn("--role PREVIEW_COMMERCIAL", commercial_cleanup)
+        self.assertLess(
+            commercial_cleanup.index("cleanup_preview_identity_smoke.py"),
+            commercial_cleanup.index("cleanup_preview_commercial.py"),
         )
         self.assertLess(
             workflow.index("configure_preview_commercial_auth_origin.py"),
