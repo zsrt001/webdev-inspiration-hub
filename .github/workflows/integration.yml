@@ -12,12 +12,13 @@ on:
         required: true
         type: string
       acceptance_scope:
-        description: Run backend deployment proof now; defer Google and Commercial journeys until the final acceptance run
+        description: Run the exact backend deployment, an isolated real Provider proof, or the final Google and Commercial journeys
         required: true
         default: runtime_only
         type: choice
         options:
           - "runtime_only"
+          - "provider_only"
           - "full"
       failure_boundary:
         description: Optional cleanup failure-injection proof
@@ -837,13 +838,14 @@ jobs:
           if [[ "${{ inputs.failure_boundary }}" == "cleanup" ]]; then exit 98; fi
 
   commercial:
-    name: Build, bind, exercise, and clean Preview Commercial
+    name: Build, bind, exercise, and clean Preview backend/Commercial
     needs: [register, smoke, cleanup]
     if: >-
-      inputs.acceptance_scope == 'full' &&
+      always() &&
+      (inputs.acceptance_scope == 'provider_only' || inputs.acceptance_scope == 'full') &&
       needs.register.result == 'success' &&
-      needs.smoke.result == 'success' &&
-      needs.cleanup.result == 'success'
+      needs.cleanup.result == 'success' &&
+      (inputs.acceptance_scope == 'provider_only' || needs.smoke.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: preview-commercial
@@ -1208,6 +1210,7 @@ jobs:
             --output "$COMMERCIAL_EVIDENCE_DIR/backend-runtime.json"
 
       - name: Bind the exact commercial callback, Supabase callback, identities, and cohorts
+        if: inputs.acceptance_scope == 'full'
         env:
           PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
           PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
@@ -1278,11 +1281,22 @@ jobs:
         env:
           PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PREVIEW_GOOGLE_SUBJECTS_B64: ${{ secrets.PREVIEW_GOOGLE_SUBJECTS_B64 }}
         run: |
+          set -euo pipefail
+          if [[ "${{ inputs.acceptance_scope }}" == "provider_only" ]]; then
+            printf '%s' "$PREVIEW_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/preview-commercial-google-subjects.json"
+            selection_args=(--selection-mode latest-cleaned)
+          else
+            selection_args=(
+              --selection-mode exact
+              --source-sha "$SOURCE_SHA"
+              --workflow-run-id "$GITHUB_RUN_ID"
+              --workflow-attempt "$GITHUB_RUN_ATTEMPT"
+            )
+          fi
           python backend/scripts/resolve_preview_provider_owner.py \
-            --source-sha "$SOURCE_SHA" \
-            --workflow-run-id "$GITHUB_RUN_ID" \
-            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            "${selection_args[@]}" \
             --subjects-file "$RUNNER_TEMP/preview-commercial-google-subjects.json" \
             --database-url-env PREVIEW_CONTROL_READ_DATABASE_URL \
             --hmac-key-env ACCEPTANCE_IDENTITY_HMAC_KEY \
@@ -1349,6 +1363,7 @@ jobs:
             --output "$COMMERCIAL_EVIDENCE_DIR/provider-fetch.json"
 
       - name: Run the full Google, Creem Test Mode, generation, partner, export, delete, and accessibility journey
+        if: inputs.acceptance_scope == 'full'
         working-directory: frontend
         env:
           RUN_PREVIEW_E2E: '1'
@@ -1376,6 +1391,7 @@ jobs:
           npm run test:e2e -- e2e/preview-commercial-flow.spec.ts
 
       - name: Materialize real Preview Commercial release evidence
+        if: inputs.acceptance_scope == 'full'
         env:
           PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
@@ -1468,6 +1484,10 @@ jobs:
           STORAGE_PROVIDER: vercel
           PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN }}
         run: |
+          expected_identities=0
+          if [[ "${{ inputs.acceptance_scope }}" == "full" ]]; then
+            expected_identities=2
+          fi
           python backend/scripts/cleanup_preview_commercial.py \
             --activation-id "$(tr -d '\r\n' < "$RUNNER_TEMP/commercial-activation-id.txt")" \
             --source-sha "$SOURCE_SHA" \
@@ -1476,6 +1496,7 @@ jobs:
             --workflow-run-id "$GITHUB_RUN_ID" --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
             --actor "github-actions:$GITHUB_RUN_ID" \
             --reason "protected Preview Commercial cleanup" \
+            --expected-consumed-identities "$expected_identities" \
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
             --output "$COMMERCIAL_EVIDENCE_DIR/cleanup-report.json"
 

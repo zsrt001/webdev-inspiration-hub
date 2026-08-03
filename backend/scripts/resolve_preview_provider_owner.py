@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the Preview Provider owner from a consumed Identity binding."""
+"""Resolve a Preview Provider owner from a real consumed Google binding."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.database import normalize_database_url  # noqa: E402
 from app.models.acceptance_identity_binding import AcceptanceIdentityBinding  # noqa: E402
 from app.models.release_activation import ReleaseActivation  # noqa: E402
+from app.models.user import User  # noqa: E402
 from app.services.acceptance_identity_service import compute_subject_hmac  # noqa: E402
 
 
@@ -118,10 +119,53 @@ async def resolve_owner_user_id(
     return activation, binding.consumed_user_id
 
 
+async def resolve_latest_cleaned_owner_user_id(
+    db: AsyncSession,
+    *,
+    subject_hmac: str,
+) -> tuple[ReleaseActivation, uuid.UUID]:
+    rows = (
+        await db.execute(
+            select(ReleaseActivation, AcceptanceIdentityBinding.consumed_user_id)
+            .join(
+                AcceptanceIdentityBinding,
+                AcceptanceIdentityBinding.deployment_id
+                == ReleaseActivation.api_deployment_id,
+            )
+            .join(User, User.id == AcceptanceIdentityBinding.consumed_user_id)
+            .where(
+                ReleaseActivation.environment == "preview",
+                ReleaseActivation.kind == "PREVIEW_IDENTITY",
+                ReleaseActivation.phase == "CLEANED",
+                AcceptanceIdentityBinding.environment == "preview",
+                AcceptanceIdentityBinding.provider == "google",
+                AcceptanceIdentityBinding.subject_hmac == subject_hmac,
+                AcceptanceIdentityBinding.consumed_at.is_not(None),
+                AcceptanceIdentityBinding.consumed_user_id.is_not(None),
+                AcceptanceIdentityBinding.revoked_at.is_(None),
+                User.status == "active",
+            )
+            .order_by(
+                ReleaseActivation.updated_at.desc(),
+                ReleaseActivation.created_at.desc(),
+                ReleaseActivation.id.desc(),
+            )
+            .limit(1)
+        )
+    ).one_or_none()
+    if rows is None or rows[1] is None:
+        raise ValueError("no cleaned real Google acceptance binding is available")
+    return rows[0], rows[1]
+
+
 def build_report(
     activation: ReleaseActivation,
     owner_user_id: uuid.UUID,
+    *,
+    selection_mode: str = "exact",
 ) -> dict[str, Any]:
+    if selection_mode not in {"exact", "latest-cleaned"}:
+        raise ValueError("Provider owner selection mode is invalid")
     deployment_id = str(activation.api_deployment_id or "").strip()
     if not deployment_id:
         raise ValueError("Preview Identity deployment ID is absent")
@@ -135,7 +179,11 @@ def build_report(
         "owner_user_id_sha256": hashlib.sha256(
             str(owner_user_id).encode("utf-8")
         ).hexdigest(),
-        "state": "RESOLVED_FROM_CONSUMED_BINDING",
+        "state": (
+            "RESOLVED_FROM_CONSUMED_BINDING"
+            if selection_mode == "exact"
+            else "RESOLVED_FROM_PRIOR_CLEANED_BINDING"
+        ),
     }
 
 
@@ -157,16 +205,30 @@ async def _run(args: argparse.Namespace) -> int:
     engine = create_async_engine(normalized_url, connect_args=connect_args)
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as db:
-            activation, owner_user_id = await resolve_owner_user_id(
-                db,
-                source_sha=args.source_sha,
-                workflow_run_id=args.workflow_run_id,
-                workflow_attempt=args.workflow_attempt,
-                subject_hmac=subject_hmac,
-            )
+            if args.selection_mode == "exact":
+                if not args.source_sha or not args.workflow_run_id or args.workflow_attempt is None:
+                    raise ValueError("exact Provider owner selection requires workflow coordinates")
+                activation, owner_user_id = await resolve_owner_user_id(
+                    db,
+                    source_sha=args.source_sha,
+                    workflow_run_id=args.workflow_run_id,
+                    workflow_attempt=args.workflow_attempt,
+                    subject_hmac=subject_hmac,
+                )
+            else:
+                if args.source_sha or args.workflow_run_id or args.workflow_attempt is not None:
+                    raise ValueError("latest-cleaned Provider owner selection forbids workflow coordinates")
+                activation, owner_user_id = await resolve_latest_cleaned_owner_user_id(
+                    db,
+                    subject_hmac=subject_hmac,
+                )
     finally:
         await engine.dispose()
-    report = build_report(activation, owner_user_id)
+    report = build_report(
+        activation,
+        owner_user_id,
+        selection_mode=args.selection_mode,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, sort_keys=True, indent=2) + "\n",
@@ -178,9 +240,14 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source-sha", required=True)
-    parser.add_argument("--workflow-run-id", required=True)
-    parser.add_argument("--workflow-attempt", type=int, required=True)
+    parser.add_argument(
+        "--selection-mode",
+        choices=("exact", "latest-cleaned"),
+        default="exact",
+    )
+    parser.add_argument("--source-sha")
+    parser.add_argument("--workflow-run-id")
+    parser.add_argument("--workflow-attempt", type=int)
     parser.add_argument("--subjects-file", type=Path, required=True)
     parser.add_argument(
         "--database-url-env",

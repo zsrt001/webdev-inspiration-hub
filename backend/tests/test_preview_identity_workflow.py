@@ -1248,6 +1248,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "ci_run_attempt:",
             "acceptance_scope:",
             'default: runtime_only',
+            '- "provider_only"',
             'inputs.acceptance_scope == \'full\'',
             "verify_github_ref.py",
             "build_runtime_bundle_id.py",
@@ -1491,10 +1492,14 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             workflow.index("  stage5:")
         ]
         self.assertIn("needs: [register, smoke, cleanup]", commercial_job)
+        self.assertIn("always()", commercial_job)
+        self.assertIn("inputs.acceptance_scope == 'provider_only'", commercial_job)
         self.assertIn("inputs.acceptance_scope == 'full'", commercial_job)
         self.assertIn("needs.register.result == 'success'", commercial_job)
         self.assertIn("needs.smoke.result == 'success'", commercial_job)
         self.assertIn("needs.cleanup.result == 'success'", commercial_job)
+        self.assertIn("--selection-mode latest-cleaned", commercial_job)
+        self.assertIn("--expected-consumed-identities", commercial_job)
         self.assertLess(
             second_isolation,
             workflow.index("Build the exact website-backend runtime ID before deployment"),
@@ -1584,6 +1589,20 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, workflow)
+
+        full_only_binding = workflow[
+            workflow.index("Bind the exact commercial callback, Supabase callback, identities, and cohorts") :
+            workflow.index("Resolve the primary Provider owner from the consumed Identity binding")
+        ]
+        self.assertIn("if: inputs.acceptance_scope == 'full'", full_only_binding)
+        full_only_browser = workflow[
+            workflow.index("Run the full Google, Creem Test Mode") :
+            workflow.index("Revoke any prepared grant and remove the exact temporary alias")
+        ]
+        self.assertGreaterEqual(
+            full_only_browser.count("if: inputs.acceptance_scope == 'full'"),
+            2,
+        )
 
         self.assertNotIn("explicit Stage-6 NOT_RUN evidence", workflow)
         self.assertNotIn('"status": "PASS" if passed else "NOT_RUN"', workflow)
