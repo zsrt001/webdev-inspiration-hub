@@ -702,6 +702,7 @@ async def refund_captured_reservation(
         expires_at=current + timedelta(days=90),
     )
     db.add(transaction)
+    await db.flush()
     db.add(lot)
     credit.balance = next_balance
     await db.flush()

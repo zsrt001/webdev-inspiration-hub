@@ -115,7 +115,9 @@ async def ensure_welcome_grant_for_identity(
         grant_lot_id=lot_id,
     )
     db.add(transaction)
+    await db.flush()
     db.add(lot)
+    await db.flush()
     db.add(claim)
     credit.balance = next_balance
     await db.flush()

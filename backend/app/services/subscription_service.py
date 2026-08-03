@@ -1234,7 +1234,9 @@ class SubscriptionService:
             grant_lot_id=lot_id,
         )
         db.add(transaction)
+        await db.flush()
         db.add(lot)
+        await db.flush()
         db.add(grant)
         credit.balance = next_balance
         invoice.credit_grant_id = grant_id
