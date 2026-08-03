@@ -93,7 +93,9 @@ async def _locked_identity_user(
     db: AsyncSession,
     claims: SupabaseUserClaims,
 ) -> tuple[UserIdentity | None, User | None]:
-    lock_key = f"vowpic.identity.supabase\0{claims.subject}"
+    # PostgreSQL text values cannot contain NUL bytes. Keep the provider and
+    # subject namespaced with a printable delimiter before hashing the key.
+    lock_key = f"vowpic.identity.supabase:{claims.subject}"
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": lock_key})
     result = await db.execute(
         select(UserIdentity, User)

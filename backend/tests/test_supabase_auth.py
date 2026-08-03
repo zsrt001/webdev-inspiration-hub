@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -193,6 +195,28 @@ class SupabaseAuthTest(unittest.TestCase):
             }.issubset(routes)
         )
         self.assertNotIn("/auth/supabase/google/start", routes)
+
+
+class SupabaseIdentityLockTest(unittest.IsolatedAsyncioTestCase):
+    async def test_identity_advisory_lock_uses_postgresql_safe_text(self) -> None:
+        from app.routers.auth.google import _locked_identity_user
+
+        lock_result = MagicMock()
+        identity_result = MagicMock()
+        identity_result.one_or_none.return_value = None
+        database = AsyncMock()
+        database.execute = AsyncMock(side_effect=(lock_result, identity_result))
+
+        identity, user = await _locked_identity_user(
+            database,
+            SimpleNamespace(subject=SUBJECT),
+        )
+
+        self.assertIsNone(identity)
+        self.assertIsNone(user)
+        lock_parameters = database.execute.await_args_list[0].args[1]
+        self.assertEqual(lock_parameters["key"], f"vowpic.identity.supabase:{SUBJECT}")
+        self.assertNotIn("\x00", lock_parameters["key"])
 
 
 if __name__ == "__main__":
