@@ -954,6 +954,17 @@ jobs:
             backend.tests.test_backend_generation_executor \
             backend.tests.test_release_coordinate_resolver -v
 
+      - name: Prove EvoLink can fund one Preview image before mutation
+        env:
+          EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$COMMERCIAL_EVIDENCE_DIR"
+          python scripts/release/verify_evolink_credits.py \
+            --api-key-env EVOLINK_API_KEY \
+            --capabilities release/provider-capabilities.json \
+            --output "$COMMERCIAL_EVIDENCE_DIR/evolink-credit-preflight.json"
+
       - name: Re-prove Preview Supabase isolation before Commercial mutation
         env:
           PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
