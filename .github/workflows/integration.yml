@@ -1313,7 +1313,6 @@ jobs:
 
       - name: Lease the exact Provider-grant origin and run the real Provider fetch proof
         env:
-          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
           PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
           PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
           PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
@@ -1348,7 +1347,7 @@ jobs:
             --output "$COMMERCIAL_EVIDENCE_DIR/provider-capabilities.json"
           python scripts/release/prepare_preview_provider_case.py \
             --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
-            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --database-url-env PREVIEW_RUNTIME_DATABASE_URL \
             --owner-read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL \
             --output "$RUNNER_TEMP/provider-input.json"
           python scripts/release/configure_preview_provider_grant_origin.py snapshot \
@@ -1361,13 +1360,13 @@ jobs:
             --output "$COMMERCIAL_EVIDENCE_DIR/provider-origin-added.json"
           python scripts/release/prepare_preview_provider_grant.py \
             --input-reference "$RUNNER_TEMP/provider-input.json" \
-            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --database-url-env PREVIEW_RUNTIME_DATABASE_URL \
             --output "$RUNNER_TEMP/provider-grant-reference.json"
           python backend/scripts/verify_preview_evolink_callback_recovery.py \
             --capabilities release/provider-capabilities.json \
             --grant-reference "$RUNNER_TEMP/provider-grant-reference.json" \
             --expected-source-sha "$SOURCE_SHA" \
-            --write-database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --write-database-url-env PREVIEW_RUNTIME_DATABASE_URL \
             --read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL \
             --output "$COMMERCIAL_EVIDENCE_DIR/provider-fetch.json"
 
@@ -1422,7 +1421,7 @@ jobs:
         if: always()
         env:
           PREVIEW_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_PLANE_DATABASE_URL }}
-          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          PREVIEW_RUNTIME_DATABASE_URL: ${{ secrets.PREVIEW_RUNTIME_DATABASE_URL }}
           SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -1442,7 +1441,7 @@ jobs:
             set +e
             python scripts/release/cleanup_preview_provider_case.py \
               --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
-              --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+              --database-url-env PREVIEW_RUNTIME_DATABASE_URL \
               --output "$COMMERCIAL_EVIDENCE_DIR/provider-case-cleanup.json"
             provider_cleanup_status=$?
             set -e

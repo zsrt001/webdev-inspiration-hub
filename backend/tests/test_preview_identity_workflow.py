@@ -89,6 +89,60 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             workflow,
         )
 
+    def test_provider_acceptance_writes_only_through_the_runtime_login(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "integration.yml").read_text(
+            encoding="utf-8"
+        )
+        provider_block = workflow[
+            workflow.index(
+                "Lease the exact Provider-grant origin and run the real Provider fetch proof"
+            ) : workflow.index(
+                "Run the full Google, Creem Test Mode, generation, partner, export, delete, and accessibility journey"
+            )
+        ]
+        cleanup_block = workflow[
+            workflow.index(
+                "Revoke any prepared grant and remove the exact temporary alias, callback, and auth origin"
+            ) : workflow.index(
+                "Return the database-owned Preview Commercial activation to CLEANED"
+            )
+        ]
+
+        self.assertNotIn("PREVIEW_MIGRATION_DATABASE_URL", provider_block)
+        self.assertEqual(
+            provider_block.count("--database-url-env PREVIEW_RUNTIME_DATABASE_URL"),
+            2,
+        )
+        self.assertIn(
+            "--write-database-url-env PREVIEW_RUNTIME_DATABASE_URL",
+            provider_block,
+        )
+        self.assertIn(
+            "--read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL",
+            provider_block,
+        )
+        self.assertNotIn("PREVIEW_MIGRATION_DATABASE_URL", cleanup_block)
+        self.assertIn(
+            "--database-url-env PREVIEW_RUNTIME_DATABASE_URL",
+            cleanup_block,
+        )
+
+        for relative_path in (
+            "scripts/release/prepare_preview_provider_case.py",
+            "scripts/release/prepare_preview_provider_grant.py",
+            "scripts/release/cleanup_preview_provider_case.py",
+        ):
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            with self.subTest(relative_path=relative_path):
+                self.assertIn(
+                    'default="PREVIEW_RUNTIME_DATABASE_URL"',
+                    source,
+                )
+                self.assertNotIn(
+                    'default="PREVIEW_MIGRATION_DATABASE_URL"',
+                    source,
+                )
+
     def test_exact_preview_identity_recovery_is_coordinate_bound_and_fail_closed(self) -> None:
         recovery_path = ROOT / ".github" / "workflows" / "preview-identity-recovery.yml"
         self.assertTrue(recovery_path.is_file())
