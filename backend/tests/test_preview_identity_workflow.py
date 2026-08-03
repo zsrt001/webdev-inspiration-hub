@@ -36,6 +36,28 @@ def _load(name: str, relative_path: str):
 
 
 class PreviewIdentityWorkflowTest(unittest.TestCase):
+    def test_exact_preview_identity_recovery_is_coordinate_bound_and_fail_closed(self) -> None:
+        recovery_path = ROOT / ".github" / "workflows" / "preview-identity-recovery.yml"
+        self.assertTrue(recovery_path.is_file())
+        recovery = recovery_path.read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch:", recovery)
+        self.assertIn("environment: preview-identity", recovery)
+        self.assertIn("TARGET_SOURCE_SHA: ${{ inputs.source_sha }}", recovery)
+        self.assertIn("TARGET_RUN_ID: ${{ inputs.preview_run_id }}", recovery)
+        self.assertIn("TARGET_RUN_ATTEMPT: ${{ inputs.preview_run_attempt }}", recovery)
+        self.assertIn('re.fullmatch(r"[0-9a-f]{40}"', recovery)
+        self.assertIn('re.fullmatch(r"[1-9][0-9]{0,19}"', recovery)
+        self.assertIn('re.fullmatch(r"[1-9][0-9]{0,9}"', recovery)
+        self.assertIn("github_artifact_evidence.py lookup", recovery)
+        self.assertIn('grep -Fx "state=FOUND" "$GITHUB_OUTPUT"', recovery)
+        self.assertIn("cleanup_preview_identity_smoke.py", recovery)
+        self.assertIn('--workflow-run-id "$TARGET_RUN_ID"', recovery)
+        self.assertIn('--workflow-attempt "$TARGET_RUN_ATTEMPT"', recovery)
+        self.assertIn("materialize_preview_cleanup_gate.py", recovery)
+        self.assertIn("--register-result success", recovery)
+        self.assertNotIn('--workflow-attempt "$GITHUB_RUN_ATTEMPT"', recovery)
+
     def test_runtime_contract_keeps_identity_worker_free_and_adds_commercial_role(self) -> None:
         contract_path = (
             ROOT
