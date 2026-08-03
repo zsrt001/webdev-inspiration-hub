@@ -840,6 +840,25 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                 "attempt_provider_job_id": "task-terminal-preview-proof",
             },
         )
+        cleanup.validate_case_row(
+            reference,
+            {
+                **row,
+                "order_status": "FAILED",
+                "job_status": "FAILED",
+                "attempt_status": "FAILED",
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "generation graph"):
+            cleanup.validate_case_row(
+                reference,
+                {
+                    **row,
+                    "order_status": "UNKNOWN_EXTERNAL_STATE",
+                    "job_status": "RECONCILING",
+                    "attempt_status": "UNKNOWN",
+                },
+            )
         with self.assertRaisesRegex(ValueError, "before terminal settlement"):
             cleanup.validate_case_row(
                 reference,

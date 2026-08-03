@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import inspect
 import json
 import unittest
+from unittest.mock import patch
 from uuid import UUID
 
 import httpx
@@ -13,6 +14,7 @@ import httpx
 from backend.scripts.verify_preview_evolink_callback_recovery import (
     _is_fresh_prepared_graph,
     _prepare_unknown,
+    _record_definitive_rejection,
     verify_callback_recovery,
 )
 
@@ -35,6 +37,26 @@ class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
         self.assertIn("WHERE id = %s AND status = 'ACTIVE'", source)
         self.assertIn("WHERE generation_job_id = %s AND status = 'GENERATING'", source)
         self.assertNotIn("SET status = 'UNKNOWN',\n                    submit_started_at", source)
+
+    def test_definitive_rejection_uses_only_legal_terminal_transitions(self) -> None:
+        source = inspect.getsource(_record_definitive_rejection)
+        transitions = (
+            "SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP",
+            "SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP",
+            "SET status = 'FAILED', error_message = %s",
+        )
+        positions: list[int] = []
+        offset = 0
+        for transition in transitions:
+            position = source.index(transition, offset)
+            positions.append(position)
+            offset = position + len(transition)
+
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("WHERE id = %s AND status = 'UNKNOWN'", source)
+        self.assertIn("WHERE id = %s AND status = 'RECONCILING'", source)
+        self.assertIn("status = 'UNKNOWN_EXTERNAL_STATE'", source)
+        self.assertIn("provider_job_id IS NULL", source)
 
     def test_fresh_graph_accepts_psycopg_uuid_text_or_registered_uuid(self) -> None:
         reference = {
@@ -194,6 +216,9 @@ class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
                 signing_key=b"provider-fetch-signing-key-32bytes",
                 client=client,
                 prepare_unknown=lambda: prepared.append(True),
+                record_rejection=lambda _status_code: self.fail(
+                    "successful submission must not record a rejection"
+                ),
                 usage_probe=lambda _grant_id: next(usage_rows),
                 binding_probe=lambda: next(binding_rows),
                 now=datetime(2026, 7, 23, 0, 0, 2, tzinfo=timezone.utc),
@@ -213,6 +238,67 @@ class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
         self.assertEqual(report["callback_attempt_status"], "FINISHED")
         self.assertEqual(report["callback_job_status"], "FINISHED")
         self.assertNotIn("s" * 43, json.dumps(report, sort_keys=True))
+
+    def test_http_402_is_terminalized_but_ambiguous_500_is_not(self) -> None:
+        source = "a" * 40
+        grant = {
+            "attempt_id": "00000000-0000-4000-8000-000000000076",
+            "grant_id": "00000000-0000-4000-8000-000000000073",
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "api_deployment_id": "dpl_preview",
+            "read_url": (
+                "https://vowpic-provider-aaaaaaaaaaaa-123-1.vercel.app/"
+                "api/v1/media/grants/" + "s" * 43
+            ),
+        }
+        for status_code, expected_rejections in ((402, [402]), (500, [])):
+            with self.subTest(status_code=status_code):
+                prepared: list[bool] = []
+                rejections: list[int] = []
+
+                def handler(_request: httpx.Request) -> httpx.Response:
+                    return httpx.Response(status_code, json={"error": "redacted"})
+
+                with (
+                    patch(
+                        "backend.scripts.verify_preview_evolink_callback_recovery."
+                        "validate_provider_capabilities"
+                    ),
+                    patch(
+                        "backend.scripts.verify_preview_evolink_callback_recovery."
+                        "_validate_grant_reference"
+                    ),
+                    patch(
+                        "backend.scripts.verify_preview_evolink_callback_recovery."
+                        "_validate_initial_usage"
+                    ),
+                    httpx.Client(transport=httpx.MockTransport(handler)) as client,
+                    self.assertRaisesRegex(ValueError, f"HTTP {status_code}"),
+                ):
+                    verify_callback_recovery(
+                        capability_document={},
+                        grant_reference=grant,
+                        expected_source_sha=source,
+                        api_key="provider-key",
+                        api_base_url="https://api.evolink.ai",
+                        image_model="gemini-3.1-flash-image-preview",
+                        callback_origin=(
+                            "https://vowpic-evolink-aaaaaaaaaaaa-123-1.vercel.app"
+                        ),
+                        callback_secret="callback-test-secret-" + "x" * 32,
+                        approval_ref="approval-123",
+                        signing_key=b"provider-fetch-signing-key-32bytes",
+                        client=client,
+                        prepare_unknown=lambda: prepared.append(True),
+                        record_rejection=rejections.append,
+                        usage_probe=lambda _grant_id: {},
+                        binding_probe=lambda: None,
+                        now=datetime(2026, 7, 23, 0, 0, 2, tzinfo=timezone.utc),
+                        poll_interval_seconds=0,
+                    )
+
+                self.assertEqual(prepared, [True])
+                self.assertEqual(rejections, expected_rejections)
 
     def test_callback_must_bind_the_same_task(self) -> None:
         with self.assertRaisesRegex(ValueError, "different Provider task"):

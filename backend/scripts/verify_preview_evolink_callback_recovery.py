@@ -47,6 +47,9 @@ _CALLBACK_HOST = re.compile(
     r"^vowpic-evolink-[0-9a-f]{12}-[1-9][0-9]{0,19}-"
     r"[1-9][0-9]{0,9}\.vercel\.app$"
 )
+_DEFINITIVE_SUBMIT_REJECTION_STATUSES = frozenset(
+    {400, 401, 402, 403, 404, 409, 422, 429}
+)
 
 
 def _api_origin(value: object) -> str:
@@ -126,6 +129,7 @@ def verify_callback_recovery(
     signing_key: bytes,
     client: httpx.Client,
     prepare_unknown: Callable[[], None],
+    record_rejection: Callable[[int], None],
     usage_probe: Callable[[str], dict[str, Any]],
     binding_probe: Callable[[], dict[str, Any] | None],
     now: datetime | None = None,
@@ -186,6 +190,11 @@ def verify_callback_recovery(
             "callback_url": callback_url,
         },
     )
+    if response.status_code in _DEFINITIVE_SUBMIT_REJECTION_STATUSES:
+        record_rejection(response.status_code)
+        raise ValueError(
+            f"EvoLink callback recovery submit failed with HTTP {response.status_code}"
+        )
     if response.is_redirect or not 200 <= response.status_code < 300:
         raise ValueError(
             f"EvoLink callback recovery submit failed with HTTP {response.status_code}"
@@ -440,6 +449,112 @@ def _binding_probe(database_url: str, reference: dict[str, Any]) -> dict[str, An
     return result
 
 
+def _record_definitive_rejection(
+    database_url: str,
+    reference: dict[str, Any],
+    status_code: int,
+) -> None:
+    """Terminalize only a Provider-confirmed non-acceptance response."""
+
+    if status_code not in _DEFINITIVE_SUBMIT_REJECTION_STATUSES:
+        raise ValueError("Preview callback rejection status is not definitive")
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    provider_code = f"evolink_submit_rejected_{status_code}"
+    with psycopg2.connect(_database_url(database_url)) as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT a.status AS attempt_status, a.provider_job_id,
+                       j.status AS job_status, j.active_attempt_id,
+                       j.runtime_bundle_id, j.api_deployment_id,
+                       o.status AS order_status
+                FROM generation_attempts a
+                JOIN generation_jobs j ON j.id = a.job_id
+                JOIN orders o ON o.id = j.order_id
+                WHERE a.id = %s AND a.job_id = %s AND o.id = (
+                    SELECT order_id FROM generation_jobs WHERE id = %s
+                )
+                FOR UPDATE OF a, j, o
+                """,
+                (
+                    reference["attempt_id"],
+                    reference["job_id"],
+                    reference["job_id"],
+                ),
+            )
+            row = cursor.fetchone()
+            if (
+                row is None
+                or row.get("provider_job_id") is not None
+                or str(row.get("attempt_status") or "") != "UNKNOWN"
+                or str(row.get("job_status") or "") != "RECONCILING"
+                or str(row.get("order_status") or "") != "UNKNOWN_EXTERNAL_STATE"
+                or str(row.get("active_attempt_id") or "")
+                != str(reference["attempt_id"])
+                or str(row.get("runtime_bundle_id") or "")
+                != str(reference["runtime_bundle_id"])
+                or str(row.get("api_deployment_id") or "")
+                != str(reference["api_deployment_id"])
+            ):
+                raise ValueError(
+                    "Preview callback rejection graph is not the exact unknown case"
+                )
+            cursor.execute(
+                """
+                UPDATE generation_attempts
+                SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'UNKNOWN'
+                  AND provider_job_id IS NULL
+                RETURNING id
+                """,
+                (reference["attempt_id"],),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Preview callback rejection attempt CAS failed")
+            cursor.execute(
+                """
+                UPDATE generation_jobs
+                SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP,
+                    last_error_code = %s,
+                    last_error_detail = 'preview_callback_provider_rejected',
+                    next_retry_at = NULL,
+                    lease_owner = NULL,
+                    lease_claim_id = NULL,
+                    lease_expires_at = NULL,
+                    heartbeat_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'RECONCILING'
+                  AND active_attempt_id = %s
+                RETURNING id
+                """,
+                (
+                    provider_code,
+                    reference["job_id"],
+                    reference["attempt_id"],
+                ),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Preview callback rejection job CAS failed")
+            cursor.execute(
+                """
+                UPDATE orders
+                SET status = 'FAILED', error_message = %s,
+                    delivery_status = 'BLOCKED', updated_at = CURRENT_TIMESTAMP
+                WHERE generation_job_id = %s
+                  AND status = 'UNKNOWN_EXTERNAL_STATE'
+                  AND price_cents = 0 AND payment_id IS NULL AND paid_at IS NULL
+                  AND reservation_id IS NULL
+                RETURNING id
+                """,
+                (provider_code, reference["job_id"]),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Preview callback rejection order CAS failed")
+
+
 def _usage_probe(database_url: str, grant_id: str) -> dict[str, Any]:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -561,6 +676,11 @@ def main() -> int:
                     prepare_unknown=lambda: _prepare_unknown(
                         write_database_url,
                         reference,
+                    ),
+                    record_rejection=lambda status_code: _record_definitive_rejection(
+                        write_database_url,
+                        reference,
+                        status_code,
                     ),
                     usage_probe=lambda grant_id: _usage_probe(
                         read_database_url,

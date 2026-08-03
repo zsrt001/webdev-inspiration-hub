@@ -82,30 +82,29 @@ def validate_case_row(reference: dict[str, Any], row: dict[str, Any]) -> None:
     if str(row.get("attempt_provider") or "") != "evolink":
         raise ValueError("Provider cleanup refuses a foreign attempt")
     provider_task_id = str(row.get("attempt_provider_job_id") or "").strip()
+    generation_graph = (
+        str(row.get("attempt_status") or ""),
+        str(row.get("job_status") or ""),
+        str(row.get("order_status") or ""),
+    )
     if provider_task_id:
-        attempt_status = str(row.get("attempt_status") or "")
-        job_status = str(row.get("job_status") or "")
-        order_status = str(row.get("order_status") or "")
         terminal_graphs = {
             ("FINISHED", "FINISHED", "READY"),
             ("FINISHED", "FAILED", "FAILED"),
             ("FAILED", "FAILED", "FAILED"),
         }
-        if (attempt_status, job_status, order_status) not in terminal_graphs:
+        if generation_graph not in terminal_graphs:
             raise ValueError(
                 "Provider cleanup refuses a submitted attempt before terminal settlement"
             )
     else:
-        allowed_unsubmitted = {
-            "order_status": {"QUEUED", "CANCELLED"},
-            "job_status": {"QUEUED", "CANCELLED"},
-            "attempt_status": {"PREPARED", "FAILED"},
+        terminalizable_graphs = {
+            ("PREPARED", "QUEUED", "QUEUED"),
+            ("FAILED", "CANCELLED", "CANCELLED"),
+            ("FAILED", "FAILED", "FAILED"),
         }
-        for field, values in allowed_unsubmitted.items():
-            if str(row.get(field) or "") not in values:
-                raise ValueError(
-                    f"Provider cleanup {field} is not safely terminalizable"
-                )
+        if generation_graph not in terminalizable_graphs:
+            raise ValueError("Provider cleanup generation graph is not safely terminalizable")
     if str(row.get("asset_status") or "") not in {
         "PENDING_UPLOAD",
         "ACTIVE",
@@ -211,6 +210,12 @@ def cleanup_case(
             provider_task_bound = bool(
                 str(row.get("attempt_provider_job_id") or "").strip()
             )
+            unsubmitted_terminal_failure = (
+                not provider_task_bound
+                and str(row.get("attempt_status") or "") == "FAILED"
+                and str(row.get("job_status") or "") == "FAILED"
+                and str(row.get("order_status") or "") == "FAILED"
+            )
             cursor.execute(
                 """
                 UPDATE asset_access_grants
@@ -229,7 +234,7 @@ def cleanup_case(
                 ),
             )
             revoked_count = int(cursor.rowcount)
-            if not provider_task_bound:
+            if not provider_task_bound and not unsubmitted_terminal_failure:
                 cursor.execute(
                     """
                     UPDATE generation_attempts
@@ -325,7 +330,9 @@ def cleanup_case(
         "storage_delete_result": deletion.value,
         "cleanup_scope": "local-database-grant-and-private-object",
         "provider_task_bound": provider_task_bound,
-        "terminal_generation_graph_preserved": provider_task_bound,
+        "terminal_generation_graph_preserved": (
+            provider_task_bound or unsubmitted_terminal_failure
+        ),
         "observed_at": current.astimezone(timezone.utc).isoformat(),
     }
 
