@@ -5,15 +5,42 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import unittest
+from uuid import UUID
 
 import httpx
 
 from backend.scripts.verify_preview_evolink_callback_recovery import (
+    _is_fresh_prepared_graph,
     verify_callback_recovery,
 )
 
 
 class PreviewEvolinkCallbackRecoveryTest(unittest.TestCase):
+    def test_fresh_graph_accepts_psycopg_uuid_text_or_registered_uuid(self) -> None:
+        reference = {
+            "attempt_id": "00000000-0000-4000-8000-000000000076",
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "api_deployment_id": "dpl_preview",
+        }
+        row = {
+            "attempt_status": "PREPARED",
+            "provider_job_id": None,
+            "job_status": "QUEUED",
+            "active_attempt_id": reference["attempt_id"],
+            "runtime_bundle_id": reference["runtime_bundle_id"],
+            "api_deployment_id": reference["api_deployment_id"],
+            "order_status": "QUEUED",
+        }
+
+        self.assertTrue(_is_fresh_prepared_graph(row, reference))
+        self.assertTrue(
+            _is_fresh_prepared_graph(
+                {**row, "active_attempt_id": UUID(reference["attempt_id"])},
+                reference,
+            )
+        )
+        self.assertFalse(_is_fresh_prepared_graph({**row, "job_status": "ACTIVE"}, reference))
+
     def test_one_submit_is_bound_only_by_callback(self) -> None:
         source = "a" * 40
         grant = {
