@@ -933,6 +933,7 @@ jobs:
             CREEM_TEST_SUBSCRIPTION_STARTER_PRODUCT_ID PREVIEW_CREEM_CALLBACK_HOST; do
             test -n "${!name}"
           done
+          test "${#PROVIDER_EVIDENCE_HMAC_KEY}" -ge 32
 
       - name: Install pinned release tooling and run the commercial boundary tests
         run: |

@@ -1435,6 +1435,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(preflight=required_name):
                 self.assertIn(required_name, commercial_preflight)
+        self.assertIn(
+            'test "${#PROVIDER_EVIDENCE_HMAC_KEY}" -ge 32',
+            commercial_preflight,
+        )
         for runtime_block in (identity_deploy, commercial_deploy):
             with self.subTest(block=runtime_block.splitlines()[0]):
                 self.assertIn("DATABASE_URL=$PREVIEW_RUNTIME_DATABASE_URL", runtime_block)
