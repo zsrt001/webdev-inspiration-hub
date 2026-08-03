@@ -274,14 +274,26 @@ def verify_alias_runtime(
     bypass_secret: str,
     probe_secret: str,
     client: httpx.Client,
+    attempts: int = 10,
+    retry_delay_seconds: float = 2.0,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     if len(str(probe_secret or "")) < 32:
         raise ValueError("Provider-grant probe secret must contain at least 32 characters")
+    if type(attempts) is not int or attempts < 1 or attempts > 30:
+        raise ValueError("Provider-grant alias read-back attempt count is invalid")
+    delay = float(retry_delay_seconds)
+    if delay < 0 or delay > 5 or attempts * delay > 60:
+        raise ValueError("Provider-grant alias read-back retry window is invalid")
     headers = {"Accept": "application/json"}
     headers["x-vowpic-provider-probe"] = str(probe_secret)
     if bypass_secret.strip():
         headers["x-vercel-protection-bypass"] = bypass_secret.strip()
-    response = client.get(_version_url(state), headers=headers, follow_redirects=False)
+    for attempt in range(1, attempts + 1):
+        response = client.get(_version_url(state), headers=headers, follow_redirects=False)
+        if response.status_code != 404 or attempt == attempts:
+            break
+        sleep(delay)
     if response.status_code != 200 or response.is_redirect:
         raise ValueError(f"Provider-grant alias read-back failed with HTTP {response.status_code}")
     try:
@@ -304,6 +316,7 @@ def verify_alias_runtime(
         **expected,
         "alias_host": state["alias_host"],
         "api_deployment_id": state["api_deployment_id"],
+        "readback_attempt_count": attempt,
         "observed_at": datetime.now(timezone.utc).isoformat(),
     }
 
