@@ -20,7 +20,6 @@ for entry in (str(ROOT), str(BACKEND)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
-from app.core.config import get_settings  # noqa: E402
 from app.services.storage import DeleteResult, StorageService  # noqa: E402
 from scripts.release.prepare_preview_provider_case import (  # noqa: E402
     _validate_activation,
@@ -167,6 +166,7 @@ def _build_reference(activation: dict[str, Any], row: dict[str, Any]) -> dict[st
         job_id=uuid.UUID(str(row["job_id"])),
         attempt_id=uuid.UUID(str(row["attempt_id"])),
         asset_id=uuid.UUID(str(row["asset_id"])),
+        backend_executor_digest=str(row["job_worker_image_digest"]),
     )
 
 

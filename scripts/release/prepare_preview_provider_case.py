@@ -115,11 +115,15 @@ def build_case_reference(
     job_id: uuid.UUID,
     attempt_id: uuid.UUID,
     asset_id: uuid.UUID,
+    backend_executor_digest: str,
 ) -> dict[str, Any]:
     normalized = _validate_activation(activation)
     for value in (owner_user_id, order_id, job_id, attempt_id, asset_id):
         if not isinstance(value, uuid.UUID):
             raise ValueError("Provider case row coordinates must be UUIDs")
+    normalized_digest = str(backend_executor_digest or "").strip().lower()
+    if not _DIGEST.fullmatch(normalized_digest):
+        raise ValueError("Provider case backend executor digest is invalid")
     case_id = case_id_for_activation(normalized["activation_id"])
     return {
         "schema": "vowpic.preview-provider-input.v1",
@@ -128,7 +132,7 @@ def build_case_reference(
         "source_sha": str(normalized["source_sha"]),
         "runtime_bundle_id": str(normalized["runtime_bundle_id"]),
         "api_deployment_id": str(normalized["api_deployment_id"]),
-        "backend_executor_digest": get_settings().backend_executor_digest,
+        "backend_executor_digest": normalized_digest,
         "job_id": str(job_id),
         "attempt_id": str(attempt_id),
         "asset_id": str(asset_id),
@@ -232,6 +236,7 @@ def _case_reference_from_rows(
         job_id=job.id,
         attempt_id=attempt.id,
         asset_id=asset.id,
+        backend_executor_digest=get_settings().backend_executor_digest,
     )
     if (
         order.user_id != owner_user_id
