@@ -19,7 +19,7 @@ function providerUrl(overrides: Record<string, string> = {}): string {
 }
 
 describe('protected Google OAuth acceptance navigation', () => {
-  it('preserves interactive account selection while binding the exact identity hint and PKCE request', () => {
+  it('uses the signed-in account hint without forcing a Google prompt or changing PKCE', () => {
     const original = new URL(providerUrl());
     const rewritten = new URL(
       rewritePreauthenticatedSupabaseGoogleOAuthUrl(
@@ -28,7 +28,7 @@ describe('protected Google OAuth acceptance navigation', () => {
       ),
     );
 
-    expect(rewritten.searchParams.get('prompt')).toBe('select_account');
+    expect(rewritten.searchParams.get('prompt')).toBeNull();
     expect(rewritten.searchParams.get('login_hint')).toBe('acceptance@example.com');
     for (const parameter of [
       'provider',

@@ -172,11 +172,12 @@ class WorkflowFalseGreenTest(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.preview_test)
 
-    def test_protected_google_acceptance_selects_the_exact_account_without_changing_user_login(self) -> None:
-        self.assertIn("url.searchParams.set('prompt', 'select_account')", self.google_oauth_acceptance)
+    def test_protected_google_acceptance_uses_headed_edge_and_exact_hint_without_changing_user_login(self) -> None:
+        self.assertIn("url.searchParams.delete('prompt')", self.google_oauth_acceptance)
         self.assertIn("url.searchParams.set('login_hint', identityEmail)", self.google_oauth_acceptance)
         self.assertIn("{ times: 1 }", self.google_oauth_acceptance)
         self.assertIn("queryParams: { prompt: 'select_account' }", self.browser_auth)
+        self.assertIn("npm run test:e2e -- --headed e2e/google-session-smoke.spec.ts", self.integration)
         for source in (
             self.preview_test,
             self.main_flow_test,
