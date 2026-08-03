@@ -1,5 +1,7 @@
 """Side-effect-free compatibility tombstones for permanently retired routes."""
 
+import uuid
+
 from fastapi import APIRouter, HTTPException
 
 
@@ -74,8 +76,8 @@ async def retired_user_create() -> None:
     _raise_retired("legacy_user_route_retired", "This user endpoint is no longer available.")
 
 
-@router.api_route("/users/{user_id}", methods=["GET", "PATCH"])
-async def retired_user_detail(user_id: str) -> None:
+@router.api_route("/users/{user_id:uuid}", methods=["GET", "PATCH"])
+async def retired_user_detail(user_id: uuid.UUID) -> None:
     _ = user_id
     _raise_retired("legacy_user_route_retired", "This user endpoint is no longer available.")
 
