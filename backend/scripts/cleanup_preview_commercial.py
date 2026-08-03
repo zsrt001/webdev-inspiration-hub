@@ -40,16 +40,27 @@ from scripts.release.cleanup_preview_identity_smoke import (  # noqa: E402
 
 
 def _validate_activation(activation: ReleaseActivation, args: argparse.Namespace) -> None:
+    if activation.phase == "RESERVED":
+        deployment_coordinate_is_valid = activation.api_deployment_id is None
+    elif activation.phase == "CLEANED":
+        deployment_coordinate_is_valid = activation.api_deployment_id in {
+            None,
+            args.deployment_id,
+        }
+    else:
+        deployment_coordinate_is_valid = (
+            activation.api_deployment_id == args.deployment_id
+        )
     if (
         activation.environment != "preview"
         or activation.kind != "PREVIEW_COMMERCIAL"
         or activation.api_role != "PREVIEW_COMMERCIAL_API"
         or activation.source_sha != args.source_sha
         or activation.runtime_bundle_id != args.runtime_bundle_id
-        or activation.api_deployment_id != args.deployment_id
+        or not deployment_coordinate_is_valid
         or str(activation.workflow_run_id) != args.workflow_run_id
         or int(activation.workflow_attempt) != args.workflow_attempt
-        or activation.phase not in {"COMPLETED", "CLEANED"}
+        or activation.phase not in {"RESERVED", "DEPLOYED", "COMPLETED", "CLEANED"}
         or any(
             getattr(activation, field) is not None
             for field in (

@@ -8,6 +8,7 @@ import unittest
 import httpx
 
 from backend.scripts.configure_evolink_callback_origin import (
+    _verify_runtime,
     bind_alias,
     build_callback_host,
     build_state,
@@ -129,6 +130,31 @@ class EvolinkCallbackOriginTest(unittest.TestCase):
                     probe_secret="provider-probe-secret-" + "x" * 32,
                     client=client,
                 )
+
+    def test_runtime_failure_reports_only_safe_diagnostics(self) -> None:
+        state = build_state(
+            source_sha=SOURCE_SHA,
+            workflow_run_id="123456789",
+            workflow_attempt=2,
+            deployment_url="https://preview-exact.vercel.app",
+            deployment_id=DEPLOYMENT_ID,
+            runtime_bundle_id=RUNTIME_ID,
+        )
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, text="sensitive runtime body")
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            with self.assertRaisesRegex(ValueError, '"status_code": 503') as raised:
+                _verify_runtime(
+                    state,
+                    bypass_secret="bypass-secret",
+                    probe_secret="provider-probe-secret-" + "x" * 32,
+                    client=client,
+                    attempts=1,
+                    delay_seconds=0,
+                )
+        self.assertNotIn("sensitive runtime body", str(raised.exception))
 
 
 if __name__ == "__main__":

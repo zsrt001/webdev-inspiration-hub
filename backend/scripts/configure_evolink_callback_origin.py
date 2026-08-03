@@ -151,14 +151,24 @@ def _verify_runtime(
     if len(probe_secret.strip()) < 32:
         raise ValueError("EvoLink callback runtime probe secret is required")
     headers["x-vowpic-provider-probe"] = probe_secret.strip()
+    last_observation: dict[str, Any] = {"state": "not_attempted"}
     for attempt in range(1, attempts + 1):
         response = client.get(
             f"{state['callback_origin']}/api/v1/version",
             headers=headers,
             follow_redirects=False,
         )
+        last_observation = {
+            "attempt": attempt,
+            "status_code": response.status_code,
+            "redirect": response.is_redirect,
+        }
         if response.status_code == 200 and not response.is_redirect:
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError:
+                last_observation["payload_state"] = "invalid_json"
+                payload = None
             expected = {
                 "schema": "vowpic.runtime-bundle-report.v1",
                 "source_sha": state["source_sha"],
@@ -174,9 +184,20 @@ def _verify_runtime(
                     **state,
                     "observed_at": datetime.now(timezone.utc).isoformat(),
                 }
+            if payload is not None:
+                last_observation["payload_state"] = (
+                    "coordinate_mismatch" if isinstance(payload, dict) else "not_an_object"
+                )
+                if isinstance(payload, dict):
+                    last_observation["mismatched_fields"] = sorted(
+                        key for key, value in expected.items() if payload.get(key) != value
+                    )
         if attempt < attempts:
             sleep(delay_seconds)
-    raise ValueError("EvoLink callback alias did not resolve to the exact deployment")
+    raise ValueError(
+        "EvoLink callback alias did not resolve to the exact deployment; "
+        f"last_observation={json.dumps(last_observation, sort_keys=True)}"
+    )
 
 
 def bind_alias(

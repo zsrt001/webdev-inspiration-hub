@@ -1392,6 +1392,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "EVOLINK_API_KEY: ${{ secrets.EVOLINK_API_KEY }}",
             "EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}",
             "EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}",
+            "PREVIEW_SUPPORT_EMAIL: ${{ vars.PREVIEW_SUPPORT_EMAIL }}",
+            "PREVIEW_SUPPORT_MONITORED: ${{ vars.PREVIEW_SUPPORT_MONITORED }}",
             "PROVIDER_EVIDENCE_HMAC_KEY: ${{ secrets.PROVIDER_EVIDENCE_HMAC_KEY }}",
             'test -n "$PREVIEW_RUNTIME_DATABASE_URL"',
             'test -n "$PREVIEW_CONTROL_PLANE_DATABASE_URL"',
@@ -1427,6 +1429,8 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "EVOLINK_API_KEY",
             "EVOLINK_API_BASE_URL",
             "EVOLINK_IMAGE_MODEL",
+            "PREVIEW_SUPPORT_EMAIL",
+            "PREVIEW_SUPPORT_MONITORED",
             "PROVIDER_EVIDENCE_HMAC_KEY",
         ):
             with self.subTest(preflight=required_name):
@@ -1456,6 +1460,11 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         self.assertIn(
             "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY",
             identity_deploy,
+        )
+        self.assertIn("SUPPORT_EMAIL=$PREVIEW_SUPPORT_EMAIL", commercial_deploy)
+        self.assertIn(
+            "SUPPORT_MONITORED=$PREVIEW_SUPPORT_MONITORED",
+            commercial_deploy,
         )
         first_isolation = workflow.index(
             "Prove Preview Supabase physical isolation read-only"
