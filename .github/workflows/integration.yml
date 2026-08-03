@@ -1349,6 +1349,7 @@ jobs:
           python scripts/release/prepare_preview_provider_case.py \
             --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \
             --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --owner-read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL \
             --output "$RUNNER_TEMP/provider-input.json"
           python scripts/release/configure_preview_provider_grant_origin.py snapshot \
             --activation-json "$COMMERCIAL_EVIDENCE_DIR/activation-report.json" \

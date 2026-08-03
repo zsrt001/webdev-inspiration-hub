@@ -36,14 +36,13 @@ def _load(name: str, relative_path: str):
 
 
 class PreviewIdentityWorkflowTest(unittest.TestCase):
-    def test_provider_case_reads_identity_rows_through_the_bounded_owner_role(self) -> None:
+    def test_provider_case_validates_owner_without_role_switching(self) -> None:
         prepare = _load(
-            "prepare_preview_provider_case_role_contract",
+            "prepare_preview_provider_case_read_contract",
             "scripts/release/prepare_preview_provider_case.py",
         )
         owner_id = UUID("00000000-0000-0000-0000-000000000020")
         db = SimpleNamespace(
-            execute=AsyncMock(),
             scalar=AsyncMock(
                 side_effect=[
                     SimpleNamespace(status="active"),
@@ -55,31 +54,40 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
 
         asyncio.run(prepare._require_acceptance_owner(db, owner_id))
 
-        role_statements = [str(call.args[0]) for call in db.execute.await_args_list]
-        self.assertEqual(
-            role_statements,
-            [
-                "SET LOCAL ROLE vowpic_identity_owner",
-                "SET LOCAL ROLE vowpic_migration_owner",
-            ],
-        )
+        self.assertEqual(db.scalar.await_count, 3)
 
-    def test_provider_case_restores_migration_role_before_rejecting_owner(self) -> None:
+    def test_provider_case_rejects_inactive_owner_before_identity_queries(self) -> None:
         prepare = _load(
-            "prepare_preview_provider_case_role_restore",
+            "prepare_preview_provider_case_inactive_owner",
             "scripts/release/prepare_preview_provider_case.py",
         )
         owner_id = UUID("00000000-0000-0000-0000-000000000020")
         db = SimpleNamespace(
-            execute=AsyncMock(),
-            scalar=AsyncMock(side_effect=[None, None]),
+            scalar=AsyncMock(return_value=None),
         )
 
         with self.assertRaisesRegex(ValueError, "not an active user"):
             asyncio.run(prepare._require_acceptance_owner(db, owner_id))
 
-        role_statements = [str(call.args[0]) for call in db.execute.await_args_list]
-        self.assertEqual(role_statements[-1], "SET LOCAL ROLE vowpic_migration_owner")
+        self.assertEqual(db.scalar.await_count, 1)
+
+    def test_provider_case_uses_the_existing_control_reader_for_owner_validation(self) -> None:
+        prepare = _load(
+            "prepare_preview_provider_case_separate_read_login",
+            "scripts/release/prepare_preview_provider_case.py",
+        )
+        prepare_source = inspect.getsource(prepare.prepare_case)
+        workflow = (ROOT / ".github" / "workflows" / "integration.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("owner_read_database_url", prepare_source)
+        self.assertIn("await validate_acceptance_owner", prepare_source)
+        self.assertNotIn("SET LOCAL ROLE", inspect.getsource(prepare))
+        self.assertIn(
+            "--owner-read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL",
+            workflow,
+        )
 
     def test_exact_preview_identity_recovery_is_coordinate_bound_and_fail_closed(self) -> None:
         recovery_path = ROOT / ".github" / "workflows" / "preview-identity-recovery.yml"
