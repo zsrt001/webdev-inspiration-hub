@@ -451,6 +451,54 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
                 client=client,
             )
         self.assertEqual(report["api_deployment_id"], "dpl_preview")
+        self.assertEqual(report["readback_attempt_count"], 1)
+
+        readback_responses = iter(
+            [
+                httpx.Response(404),
+                httpx.Response(404),
+                httpx.Response(
+                    200,
+                    json={
+                        "schema": "vowpic.runtime-bundle-report.v1",
+                        "source_sha": activation["source_sha"],
+                        "runtime_bundle_id": activation["runtime_bundle_id"],
+                        "deployment_id": activation["api_deployment_id"],
+                        "release_role": activation["kind"],
+                        "runtime_environment": "preview",
+                    },
+                ),
+            ]
+        )
+        sleeps: list[float] = []
+        with httpx.Client(
+            transport=httpx.MockTransport(lambda _request: next(readback_responses))
+        ) as client:
+            propagated = module.verify_alias_runtime(
+                state,
+                bypass_secret="",
+                probe_secret="p" * 32,
+                client=client,
+                attempts=3,
+                retry_delay_seconds=0.25,
+                sleep=sleeps.append,
+            )
+        self.assertEqual(propagated["readback_attempt_count"], 3)
+        self.assertEqual(sleeps, [0.25, 0.25])
+
+        with httpx.Client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(404))
+        ) as client:
+            with self.assertRaisesRegex(ValueError, "HTTP 404"):
+                module.verify_alias_runtime(
+                    state,
+                    bypass_secret="",
+                    probe_secret="p" * 32,
+                    client=client,
+                    attempts=2,
+                    retry_delay_seconds=0,
+                    sleep=lambda _seconds: None,
+                )
 
         def absent_handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.url.host, "api.vercel.com")
