@@ -24,7 +24,7 @@ for entry in (str(ROOT), str(BACKEND)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
-from sqlalchemy import select, text  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
@@ -149,23 +149,16 @@ def _runtime_matches(activation: dict[str, Any]) -> bool:
 
 
 async def _require_acceptance_owner(db, owner_user_id: uuid.UUID) -> None:
-    # The Preview migration login intentionally reaches the identity tables only
-    # through the non-inherited identity-owner role.  Keep that RLS boundary
-    # intact instead of granting the migration role a broad users policy.
-    await db.execute(text("SET LOCAL ROLE vowpic_identity_owner"))
-    try:
-        user = await db.scalar(select(User).where(User.id == owner_user_id))
-        identity_id = await db.scalar(
-            select(UserIdentity.id).where(
-                UserIdentity.user_id == owner_user_id,
-                UserIdentity.provider == "supabase",
-                UserIdentity.revoked_at.is_(None),
-            ).limit(1)
-        )
-    finally:
-        await db.execute(text("SET LOCAL ROLE vowpic_migration_owner"))
+    user = await db.scalar(select(User).where(User.id == owner_user_id))
     if user is None or str(user.status or "").lower() != "active":
         raise ValueError("Provider case owner is not an active user")
+    identity_id = await db.scalar(
+        select(UserIdentity.id).where(
+            UserIdentity.user_id == owner_user_id,
+            UserIdentity.provider == "supabase",
+            UserIdentity.revoked_at.is_(None),
+        ).limit(1)
+    )
     binding_id = await db.scalar(
         select(AcceptanceIdentityBinding.id).where(
             AcceptanceIdentityBinding.consumed_user_id == owner_user_id,
@@ -175,6 +168,21 @@ async def _require_acceptance_owner(db, owner_user_id: uuid.UUID) -> None:
     )
     if identity_id is None or binding_id is None:
         raise ValueError("Provider case owner lacks a consumed Google acceptance binding")
+
+
+async def validate_acceptance_owner(
+    owner_read_database_url: str,
+    owner_user_id: uuid.UUID,
+) -> None:
+    normalized_url, connect_args = normalize_database_url(owner_read_database_url)
+    engine = create_async_engine(normalized_url, connect_args=connect_args)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as db:
+            async with db.begin():
+                await _require_acceptance_owner(db, owner_user_id)
+    finally:
+        await engine.dispose()
 
 
 def _case_reference_from_rows(
@@ -236,6 +244,7 @@ async def prepare_case(
     database_url: str,
     activation: dict[str, Any],
     *,
+    owner_read_database_url: str,
     owner_user_id: uuid.UUID,
     image_bytes: bytes,
     now: datetime | None = None,
@@ -255,6 +264,7 @@ async def prepare_case(
     else:
         raise ValueError("Provider case image must be JPEG, PNG, or WebP")
     image = validate_and_reencode_image(image_bytes, declared_content_type=declared_mime)
+    await validate_acceptance_owner(owner_read_database_url, owner_user_id)
     case_id = case_id_for_activation(normalized["activation_id"])
     object_key = provider_case_object_key(normalized["activation_id"], case_id)
     normalized_url, connect_args = normalize_database_url(database_url)
@@ -287,7 +297,6 @@ async def prepare_case(
                     or activation_row.current_snapshot_hash != activation_row.target_snapshot_hash
                 ):
                     raise ValueError("Provider case activation is not exact and all-OFF")
-                await _require_acceptance_owner(db, owner_user_id)
                 asset = await db.scalar(
                     select(MediaAsset).where(MediaAsset.object_key == object_key).with_for_update()
                 )
@@ -418,15 +427,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--activation-json", required=True)
     parser.add_argument("--database-url-env", default="PREVIEW_MIGRATION_DATABASE_URL")
+    parser.add_argument(
+        "--owner-read-database-url-env",
+        default="PREVIEW_CONTROL_READ_DATABASE_URL",
+    )
     parser.add_argument("--owner-user-id-env", default="PREVIEW_PROVIDER_OWNER_USER_ID")
     parser.add_argument("--image-file")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     try:
         database_url = os.environ.get(args.database_url_env, "").strip()
+        owner_read_database_url = os.environ.get(args.owner_read_database_url_env, "").strip()
         owner_user_id = uuid.UUID(os.environ.get(args.owner_user_id_env, "").strip())
         if not database_url:
             raise ValueError("Provider case database is required")
+        if not owner_read_database_url:
+            raise ValueError("Provider owner read database is required")
         image_bytes = (
             Path(args.image_file).read_bytes()
             if args.image_file
@@ -436,6 +452,7 @@ def main() -> int:
             prepare_case(
                 database_url,
                 _load_json(args.activation_json),
+                owner_read_database_url=owner_read_database_url,
                 owner_user_id=owner_user_id,
                 image_bytes=image_bytes,
             )
