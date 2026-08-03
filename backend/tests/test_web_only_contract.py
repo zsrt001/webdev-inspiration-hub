@@ -18,14 +18,14 @@ RETIRED_ROUTES = (
     ("POST", "/api/v1/users/", "/api/v1/users/", "legacy_user_route_retired", {"openid": "retired"}),
     (
         "GET",
-        "/api/v1/users/{user_id}",
+        "/api/v1/users/{user_id:uuid}",
         f"/api/v1/users/{uuid.UUID(int=0)}",
         "legacy_user_route_retired",
         None,
     ),
     (
         "PATCH",
-        "/api/v1/users/{user_id}",
+        "/api/v1/users/{user_id:uuid}",
         f"/api/v1/users/{uuid.UUID(int=0)}",
         "legacy_user_route_retired",
         {"nickname": "retired"},
@@ -670,6 +670,38 @@ class RetiredRouteContractTest(unittest.IsolatedAsyncioTestCase):
                         {"code", "message", "request_id", "retryable", "field_errors"},
                     )
                     self.assertFalse(has_url_key(payload), payload)
+        self.assertEqual(self.database_dependency_calls, 0)
+
+    async def test_active_user_profile_is_not_shadowed_by_retired_uuid_route(self) -> None:
+        from datetime import datetime, timezone
+
+        from app.core.session_auth import get_session_user
+        from app.models.user import User
+
+        now = datetime.now(timezone.utc)
+        user = User(
+            id=uuid.uuid4(),
+            email="profile@example.com",
+            nickname="Profile",
+            role="user",
+            status="active",
+            created_at=now,
+            updated_at=now,
+        )
+
+        async def authenticated_user() -> User:
+            return user
+
+        self.app.dependency_overrides[get_session_user] = authenticated_user
+        transport = httpx.ASGITransport(app=self.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/api/v1/users/me")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["id"], str(user.id))
         self.assertEqual(self.database_dependency_calls, 0)
 
 
