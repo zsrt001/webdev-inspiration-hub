@@ -36,7 +36,7 @@ export function rewritePreauthenticatedSupabaseGoogleOAuthUrl(
   ) {
     throw new Error('SUPABASE_GOOGLE_OAUTH_PKCE_INVALID');
   }
-  url.searchParams.set('prompt', 'none');
+  url.searchParams.set('prompt', 'select_account');
   url.searchParams.set('login_hint', identityEmail);
   return url.toString();
 }
