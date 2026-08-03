@@ -125,6 +125,10 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "--activation-read-database-url-env PREVIEW_CONTROL_READ_DATABASE_URL",
             provider_block,
         )
+        self.assertIn(
+            "ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}",
+            provider_block,
+        )
         self.assertNotIn("PREVIEW_MIGRATION_DATABASE_URL", cleanup_block)
         self.assertIn(
             "--database-url-env PREVIEW_RUNTIME_DATABASE_URL",
@@ -728,16 +732,12 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "asset_id": UUID("00000000-0000-0000-0000-000000000024"),
         }
         backend_digest = "sha256:" + "d" * 64
-        with patch.object(
-            prepare,
-            "get_settings",
-            return_value=SimpleNamespace(backend_executor_digest=backend_digest),
-        ):
-            reference = prepare.build_case_reference(
-                activation,
-                owner_user_id=owner_id,
-                **ids,
-            )
+        reference = prepare.build_case_reference(
+            activation,
+            owner_user_id=owner_id,
+            backend_executor_digest=backend_digest,
+            **ids,
+        )
         self.assertEqual(
             reference["case_id"],
             str(prepare.case_id_for_activation(activation["activation_id"])),
@@ -751,6 +751,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             **reference,
             "object_key": object_key,
             "owner_user_id": str(owner_id),
+            "order_id": str(ids["order_id"]),
             "order_user_id": str(owner_id),
             "order_generation_job_id": str(ids["job_id"]),
             "order_source_asset_ids": [str(ids["asset_id"])],
@@ -773,6 +774,13 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "acceptance_binding_count": 1,
             "active_identity_count": 1,
         }
+        with patch.object(
+            prepare,
+            "get_settings",
+            side_effect=AssertionError("cleanup must not rebuild runtime identity from process env"),
+        ):
+            rebuilt_reference = cleanup._build_reference(activation, row)
+        self.assertEqual(rebuilt_reference["backend_executor_digest"], backend_digest)
         cleanup.validate_case_row(reference, row)
         cleanup.validate_case_row(
             reference,
@@ -799,6 +807,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             prepare.build_case_reference(
                 {**activation, "source_sha": "not-a-source-sha"},
                 owner_user_id=owner_id,
+                backend_executor_digest=backend_digest,
                 **ids,
             )
         with self.assertRaisesRegex(ValueError, "dedicated object prefix"):
