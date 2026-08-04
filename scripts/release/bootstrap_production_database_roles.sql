@@ -79,6 +79,18 @@ BEGIN
         CREATE ROLE vowpic_identity_service
           NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_media_service') THEN
+        CREATE ROLE vowpic_media_service
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_generation_service') THEN
+        CREATE ROLE vowpic_generation_service
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vowpic_partner_service') THEN
+        CREATE ROLE vowpic_partner_service
+          NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    END IF;
     GRANT vowpic_identity_owner TO vowpic_migration_owner
       WITH INHERIT FALSE, SET TRUE;
 
@@ -91,7 +103,10 @@ BEGIN
         'vowpic_observation_reader',
         'vowpic_observation_writer',
         'vowpic_identity_owner',
-        'vowpic_identity_service'
+        'vowpic_identity_service',
+        'vowpic_media_service',
+        'vowpic_generation_service',
+        'vowpic_partner_service'
     )
       AND (
         rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR
@@ -113,7 +128,10 @@ BEGIN
         'vowpic_observation_reader',
         'vowpic_observation_writer',
         'vowpic_identity_owner',
-        'vowpic_identity_service'
+        'vowpic_identity_service',
+        'vowpic_media_service',
+        'vowpic_generation_service',
+        'vowpic_partner_service'
     )
       AND NOT (
         member.rolname = 'vowpic_migration_owner'
@@ -130,7 +148,11 @@ BEGIN
             'vowpic_runtime',
             'vowpic_control_writer',
             'vowpic_observation_reader',
-            'vowpic_observation_writer'
+            'vowpic_observation_writer',
+            'vowpic_identity_service',
+            'vowpic_media_service',
+            'vowpic_generation_service',
+            'vowpic_partner_service'
         )
           AND (
               EXISTS (SELECT 1 FROM pg_database database WHERE database.datdba = role.oid) OR
@@ -302,6 +324,12 @@ BEGIN
     ALTER ROLE vowpic_migration_login SET statement_timeout = '5min';
     REVOKE ALL ON SCHEMA public FROM vowpic_migration_login;
     GRANT USAGE, CREATE ON SCHEMA public TO vowpic_migration_owner;
+    GRANT USAGE, CREATE ON SCHEMA public TO vowpic_identity_owner;
+    GRANT USAGE ON SCHEMA public TO
+      vowpic_identity_service,
+      vowpic_media_service,
+      vowpic_generation_service,
+      vowpic_partner_service;
 
     FOR relation IN
         SELECT namespace.nspname, class.relname, class.relkind
