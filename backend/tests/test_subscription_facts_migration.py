@@ -41,6 +41,28 @@ class SubscriptionFactsMigrationTest(unittest.TestCase):
         self.assertIn('"fk_subscription_grants_subscription"', source)
         self.assertIn('ondelete="RESTRICT"', source)
 
+    def test_existing_subscription_rows_are_backfilled_through_forced_rls(self) -> None:
+        source = MIGRATION.read_text(encoding="utf-8")
+        create_policy = source.index(
+            "CREATE POLICY {SUBSCRIPTION_BACKFILL_POLICY} ON public.user_subscriptions"
+        )
+        update_rows = source.index(
+            "UPDATE user_subscriptions SET normalized_status"
+        )
+        drop_policy = source.index(
+            "DROP POLICY {SUBSCRIPTION_BACKFILL_POLICY} ON public.user_subscriptions"
+        )
+        enforce_not_null = source.index(
+            'op.alter_column(\n        "user_subscriptions",\n        "normalized_status"'
+        )
+        self.assertLess(create_policy, update_rows)
+        self.assertLess(update_rows, drop_policy)
+        self.assertLess(drop_policy, enforce_not_null)
+        self.assertIn(
+            "FOR ALL TO vowpic_migration_owner USING (true) WITH CHECK (true)",
+            source,
+        )
+
     def test_models_expose_transaction_period_and_root_lineage(self) -> None:
         for column in (
             "provider_transaction_id",
