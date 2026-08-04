@@ -3193,3 +3193,48 @@
   `git diff --check` passed.
 - No Production deployment, payment, provider call, or Proxifier change is
   claimed by this entry.
+
+## 2026-08-04 - Close the website-only post-deploy residuals
+
+### Confirmed production evidence
+
+- `main` CI run `30909657234` and the protected website-safe release run
+  `30910009734` succeeded for the same website milestone source. Formal-domain
+  version, strict health, readiness, public configuration, legal/auth pages,
+  retired-route tombstones, database revision `20260710_0020`, and post-release
+  Vercel error/HTTP-500 scans were verified without invoking a business action.
+- All seven commercial capabilities remained OFF and unbound. The check did not
+  perform Google login, upload, EvoLink generation, private download, Creem
+  payment, subscription, cancellation, or refund.
+- Protected observation-login run `30913210432` proved the dedicated reader and
+  writer roles, published only the workflow-required protected Secret names to
+  the four existing GitHub environments, and deleted the one-time publication
+  token. The reader is default read-only; neither login is a superuser,
+  `BYPASSRLS`, `CREATEDB`, or `CREATEROLE` role. No administrator database URL
+  was substituted for a scoped login.
+
+### Repository closure
+
+- Deleted the unreferenced legacy `session_service.py`; the retired endpoints
+  remain explicit HTTP 410 tombstones, and the Web-only contract now prevents
+  that dead service from returning.
+- Replaced stale Production-acceptance statements with dated website-milestone
+  evidence. Current deployment coordinates are deliberately authoritative only
+  through the live `/version` response and the latest successful protected
+  website-release run, so a later main deployment cannot make the document
+  silently false.
+- Reconciled the finite closure plan with the existing Supabase project,
+  Storage, Preview/Production Secret-name inventory, schema, scoped database
+  roles, and observation evidence. Google identity, generation, payment, and
+  business observation remain explicitly `NOT_RUN` because the user deferred
+  them; they are not reported as website failures or as PASS.
+
+### Verification
+
+- Complete backend regression passed: `1175 tests`, `42 skipped`.
+- Focused Web-only, EvoLink architecture, risk-lockdown, website-release,
+  observation-login, and Production-acceptance regression passed: `95 tests`.
+- Python compilation, all 13 GitHub workflow YAML parses, UTF-8 validation,
+  deleted-service active-reference scan, sensitive-literal diff scan, and
+  `git diff --check` passed.
+- Proxifier was not modified or restarted.

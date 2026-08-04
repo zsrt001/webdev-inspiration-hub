@@ -2,7 +2,7 @@
 
 状态：`LOCKED_FOR_EXECUTION`
 
-更新日期：2026-07-23
+更新日期：2026-08-04
 
 ## 1. 唯一目标
 
@@ -25,25 +25,28 @@
 9. 不打印、保存或提交 Secret、连接串、Cookie、浏览器登录态。
 10. 同一根因连续两次失败且没有新证据时停止该路径，重新诊断，禁止盲目重试。
 
-## 3. 当前已实现但尚未发布的本地改动
+## 3. 2026-08-04 网站安全上线里程碑
 
-以下状态只表示当前工作树已有实现和直接测试，不表示 Production 已完成：
+截至该里程碑，以下实现已经合并到 `main@e997eaac0bd3b216ea6d630296f2efe9484798ac`。受保护的
+网站发布已经将该精确源码部署到正式域名，但所有商业 capability 保持 OFF；这不表示
+真实生成、支付或 Google 身份链路已经完成验收：
 
-- `IMPLEMENTED_LOCAL`：网站后端直接提交 EvoLink，浏览器不直接调用 Provider。
-- `IMPLEMENTED_LOCAL`：Provider 回调、订单进度和五分钟 GitHub 触发器都只调用 VowPic 后端，由后端完成对账、下载、QA、结算和交付。
-- `IMPLEMENTED_LOCAL`：`SUBMITTING` 崩溃恢复、模糊网络错误、跨部署接管和回调先到竞态已收口。
-- `IMPLEMENTED_LOCAL`：Production/observation 回滚改为使用签名的 SAFE_BASELINE 源码、运行时、部署和 schema 坐标，不再用目标坐标验证旧部署。
-- `IMPLEMENTED_LOCAL`：缺少 observation 只读凭据时失败，不再返回绿色 no-op。
-- `IMPLEMENTED_LOCAL`：Preview 必须证明与 Production 是不同 Supabase 项目，四类数据库凭据必须连接同一 Preview 数据库并满足预期角色。
-- `IMPLEMENTED_LOCAL`：Preview 的真实 EvoLink 演练使用绑定精确 Vercel deployment 的专用回调域名；提交器不保存响应中的 task ID，只允许签名回调恢复 UNKNOWN，且 Stage-5 必须证明一次提交、一次 Provider 读取、回调绑定和终态清理。
-- `IMPLEMENTED_LOCAL`：Production 会重新验证指定 Preview workflow run/attempt 的 GitHub 成功状态，重新哈希下载包中的每个 Gate 证据，并同时绑定 activation、runtime bundle、deployment 和 manifest；同一 source SHA 的其他运行不能被误选。
-- `IMPLEMENTED_LOCAL`：Railway、独立 Worker、ARQ/Redis 生成队列、runtime-drain 残留及分叉运行时合同已从活动代码清理。
+- `MERGED_MAIN`：网站后端直接提交 EvoLink，浏览器不直接调用 Provider。
+- `MERGED_MAIN`：Provider 回调、订单进度和五分钟 GitHub 触发器都只调用 VowPic 后端，由后端完成对账、下载、QA、结算和交付。
+- `MERGED_MAIN`：`SUBMITTING` 崩溃恢复、模糊网络错误、跨部署接管和回调先到竞态已收口。
+- `MERGED_MAIN`：Production/observation 回滚使用签名的 SAFE_BASELINE 源码、运行时、部署和 schema 坐标，不用目标坐标验证旧部署。
+- `MERGED_MAIN`：缺少 observation 只读凭据时失败，不返回绿色 no-op。
+- `MERGED_MAIN`：Preview 必须证明与 Production 是不同 Supabase 项目，四类数据库凭据必须连接同一 Preview 数据库并满足预期角色。
+- `MERGED_MAIN`：Preview 的真实 EvoLink 演练绑定精确 Vercel deployment；提交器不保存响应中的 task ID，只允许签名回调恢复 UNKNOWN，且 Stage-5 必须证明一次提交、一次 Provider 读取、回调绑定和终态清理。
+- `MERGED_MAIN`：Production 会重新验证指定 Preview workflow run/attempt，重新哈希每个 Gate 证据，并同时绑定 activation、runtime bundle、deployment 和 manifest。
+- `MERGED_MAIN`：Railway、独立 Worker、ARQ/Redis 生成队列、runtime-drain 残留及分叉运行时合同已从活动代码清理。
 
-这些改动只有通过第 4 节全部门禁并合并到 main 后，才获得可发布资格。
+网站发布 run `30910009734` 只证明 browse-only Web SaaS、严格健康、数据库 `0020`、
+旧接口墓碑和全能力 OFF。第 4 节的商业验收顺序仍然有效，不能用网站上线证据跳过。
 
-## 4. 剩余项与固定执行顺序
+## 4. 阶段与固定执行顺序
 
-| 阶段 | 当前状态 | 只允许执行的动作 | 退出证据 |
+| 阶段 | 2026-07-23 状态快照 | 只允许执行的动作 | 退出证据 |
 | --- | --- | --- | --- |
 | R1 本地完整验证 | `LOCAL_VERIFIED_CI_INTEGRATIONS_PENDING` | 对当前代码重跑后端全套、前端 typecheck/unit/Web build、关键 E2E、契约和 diff 检查；本地没有真实 PostgreSQL/Private Storage/Creem 受保护凭据的项目明确记为 `NOT_RUN`，由 PR CI 与 Preview 强制执行 | 当前后端 `1060 passed, 41 skipped, 1484 subtests`；41 项逐项证明为外部集成 `NOT_RUN`，不冒充 PASS；前端 typecheck、25 个 unit、Web build、Chromium/Firefox 共 14 个主链路与 a11y 测试通过；OpenAPI 确定性快照和生成类型一致；`.tmp/` 仅保留不提交的当前任务合同 |
 | R3A Preview 非 Google 实时库存 | `COMPLETED` | 只读回验 GitHub/Vercel/Supabase/Creem/EvoLink 当前元数据；复用现有 Preview 项目、Private Blob、四类数据库登录、Creem Test 和 EvoLink 配置 | 不读取 Secret 明文；Preview/Production ref 不同；四类 DB 登录、Blob、EvoLink 和 Creem Test 配置均存在并通过只读/最小权限证明 |
@@ -53,6 +56,22 @@
 | R5 Preview Identity/Commercial | `PENDING_R3B` | 对 R4 的唯一 merge SHA 运行 Integration；Identity 完成后再运行 Commercial；至少一单必须从真实创建页完成 Google 登录态、私有照片上传、幂等提交、预览页轮询、READY 展示和页面下载，禁止只用 API helper 替代页面验收 | GitHub run `completed/success` 且 head branch=`main`、head SHA=merge SHA；所有 Preview release Gate 当前 PASS；Creem Test 支付、订阅、取消、退款、真实生成、页面下载、导出、删除、Partner Invite 和可访问性证据完整；cleanup=`CLEANED` |
 | R6 Production 凭据前置与工作流内数据门 | `PENDING_R5` | 触发前只读核验并补齐 Production workflow 所需的最小权限凭据、库存和恢复演练输入；随后用同一 merge SHA 与 R5 的 Preview run/attempt 触发唯一 `production-release.yml`。schema、identity、commercial、generation、media backfill/约束和迁移写入只能由该 workflow 内部调用 `data-migration.yml` 执行，不能在工作流外另起一条迁移路径 | workflow 内库存和恢复报告通过；revision 精确为 0020；runtime/control/observation 角色证明通过；无管理员 URL 替代；所有数据门完成后才进入 staged acceptance |
 | R7 同一 Production 工作流的验收、正式域名与观察 | `PENDING_R6` | R6 数据门通过后继续同一次 Production workflow 的 staged acceptance、人工质量门和 Promote；验证正式域名版本坐标；从真实页面执行 Google 登录、隔离上传、幂等下单、EvoLink 生成、QA、READY 展示、私有下载、账本和删除；正式激活后先有界恢复 legacy generation work，再对旧 generation/payment outbox 做只读库存和受控退休，随后持续观察并验证回滚基线 | Production 与正式域名 source SHA=merge SHA；真实页面主链路全部通过；已由底层权威状态证明处理的旧 envelope 幂等审计退休，未知/冲突保持阻断，退休后 mandatory outbox active_count=0；观察到终态；回滚报告绑定签名 SAFE_BASELINE；无 P0/P1/P2/P3 残留 |
+
+### 4.1 2026-08-04 网站里程碑状态
+
+- R1：`main@e997eaac0bd3b216ea6d630296f2efe9484798ac` 的 CI run
+  `30909657234` 全部成功；新的代码写入仍须取得新的 PR CI。
+- R4 网站子阶段：`WEBSITE_SAFE_COMPLETE`。网站修复 PR 链已合并并通过受保护发布；
+  这不等于后续商业激活 R4 已完成。
+- R3B：两个 Preview 环境所需 Google Secret 名称已经存在；按用户要求不读取值，
+  身份有效性验收保持 `DEFERRED_BY_USER`。
+- R5：`DEFERRED_BY_USER`。不执行 Google、上传、EvoLink 生图、Creem 或私密下载；
+  七个商业 capability 全部保持 OFF。
+- R6 基础前置：schema `0020`、runtime/control/observation 最小权限角色和当前工作流
+  的环境 Secret 名称已完整。observation 凭据 run `30913210432` 成功；完整商业数据门
+  仍等待 R5。
+- R7 网站子阶段：`WEBSITE_FORMAL_VERIFIED`。正式域名网站已验证；商业主链路和
+  observation 仍是 `NOT_RUN`。
 
 ## 5. R1 验证矩阵
 
@@ -86,7 +105,7 @@ R1 必须覆盖：
 5. EvoLink 只需要现有生图 API Key、base URL、模型和真实 Provider 证据，不要求平台提供额外“幂等合同”文件。
 6. GitHub/Vercel 只写 Secret 名称对应的受保护值，不回显内容。
 
-### 6.1 2026-07-23 实时库存结论
+### 6.1 2026-07-23 历史库存快照
 
 以下结论来自当前 GitHub/Vercel 元数据、GitHub Actions 日志和正式域名只读接口，不来自旧记录：
 
@@ -104,7 +123,7 @@ R1 必须覆盖：
 12. 远端尚无任何 Integration 或 Manual Production release 成功运行；不得把本地测试或旧 SAFE_BASELINE 当作 R5/R7 验收。
 13. 两个 Preview workflow 会在运行时通过 Supabase Management API 只读解析唯一 publishable/legacy anon 公钥并注入 `SUPABASE_URL` 与 `SUPABASE_ANON_KEY`；secret/service-role/歧义库存一律 fail-closed，不再依赖手工复制公开 key。
 
-### 6.2 精确补齐清单
+### 6.2 2026-07-23 历史补齐清单
 
 `preview-identity` 只补以下缺失项：
 
@@ -125,6 +144,35 @@ Production 只补当前工作流真实引用但环境中缺失的项；其中数
 - `production-recovery`：`PRODUCTION_ACCEPTANCE_APPROVAL_ID`、`PRODUCTION_MIGRATION_DATABASE_URL`、`VERCEL_TOKEN`。
 - `production` 的 Google 验收态、EvoLink、Supabase 管理令牌和支持渠道缺项在 R6 写入前逐项从现有平台验证；无法证明现有值时保持商业能力 OFF，不用占位符或 Production 管理员凭据替代。
 
+### 6.2.1 2026-08-04 库存与缺口复盘
+
+以下结论来自 GitHub 全分页环境元数据、受保护 Actions、Production 数据库只读查询
+和正式域名接口；它们覆盖并取代 6.1、6.2 中已经过期的“缺失”描述：
+
+1. 该次网站里程碑复验时，正式域名运行 `main@e997eaac0bd3b216ea6d630296f2efe9484798ac`，deployment
+   `dpl_2JvXxNivMPBDZ1ez7HmU3o4cnCYG`；主页、版本、严格健康和 readiness 均为
+   HTTP 200。运行包 role 为 `COMMERCIAL_7A` 只表示包类型，不表示商业验收通过。
+2. Production revision 为 `20260710_0020`，`release_observation_recoveries` 表存在。
+   runtime/control/observation 角色均为专用最小权限角色；observation reader 默认只读。
+3. 受保护 run `30913210432` 已轮换并证明 observation reader/writer 登录，向
+   `production-observation`、`production-observation-emergency`、
+   `production-recovery` 和 `production` 发布当前工作流引用的全部 observation/
+   recovery Secret，并删除一次性发布 token。没有管理员 URL 冒充运行时连接。
+4. `preview-identity` 的 17 个 Secret、2 个变量和 `preview-commercial` 的 26 个
+   Secret、7 个变量名称均完整。Google 值和账号差异尚未读取或验证，按用户要求保持
+   `NOT_RUN`。
+5. `production` 当前完整工作流引用的 Secret/Variable 名称已完整；可选
+   `PRODUCTION_SUPPORT_URL` 为空时由已验证的 monitored support email 满足网站门禁。
+6. 网站发布 run `30910009734` 成功，但对应该次 source 的 Preview Identity/
+   Commercial 和完整 `production-release.yml` 尚未运行。当前真正剩余的是被用户明确
+   延期的身份、生成、支付和 observation 业务验收，不是资源名称缺口。
+
+恢复商业验收时只验证现有值和真实链路，不重复创建 Supabase、Storage、Redis、
+Google、EvoLink、Creem 或数据库角色，也不重复写入已存在的 Secret。
+
+后续每次 `main` 发布后的当前 source/deployment 以正式域名 `/version` 和最新成功的
+受保护网站发布 run 为权威，本节 SHA 仅作为带日期的里程碑证据。
+
 ### 6.3 R3/R2/R4 一次性执行顺序
 
 以下完成项不重跑、不重建、不轮换：专用 VowPic Preview 项目、0020 迁移、四类最小权限数据库登录、Vercel 自动化令牌、Preview/Production 保护绕过密钥、Vercel Git 自动部署禁用和 GitHub `main` ruleset。后续只允许只读回验这些状态。
@@ -133,7 +181,7 @@ Production 只补当前工作流真实引用但环境中缺失的项；其中数
 2. 完成 `preview-identity`、`preview-commercial`、Preview 项目 ref、四类数据库角色、Vercel Git 自动部署禁用和 GitHub ruleset 的只读盘点；不重复创建、迁移、轮换或写入已正确状态。
 3. 由独立 reviewer 对当前最终哈希执行 R2；只有 P0=0、P1=0、P2=0、P3=0 才进入 Git。
 4. 提交 PR 并等待完整 CI；CI 未通过不合并。合并前最后一次只读确认 Vercel Git 自动部署仍为 `disabled`、GitHub `main` 必需检查仍生效。
-5. 取得唯一 merge SHA 后，才执行两套现有 Google 测试身份的最后安全接入，把 6.2 的 5 个 Secret 写入两个 Preview 环境；不读取或持久化密码、2FA、Cookie 或令牌明文。用户可选择本人完成。
+5. 取得唯一商业 merge SHA 后，才验证两个 Preview 环境中现有的两套 Google 测试身份；不重复写入已存在的 5 个 Secret，不读取或持久化密码、2FA、Cookie 或令牌明文。用户可选择本人完成。
 6. Google 身份门通过后，严格执行 R5→R6→R7；任何失败都停在该 Gate，只修该根因，不扩架构、不重复 EvoLink 提交。
 
 ## 7. R4-R7 发布顺序

@@ -233,10 +233,6 @@ class WebOnlyStaticContractTest(unittest.TestCase):
         self.assertIn("goCreate('golden_anniversary')", detail_source)
         self.assertIn("Golden anniversary workflow", detail_source)
 
-        legacy_session_service = (ROOT / "backend/app/services/session_service.py").read_text(encoding="utf-8")
-        self.assertNotIn("mp_path", legacy_session_service)
-        self.assertNotIn("pages/join/landing", legacy_session_service)
-
     def test_active_frontend_has_no_guest_or_wechat_authentication(self) -> None:
         active_paths = (
             ROOT / "frontend/src/utils/api.ts",
@@ -370,6 +366,7 @@ class WebOnlyStaticContractTest(unittest.TestCase):
             "backend/app/routers/recommendations.py",
             "backend/app/routers/leads.py",
             "backend/app/routers/session.py",
+            "backend/app/services/session_service.py",
             "backend/app/services/lead_crm_service.py",
             "backend/app/services/local_reco_service.py",
             "backend/scripts/run_e2e_commercial_regression.py",
