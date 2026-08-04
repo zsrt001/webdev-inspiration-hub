@@ -90,6 +90,11 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             ),
         )
 
+    def test_migration_reference_query_escapes_psycopg_percent(self) -> None:
+        source = PROOF_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("format('public.%%I', required.table_name)", source)
+        self.assertNotIn("format('public.%I', required.table_name)", source)
+
     def test_server_side_bootstrap_creates_scoped_inventory_and_migration_logins(self) -> None:
         source = BOOTSTRAP_SQL.read_text(encoding="utf-8")
         for required in (
