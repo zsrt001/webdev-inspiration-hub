@@ -110,6 +110,10 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "GRANT SELECT ON ALL TABLES IN SCHEMA public",
             "SET LOCAL ROLE vowpic_migration_owner",
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public",
+            "GRANT REFERENCES ON TABLE public.%I TO vowpic_migration_owner",
+            "'acceptance_identity_bindings'",
+            "'release_activations'",
+            "'release_observation_runs'",
             "RESET ROLE",
             "class.relowner <> 'vowpic_migration_owner'::regrole",
             "procedure.proowner <> 'vowpic_migration_owner'::regrole",
@@ -168,10 +172,25 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             source.index(owner_set_check),
             source.index("'ALTER %s %I.%I OWNER TO vowpic_migration_owner'"),
         )
-        default_role_start = source.index("SET LOCAL ROLE vowpic_migration_owner")
+        reference_grant = source.index(
+            "GRANT REFERENCES ON TABLE public.%I TO vowpic_migration_owner"
+        )
+        reference_role_start = source.rindex(
+            "SET LOCAL ROLE vowpic_migration_owner",
+            0,
+            reference_grant,
+        )
+        reference_role_reset = source.index("RESET ROLE;", reference_grant)
+        self.assertLess(reference_role_start, reference_grant)
+        self.assertLess(reference_grant, reference_role_reset)
         default_table_grant = source.index(
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public\n"
             "      GRANT SELECT ON TABLES TO vowpic_inventory_login;"
+        )
+        default_role_start = source.rindex(
+            "SET LOCAL ROLE vowpic_migration_owner",
+            0,
+            default_table_grant,
         )
         default_sequence_grant = source.index(
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public\n"
@@ -210,6 +229,9 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "session_user": proof.MIGRATION_LOGIN,
             "current_user": proof.MIGRATION_OWNER,
             "migration_owner_member": True,
+            "migration_reference_privileges": {
+                table: True for table in proof.MIGRATION_REFERENCE_TABLES
+            },
         }
         runtime_role = {
             "role_name": proof.RUNTIME_LOGIN,
@@ -268,6 +290,18 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
                     **runtime_role,
                     "memberships": [proof.RUNTIME_GROUP],
                 },
+                identity_tables,
+            )
+        with self.assertRaisesRegex(ValueError, "scoped migration authority"):
+            proof._validate_runtime_identity_grant(
+                {
+                    **authority,
+                    "migration_reference_privileges": {
+                        **authority["migration_reference_privileges"],
+                        "acceptance_identity_bindings": False,
+                    },
+                },
+                runtime_role,
                 identity_tables,
             )
         with self.assertRaisesRegex(ValueError, "oauth_login_intents"):
