@@ -159,9 +159,6 @@ jobs:
           PY
 
       - name: Capture the current formal deployment for bounded rollback
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -178,16 +175,9 @@ jobs:
           const config = await configResponse.json();
           const capabilities = config.capabilities || {};
           if (Object.keys(capabilities).length !== 7 || Object.values(capabilities).some(Boolean)) throw new Error('current formal capabilities are not all OFF');
-          const deploymentResponse = await fetch(
-            `https://api.vercel.com/v13/deployments/${encodeURIComponent(runtime.deployment_id)}?teamId=${encodeURIComponent(process.env.VERCEL_ORG_ID)}`,
-            {headers: {Authorization: `Bearer ${process.env.VERCEL_TOKEN}`}},
-          );
-          if (!deploymentResponse.ok) throw new Error(`current deployment lookup returned ${deploymentResponse.status}`);
-          const deployment = await deploymentResponse.json();
-          if (deployment.id !== runtime.deployment_id || deployment.readyState !== 'READY' || !deployment.url) throw new Error('current formal deployment is not a ready rollback target');
-          const rollbackUrl = `https://${deployment.url}`;
-          fs.writeFileSync(`${process.env.RUNNER_TEMP}/previous-formal.json`, JSON.stringify({runtime, rollback_url: rollbackUrl}));
-          fs.appendFileSync(process.env.GITHUB_ENV, `ORIGINAL_DEPLOYMENT_URL=${rollbackUrl}\nORIGINAL_DEPLOYMENT_ID=${runtime.deployment_id}\n`);
+          if (!/^dpl_[A-Za-z0-9]+$/.test(runtime.deployment_id)) throw new Error('current formal deployment ID is not canonical');
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/previous-formal.json`, JSON.stringify({runtime, rollback_deployment_id: runtime.deployment_id}));
+          fs.appendFileSync(process.env.GITHUB_ENV, `ORIGINAL_DEPLOYMENT_ID=${runtime.deployment_id}\n`);
           })().catch((error) => {
             console.error(error.message);
             process.exit(1);
@@ -300,7 +290,7 @@ jobs:
             } catch {}
             await new Promise(resolve => setTimeout(resolve, 2000));
           }
-          if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.BRIDGE_RUNTIME_BUNDLE_ID || runtime.release_role !== 'SAFE_BASELINE' || runtime.schema_revision !== '20260712_0014' || !runtime.deployment_id) throw new Error('bridge runtime coordinates are invalid');
+          if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.BRIDGE_RUNTIME_BUNDLE_ID || runtime.release_role !== 'SAFE_BASELINE' || runtime.schema_revision !== '20260712_0014' || !/^dpl_[A-Za-z0-9]+$/.test(runtime.deployment_id)) throw new Error('bridge runtime coordinates are invalid');
           const readiness = await getJson('/api/v1/ops/readiness');
           if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('bridge readiness is not green');
           const config = await getJson('/api/v1/ops/public_config');
@@ -324,7 +314,20 @@ jobs:
         run: |
           set -euo pipefail
           rollback_original() {
-            "$VERCEL_CLI" promote "$ORIGINAL_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
+            current_id="$(node <<'NODE' || true
+          (async () => {
+          const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+          const response = await fetch(`${base}/version`, {cache: 'no-store'});
+          if (!response.ok) process.exit(1);
+          const runtime = await response.json();
+          if (!/^dpl_[A-Za-z0-9]+$/.test(runtime.deployment_id)) process.exit(1);
+          process.stdout.write(runtime.deployment_id);
+          })().catch(() => process.exit(1));
+          NODE
+            )"
+            if [[ "$current_id" != "$ORIGINAL_DEPLOYMENT_ID" ]]; then
+              "$VERCEL_CLI" rollback "$ORIGINAL_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN"
+            fi
             node <<'NODE'
           (async () => {
           const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
@@ -387,7 +390,6 @@ jobs:
             rollback_original
             exit 1
           fi
-          echo "PREVIOUS_DEPLOYMENT_URL=$BRIDGE_URL" >> "$GITHUB_ENV"
           echo "PREVIOUS_DEPLOYMENT_ID=$BRIDGE_DEPLOYMENT_ID" >> "$GITHUB_ENV"
 
       - name: Recheck current main immediately before the bounded schema transition
@@ -512,7 +514,7 @@ jobs:
             } catch {}
             await new Promise(resolve => setTimeout(resolve, 2000));
           }
-          if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.RUNTIME_BUNDLE_ID || runtime.release_role !== 'COMMERCIAL_7A' || runtime.schema_revision !== '20260710_0020' || !runtime.deployment_id) throw new Error('candidate runtime coordinates are invalid');
+          if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.RUNTIME_BUNDLE_ID || runtime.release_role !== 'COMMERCIAL_7A' || runtime.schema_revision !== '20260710_0020' || !/^dpl_[A-Za-z0-9]+$/.test(runtime.deployment_id)) throw new Error('candidate runtime coordinates are invalid');
           const readiness = await getJson('/api/v1/ops/readiness');
           if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('candidate readiness is not green');
           const config = await getJson('/api/v1/ops/public_config');
@@ -548,7 +550,20 @@ jobs:
         run: |
           set -euo pipefail
           rollback() {
-            "$VERCEL_CLI" promote "$PREVIOUS_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
+            current_id="$(node <<'NODE' || true
+          (async () => {
+          const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+          const response = await fetch(`${base}/version`, {cache: 'no-store'});
+          if (!response.ok) process.exit(1);
+          const runtime = await response.json();
+          if (!/^dpl_[A-Za-z0-9]+$/.test(runtime.deployment_id)) process.exit(1);
+          process.stdout.write(runtime.deployment_id);
+          })().catch(() => process.exit(1));
+          NODE
+            )"
+            if [[ "$current_id" != "$PREVIOUS_DEPLOYMENT_ID" ]]; then
+              "$VERCEL_CLI" rollback "$PREVIOUS_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN"
+            fi
             node <<'NODE'
           const fs = require('node:fs');
           (async () => {
