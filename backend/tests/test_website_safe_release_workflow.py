@@ -84,6 +84,38 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("rollback baseline readiness is not green after schema transition", self.source)
         self.assertNotIn("alembic downgrade", self.source)
 
+    def test_proves_and_injects_the_least_privilege_runtime_database_logins(self) -> None:
+        self.assertIn(
+            "PRODUCTION_RUNTIME_DATABASE_URL: "
+            "${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}",
+            self.source,
+        )
+        self.assertIn(
+            "PRODUCTION_CONTROL_PLANE_DATABASE_URL: "
+            "${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}",
+            self.source,
+        )
+        self.assertEqual(
+            self.source.count("verify_production_database_credentials.py"),
+            1,
+        )
+        self.assertEqual(
+            self.source.count(
+                '--env "DATABASE_URL=$PRODUCTION_RUNTIME_DATABASE_URL"'
+            ),
+            2,
+        )
+        self.assertEqual(
+            self.source.count(
+                '--env "CONTROL_PLANE_DATABASE_URL=$PRODUCTION_CONTROL_PLANE_DATABASE_URL"'
+            ),
+            2,
+        )
+        self.assertNotIn(
+            '--env "DATABASE_URL=$PRODUCTION_MIGRATION_DATABASE_URL"',
+            self.source,
+        )
+
     def test_deploys_unaliased_candidate_then_promotes_once_with_rollback(self) -> None:
         self.assertEqual(self.source.count(" deploy --prebuilt --prod --skip-domain "), 2)
         self.assertEqual(self.source.count('"$VERCEL_CLI" promote "$BRIDGE_URL"'), 1)

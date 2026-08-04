@@ -118,9 +118,13 @@ jobs:
 
       - name: Prove the supported Production schema and every commercial capability are OFF
         env:
+          PRODUCTION_RUNTIME_DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          PRODUCTION_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
         run: |
           set -euo pipefail
+          python scripts/release/verify_production_database_credentials.py \
+            --output "$RUNNER_TEMP/production-database-credential-proof.json"
           python - <<'PY'
           import json
           import os
@@ -237,6 +241,8 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PRODUCTION_RUNTIME_DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          PRODUCTION_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
         run: |
           set -euo pipefail
           "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
@@ -250,6 +256,8 @@ jobs:
             --env "SOURCE_SHA=$SOURCE_SHA" \
             --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA" \
             --env "RUNTIME_BUNDLE_ID=$BRIDGE_RUNTIME_BUNDLE_ID" \
+            --env "DATABASE_URL=$PRODUCTION_RUNTIME_DATABASE_URL" \
+            --env "CONTROL_PLANE_DATABASE_URL=$PRODUCTION_CONTROL_PLANE_DATABASE_URL" \
             --meta "vowpicSourceSha=$SOURCE_SHA" \
             --meta "vowpicRuntimeBundleId=$BRIDGE_RUNTIME_BUNDLE_ID" \
             --meta "vowpicBuildSha256=$BUILD_SHA256" \
@@ -263,6 +271,8 @@ jobs:
             --env "SOURCE_SHA=$SOURCE_SHA" \
             --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA" \
             --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
+            --env "DATABASE_URL=$PRODUCTION_RUNTIME_DATABASE_URL" \
+            --env "CONTROL_PLANE_DATABASE_URL=$PRODUCTION_CONTROL_PLANE_DATABASE_URL" \
             --meta "vowpicSourceSha=$SOURCE_SHA" \
             --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
             --meta "vowpicBuildSha256=$BUILD_SHA256" \
