@@ -193,6 +193,29 @@ class IdentitySessionSchemaTest(unittest.TestCase):
         self.assertIn("SET search_path = pg_catalog, public", source)
         self.assertIn("REVOKE ALL ON FUNCTION public.app_current_user_id() FROM PUBLIC", source)
         self.assertIn("identity_legacy_fallback_uses_seq", source)
+        sequence_revoke = source.index(
+            "REVOKE ALL ON SEQUENCE public.identity_legacy_fallback_uses_seq FROM PUBLIC"
+        )
+        sequence_grant = source.index(
+            "GRANT SELECT ON SEQUENCE public.identity_legacy_fallback_uses_seq"
+        )
+        sequence_owner = source.index(
+            "ALTER SEQUENCE public.identity_legacy_fallback_uses_seq "
+            '"\n            "OWNER TO vowpic_identity_owner'
+        )
+        self.assertLess(sequence_revoke, sequence_owner)
+        self.assertLess(sequence_grant, sequence_owner)
+        function_revoke = source.index(
+            "REVOKE ALL ON FUNCTION public.app_current_user_id() FROM PUBLIC"
+        )
+        function_grant = source.index(
+            "GRANT EXECUTE ON FUNCTION public.app_current_user_id() TO authenticated"
+        )
+        function_owner = source.index(
+            "ALTER FUNCTION public.app_current_user_id() OWNER TO vowpic_identity_owner"
+        )
+        self.assertLess(function_revoke, function_owner)
+        self.assertLess(function_grant, function_owner)
         for guard_name in (
             "guard_user_identity_update",
             "guard_oauth_login_intent_update",

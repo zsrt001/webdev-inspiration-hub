@@ -486,12 +486,6 @@ def _create_identity_roles_and_rls() -> None:
     )
     op.execute(
         sa.text(
-            "ALTER SEQUENCE public.identity_legacy_fallback_uses_seq "
-            "OWNER TO vowpic_identity_owner"
-        )
-    )
-    op.execute(
-        sa.text(
             "REVOKE ALL ON SEQUENCE public.identity_legacy_fallback_uses_seq FROM PUBLIC"
         )
     )
@@ -507,6 +501,12 @@ def _create_identity_roles_and_rls() -> None:
         sa.text(
             "GRANT SELECT ON SEQUENCE public.identity_legacy_fallback_uses_seq "
             "TO vowpic_identity_service"
+        )
+    )
+    op.execute(
+        sa.text(
+            "ALTER SEQUENCE public.identity_legacy_fallback_uses_seq "
+            "OWNER TO vowpic_identity_owner"
         )
     )
 
@@ -631,10 +631,10 @@ def _create_current_user_resolver() -> None:
             """
         )
     )
-    op.execute(sa.text("ALTER FUNCTION public.app_current_user_id() OWNER TO vowpic_identity_owner"))
     op.execute(sa.text("REVOKE ALL ON FUNCTION public.app_current_user_id() FROM PUBLIC"))
     if _role_exists("authenticated"):
         op.execute(sa.text("GRANT EXECUTE ON FUNCTION public.app_current_user_id() TO authenticated"))
+    op.execute(sa.text("ALTER FUNCTION public.app_current_user_id() OWNER TO vowpic_identity_owner"))
 
     for table_name, predicate in USER_OWNED_TABLES.items():
         if not _table_exists(table_name):
