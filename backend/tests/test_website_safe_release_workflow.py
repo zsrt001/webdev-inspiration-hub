@@ -116,6 +116,36 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
             self.source,
         )
 
+    def test_injects_the_approved_monitored_support_channel_into_the_candidate(self) -> None:
+        job_env = self.document["jobs"]["website-safe-release"]["env"]
+        self.assertEqual(
+            job_env["PRODUCTION_SUPPORT_EMAIL"],
+            "${{ vars.PRODUCTION_SUPPORT_EMAIL }}",
+        )
+        self.assertEqual(
+            job_env["PRODUCTION_SUPPORT_URL"],
+            "${{ vars.PRODUCTION_SUPPORT_URL }}",
+        )
+        self.assertEqual(
+            job_env["PRODUCTION_SUPPORT_MONITORED"],
+            "${{ vars.PRODUCTION_SUPPORT_MONITORED }}",
+        )
+        self.assertIn(
+            '[[ -n "$PRODUCTION_SUPPORT_EMAIL" || -n "$PRODUCTION_SUPPORT_URL" ]]',
+            self.source,
+        )
+        self.assertIn(
+            'test "$PRODUCTION_SUPPORT_MONITORED" = "true"',
+            self.source,
+        )
+        for binding in (
+            '--env "SUPPORT_EMAIL=$PRODUCTION_SUPPORT_EMAIL"',
+            '--env "SUPPORT_URL=$PRODUCTION_SUPPORT_URL"',
+            '--env "SUPPORT_MONITORED=$PRODUCTION_SUPPORT_MONITORED"',
+        ):
+            with self.subTest(binding=binding):
+                self.assertEqual(self.source.count(binding), 1)
+
     def test_deploys_unaliased_candidate_then_promotes_once_with_rollback(self) -> None:
         self.assertEqual(self.source.count(" deploy --prebuilt --prod --skip-domain "), 2)
         self.assertEqual(self.source.count('"$VERCEL_CLI" promote "$BRIDGE_URL"'), 1)

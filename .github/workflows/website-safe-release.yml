@@ -29,6 +29,9 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       RELEASE_ROLE: COMMERCIAL_7A
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+      PRODUCTION_SUPPORT_EMAIL: ${{ vars.PRODUCTION_SUPPORT_EMAIL }}
+      PRODUCTION_SUPPORT_URL: ${{ vars.PRODUCTION_SUPPORT_URL }}
+      PRODUCTION_SUPPORT_MONITORED: ${{ vars.PRODUCTION_SUPPORT_MONITORED }}
     steps:
       - name: Check out the exact website source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -245,6 +248,8 @@ jobs:
           PRODUCTION_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
         run: |
           set -euo pipefail
+          [[ -n "$PRODUCTION_SUPPORT_EMAIL" || -n "$PRODUCTION_SUPPORT_URL" ]]
+          test "$PRODUCTION_SUPPORT_MONITORED" = "true"
           "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
           "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
           test -d .vercel/output
@@ -275,6 +280,9 @@ jobs:
             --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
             --env "DATABASE_URL=$PRODUCTION_RUNTIME_DATABASE_URL" \
             --env "CONTROL_PLANE_DATABASE_URL=$PRODUCTION_CONTROL_PLANE_DATABASE_URL" \
+            --env "SUPPORT_EMAIL=$PRODUCTION_SUPPORT_EMAIL" \
+            --env "SUPPORT_URL=$PRODUCTION_SUPPORT_URL" \
+            --env "SUPPORT_MONITORED=$PRODUCTION_SUPPORT_MONITORED" \
             --meta "vowpicSourceSha=$SOURCE_SHA" \
             --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
             --meta "vowpicBuildSha256=$BUILD_SHA256" \
