@@ -137,6 +137,10 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
         )
 
     def test_never_runs_generation_payment_or_broad_data_migration(self) -> None:
+        self.assertEqual(
+            self.source.count('--env "TASK_EXECUTION_MODE=backend"'),
+            2,
+        )
         forbidden = (
             "images/generations",
             "orders/create",

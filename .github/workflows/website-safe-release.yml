@@ -253,6 +253,7 @@ jobs:
           BRIDGE_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
             --env "RUNTIME_ENVIRONMENT=production" \
             --env "RELEASE_ROLE=SAFE_BASELINE" \
+            --env "TASK_EXECUTION_MODE=backend" \
             --env "SOURCE_SHA=$SOURCE_SHA" \
             --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA" \
             --env "RUNTIME_BUNDLE_ID=$BRIDGE_RUNTIME_BUNDLE_ID" \
@@ -268,6 +269,7 @@ jobs:
           CANDIDATE_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
             --env "RUNTIME_ENVIRONMENT=production" \
             --env "RELEASE_ROLE=$RELEASE_ROLE" \
+            --env "TASK_EXECUTION_MODE=backend" \
             --env "SOURCE_SHA=$SOURCE_SHA" \
             --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA" \
             --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
