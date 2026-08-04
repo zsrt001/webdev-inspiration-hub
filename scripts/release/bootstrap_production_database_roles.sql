@@ -336,6 +336,23 @@ BEGIN
         );
     END LOOP;
 
+    SET LOCAL ROLE vowpic_migration_owner;
+    FOR relation IN
+        SELECT required.table_name
+        FROM unnest(ARRAY[
+            'acceptance_identity_bindings',
+            'release_activations',
+            'release_observation_runs'
+        ]::text[]) AS required(table_name)
+        WHERE to_regclass(format('public.%I', required.table_name)) IS NOT NULL
+    LOOP
+        EXECUTE format(
+            'GRANT REFERENCES ON TABLE public.%I TO vowpic_migration_owner',
+            relation.table_name
+        );
+    END LOOP;
+    RESET ROLE;
+
     FOR routine IN
         SELECT namespace.nspname, procedure.proname,
                pg_get_function_identity_arguments(procedure.oid) AS identity_arguments

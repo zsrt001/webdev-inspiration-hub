@@ -48,6 +48,11 @@ CONTROL_PLANE_TABLES = (
     "acceptance_identity_bindings",
     "release_activations",
 )
+MIGRATION_REFERENCE_TABLES = (
+    "acceptance_identity_bindings",
+    "release_activations",
+    "release_observation_runs",
+)
 ALLOWED_RUNTIME_PRIVILEGES = {"SELECT", "INSERT", "UPDATE"}
 OBSERVATION_READ_TABLES = (
     "release_activations",
@@ -500,10 +505,13 @@ def _validate_runtime_identity_grant(
     *,
     identity_schema_required: bool = True,
 ) -> None:
+    reference_privileges = authority.get("migration_reference_privileges") or {}
     if (
         authority.get("session_user") != MIGRATION_LOGIN
         or authority.get("current_user") != MIGRATION_OWNER
         or not authority.get("migration_owner_member")
+        or set(reference_privileges) != set(MIGRATION_REFERENCE_TABLES)
+        or not all(reference_privileges.values())
     ):
         raise ValueError("identity grant proof requires the scoped migration authority")
     forbidden_role_flags = (
@@ -587,6 +595,23 @@ def prove_runtime_identity_grant(
                 """
             )
             authority = dict(cursor.fetchone() or {})
+            cursor.execute(
+                """
+                SELECT required.table_name,
+                       has_table_privilege(
+                           current_user,
+                           format('public.%I', required.table_name),
+                           'REFERENCES'
+                       ) AS can_references
+                FROM unnest(%s::text[]) AS required(table_name)
+                ORDER BY required.table_name
+                """,
+                (list(MIGRATION_REFERENCE_TABLES),),
+            )
+            authority["migration_reference_privileges"] = {
+                str(row["table_name"]): bool(row["can_references"])
+                for row in cursor.fetchall()
+            }
             cursor.execute("SELECT version_num FROM public.alembic_version")
             schema_revisions = tuple(
                 sorted(str(row["version_num"]) for row in cursor.fetchall())
@@ -728,6 +753,13 @@ def prove_runtime_identity_grant(
         "authority": {
             "session_user": authority["session_user"],
             "current_user": authority["current_user"],
+            "migration_reference_tables": sorted(
+                table
+                for table, allowed in authority[
+                    "migration_reference_privileges"
+                ].items()
+                if allowed
+            ),
         },
         "runtime_role": runtime_role,
         "identity_tables": identity_tables,
