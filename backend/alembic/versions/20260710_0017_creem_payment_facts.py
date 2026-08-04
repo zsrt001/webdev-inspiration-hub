@@ -24,6 +24,8 @@ PAYMENT_FACT_TABLES = (
     "payment_dispute_facts",
 )
 
+PURCHASE_BACKFILL_POLICY = "credit_purchases_vowpic_migration_backfill"
+
 
 def _expand_purchase_intents() -> None:
     op.add_column("credit_purchases", sa.Column("intent_state", sa.String(32), nullable=True))
@@ -80,8 +82,19 @@ def _expand_purchase_intents() -> None:
     )
     op.execute(
         sa.text(
+            f"CREATE POLICY {PURCHASE_BACKFILL_POLICY} ON public.credit_purchases "
+            "FOR ALL TO vowpic_migration_owner USING (true) WITH CHECK (true)"
+        )
+    )
+    op.execute(
+        sa.text(
             "UPDATE credit_purchases SET intent_state = "
             "CASE WHEN status IN ('paid', 'completed') THEN 'CONFIRMED' ELSE 'UNKNOWN' END"
+        )
+    )
+    op.execute(
+        sa.text(
+            f"DROP POLICY {PURCHASE_BACKFILL_POLICY} ON public.credit_purchases"
         )
     )
     op.alter_column(

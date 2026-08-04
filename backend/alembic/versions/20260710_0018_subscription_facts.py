@@ -25,6 +25,8 @@ SUBSCRIPTION_FACT_TABLES = (
     "subscription_cancel_intents",
 )
 
+SUBSCRIPTION_BACKFILL_POLICY = "user_subscriptions_vowpic_migration_backfill"
+
 
 def _expand_subscription_projection() -> None:
     op.add_column(
@@ -62,12 +64,23 @@ def _expand_subscription_projection() -> None:
     )
     op.execute(
         sa.text(
+            f"CREATE POLICY {SUBSCRIPTION_BACKFILL_POLICY} ON public.user_subscriptions "
+            "FOR ALL TO vowpic_migration_owner USING (true) WITH CHECK (true)"
+        )
+    )
+    op.execute(
+        sa.text(
             "UPDATE user_subscriptions SET normalized_status = CASE "
             "WHEN status = 'active' THEN 'ACTIVE' "
             "WHEN status = 'past_due' THEN 'PAST_DUE' "
             "WHEN status = 'canceled' THEN 'CANCELED' "
             "WHEN status = 'expired' THEN 'EXPIRED' "
             "ELSE 'PENDING' END"
+        )
+    )
+    op.execute(
+        sa.text(
+            f"DROP POLICY {SUBSCRIPTION_BACKFILL_POLICY} ON public.user_subscriptions"
         )
     )
     op.alter_column(

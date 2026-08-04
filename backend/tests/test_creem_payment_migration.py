@@ -32,6 +32,26 @@ class CreemPaymentMigrationTest(unittest.TestCase):
         self.assertIn("commercial_append_only_guard", source)
         self.assertIn("ENABLE ROW LEVEL SECURITY", source)
 
+    def test_existing_purchase_rows_are_backfilled_through_forced_rls(self) -> None:
+        source = MIGRATION.read_text(encoding="utf-8")
+        create_policy = source.index(
+            "CREATE POLICY {PURCHASE_BACKFILL_POLICY} ON public.credit_purchases"
+        )
+        update_rows = source.index("UPDATE credit_purchases SET intent_state")
+        drop_policy = source.index(
+            "DROP POLICY {PURCHASE_BACKFILL_POLICY} ON public.credit_purchases"
+        )
+        enforce_not_null = source.index(
+            'op.alter_column(\n        "credit_purchases",\n        "intent_state"'
+        )
+        self.assertLess(create_policy, update_rows)
+        self.assertLess(update_rows, drop_policy)
+        self.assertLess(drop_policy, enforce_not_null)
+        self.assertIn(
+            "FOR ALL TO vowpic_migration_owner USING (true) WITH CHECK (true)",
+            source,
+        )
+
     def test_purchase_and_event_models_expose_independent_money_facts(self) -> None:
         for column in (
             "intent_state",
