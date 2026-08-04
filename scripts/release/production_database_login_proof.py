@@ -53,6 +53,13 @@ MIGRATION_REFERENCE_TABLES = (
     "release_activations",
     "release_observation_runs",
 )
+MIGRATION_PREREQUISITE_ROLES = (
+    "vowpic_identity_owner",
+    "vowpic_identity_service",
+    "vowpic_media_service",
+    "vowpic_generation_service",
+    "vowpic_partner_service",
+)
 ALLOWED_RUNTIME_PRIVILEGES = {"SELECT", "INSERT", "UPDATE"}
 OBSERVATION_READ_TABLES = (
     "release_activations",
@@ -506,14 +513,35 @@ def _validate_runtime_identity_grant(
     identity_schema_required: bool = True,
 ) -> None:
     reference_privileges = authority.get("migration_reference_privileges") or {}
+    prerequisite_roles = authority.get("migration_prerequisite_roles") or {}
     if (
         authority.get("session_user") != MIGRATION_LOGIN
         or authority.get("current_user") != MIGRATION_OWNER
         or not authority.get("migration_owner_member")
+        or not authority.get("identity_owner_schema_create")
         or set(reference_privileges) != set(MIGRATION_REFERENCE_TABLES)
         or not all(reference_privileges.values())
+        or set(prerequisite_roles) != set(MIGRATION_PREREQUISITE_ROLES)
     ):
         raise ValueError("identity grant proof requires the scoped migration authority")
+    for role_name, facts in prerequisite_roles.items():
+        if (
+            facts.get("role_name") != role_name
+            or facts.get("can_login")
+            or facts.get("superuser")
+            or facts.get("create_db")
+            or facts.get("create_role")
+            or facts.get("replication")
+            or facts.get("bypass_rls")
+            or not facts.get("inherit_privileges")
+            or not facts.get("schema_usage")
+            or bool(facts.get("schema_create"))
+            != (role_name == "vowpic_identity_owner")
+            or facts.get("memberships")
+        ):
+            raise ValueError(
+                "identity grant proof requires safe migration prerequisite roles"
+            )
     forbidden_role_flags = (
         "superuser",
         "create_db",
@@ -591,10 +619,46 @@ def prove_runtime_identity_grant(
                            session_user,
                            'vowpic_migration_owner',
                            'MEMBER'
-                       ) AS migration_owner_member
+                       ) AS migration_owner_member,
+                       has_schema_privilege(
+                           'vowpic_identity_owner',
+                           'public',
+                           'CREATE'
+                       ) AS identity_owner_schema_create
                 """
             )
             authority = dict(cursor.fetchone() or {})
+            cursor.execute(
+                """
+                SELECT role.rolname AS role_name,
+                       role.rolcanlogin AS can_login,
+                       role.rolinherit AS inherit_privileges,
+                       role.rolsuper AS superuser,
+                       role.rolcreatedb AS create_db,
+                       role.rolcreaterole AS create_role,
+                       role.rolreplication AS replication,
+                       role.rolbypassrls AS bypass_rls,
+                       has_schema_privilege(
+                           role.rolname, 'public', 'USAGE'
+                       ) AS schema_usage,
+                       has_schema_privilege(
+                           role.rolname, 'public', 'CREATE'
+                       ) AS schema_create,
+                       COALESCE((
+                           SELECT array_agg(parent.rolname ORDER BY parent.rolname)
+                           FROM pg_auth_members membership
+                           JOIN pg_roles parent ON parent.oid = membership.roleid
+                           WHERE membership.member = role.oid
+                       ), ARRAY[]::name[]) AS memberships
+                FROM pg_roles role
+                WHERE role.rolname = ANY(%s)
+                ORDER BY role.rolname
+                """,
+                (list(MIGRATION_PREREQUISITE_ROLES),),
+            )
+            authority["migration_prerequisite_roles"] = {
+                str(row["role_name"]): dict(row) for row in cursor.fetchall()
+            }
             cursor.execute(
                 """
                 SELECT required.table_name,
@@ -753,6 +817,12 @@ def prove_runtime_identity_grant(
         "authority": {
             "session_user": authority["session_user"],
             "current_user": authority["current_user"],
+            "identity_owner_schema_create": authority[
+                "identity_owner_schema_create"
+            ],
+            "migration_prerequisite_roles": sorted(
+                authority["migration_prerequisite_roles"]
+            ),
             "migration_reference_tables": sorted(
                 table
                 for table, allowed in authority[

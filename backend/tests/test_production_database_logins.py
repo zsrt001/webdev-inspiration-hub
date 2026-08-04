@@ -105,7 +105,12 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "vowpic_migration_login",
             "vowpic_identity_owner",
             "vowpic_identity_service",
+            "vowpic_media_service",
+            "vowpic_generation_service",
+            "vowpic_partner_service",
             "GRANT vowpic_identity_owner TO vowpic_migration_owner",
+            "GRANT USAGE, CREATE ON SCHEMA public TO vowpic_identity_owner",
+            "GRANT USAGE ON SCHEMA public TO",
             "WITH INHERIT FALSE, SET TRUE",
             "vowpic_app_runtime",
             "vowpic_control_writer_login",
@@ -234,8 +239,25 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
             "session_user": proof.MIGRATION_LOGIN,
             "current_user": proof.MIGRATION_OWNER,
             "migration_owner_member": True,
+            "identity_owner_schema_create": True,
             "migration_reference_privileges": {
                 table: True for table in proof.MIGRATION_REFERENCE_TABLES
+            },
+            "migration_prerequisite_roles": {
+                role: {
+                    "role_name": role,
+                    "can_login": False,
+                    "inherit_privileges": True,
+                    "superuser": False,
+                    "create_db": False,
+                    "create_role": False,
+                    "replication": False,
+                    "bypass_rls": False,
+                    "schema_usage": True,
+                    "schema_create": role == "vowpic_identity_owner",
+                    "memberships": [],
+                }
+                for role in proof.MIGRATION_PREREQUISITE_ROLES
             },
         }
         runtime_role = {
@@ -295,6 +317,29 @@ class ProductionDatabaseLoginUrlTest(unittest.TestCase):
                     **runtime_role,
                     "memberships": [proof.RUNTIME_GROUP],
                 },
+                identity_tables,
+            )
+        with self.assertRaisesRegex(ValueError, "scoped migration authority"):
+            proof._validate_runtime_identity_grant(
+                {**authority, "identity_owner_schema_create": False},
+                runtime_role,
+                identity_tables,
+            )
+        with self.assertRaisesRegex(ValueError, "safe migration prerequisite roles"):
+            proof._validate_runtime_identity_grant(
+                {
+                    **authority,
+                    "migration_prerequisite_roles": {
+                        **authority["migration_prerequisite_roles"],
+                        "vowpic_media_service": {
+                            **authority["migration_prerequisite_roles"][
+                                "vowpic_media_service"
+                            ],
+                            "can_login": True,
+                        },
+                    },
+                },
+                runtime_role,
                 identity_tables,
             )
         with self.assertRaisesRegex(ValueError, "scoped migration authority"):
