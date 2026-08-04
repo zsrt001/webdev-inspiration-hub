@@ -42,11 +42,9 @@ from provision_production_database_logins import (  # noqa: E402
 )
 
 
-OBSERVATION_GITHUB_SECRETS = {
-    "OBSERVATION_READ_DATABASE_URL": OBSERVATION_READER_LOGIN,
-    "OBSERVATION_WRITE_DATABASE_URL": OBSERVATION_WRITER_LOGIN,
-}
 OBSERVATION_SCHEMA = "20260710_0020"
+_GITHUB_ENVIRONMENT = re.compile(r"[A-Za-z0-9_.-]+")
+_GITHUB_SECRET = re.compile(r"[A-Z][A-Z0-9_]+")
 
 
 def _require_observation_schema(cursor: RealDictCursor) -> str:
@@ -96,24 +94,25 @@ def _run_gh(
     )
 
 
-def publish_github_observation_database_urls(
+def _publish_github_environment_secrets(
     *,
     github_cli: str,
     repository: str,
     environment: str,
-    reader_url: str,
-    writer_url: str,
+    secret_values: dict[str, str],
 ) -> dict[str, dict[str, str]]:
     cli = _resolve_cli(github_cli)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("GitHub repository is invalid")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", environment):
+    if not _GITHUB_ENVIRONMENT.fullmatch(environment):
         raise ValueError("GitHub environment is invalid")
-    redactions = (reader_url, writer_url)
-    for name, value in (
-        ("OBSERVATION_READ_DATABASE_URL", reader_url),
-        ("OBSERVATION_WRITE_DATABASE_URL", writer_url),
-    ):
+    if not secret_values:
+        raise ValueError("GitHub Environment secret set is empty")
+    for name, value in secret_values.items():
+        if not _GITHUB_SECRET.fullmatch(name) or not value:
+            raise ValueError("GitHub Environment secret input is invalid")
+    redactions = tuple(secret_values.values())
+    for name, value in secret_values.items():
         _run_gh(
             [
                 cli,
@@ -146,7 +145,7 @@ def publish_github_observation_database_urls(
     if not isinstance(payload, list):
         raise ValueError("GitHub Environment secret metadata is invalid")
     evidence: dict[str, dict[str, str]] = {}
-    for name in OBSERVATION_GITHUB_SECRETS:
+    for name in secret_values:
         matches = [item for item in payload if item.get("name") == name]
         if len(matches) != 1 or not str(matches[0].get("updatedAt") or ""):
             raise ValueError(
@@ -157,6 +156,79 @@ def publish_github_observation_database_urls(
             "updated_at": str(matches[0]["updatedAt"]),
         }
     return evidence
+
+
+def publish_github_observation_database_urls(
+    *,
+    github_cli: str,
+    repository: str,
+    environment: str,
+    reader_url: str,
+    writer_url: str,
+) -> dict[str, dict[str, str]]:
+    return _publish_github_environment_secrets(
+        github_cli=github_cli,
+        repository=repository,
+        environment=environment,
+        secret_values={
+            "OBSERVATION_READ_DATABASE_URL": reader_url,
+            "OBSERVATION_WRITE_DATABASE_URL": writer_url,
+        },
+    )
+
+
+def publish_github_observation_release_secrets(
+    *,
+    github_cli: str,
+    repository: str,
+    observation_environment: str,
+    emergency_environment: str,
+    recovery_environment: str,
+    production_environment: str,
+    reader_url: str,
+    writer_url: str,
+    migration_url: str,
+    vercel_token: str,
+    acceptance_approval_id: str,
+    observation_signing_key: str,
+    release_evidence_hmac_key: str,
+) -> dict[str, dict[str, dict[str, str]]]:
+    environments = (
+        observation_environment,
+        emergency_environment,
+        recovery_environment,
+        production_environment,
+    )
+    if len(set(environments)) != len(environments):
+        raise ValueError("GitHub release environments must be distinct")
+    secret_sets = {
+        observation_environment: {
+            "OBSERVATION_READ_DATABASE_URL": reader_url,
+            "OBSERVATION_WRITE_DATABASE_URL": writer_url,
+            "OBSERVATION_SIGNING_KEY": observation_signing_key,
+            "RELEASE_EVIDENCE_HMAC_KEY": release_evidence_hmac_key,
+        },
+        emergency_environment: {
+            "OBSERVATION_EMERGENCY_DATABASE_URL": writer_url,
+        },
+        recovery_environment: {
+            "PRODUCTION_MIGRATION_DATABASE_URL": migration_url,
+            "VERCEL_TOKEN": vercel_token,
+            "PRODUCTION_ACCEPTANCE_APPROVAL_ID": acceptance_approval_id,
+        },
+        production_environment: {
+            "OBSERVATION_SIGNING_KEY": observation_signing_key,
+        },
+    }
+    return {
+        environment: _publish_github_environment_secrets(
+            github_cli=github_cli,
+            repository=repository,
+            environment=environment,
+            secret_values=values,
+        )
+        for environment, values in secret_sets.items()
+    }
 
 
 def prove_observation_logins_after_pooler_propagation(
@@ -309,29 +381,66 @@ def main() -> int:
         "--github-environment",
         default="production-observation",
     )
+    parser.add_argument(
+        "--emergency-github-environment",
+        default="production-observation-emergency",
+    )
+    parser.add_argument(
+        "--recovery-github-environment",
+        default="production-recovery",
+    )
+    parser.add_argument(
+        "--production-github-environment",
+        default="production",
+    )
+    parser.add_argument("--vercel-token-env", default="VERCEL_TOKEN")
+    parser.add_argument(
+        "--acceptance-approval-id-env",
+        default="PRODUCTION_ACCEPTANCE_APPROVAL_ID",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     migration_url = os.environ.get(args.database_url_env, "").strip()
-    if not migration_url or not args.github_repository:
+    vercel_token = os.environ.get(args.vercel_token_env, "").strip()
+    acceptance_approval_id = os.environ.get(
+        args.acceptance_approval_id_env,
+        "",
+    ).strip()
+    if (
+        not migration_url
+        or not vercel_token
+        or not acceptance_approval_id
+        or not args.github_repository
+    ):
         print(
-            "ERROR: protected migration database URL and GitHub repository are required",
+            "ERROR: protected release credentials and GitHub repository are required",
             file=sys.stderr,
         )
         return 1
     reader_url = writer_url = ""
     reader_password = writer_password = ""
+    observation_signing_key = secrets.token_urlsafe(48)
+    release_evidence_hmac_key = secrets.token_urlsafe(48)
     try:
         reader_url, writer_url, proof = provision_observation_database_logins(
             migration_url
         )
         reader_password = str(urlsplit(reader_url).password or "")
         writer_password = str(urlsplit(writer_url).password or "")
-        github = publish_github_observation_database_urls(
+        github = publish_github_observation_release_secrets(
             github_cli=args.github_cli,
             repository=args.github_repository,
-            environment=args.github_environment,
+            observation_environment=args.github_environment,
+            emergency_environment=args.emergency_github_environment,
+            recovery_environment=args.recovery_github_environment,
+            production_environment=args.production_github_environment,
             reader_url=reader_url,
             writer_url=writer_url,
+            migration_url=migration_url,
+            vercel_token=vercel_token,
+            acceptance_approval_id=acceptance_approval_id,
+            observation_signing_key=observation_signing_key,
+            release_evidence_hmac_key=release_evidence_hmac_key,
         )
         report = {
             "schema": "vowpic.observation-database-logins.v1",
@@ -348,7 +457,10 @@ def main() -> int:
                 {
                     "state": "PROVISIONED",
                     "roles": sorted(proof["roles"]),
-                    "github_secrets": sorted(github),
+                    "github_secrets": {
+                        environment: sorted(metadata)
+                        for environment, metadata in github.items()
+                    },
                 }
             )
         )
@@ -362,10 +474,14 @@ def main() -> int:
         detail = str(exc)
         for secret in (
             migration_url,
+            vercel_token,
+            acceptance_approval_id,
             reader_url,
             writer_url,
             reader_password,
             writer_password,
+            observation_signing_key,
+            release_evidence_hmac_key,
         ):
             if secret:
                 detail = detail.replace(secret, "[REDACTED]")

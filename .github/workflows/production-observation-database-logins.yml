@@ -30,6 +30,8 @@ jobs:
       - name: Rotate and prove the two least-privilege logins
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
           GH_TOKEN: ${{ secrets.ONE_TIME_OBSERVATION_SECRET_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
@@ -39,6 +41,9 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --github-repository "$GITHUB_REPOSITORY" \
             --github-environment production-observation \
+            --emergency-github-environment production-observation-emergency \
+            --recovery-github-environment production-recovery \
+            --production-github-environment production \
             --output artifacts/production-observation-database-logins/proof.json
       - name: Remove the one-time GitHub publishing credential
         if: ${{ always() }}
