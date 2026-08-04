@@ -31,7 +31,7 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
         self.assertIn('test "$GITHUB_SHA" = "$SOURCE_SHA"', self.source)
         self.assertIn('item.get("name") == "quality-gate"', self.source)
 
-    def test_requires_exact_schema_and_all_seven_flags_off(self) -> None:
+    def test_requires_supported_source_exact_target_and_all_seven_flags_off(self) -> None:
         for capability in (
             "google_auth",
             "authenticated_upload",
@@ -42,15 +42,34 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
             "partner_invite",
         ):
             self.assertIn(f'"{capability}"', self.source)
+        self.assertIn('"20260712_0014", "20260710_0020"', self.source)
         self.assertIn('revisions != [("20260710_0020",)]', self.source)
         self.assertIn('row[1] != "OFF"', self.source)
         self.assertIn("Object.values(capabilities).some(Boolean)", self.source)
 
+    def test_schema_transition_is_exact_minimum_privilege_and_forward_only(self) -> None:
+        self.assertEqual(
+            self.source.count("python -m alembic -c alembic.ini upgrade 20260710_0020"),
+            1,
+        )
+        self.assertIn('if [[ "$SCHEMA_BEFORE" = "20260712_0014" ]]', self.source)
+        self.assertIn("production_database_login_proof.py", self.source)
+        self.assertIn('--expected-schema "$SCHEMA_BEFORE"', self.source)
+        self.assertIn("--expected-schema 20260710_0020", self.source)
+        self.assertIn("lock_timeout=5s", self.source)
+        self.assertIn("statement_timeout=1800s", self.source)
+        self.assertIn("rollback baseline readiness is not green after schema transition", self.source)
+        self.assertNotIn("alembic downgrade", self.source)
+
     def test_deploys_unaliased_candidate_then_promotes_once_with_rollback(self) -> None:
-        self.assertEqual(self.source.count(" deploy --prebuilt --prod --skip-domain "), 1)
+        self.assertEqual(self.source.count(" deploy --prebuilt --prod --skip-domain "), 2)
+        self.assertEqual(self.source.count('"$VERCEL_CLI" promote "$BRIDGE_URL"'), 1)
         self.assertEqual(self.source.count('"$VERCEL_CLI" promote "$CANDIDATE_URL"'), 1)
         self.assertEqual(self.source.count('"$VERCEL_CLI" promote "$PREVIOUS_DEPLOYMENT_URL"'), 1)
+        self.assertEqual(self.source.count('"$VERCEL_CLI" promote "$ORIGINAL_DEPLOYMENT_URL"'), 1)
         self.assertIn("Capture the current formal deployment for bounded rollback", self.source)
+        self.assertIn("Verify the unaliased compatibility bridge on the current schema", self.source)
+        self.assertIn("Promote the verified compatibility bridge before schema mutation", self.source)
         self.assertIn("Verify the unaliased candidate without generation or payment", self.source)
         self.assertIn("roll back on any formal verification failure", self.source)
         self.assertIn(
@@ -58,13 +77,12 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
             self.source,
         )
 
-    def test_never_runs_generation_payment_or_database_mutation(self) -> None:
+    def test_never_runs_generation_payment_or_broad_data_migration(self) -> None:
         forbidden = (
             "images/generations",
             "orders/create",
             "payments/checkout",
             "CREEM_CARD",
-            "alembic upgrade",
             "data-migration.yml",
             "set_capability_state",
             "configure_evolink_callback_origin.py",

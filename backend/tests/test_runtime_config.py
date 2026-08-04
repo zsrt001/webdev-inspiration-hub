@@ -300,6 +300,70 @@ class RuntimeFailClosedTest(unittest.IsolatedAsyncioTestCase):
                 (True, "20260712_0014"),
             )
 
+    async def test_safe_baseline_bridge_accepts_only_the_approved_forward_schema(self) -> None:
+        from app.core import runtime_checks
+
+        class Result:
+            def __init__(self, revision: str):
+                self.revision = revision
+
+            def scalar_one(self) -> str:
+                return self.revision
+
+        class Session:
+            def __init__(self, revision: str):
+                self.revision = revision
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback) -> None:
+                return None
+
+            async def execute(self, statement):
+                return Result(self.revision)
+
+        with (
+            patch.object(
+                runtime_checks,
+                "public_runtime_bundle",
+                return_value=SimpleNamespace(schema_revision="20260712_0014"),
+            ),
+            patch.object(runtime_checks.settings, "release_role", "SAFE_BASELINE"),
+            patch.object(
+                runtime_checks,
+                "async_session_maker",
+                return_value=Session("20260710_0020"),
+            ),
+        ):
+            self.assertEqual(
+                await runtime_checks._check_database_schema(),
+                (
+                    True,
+                    "forward-compatible expected=20260712_0014,actual=20260710_0020",
+                ),
+            )
+
+        for role in ("COMMERCIAL_7A", "CONTRACT_7B"):
+            with (
+                self.subTest(role=role),
+                patch.object(
+                    runtime_checks,
+                    "public_runtime_bundle",
+                    return_value=SimpleNamespace(schema_revision="20260712_0014"),
+                ),
+                patch.object(runtime_checks.settings, "release_role", role),
+                patch.object(
+                    runtime_checks,
+                    "async_session_maker",
+                    return_value=Session("20260710_0020"),
+                ),
+            ):
+                self.assertEqual(
+                    await runtime_checks._check_database_schema(),
+                    (False, "expected=20260712_0014,actual=20260710_0020"),
+                )
+
     async def test_live_schema_drift_blocks_strict_core_readiness(self) -> None:
         from app.core import runtime_checks
 

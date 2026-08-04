@@ -108,7 +108,7 @@ jobs:
             | sha256sum --check --strict
           echo "PGSSLROOTCERT=$RUNNER_TEMP/prod-ca-2021.crt" >> "$GITHUB_ENV"
 
-      - name: Prove Production schema and every commercial capability are OFF
+      - name: Prove the supported Production schema and every commercial capability are OFF
         env:
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
         run: |
@@ -139,16 +139,23 @@ jobs:
                       "WHERE environment='production' ORDER BY capability"
                   )
                   rows = cursor.fetchall()
-          if revisions != [("20260710_0020",)]:
-              raise SystemExit("website-only release requires exact Production schema 20260710_0020")
+          if len(revisions) != 1 or revisions[0][0] not in {
+              "20260712_0014", "20260710_0020",
+          }:
+              raise SystemExit(
+                  f"website-only release observed an unsupported Production schema: {revisions!r}"
+              )
           if {row[0] for row in rows} != expected or len(rows) != len(expected):
               raise SystemExit("Production capability inventory is incomplete")
           if any(row[1] != "OFF" or any(value is not None for value in row[2:]) for row in rows):
               raise SystemExit("website-only release requires every Production capability to be unbound and OFF")
-          Path(os.environ["RUNNER_TEMP"], "production-flags-off.json").write_text(
+          schema_before = str(revisions[0][0])
+          Path(os.environ["RUNNER_TEMP"], "production-schema-before.json").write_text(
               json.dumps({"schema_revision": revisions[0][0], "capabilities": sorted(expected), "state": "OFF"}),
               encoding="utf-8",
           )
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"SCHEMA_BEFORE={schema_before}\n")
           PY
 
       - name: Capture the current formal deployment for bounded rollback
@@ -180,7 +187,7 @@ jobs:
           if (deployment.id !== runtime.deployment_id || deployment.readyState !== 'READY' || !deployment.url) throw new Error('current formal deployment is not a ready rollback target');
           const rollbackUrl = `https://${deployment.url}`;
           fs.writeFileSync(`${process.env.RUNNER_TEMP}/previous-formal.json`, JSON.stringify({runtime, rollback_url: rollbackUrl}));
-          fs.appendFileSync(process.env.GITHUB_ENV, `PREVIOUS_DEPLOYMENT_URL=${rollbackUrl}\nPREVIOUS_DEPLOYMENT_ID=${runtime.deployment_id}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `ORIGINAL_DEPLOYMENT_URL=${rollbackUrl}\nORIGINAL_DEPLOYMENT_ID=${runtime.deployment_id}\n`);
           })().catch((error) => {
             console.error(error.message);
             process.exit(1);
@@ -190,6 +197,18 @@ jobs:
       - name: Derive the immutable website runtime bundle
         run: |
           set -euo pipefail
+          python scripts/release/build_runtime_bundle_id.py \
+            --release-role SAFE_BASELINE \
+            --source-sha "$SOURCE_SHA" \
+            --schema 20260712_0014 \
+            --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
+            --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
+            --safe-baseline-contract release/safe-baseline-contract.json \
+            --builder-contract-version safe-baseline.v2 \
+            --output "$RUNNER_TEMP/bridge-runtime-bundle-id.txt"
+          BRIDGE_RUNTIME_BUNDLE_ID="$(tr -d '\r\n' < "$RUNNER_TEMP/bridge-runtime-bundle-id.txt")"
+          [[ "$BRIDGE_RUNTIME_BUNDLE_ID" =~ ^rtb_[0-9a-f]{64}$ ]]
+          echo "BRIDGE_RUNTIME_BUNDLE_ID=$BRIDGE_RUNTIME_BUNDLE_ID" >> "$GITHUB_ENV"
           python scripts/release/build_runtime_bundle_id.py \
             --release-role "$RELEASE_ROLE" \
             --source-sha "$SOURCE_SHA" \
@@ -215,7 +234,7 @@ jobs:
           [[ "$RUNTIME_BUNDLE_ID" =~ ^rtb_[0-9a-f]{64}$ ]]
           echo "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" >> "$GITHUB_ENV"
 
-      - name: Build and deploy one unaliased website candidate
+      - name: Build once and deploy unaliased bridge and website candidates
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -227,6 +246,19 @@ jobs:
           test -d .vercel/output
           BUILD_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
           [[ "$BUILD_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          BRIDGE_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
+            --env "RUNTIME_ENVIRONMENT=production" \
+            --env "RELEASE_ROLE=SAFE_BASELINE" \
+            --env "SOURCE_SHA=$SOURCE_SHA" \
+            --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA" \
+            --env "RUNTIME_BUNDLE_ID=$BRIDGE_RUNTIME_BUNDLE_ID" \
+            --meta "vowpicSourceSha=$SOURCE_SHA" \
+            --meta "vowpicRuntimeBundleId=$BRIDGE_RUNTIME_BUNDLE_ID" \
+            --meta "vowpicBuildSha256=$BUILD_SHA256" \
+            --meta "vowpicReleaseRole=SAFE_BASELINE" \
+            --meta "vowpicRuntimeIdentityContract=vowpic-runtime-identity-v1" \
+            --token="$VERCEL_TOKEN")"
+          [[ "$BRIDGE_URL" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]
           CANDIDATE_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
             --env "RUNTIME_ENVIRONMENT=production" \
             --env "RELEASE_ROLE=$RELEASE_ROLE" \
@@ -240,8 +272,222 @@ jobs:
             --meta "vowpicRuntimeIdentityContract=vowpic-runtime-identity-v1" \
             --token="$VERCEL_TOKEN")"
           [[ "$CANDIDATE_URL" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]
+          test "$BRIDGE_URL" != "$CANDIDATE_URL"
+          echo "BRIDGE_URL=$BRIDGE_URL" >> "$GITHUB_ENV"
           echo "CANDIDATE_URL=$CANDIDATE_URL" >> "$GITHUB_ENV"
           echo "BUILD_SHA256=$BUILD_SHA256" >> "$GITHUB_ENV"
+
+      - name: Verify the unaliased compatibility bridge on the current schema
+        env:
+          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          (async () => {
+          const base = process.env.BRIDGE_URL;
+          const headers = {'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_HEADER};
+          const getJson = async (path) => {
+            const response = await fetch(base + path, {headers, cache: 'no-store'});
+            if (!response.ok) throw new Error(`bridge ${path} returned ${response.status}`);
+            return response.json();
+          };
+          let runtime;
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            try {
+              runtime = await getJson('/version');
+              if (runtime.source_sha === process.env.SOURCE_SHA) break;
+            } catch {}
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+          if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.BRIDGE_RUNTIME_BUNDLE_ID || runtime.release_role !== 'SAFE_BASELINE' || runtime.schema_revision !== '20260712_0014' || !runtime.deployment_id) throw new Error('bridge runtime coordinates are invalid');
+          const readiness = await getJson('/api/v1/ops/readiness');
+          if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('bridge readiness is not green');
+          const config = await getJson('/api/v1/ops/public_config');
+          const capabilities = config.capabilities || {};
+          if (Object.keys(capabilities).length !== 7 || Object.values(capabilities).some(Boolean)) throw new Error('bridge capabilities are not all OFF');
+          for (const route of ['/', '/pages/auth/login', '/pages/auth/register', '/pages/legal/privacy', '/pages/legal/refund', '/pages/legal/terms']) {
+            const response = await fetch(base + route, {headers, redirect: 'manual'});
+            if (response.status !== 200) throw new Error(`bridge ${route} returned ${response.status}`);
+          }
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/bridge-candidate-verified.json`, JSON.stringify({runtime, readiness: {commercial_ready: true, blockers: []}, capabilities}));
+          fs.appendFileSync(process.env.GITHUB_ENV, `BRIDGE_DEPLOYMENT_ID=${runtime.deployment_id}\n`);
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Promote the verified compatibility bridge before schema mutation
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          rollback_original() {
+            "$VERCEL_CLI" promote "$ORIGINAL_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
+            node <<'NODE'
+          (async () => {
+          const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+          let runtime;
+          for (let attempt = 0; attempt < 30; attempt += 1) {
+            try {
+              const response = await fetch(`${base}/version`, {cache: 'no-store'});
+              if (response.ok) {
+                runtime = await response.json();
+                if (runtime.deployment_id === process.env.ORIGINAL_DEPLOYMENT_ID) break;
+              }
+            } catch {}
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+          if (!runtime || runtime.deployment_id !== process.env.ORIGINAL_DEPLOYMENT_ID) throw new Error('formal domain did not return to the original deployment');
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
+          }
+          set +e
+          "$VERCEL_CLI" promote "$BRIDGE_URL" --yes --token="$VERCEL_TOKEN"
+          bridge_promote_status=$?
+          set -e
+          if [[ "$bridge_promote_status" -ne 0 ]]; then
+            rollback_original
+            exit "$bridge_promote_status"
+          fi
+          if ! node <<'NODE'
+          const fs = require('node:fs');
+          (async () => {
+          const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+          const getJson = async (path) => {
+            const response = await fetch(base + path, {cache: 'no-store'});
+            if (!response.ok) throw new Error(`formal bridge ${path} returned ${response.status}`);
+            return response.json();
+          };
+          let runtime;
+          for (let attempt = 0; attempt < 30; attempt += 1) {
+            try {
+              runtime = await getJson('/version');
+              if (runtime.deployment_id === process.env.BRIDGE_DEPLOYMENT_ID) break;
+            } catch {}
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+          if (!runtime || runtime.deployment_id !== process.env.BRIDGE_DEPLOYMENT_ID || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.BRIDGE_RUNTIME_BUNDLE_ID || runtime.release_role !== 'SAFE_BASELINE') throw new Error('formal domain did not converge to the verified bridge');
+          const readiness = await getJson('/api/v1/ops/readiness');
+          if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('formal bridge readiness is not green');
+          const config = await getJson('/api/v1/ops/public_config');
+          const capabilities = config.capabilities || {};
+          if (Object.keys(capabilities).length !== 7 || Object.values(capabilities).some(Boolean)) throw new Error('formal bridge capabilities are not all OFF');
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/bridge-formal-before-schema.json`, JSON.stringify({runtime, readiness: {commercial_ready: true, blockers: []}, capabilities}));
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
+          then
+            rollback_original
+            exit 1
+          fi
+          echo "PREVIOUS_DEPLOYMENT_URL=$BRIDGE_URL" >> "$GITHUB_ENV"
+          echo "PREVIOUS_DEPLOYMENT_ID=$BRIDGE_DEPLOYMENT_ID" >> "$GITHUB_ENV"
+
+      - name: Recheck current main immediately before the bounded schema transition
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-schema.json"
+
+      - name: Advance only schema 0014 to 0020 while every capability stays OFF
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          [[ "$SCHEMA_BEFORE" = "20260712_0014" || "$SCHEMA_BEFORE" = "20260710_0020" ]]
+          python scripts/release/production_database_login_proof.py \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --expected-schema "$SCHEMA_BEFORE" \
+            --output "$RUNNER_TEMP/migration-login-before.json"
+          if [[ "$SCHEMA_BEFORE" = "20260712_0014" ]]; then
+            (
+              cd backend
+              DATABASE_URL="$PRODUCTION_MIGRATION_DATABASE_URL" \
+              PGOPTIONS="-c lock_timeout=5s -c statement_timeout=1800s" \
+                python -m alembic -c alembic.ini upgrade 20260710_0020
+            )
+          fi
+          python scripts/release/production_database_login_proof.py \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --expected-schema 20260710_0020 \
+            --output "$RUNNER_TEMP/migration-login-after.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import psycopg2
+
+          expected = {
+              "google_auth", "authenticated_upload", "generation",
+              "credit_pack_checkout", "subscription_billing",
+              "private_download", "partner_invite",
+          }
+          url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
+              "postgresql+asyncpg://", "postgresql://", 1
+          )
+          with psycopg2.connect(url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version_num FROM alembic_version")
+                  revisions = cursor.fetchall()
+                  cursor.execute(
+                      "SELECT capability, state, deployment_id, runtime_bundle_id, "
+                      "release_activation_id FROM ops_feature_flags "
+                      "WHERE environment='production' ORDER BY capability"
+                  )
+                  rows = cursor.fetchall()
+          if revisions != [("20260710_0020",)]:
+              raise SystemExit(f"Production schema did not converge to 20260710_0020: {revisions!r}")
+          if {row[0] for row in rows} != expected or len(rows) != len(expected):
+              raise SystemExit("Production capability inventory changed during schema transition")
+          if any(row[1] != "OFF" or any(value is not None for value in row[2:]) for row in rows):
+              raise SystemExit("a Production capability was activated or bound during schema transition")
+          Path(os.environ["RUNNER_TEMP"], "production-schema-after.json").write_text(
+              json.dumps({"schema_revision": revisions[0][0], "capabilities": sorted(expected), "state": "OFF"}),
+              encoding="utf-8",
+          )
+          PY
+          node <<'NODE'
+          const fs = require('node:fs');
+          (async () => {
+          const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+          const getJson = async (path) => {
+            const response = await fetch(base + path, {cache: 'no-store'});
+            if (!response.ok) throw new Error(`rollback baseline ${path} returned ${response.status} after schema transition`);
+            return response.json();
+          };
+          const runtime = await getJson('/version');
+          if (runtime.deployment_id !== process.env.PREVIOUS_DEPLOYMENT_ID) throw new Error('formal domain changed during schema transition');
+          const readiness = await getJson('/api/v1/ops/readiness');
+          if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('rollback baseline readiness is not green after schema transition');
+          const config = await getJson('/api/v1/ops/public_config');
+          const capabilities = config.capabilities || {};
+          if (Object.keys(capabilities).length !== 7 || Object.values(capabilities).some(Boolean)) throw new Error('rollback baseline capabilities are not all OFF after schema transition');
+          for (const route of ['/', '/pages/auth/login', '/pages/auth/register', '/pages/legal/privacy', '/pages/legal/refund', '/pages/legal/terms']) {
+            const response = await fetch(base + route, {cache: 'no-store', redirect: 'manual'});
+            if (response.status !== 200) throw new Error(`rollback baseline ${route} returned ${response.status} after schema transition`);
+          }
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/baseline-after-schema.json`, JSON.stringify({runtime, readiness: {commercial_ready: true, blockers: []}, capabilities}));
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
 
       - name: Verify the unaliased candidate without generation or payment
         env:
@@ -377,8 +623,15 @@ jobs:
           path: |
             ${{ runner.temp }}/current-main.json
             ${{ runner.temp }}/quality-gate.json
-            ${{ runner.temp }}/production-flags-off.json
+            ${{ runner.temp }}/production-schema-before.json
             ${{ runner.temp }}/previous-formal.json
+            ${{ runner.temp }}/bridge-candidate-verified.json
+            ${{ runner.temp }}/bridge-formal-before-schema.json
+            ${{ runner.temp }}/main-before-schema.json
+            ${{ runner.temp }}/migration-login-before.json
+            ${{ runner.temp }}/migration-login-after.json
+            ${{ runner.temp }}/production-schema-after.json
+            ${{ runner.temp }}/baseline-after-schema.json
             ${{ runner.temp }}/candidate-verified.json
             ${{ runner.temp }}/main-before-promote.json
             ${{ runner.temp }}/formal-verified.json
