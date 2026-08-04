@@ -31,6 +31,29 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
         self.assertIn('test "$GITHUB_SHA" = "$SOURCE_SHA"', self.source)
         self.assertIn('item.get("name") == "quality-gate"', self.source)
 
+    def test_installs_checksum_pinned_uv_before_local_vercel_build(self) -> None:
+        steps = self.document["jobs"]["website-safe-release"]["steps"]
+        uv_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Install the Vercel-compatible uv build tool"
+        )
+        self.assertEqual(
+            uv_step["uses"],
+            "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
+        )
+        self.assertEqual(uv_step["with"]["version"], "0.10.11")
+        self.assertEqual(
+            uv_step["with"]["checksum"],
+            "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583",
+        )
+        self.assertFalse(uv_step["with"]["enable-cache"])
+        self.assertFalse(uv_step["with"]["download-from-astral-mirror"])
+        self.assertLess(
+            self.source.index("Install the Vercel-compatible uv build tool"),
+            self.source.index("Build once and deploy unaliased bridge and website candidates"),
+        )
+
     def test_requires_supported_source_exact_target_and_all_seven_flags_off(self) -> None:
         for capability in (
             "google_auth",
