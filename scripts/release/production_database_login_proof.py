@@ -600,7 +600,7 @@ def prove_runtime_identity_grant(
                 SELECT required.table_name,
                        has_table_privilege(
                            current_user,
-                           format('public.%I', required.table_name),
+                           format('public.%%I', required.table_name),
                            'REFERENCES'
                        ) AS can_references
                 FROM unnest(%s::text[]) AS required(table_name)
