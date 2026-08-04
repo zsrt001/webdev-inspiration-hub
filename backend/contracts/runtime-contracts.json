@@ -28,7 +28,7 @@
     "backend/app/services/payment_service.py": "e5299448fb5bd98e69e3d9bf66d5a38db77f0cb1280c575b812f147dee742186",
     "backend/app/services/feature_flag_service.py": "51594b7f288e2ec16379a068ba4260efc95ecd5bcc328978ea6221a4a2cd93a9",
     "backend/app/core/security_headers.py": "c808e456c0772506bcf3e1ab26f1593ecb7dcd288843d12b24cf95c685dc447a",
-    "backend/app/core/runtime_checks.py": "a398150acd925911d2eb91bba67f06f36b05d781f59f94c52641231094316312",
+    "backend/app/core/runtime_checks.py": "2be8de208c132231067cc3373cc1c2361d2968b8fed2059e186c7234dcdf66f0",
     "backend/app/services/media_asset_service.py": "3dfede5e9cd5082c848810c658e31c5f42243462a5a3bc91a747f6f72cce8279",
     "backend/app/services/runtime_bundle_service.py": "0f9c72f76a3c8d60d0fe94289d2eb6fc8a776816d33da814c0843336e10dbcd2",
     "vercel.json": "a2db94e98aecf6423ac22789fa8d9705202003b78571e7bb99ea18a43264b7ea"

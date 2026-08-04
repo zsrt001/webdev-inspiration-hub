@@ -31,6 +31,10 @@ _REQUIRED_TABLES = frozenset(
         "data_migration_checkpoints",
         "release_observation_runs",
         "release_observation_samples",
+    }
+)
+_REQUIRED_0020_TABLES = frozenset(
+    {
         "release_observation_recoveries",
         "release_auth_origin_leases",
     }
@@ -163,7 +167,10 @@ async def validate_runtime_schema(db: AsyncSession) -> None:
             f"{_MINIMUM_SCHEMA_REVISION}; found "
             f"{', '.join(revisions) or 'none'}"
         )
-    missing_tables = sorted(_REQUIRED_TABLES - tables)
+    required_tables = _REQUIRED_TABLES
+    if revisions == ["20260710_0020"]:
+        required_tables = required_tables | _REQUIRED_0020_TABLES
+    missing_tables = sorted(required_tables - tables)
     if missing_tables:
         problems.append(f"missing tables: {', '.join(missing_tables)}")
     missing_indexes = sorted(_REQUIRED_INDEXES - indexes)

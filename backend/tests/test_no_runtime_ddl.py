@@ -135,12 +135,61 @@ class ColdStartNoDdlTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("information_schema.tables", statements[1])
         self.assertIn(
             "release_observation_recoveries",
-            schema_guard_service._REQUIRED_TABLES,
+            schema_guard_service._REQUIRED_0020_TABLES,
         )
         self.assertIn(
             "release_auth_origin_leases",
-            schema_guard_service._REQUIRED_TABLES,
+            schema_guard_service._REQUIRED_0020_TABLES,
         )
+
+    async def test_schema_guard_requires_0020_only_tables_only_at_0020(self) -> None:
+        from app.services import schema_guard_service
+
+        class FakeScalars:
+            def __init__(self, values):
+                self.values = values
+
+            def all(self):
+                return self.values
+
+        class FakeResult:
+            def __init__(self, values):
+                self.values = values
+
+            def scalars(self):
+                return FakeScalars(self.values)
+
+        async def validate(revision: str, tables: set[str]) -> None:
+            results = iter(
+                [
+                    [revision],
+                    sorted(tables),
+                    sorted(schema_guard_service._REQUIRED_INDEXES),
+                    sorted(schema_guard_service._REQUIRED_USER_COLUMNS),
+                    sorted(schema_guard_service._REQUIRED_CLICK_STATS_COLUMNS),
+                ]
+            )
+
+            class FakeDb:
+                async def execute(self, _statement):
+                    return FakeResult(next(results))
+
+            schema_guard_service._runtime_schema_validated = False
+            schema_guard_service._user_account_schema_validated = False
+            await schema_guard_service.validate_runtime_schema(FakeDb())
+
+        try:
+            await validate("20260712_0014", set(schema_guard_service._REQUIRED_TABLES))
+            with self.assertRaisesRegex(RuntimeError, "release_auth_origin_leases"):
+                await validate("20260710_0020", set(schema_guard_service._REQUIRED_TABLES))
+            await validate(
+                "20260710_0020",
+                set(schema_guard_service._REQUIRED_TABLES)
+                | set(schema_guard_service._REQUIRED_0020_TABLES),
+            )
+        finally:
+            schema_guard_service._runtime_schema_validated = False
+            schema_guard_service._user_account_schema_validated = False
 
     async def test_schema_validation_fails_traceably_instead_of_repairing_or_continuing(self) -> None:
         from app.services import schema_guard_service
