@@ -219,6 +219,14 @@ export async function refreshLocalSession(): Promise<boolean> {
 export async function ensureSession(force = false): Promise<SessionUser | null> {
     if (!force && sessionLoaded) return cachedUser;
     if (!force && pendingSession) return pendingSession;
+    // Every server-issued browser session includes the readable CSRF cookie.
+    // Its absence is a fail-closed signal that there is no local session to
+    // verify or refresh, so public pages should not generate expected 401s.
+    if (isWebRuntime() && !getCsrfToken()) {
+        cachedUser = null;
+        sessionLoaded = true;
+        return null;
+    }
     pendingSession = (async () => {
         let user = await fetchSessionUser();
         if (!user && await refreshLocalSession()) user = await fetchSessionUser();
