@@ -24,6 +24,9 @@ MIGRATION = (
 )
 PROOF_SCRIPT = RELEASE_DIR / "production_database_login_proof.py"
 PROVISION_SCRIPT = RELEASE_DIR / "provision_observation_database_logins.py"
+PROVISION_WORKFLOW = (
+    ROOT / ".github" / "workflows" / "production-observation-database-logins.yml"
+)
 
 PROOF_SPEC = importlib.util.spec_from_file_location(
     "observation_database_login_proof_test",
@@ -293,6 +296,108 @@ class ObservationDatabaseSecretPublishingTest(unittest.TestCase):
             self.assertNotIn("writer-secret", command)
             self.assertIn("--env", args)
             self.assertIn("production-observation", args)
+
+    def test_complete_release_secret_set_is_published_to_exact_environments(
+        self,
+    ) -> None:
+        calls: list[tuple[list[str], str | None]] = []
+        expected_by_environment = {
+            "production-observation": {
+                "OBSERVATION_READ_DATABASE_URL",
+                "OBSERVATION_WRITE_DATABASE_URL",
+                "OBSERVATION_SIGNING_KEY",
+                "RELEASE_EVIDENCE_HMAC_KEY",
+            },
+            "production-observation-emergency": {
+                "OBSERVATION_EMERGENCY_DATABASE_URL",
+            },
+            "production-recovery": {
+                "PRODUCTION_MIGRATION_DATABASE_URL",
+                "VERCEL_TOKEN",
+                "PRODUCTION_ACCEPTANCE_APPROVAL_ID",
+            },
+            "production": {"OBSERVATION_SIGNING_KEY"},
+        }
+
+        def fake_run_gh(args, *, stdin=None, redact=()):
+            calls.append((list(args), stdin))
+            if args[1:3] != ["secret", "list"]:
+                return ""
+            environment = args[args.index("--env") + 1]
+            return json.dumps(
+                [
+                    {
+                        "name": name,
+                        "updatedAt": "2026-08-03T00:00:00Z",
+                    }
+                    for name in sorted(expected_by_environment[environment])
+                ]
+            )
+
+        secret_values = {
+            "reader_url": "postgresql://reader:reader-secret@db.example/postgres",
+            "writer_url": "postgresql://writer:writer-secret@db.example/postgres",
+            "migration_url": "postgresql://migration:migration-secret@db.example/postgres",
+            "vercel_token": "vercel-secret",
+            "acceptance_approval_id": "approval-secret",
+            "observation_signing_key": "observation-signing-secret",
+            "release_evidence_hmac_key": "release-evidence-secret",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            cli = Path(directory) / "gh.exe"
+            cli.touch()
+            with mock.patch.object(
+                provision,
+                "_run_gh",
+                side_effect=fake_run_gh,
+            ):
+                result = provision.publish_github_observation_release_secrets(
+                    github_cli=str(cli),
+                    repository="zsrt001/webdev-inspiration-hub",
+                    observation_environment="production-observation",
+                    emergency_environment="production-observation-emergency",
+                    recovery_environment="production-recovery",
+                    production_environment="production",
+                    **secret_values,
+                )
+
+        self.assertEqual(
+            {environment: set(metadata) for environment, metadata in result.items()},
+            expected_by_environment,
+        )
+        set_calls = [call for call in calls if call[0][1:3] == ["secret", "set"]]
+        self.assertEqual(len(set_calls), 9)
+        self.assertEqual(
+            sum(
+                1
+                for args, value in set_calls
+                if args[3] == "OBSERVATION_SIGNING_KEY"
+                and value == secret_values["observation_signing_key"]
+            ),
+            2,
+        )
+        self.assertIn(
+            secret_values["writer_url"],
+            [value for _, value in set_calls],
+        )
+        for args, _ in set_calls:
+            command = " ".join(args)
+            for secret in secret_values.values():
+                self.assertNotIn(secret, command)
+
+    def test_protected_workflow_supplies_and_cleans_one_time_publisher(self) -> None:
+        workflow = PROVISION_WORKFLOW.read_text(encoding="utf-8")
+        for required in (
+            "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}",
+            "PRODUCTION_ACCEPTANCE_APPROVAL_ID: "
+            "${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}",
+            "--emergency-github-environment production-observation-emergency",
+            "--recovery-github-environment production-recovery",
+            "--production-github-environment production",
+            "gh secret delete ONE_TIME_OBSERVATION_SECRET_PUBLISH_TOKEN",
+        ):
+            self.assertIn(required, workflow)
+        self.assertIn("if: ${{ always() }}", workflow)
 
 
 if __name__ == "__main__":
