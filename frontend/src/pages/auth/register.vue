@@ -1,12 +1,12 @@
 <template>
   <view class="auth-page" role="main">
     <view class="auth-shell">
-      <view class="brand" @tap="goHome">
+      <a class="brand" href="/" @click.prevent="goHome">
         <text class="brand-title heading-serif">VowPic</text>
         <text class="brand-subtitle">
           {{ tr('使用 Google 创建账号，积分、订单和后续购买都会绑定到同一个已验证身份。', 'Create your account with Google so credits, orders, and future purchases stay under one verified identity.') }}
         </text>
-      </view>
+      </a>
 
       <view class="auth-card">
         <text class="auth-kicker">{{ tr('创建账号', 'Create account') }}</text>
@@ -22,7 +22,11 @@
             v-if="supabaseEnabled"
             class="btn btn-primary auth-button google-button"
             :disabled="submitting"
+            role="button"
+            :tabindex="submitting ? -1 : 0"
             @tap="googleSignIn"
+            @keydown.enter.prevent="googleSignIn"
+            @keydown.space.prevent="googleSignIn"
           >
             <text class="google-mark">G</text>
             <text>{{ submitting ? tr('连接中...', 'Connecting...') : tr('使用 Google 创建', 'Create with Google') }}</text>
@@ -41,9 +45,9 @@
 
         <view class="auth-footer">
           <text>{{ tr('已经登录？', 'Already signed in?') }}</text>
-          <text class="link" @tap="goAccount">{{ tr('打开账户', 'Open account') }}</text>
+          <a class="link" href="/pages/account/index" @click.prevent="goAccount">{{ tr('打开账户', 'Open account') }}</a>
         </view>
-        <text class="home-link" @tap="goHome">{{ tr('返回首页', 'Back to home') }}</text>
+        <a class="home-link" href="/" @click.prevent="goHome">{{ tr('返回首页', 'Back to home') }}</a>
       </view>
     </view>
   </view>

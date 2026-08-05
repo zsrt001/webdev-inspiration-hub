@@ -5,56 +5,121 @@
     :aria-label="i18nStore.locale === 'zh' ? '主导航' : 'Primary navigation'"
   >
     <view class="navbar-inner">
-      <view class="logo-area" @tap="goHome">
+      <a class="logo-area" href="/" @click.prevent="goHome">
         <text class="logo-main heading-serif">{{ t('nav.brand') }}</text>
-      </view>
+      </a>
 
       <view class="nav-links-permanent">
-        <view class="nav-link" :class="{ active: currentPath === '/pages/index/index' }" @tap="navigate('/pages/index/index')">
+        <a
+          class="nav-link"
+          href="/"
+          :class="{ active: currentPath === '/pages/index/index' }"
+          :aria-current="currentPath === '/pages/index/index' ? 'page' : undefined"
+          @click.prevent="navigate('/pages/index/index')"
+        >
           {{ t('nav.home') }}
-        </view>
-        <view v-if="creationAvailable" class="nav-link" :class="{ active: currentPath === '/pages/create/index' || currentPath === '/pages/detail/detail' }" @tap="navigate('/pages/create/index')">
+        </a>
+        <a
+          v-if="creationAvailable"
+          class="nav-link"
+          href="/pages/create/index"
+          :class="{ active: currentPath === '/pages/create/index' || currentPath === '/pages/detail/detail' }"
+          :aria-current="currentPath === '/pages/create/index' || currentPath === '/pages/detail/detail' ? 'page' : undefined"
+          @click.prevent="navigate('/pages/create/index')"
+        >
           {{ t('nav.studio') }}
-        </view>
-        <view class="nav-link" :class="{ active: currentPath === '/pages/orders/orders' }" @tap="navigate('/pages/orders/orders')">
+        </a>
+        <a
+          class="nav-link"
+          href="/pages/orders/orders"
+          :class="{ active: currentPath === '/pages/orders/orders' }"
+          :aria-current="currentPath === '/pages/orders/orders' ? 'page' : undefined"
+          @click.prevent="navigate('/pages/orders/orders')"
+        >
           {{ t('nav.orders') }}
-        </view>
-        <view class="nav-link" :class="{ active: currentPath === '/pages/account/index' }" @tap="navigate('/pages/account/index')">
+        </a>
+        <a
+          class="nav-link"
+          href="/pages/account/index"
+          :class="{ active: currentPath === '/pages/account/index' }"
+          :aria-current="currentPath === '/pages/account/index' ? 'page' : undefined"
+          @click.prevent="navigate('/pages/account/index')"
+        >
           {{ accountLabel }}
-        </view>
-        <view v-if="isAdmin" class="nav-link" :class="{ active: currentPath === '/admin' || currentPath.startsWith('/admin/') }" @tap="navigate('/admin')">
+        </a>
+        <a
+          v-if="isAdmin"
+          class="nav-link"
+          href="/admin"
+          :class="{ active: currentPath === '/admin' || currentPath.startsWith('/admin/') }"
+          :aria-current="currentPath === '/admin' || currentPath.startsWith('/admin/') ? 'page' : undefined"
+          @click.prevent="navigate('/admin')"
+        >
           {{ adminLabel }}
-        </view>
+        </a>
       </view>
 
       <view class="nav-actions">
-        <view class="lang-toggle" @tap.stop="toggleLocale">
+        <view
+          class="lang-toggle"
+          role="button"
+          tabindex="0"
+          :aria-label="i18nStore.locale === 'zh' ? 'Switch to English' : '切换到中文'"
+          @tap.stop="toggleLocale"
+          @keydown.enter.stop.prevent="toggleLocale"
+          @keydown.space.stop.prevent="toggleLocale"
+        >
           <text class="lang-text">{{ localeButtonText }}</text>
         </view>
 
-        <view v-if="accountAuthed || googleAuthAvailable" class="auth-chip" @tap.stop="handleAuthTap">
+        <a
+          v-if="accountAuthed || googleAuthAvailable"
+          class="auth-chip"
+          :href="authHref"
+          @click.stop.prevent="handleAuthTap"
+        >
           <text class="auth-text">{{ authLabel }}</text>
-        </view>
+        </a>
 
-        <view v-if="accountAuthed" class="balance-chip" :class="{ disabled: !billingAvailable }" @tap="showTopUp">
+        <view
+          v-if="accountAuthed"
+          class="balance-chip"
+          :class="{ disabled: !billingAvailable }"
+          role="button"
+          :tabindex="billingAvailable ? 0 : -1"
+          :aria-disabled="!billingAvailable"
+          @tap="showTopUp"
+          @keydown.enter.prevent="showTopUp"
+          @keydown.space.prevent="showTopUp"
+        >
           <text class="chip-icon">CR</text>
           <text class="chip-val">{{ creditBalance }}</text>
         </view>
 
-        <view class="menu-dots-mobile" @tap="toggleMenu">
+        <view
+          class="menu-dots-mobile"
+          role="button"
+          tabindex="0"
+          aria-controls="mobile-navigation-menu"
+          :aria-expanded="showMenu"
+          :aria-label="i18nStore.locale === 'zh' ? '打开导航菜单' : 'Open navigation menu'"
+          @tap="toggleMenu"
+          @keydown.enter.prevent="toggleMenu"
+          @keydown.space.prevent="toggleMenu"
+        >
           <view class="dot"></view>
           <view class="dot"></view>
           <view class="dot"></view>
         </view>
       </view>
 
-      <view v-if="showMenu" class="dropdown-menu-mobile" @tap="showMenu = false">
-        <view class="menu-item" @tap="navigate('/pages/index/index')">{{ t('nav.home') }}</view>
-        <view v-if="creationAvailable" class="menu-item" @tap="navigate('/pages/create/index')">{{ t('nav.studio') }}</view>
-        <view class="menu-item" @tap="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</view>
-        <view v-if="isAdmin" class="menu-item" @tap="navigate('/admin')">{{ adminLabel }}</view>
-        <view v-if="accountAuthed || googleAuthAvailable" class="menu-item" @tap="handleAuthTap">{{ authLabel }}</view>
-        <view class="menu-item" @tap="navigate('/pages/legal/refund')">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</view>
+      <view v-if="showMenu" id="mobile-navigation-menu" class="dropdown-menu-mobile">
+        <a class="menu-item" href="/" @click.prevent="navigate('/pages/index/index')">{{ t('nav.home') }}</a>
+        <a v-if="creationAvailable" class="menu-item" href="/pages/create/index" @click.prevent="navigate('/pages/create/index')">{{ t('nav.studio') }}</a>
+        <a class="menu-item" href="/pages/orders/orders" @click.prevent="navigate('/pages/orders/orders')">{{ t('nav.orders') }}</a>
+        <a v-if="isAdmin" class="menu-item" href="/admin" @click.prevent="navigate('/admin')">{{ adminLabel }}</a>
+        <a v-if="accountAuthed || googleAuthAvailable" class="menu-item" :href="authHref" @click.prevent="handleAuthTap">{{ authLabel }}</a>
+        <a class="menu-item" href="/pages/legal/refund" @click.prevent="navigate('/pages/legal/refund')">{{ i18nStore.locale === 'zh' ? '退款与客服' : 'Refunds & Support' }}</a>
       </view>
     </view>
   </view>
@@ -86,6 +151,7 @@ const authLabel = computed(() => {
   if (accountAuthed.value) return username.value || accountLabel.value;
   return i18nStore.locale === 'zh' ? '登录' : 'Sign in';
 });
+const authHref = computed(() => (accountAuthed.value ? '/pages/account/index' : '/pages/auth/login'));
 
 const currentPath = computed(() => {
   const pages = getCurrentPages();
@@ -227,6 +293,19 @@ defineExpose({ refreshBalance });
   white-space: nowrap;
 }
 
+.logo-area,
+.nav-link,
+.auth-chip,
+.menu-item {
+  color: inherit;
+  text-decoration: none;
+}
+
+.logo-area {
+  display: flex;
+  align-items: center;
+}
+
 .nav-links-permanent {
   display: flex;
   gap: 28px;
@@ -237,6 +316,8 @@ defineExpose({ refreshBalance });
 }
 
 .nav-link {
+  display: flex;
+  align-items: center;
   font-size: 14px;
   font-weight: 800;
   color: #4c5360;
@@ -348,6 +429,7 @@ defineExpose({ refreshBalance });
 }
 
 .menu-item {
+  display: block;
   padding: 14px 16px;
   font-size: 14px;
   color: $uni-text-color;
@@ -356,6 +438,17 @@ defineExpose({ refreshBalance });
   &:last-child {
     border-bottom: none;
   }
+}
+
+.logo-area:focus-visible,
+.nav-link:focus-visible,
+.lang-toggle:focus-visible,
+.auth-chip:focus-visible,
+.balance-chip:focus-visible,
+.menu-dots-mobile:focus-visible,
+.menu-item:focus-visible {
+  outline: 3px solid #116a60;
+  outline-offset: 3px;
 }
 
 @media (max-width: 560px) {

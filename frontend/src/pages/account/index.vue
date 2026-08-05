@@ -2,22 +2,22 @@
   <view class="app-container account-page" style="padding-top: 64px;">
     <NavBar />
 
-    <view class="account-shell">
+    <view class="account-shell" role="main">
       <view class="account-hero">
         <view>
           <text class="account-kicker">{{ tr('账户中心', 'Account Center') }}</text>
-          <text class="account-title heading-serif">{{ tr('我的 VowPic 空间', 'My VowPic Space') }}</text>
+          <text class="account-title heading-serif" role="heading" aria-level="1">{{ tr('我的 VowPic 空间', 'My VowPic Space') }}</text>
           <text class="account-subtitle">
             {{ tr('使用 Google 登录后，积分、订单和高清交付都会绑定到同一个已验证账号。', 'Sign in with Google to keep credits, orders, and HD deliveries under one verified account.') }}
           </text>
         </view>
 
         <view class="hero-actions">
-          <button v-if="!accountAuthed && googleAuthAvailable && supabaseEnabled" class="btn btn-primary hero-btn" @tap="signIn">
+          <button v-if="!accountAuthed && googleAuthAvailable && supabaseEnabled" class="btn btn-primary hero-btn" role="button" tabindex="0" @tap="signIn" @keydown.enter.prevent="signIn" @keydown.space.prevent="signIn">
             {{ tr('使用 Google 登录', 'Sign in with Google') }}
           </button>
-          <button v-if="accountAuthed && adminAccess" class="btn btn-outline hero-btn" @tap="goAdmin">{{ tr('后台控制台', 'Admin console') }}</button>
-          <button class="btn btn-outline hero-btn" @tap="refresh">{{ tr('刷新', 'Refresh') }}</button>
+          <button v-if="accountAuthed && adminAccess" class="btn btn-outline hero-btn" role="button" tabindex="0" @tap="goAdmin" @keydown.enter.prevent="goAdmin" @keydown.space.prevent="goAdmin">{{ tr('后台控制台', 'Admin console') }}</button>
+          <button class="btn btn-outline hero-btn" role="button" tabindex="0" @tap="refresh" @keydown.enter.prevent="refresh" @keydown.space.prevent="refresh">{{ tr('刷新', 'Refresh') }}</button>
         </view>
       </view>
 
@@ -27,7 +27,7 @@
 
       <view v-else-if="error" class="state-card error-card">
         <text class="state-title">{{ error }}</text>
-        <button class="btn btn-primary state-action" @tap="refresh">{{ tr('重试', 'Retry') }}</button>
+        <button class="btn btn-primary state-action" role="button" tabindex="0" @tap="refresh" @keydown.enter.prevent="refresh" @keydown.space.prevent="refresh">{{ tr('重试', 'Retry') }}</button>
       </view>
 
       <template v-else>
@@ -64,7 +64,7 @@
               </view>
             </view>
 
-            <button v-if="accountAuthed" class="btn btn-outline logout-btn" @tap="signOut">
+            <button v-if="accountAuthed" class="btn btn-outline logout-btn" role="button" tabindex="0" @tap="signOut" @keydown.enter.prevent="signOut" @keydown.space.prevent="signOut">
               {{ tr('退出登录', 'Sign out') }}
             </button>
           </view>
@@ -77,8 +77,8 @@
             </view>
             <text class="credit-copy">{{ tr('基础单人生成', 'Base single generation') }} {{ balance?.cost_per_generation || 2 }} {{ tr('积分起', 'credits and up') }}</text>
             <view class="credit-actions">
-              <button v-if="creationAvailable" class="btn btn-primary compact-btn" @tap="goCreate">{{ tr('开始创作', 'Create') }}</button>
-              <button class="btn btn-outline compact-btn" @tap="goOrders">{{ tr('查看订单', 'Orders') }}</button>
+              <button v-if="creationAvailable" class="btn btn-primary compact-btn" role="button" tabindex="0" @tap="goCreate" @keydown.enter.prevent="goCreate" @keydown.space.prevent="goCreate">{{ tr('开始创作', 'Create') }}</button>
+              <button class="btn btn-outline compact-btn" role="button" tabindex="0" @tap="goOrders" @keydown.enter.prevent="goOrders" @keydown.space.prevent="goOrders">{{ tr('查看订单', 'Orders') }}</button>
             </view>
           </view>
 
@@ -106,7 +106,11 @@
             <button
               v-if="subscriptionStore.current?.product_code && !subscriptionStore.current?.cancel_at_period_end"
               class="btn btn-outline logout-btn"
+              role="button"
+              tabindex="0"
               @tap="cancelSubscription"
+              @keydown.enter.prevent="cancelSubscription"
+              @keydown.space.prevent="cancelSubscription"
             >
               {{ tr('到期取消续订', 'Cancel at period end') }}
             </button>
@@ -146,15 +150,15 @@
                 <text class="section-title">{{ tr('最近作品', 'Recent Images') }}</text>
                 <text class="retention-note">{{ retentionNotice }}</text>
               </view>
-              <button class="mini-link" @tap="goOrders">{{ tr('全部', 'All') }}</button>
+              <button class="mini-link" role="button" tabindex="0" @tap="goOrders" @keydown.enter.prevent="goOrders" @keydown.space.prevent="goOrders">{{ tr('全部', 'All') }}</button>
             </view>
 
             <view v-if="orders.length === 0" class="empty-panel">
               <text>{{ tr('还没有生成记录', 'No generation records yet') }}</text>
-              <button v-if="creationAvailable" class="btn btn-primary state-action" @tap="goCreate">{{ tr('创建第一组照片', 'Create first set') }}</button>
+              <button v-if="creationAvailable" class="btn btn-primary state-action" role="button" tabindex="0" @tap="goCreate" @keydown.enter.prevent="goCreate" @keydown.space.prevent="goCreate">{{ tr('创建第一组照片', 'Create first set') }}</button>
             </view>
             <view v-else class="order-list">
-              <view v-for="order in orders" :key="order.id" class="order-row" @tap="viewOrder(order.id)">
+              <a v-for="order in orders" :key="order.id" class="order-row" :href="orderHref(order.id)" @click.prevent="viewOrder(order.id)">
                 <image class="order-thumb" :src="orderPreview(order)" mode="aspectFit" />
                 <view class="order-main">
                   <text class="row-title">#{{ shortId(order.id) }}</text>
@@ -163,7 +167,7 @@
                 </view>
                 <view class="order-status" :class="statusClass(order.status)">{{ statusText(order.status) }}</view>
                 <text class="paused-delete">{{ tr('删除暂不可用', 'Deletion temporarily paused') }}</text>
-              </view>
+              </a>
             </view>
           </view>
         </view>
@@ -175,7 +179,7 @@
             <text class="control-copy">
               {{ tr('导出当前账户以及已安全合并的历史账户记录。导出不包含登录令牌、存储地址、模型原始响应或内部路径。', 'Export this account and safely merged account history. The file excludes sign-in tokens, storage locations, raw model responses, and internal paths.') }}
             </text>
-            <button class="btn btn-outline control-button" :disabled="exportBusy" @tap="exportAccountData">
+            <button class="btn btn-outline control-button" role="button" :tabindex="exportBusy ? -1 : 0" :disabled="exportBusy" @tap="exportAccountData" @keydown.enter.prevent="exportAccountData" @keydown.space.prevent="exportAccountData">
               {{ exportBusy ? tr('正在生成...', 'Preparing...') : tr('下载 JSON', 'Download JSON') }}
             </button>
             <text v-if="exportMessage" class="control-status">{{ exportMessage }}</text>
@@ -189,7 +193,7 @@
             </text>
             <input v-model.trim="legacyAccountId" class="control-input" :placeholder="tr('旧账户 UUID', 'Legacy account UUID')" />
             <input v-model.trim="paymentReference" class="control-input" :placeholder="tr('已支付的付款参考号', 'Verified paid payment reference')" />
-            <button class="btn btn-outline control-button" :disabled="claimBusy" @tap="recoverLegacyAccount">
+            <button class="btn btn-outline control-button" role="button" :tabindex="claimBusy ? -1 : 0" :disabled="claimBusy" @tap="recoverLegacyAccount" @keydown.enter.prevent="recoverLegacyAccount" @keydown.space.prevent="recoverLegacyAccount">
               {{ claimBusy ? tr('正在核验...', 'Verifying...') : tr('核验并合并', 'Verify and merge') }}
             </button>
             <text v-if="claimMessage" class="control-status">{{ claimMessage }}</text>
@@ -202,7 +206,7 @@
               {{ tr('关闭会立即撤销身份和所有会话，并去标识可删除的个人资料。财务记录会保留，媒体清理仍处于待处理状态。', 'Closure immediately revokes identity and every session and anonymizes removable profile data. Financial records remain, and media cleanup remains pending.') }}
             </text>
             <input v-model.trim="closeConfirmation" class="control-input" placeholder="CLOSE MY ACCOUNT" />
-            <button class="btn danger-button control-button" :disabled="closeBusy || closeConfirmation !== 'CLOSE MY ACCOUNT'" @tap="closeAccount">
+            <button class="btn danger-button control-button" role="button" :tabindex="closeBusy || closeConfirmation !== 'CLOSE MY ACCOUNT' ? -1 : 0" :disabled="closeBusy || closeConfirmation !== 'CLOSE MY ACCOUNT'" @tap="closeAccount" @keydown.enter.prevent="closeAccount" @keydown.space.prevent="closeAccount">
               {{ closeBusy ? tr('正在关闭...', 'Closing...') : tr('关闭账户', 'Close account') }}
             </button>
           </view>
@@ -581,6 +585,10 @@ function viewOrder(orderId: string): void {
   uni.navigateTo({ url: `/pages/preview/preview?id=${orderId}` });
 }
 
+function orderHref(orderId: string): string {
+  return `/pages/preview/preview?id=${encodeURIComponent(orderId)}`;
+}
+
 onMounted(async () => {
   await Promise.all([
     opsStore.fetchPublicConfig(),
@@ -892,6 +900,18 @@ onMounted(async () => {
   gap: 14px;
   padding: 14px 0;
   border-bottom: 1px solid #edf0f4;
+}
+
+.order-row {
+  color: inherit;
+  text-decoration: none;
+}
+
+.btn:focus-visible,
+.mini-link:focus-visible,
+.order-row:focus-visible {
+  outline: 3px solid #116a60;
+  outline-offset: 3px;
 }
 
 .ledger-row:last-child,

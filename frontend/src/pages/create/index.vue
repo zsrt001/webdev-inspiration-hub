@@ -1,7 +1,7 @@
 ﻿<template>
   <view class="app-container create-page" style="padding-top: 64px;">
     <NavBar ref="navBarRef" @show-payment="openPaymentModal" />
-    <view class="create-shell">
+    <view class="create-shell" role="main">
       <view v-if="!creationAvailable" class="capability-unavailable">
         <text class="unavailable-kicker">{{ tr('安全基线', 'Safe baseline') }}</text>
         <text class="unavailable-title heading-serif" role="heading" aria-level="1">
@@ -10,7 +10,7 @@
         <text class="unavailable-copy">
           {{ tr('当前部署仅开放只读浏览。照片上传和 AI 生成会在私有存储、身份与生成链路完成真实验收后再开放。', 'This deployment is browse-only. Photo upload and AI generation will open only after identity, private storage, and generation pass real acceptance.') }}
         </text>
-        <button class="btn btn-outline unavailable-action" @tap="goHome">
+        <button class="btn btn-outline unavailable-action" role="button" tabindex="0" @tap="goHome" @keydown.enter.prevent="goHome" @keydown.space.prevent="goHome">
           {{ tr('返回风格浏览', 'Browse styles') }}
         </button>
       </view>

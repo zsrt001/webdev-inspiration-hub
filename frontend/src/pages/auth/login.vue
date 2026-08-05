@@ -1,12 +1,12 @@
 <template>
   <view class="auth-page" role="main">
     <view class="auth-shell">
-      <view class="brand" @tap="goHome">
+      <a class="brand" href="/" @click.prevent="goHome">
         <text class="brand-title heading-serif">VowPic</text>
         <text class="brand-subtitle">
           {{ tr('使用 Google 登录后，积分、订单和生成记录都会绑定到同一个已验证账号。', 'Sign in with Google to keep credits, orders, and generation records tied to one verified account.') }}
         </text>
-      </view>
+      </a>
 
       <view class="auth-card">
         <text class="auth-kicker">{{ tr('安全登录', 'Secure sign in') }}</text>
@@ -22,7 +22,11 @@
             v-if="supabaseEnabled"
             class="btn btn-primary auth-button google-button"
             :disabled="submitting"
+            role="button"
+            :tabindex="submitting ? -1 : 0"
             @tap="googleSignIn"
+            @keydown.enter.prevent="googleSignIn"
+            @keydown.space.prevent="googleSignIn"
           >
             <text class="google-mark">G</text>
             <text>{{ submitting ? tr('连接中...', 'Connecting...') : tr('使用 Google 登录', 'Sign in with Google') }}</text>
@@ -42,7 +46,7 @@
         <view class="auth-footer">
           <text>{{ tr('第一次使用？Google 会自动创建你的账号。', 'New here? Google creates your account automatically.') }}</text>
         </view>
-        <text class="home-link" @tap="goHome">{{ tr('返回首页', 'Back to home') }}</text>
+        <a class="home-link" href="/" @click.prevent="goHome">{{ tr('返回首页', 'Back to home') }}</a>
       </view>
     </view>
   </view>

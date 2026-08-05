@@ -12,6 +12,11 @@ const secondStorageState = String(
 const privateMediaReportPath = String(process.env.PREVIEW_PRIVATE_MEDIA_REPORT_PATH || '').trim();
 const failureBoundary = String(process.env.PREVIEW_FAILURE_BOUNDARY || 'none').trim();
 
+test.skip(
+  process.env.RUN_PREVIEW_E2E !== '1',
+  'real Google PKCE and private-media isolation run only in protected Preview mode',
+);
+
 function injectFailure(
   boundary: 'login' | 'upload' | 'owner-read' | 'cross-user' | 'delete' | 'refresh' | 'logout',
 ) {

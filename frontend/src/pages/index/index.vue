@@ -20,9 +20,9 @@
             {{ tr('无需预约影棚。上传人像、选择风格或描述想法，快速生成适合请柬、头像、纪念日和社交分享的婚纱影像。', 'Upload a portrait, choose a look, and generate polished AI wedding images for invitations, profiles, anniversaries, and keepsakes.') }}
           </text>
           <view class="hero-actions">
-            <view v-if="creationAvailable" class="btn primary" @tap="goToCustom">{{ tr('开始免费预览', 'Start a Free Preview') }}</view>
+            <a v-if="creationAvailable" class="btn primary" href="/pages/create/index" @click.prevent="goToCustom">{{ tr('开始免费预览', 'Start a Free Preview') }}</a>
             <view v-else class="availability-notice">{{ tr('创作功能暂未开放', 'Studio temporarily unavailable') }}</view>
-            <view class="btn secondary" @tap="scrollToGallery">{{ tr('浏览婚纱风格', 'Explore Styles') }}</view>
+            <a class="btn secondary" href="#gallery" @click.prevent="scrollToGallery">{{ tr('浏览婚纱风格', 'Explore Styles') }}</a>
           </view>
           <view class="hero-proof-grid">
             <view v-for="item in heroProofs" :key="item.title" class="proof-item">
@@ -32,7 +32,7 @@
           </view>
         </view>
 
-        <view class="hero-preview" @tap="scrollToGallery">
+        <a class="hero-preview" href="#gallery" @click.prevent="scrollToGallery">
           <view class="preview-frame">
             <img
               :src="heroPreviewUrl"
@@ -44,7 +44,7 @@
             <text class="preview-title">{{ tr('精选婚纱风格', 'Curated Wedding Looks') }}</text>
             <text class="preview-text">{{ tr('中式秀禾、韩系极简、古堡、海边、金婚纪念等风格都可以直接开始。', 'Chinese Xiuhe, Korean minimal, castle romance, beach sunset, and anniversary remakes are ready to try.') }}</text>
           </view>
-        </view>
+        </a>
       </view>
     </view>
 
@@ -70,7 +70,14 @@
         </view>
 
         <view class="feature-layout">
-          <view class="feature-panel" :class="{ disabled: !creationAvailable }" @tap="goToCustom">
+          <a
+            class="feature-panel"
+            :class="{ disabled: !creationAvailable }"
+            :href="creationAvailable ? '/pages/create/index' : undefined"
+            :aria-disabled="!creationAvailable"
+            :tabindex="creationAvailable ? 0 : -1"
+            @click.prevent="goToCustom"
+          >
             <img
               src="/static/style-previews/couple_old_money.jpg"
               class="feature-image"
@@ -83,9 +90,16 @@
               <view v-if="creationAvailable" class="feature-action">{{ tr('开始定制', 'Start Customizing') }}</view>
               <view v-else class="feature-status">{{ tr('暂未开放', 'Temporarily unavailable') }}</view>
             </view>
-          </view>
+          </a>
 
-          <view class="feature-panel alt" :class="{ disabled: !creationAvailable }" @tap="goToGoldenCreate">
+          <a
+            class="feature-panel alt"
+            :class="{ disabled: !creationAvailable }"
+            :href="creationAvailable ? '/pages/create/index?mode=golden_anniversary&id=golden_vintage_studio_8090' : undefined"
+            :aria-disabled="!creationAvailable"
+            :tabindex="creationAvailable ? 0 : -1"
+            @click.prevent="goToGoldenCreate"
+          >
             <img
               src="/static/style-previews/golden_chinese_courtyard.jpg"
               class="feature-image"
@@ -98,7 +112,7 @@
               <view v-if="creationAvailable" class="feature-action">{{ tr('开始纪念创作', 'Start Legacy Creation') }}</view>
               <view v-else class="feature-status">{{ tr('暂未开放', 'Temporarily unavailable') }}</view>
             </view>
-          </view>
+          </a>
         </view>
       </section>
 
@@ -112,26 +126,63 @@
         </view>
 
         <view class="category-filter">
-          <view class="cat-chip" :class="{ active: selectedCategory === 'all' }" @tap="selectedCategory = 'all'">
+          <view
+            class="cat-chip"
+            :class="{ active: selectedCategory === 'all' }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="selectedCategory === 'all'"
+            @tap="selectCategory('all')"
+            @keydown.enter.prevent="selectCategory('all')"
+            @keydown.space.prevent="selectCategory('all')"
+          >
             {{ tr('全部', 'All') }}
           </view>
-          <view class="cat-chip" :class="{ active: selectedCategory === 'single' }" @tap="selectedCategory = 'single'">
+          <view
+            class="cat-chip"
+            :class="{ active: selectedCategory === 'single' }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="selectedCategory === 'single'"
+            @tap="selectCategory('single')"
+            @keydown.enter.prevent="selectCategory('single')"
+            @keydown.space.prevent="selectCategory('single')"
+          >
             {{ tr('人像婚纱', 'Portrait') }}
           </view>
-          <view class="cat-chip" :class="{ active: selectedCategory === 'vintage' }" @tap="selectedCategory = 'vintage'">
+          <view
+            class="cat-chip"
+            :class="{ active: selectedCategory === 'vintage' }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="selectedCategory === 'vintage'"
+            @tap="selectCategory('vintage')"
+            @keydown.enter.prevent="selectCategory('vintage')"
+            @keydown.space.prevent="selectCategory('vintage')"
+          >
             {{ tr('金婚纪念', 'Legacy') }}
           </view>
-          <view class="cat-chip" :class="{ active: selectedCategory === 'custom' }" @tap="selectedCategory = 'custom'">
+          <view
+            class="cat-chip"
+            :class="{ active: selectedCategory === 'custom' }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="selectedCategory === 'custom'"
+            @tap="selectCategory('custom')"
+            @keydown.enter.prevent="selectCategory('custom')"
+            @keydown.space.prevent="selectCategory('custom')"
+          >
             {{ tr('自由定制', 'Bespoke') }}
           </view>
         </view>
 
         <view v-if="filteredTemplates.length > 0" class="style-grid">
-          <view
+          <a
             v-for="template in filteredTemplates"
             :key="template.id"
             class="style-card"
-            @tap="goToDetail(template)"
+            :href="detailHref(template)"
+            @click.prevent="goToDetail(template)"
           >
             <view class="style-image-frame">
               <img
@@ -146,7 +197,7 @@
               <text v-if="displayTemplateMarketingSubtitle(template)" class="style-desc">{{ displayTemplateMarketingSubtitle(template) }}</text>
               <text class="style-action">{{ tr('查看详情', 'View Details') }}</text>
             </view>
-          </view>
+          </a>
         </view>
         <view v-else class="empty-gallery">
           <text class="empty-title">{{ tr('正在加载风格作品', 'Loading styles') }}</text>
@@ -172,27 +223,41 @@
         <text class="cta-title heading-serif">{{ tr('从真实照片开始，逐步完成你的婚纱创作', 'Start with your photos and a guided creation flow') }}</text>
         <text class="cta-desc">{{ tr('系统会在提交前显示当前部署可用的能力和所需额度；未启用的付费选项不会提前展示。', 'The app shows available capabilities and required credits before submission. Paid options remain hidden until billing is available on this deployment.') }}</text>
         <view class="hero-actions centered">
-          <view v-if="creationAvailable" class="btn primary" @tap="goToCustom">{{ tr('立即开始', 'Start Now') }}</view>
+          <a v-if="creationAvailable" class="btn primary" href="/pages/create/index" @click.prevent="goToCustom">{{ tr('立即开始', 'Start Now') }}</a>
           <view v-else class="availability-notice">{{ tr('当前部署仅开放浏览', 'This deployment is browse-only') }}</view>
-          <view v-if="billingAvailable" class="btn secondary" @tap="openPaymentModal">{{ tr('查看套餐', 'View Plans') }}</view>
+          <view
+            v-if="billingAvailable"
+            class="btn secondary"
+            role="button"
+            tabindex="0"
+            @tap="openPaymentModal"
+            @keydown.enter.prevent="openPaymentModal"
+            @keydown.space.prevent="openPaymentModal"
+          >{{ tr('查看套餐', 'View Plans') }}</view>
         </view>
       </section>
     </view>
 
     <view class="site-footer" id="footer">
       <view class="footer-main">
-        <text class="footer-brand heading-serif" @tap="onLogoTap">VowPic</text>
+        <text class="footer-brand heading-serif">VowPic</text>
         <text class="footer-copy">{{ tr('VowPic 提供 AI 婚纱照生成、本地双人创作、订单跟踪和私密交付。', 'VowPic offers AI wedding portraits, local couple creation, order tracking, and private delivery.') }}</text>
       </view>
       <view class="footer-links">
-        <text @tap="scrollToGallery">{{ tr('功能', 'Features') }}</text>
-        <text v-if="billingAvailable" @tap="openPaymentModal">{{ tr('套餐', 'Plans') }}</text>
-        <text @tap="goToPrivacy">{{ tr('隐私政策', 'Privacy') }}</text>
-        <text @tap="goToTerms">{{ tr('服务条款', 'Terms') }}</text>
-        <text @tap="goToRefund">{{ tr('退款与客服', 'Refunds') }}</text>
+        <a href="#gallery" @click.prevent="scrollToGallery">{{ tr('功能', 'Features') }}</a>
+        <view
+          v-if="billingAvailable"
+          role="button"
+          tabindex="0"
+          @tap="openPaymentModal"
+          @keydown.enter.prevent="openPaymentModal"
+          @keydown.space.prevent="openPaymentModal"
+        >{{ tr('套餐', 'Plans') }}</view>
+        <a href="/pages/legal/privacy" @click.prevent="goToPrivacy">{{ tr('隐私政策', 'Privacy') }}</a>
+        <a href="/pages/legal/terms" @click.prevent="goToTerms">{{ tr('服务条款', 'Terms') }}</a>
+        <a href="/pages/legal/refund" @click.prevent="goToRefund">{{ tr('退款与客服', 'Refunds') }}</a>
       </view>
       <LegalFooter />
-      <view class="secret-admin" @tap="goToAdmin">...</view>
     </view>
 
     <PaymentModal
@@ -227,7 +292,6 @@ const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 const navBarRef = ref<InstanceType<typeof NavBar> | null>(null);
 const templates = ref<Template[]>([]);
 const selectedCategory = ref<'all' | 'single' | 'vintage' | 'custom'>('all');
-const logoTapCount = ref(0);
 const showPaymentModal = ref(false);
 const templateImageAttempts = ref<Record<string, number>>({});
 
@@ -319,22 +383,12 @@ const testimonials = computed(() => [
   },
 ]);
 
-const goToAdmin = () => {
-  uni.navigateTo({ url: '/admin' });
-};
-
-const onLogoTap = () => {
-  logoTapCount.value += 1;
-  if (logoTapCount.value >= 5) {
-    goToAdmin();
-    logoTapCount.value = 0;
-  }
-};
-
 const displayTemplateTitle = (template: Template): string => getLocalizedTemplateTitle(template, i18nStore.locale);
 
 const displayTemplateMarketingSubtitle = (template: Template): string =>
   getLocalizedTemplateMarketingSubtitle(template, i18nStore.locale);
+
+const detailHref = (template: Template): string => `/pages/detail/detail?id=${encodeURIComponent(template.id)}`;
 
 const goToPrivacy = () => {
   uni.navigateTo({ url: '/pages/legal/privacy' });
@@ -479,6 +533,10 @@ const filteredTemplates = computed(() => {
   }
   return templates.value;
 });
+
+const selectCategory = (category: 'all' | 'single' | 'vintage' | 'custom') => {
+  selectedCategory.value = category;
+};
 
 const focusCategory = (category: 'single' | 'vintage' | 'custom') => {
   post(
@@ -658,6 +716,7 @@ onMounted(async () => {
   font-weight: 900;
   cursor: pointer;
   transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  text-decoration: none;
 }
 
 .btn:active {
@@ -720,6 +779,9 @@ onMounted(async () => {
   border-radius: 8px;
   box-shadow: 0 32px 80px rgba(23, 25, 31, 0.16);
   cursor: pointer;
+  color: inherit;
+  text-decoration: none;
+  box-sizing: border-box;
 }
 
 .preview-frame {
@@ -867,6 +929,8 @@ onMounted(async () => {
   background: #ffffff;
   cursor: pointer;
   box-shadow: 0 18px 44px rgba(23, 25, 31, 0.06);
+  color: inherit;
+  text-decoration: none;
 }
 
 .feature-panel.disabled {
@@ -969,6 +1033,8 @@ onMounted(async () => {
   cursor: pointer;
   box-shadow: 0 14px 36px rgba(23, 25, 31, 0.05);
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  color: inherit;
+  text-decoration: none;
 }
 
 .style-card:active {
@@ -1120,16 +1186,25 @@ onMounted(async () => {
   font-weight: 900;
 }
 
-.footer-links text,
-.secret-admin {
+.footer-links a,
+.footer-links [role="button"] {
   cursor: pointer;
 }
 
-.secret-admin {
-  margin-top: 16px;
-  text-align: center;
-  color: rgba(76, 83, 96, 0.34);
-  font-size: 18px;
+.footer-links a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.btn:focus-visible,
+.hero-preview:focus-visible,
+.feature-panel:focus-visible,
+.cat-chip:focus-visible,
+.style-card:focus-visible,
+.footer-links a:focus-visible,
+.footer-links [role="button"]:focus-visible {
+  outline: 3px solid #116a60;
+  outline-offset: 3px;
 }
 
 @media (min-width: 961px) {
