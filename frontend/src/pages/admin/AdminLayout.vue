@@ -1,25 +1,27 @@
 <template>
   <view class="admin-shell">
     <aside class="admin-sidebar">
-      <view class="admin-brand" @tap="go('/admin')">
+      <a class="admin-brand" href="/admin" @click.prevent="go('/admin')">
         <text class="brand-mark">AI</text>
         <view>
           <text class="brand-title">{{ tr('婚纱后台', 'Wedding Admin') }}</text>
           <text class="brand-subtitle">{{ tr('运营控制台', 'Operations Console') }}</text>
         </view>
-      </view>
+      </a>
 
       <nav class="admin-nav">
-        <button
+        <a
           v-for="item in navItems"
           :key="item.path"
           class="nav-item"
+          :href="item.path"
           :class="{ active: active === item.key }"
-          @tap="go(item.path)"
+          :aria-current="active === item.key ? 'page' : undefined"
+          @click.prevent="go(item.path)"
         >
           <text class="nav-dot"></text>
           <text>{{ item.label }}</text>
-        </button>
+        </a>
       </nav>
 
       <view class="admin-session">
@@ -29,16 +31,16 @@
       </view>
     </aside>
 
-    <main class="admin-main">
+    <main class="admin-main" role="main">
       <view class="admin-topbar">
         <view>
           <text class="page-kicker">{{ tr('后台', 'Admin') }}</text>
-          <text class="page-title">{{ title }}</text>
+          <text class="page-title" role="heading" aria-level="1">{{ title }}</text>
           <text v-if="subtitle" class="page-subtitle">{{ subtitle }}</text>
         </view>
         <view class="topbar-actions">
-          <button class="secondary-action language-action" @tap="toggleLocale">{{ localeButtonText }}</button>
-          <button class="secondary-action" @tap="goHome">{{ tr('返回网站', 'Back to site') }}</button>
+          <button class="secondary-action language-action" role="button" tabindex="0" @tap="toggleLocale" @keydown.enter.prevent="toggleLocale" @keydown.space.prevent="toggleLocale">{{ localeButtonText }}</button>
+          <a class="secondary-action site-link" href="/" @click.prevent="goHome">{{ tr('返回网站', 'Back to site') }}</a>
         </view>
       </view>
 
@@ -121,6 +123,8 @@ function goHome() {
   padding: 8px 6px 20px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   cursor: pointer;
+  color: inherit;
+  text-decoration: none;
 }
 
 .brand-mark {
@@ -178,6 +182,7 @@ function goHome() {
   font-size: 14px;
   font-weight: 700;
   text-align: left;
+  text-decoration: none;
 }
 
 .nav-item.active {
@@ -236,7 +241,7 @@ function goHome() {
 .page-kicker {
   font-size: 12px;
   font-weight: 900;
-  color: #b37428;
+  color: #7c4a10;
   text-transform: uppercase;
 }
 
@@ -277,6 +282,20 @@ function goHome() {
 
 .language-action {
   min-width: 58px;
+}
+
+.site-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.admin-brand:focus-visible,
+.nav-item:focus-visible,
+.secondary-action:focus-visible {
+  outline: 3px solid #f2c078;
+  outline-offset: 3px;
 }
 
 @media (max-width: 900px) {

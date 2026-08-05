@@ -4,11 +4,11 @@
       {{ tr('使用本服务前，请确认你拥有上传素材的合法授权。支付、订阅和退款规则以平台条款为准。', 'Before using this service, confirm that you have legal rights to uploaded materials. Billing, subscriptions, and refunds follow platform terms.') }}
     </text>
     <view class="footer-links">
-      <text class="footer-link" @tap="open('/pages/legal/privacy')">{{ tr('隐私政策', 'Privacy Policy') }}</text>
+      <a class="footer-link" href="/pages/legal/privacy" @click.prevent="open('/pages/legal/privacy')">{{ tr('隐私政策', 'Privacy Policy') }}</a>
       <text class="footer-dot">·</text>
-      <text class="footer-link" @tap="open('/pages/legal/terms')">{{ tr('服务条款', 'Terms of Service') }}</text>
+      <a class="footer-link" href="/pages/legal/terms" @click.prevent="open('/pages/legal/terms')">{{ tr('服务条款', 'Terms of Service') }}</a>
       <text class="footer-dot">·</text>
-      <text class="footer-link" @tap="open('/pages/legal/refund')">{{ tr('退款与客服', 'Refunds & Support') }}</text>
+      <a class="footer-link" href="/pages/legal/refund" @click.prevent="open('/pages/legal/refund')">{{ tr('退款与客服', 'Refunds & Support') }}</a>
     </view>
   </view>
 </template>
@@ -52,6 +52,12 @@ function open(url: string) {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0;
+  text-decoration: none;
+}
+
+.footer-link:focus-visible {
+  outline: 3px solid #116a60;
+  outline-offset: 3px;
 }
 
 .footer-dot {

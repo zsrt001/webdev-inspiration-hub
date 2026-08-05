@@ -2,10 +2,10 @@
   <view class="app-container orders-page" style="padding-top: 64px;">
     <NavBar />
 
-    <view class="orders-shell">
+    <view class="orders-shell" role="main">
       <view class="orders-header">
         <text class="orders-kicker">{{ tr('作品档案', 'Archive') }}</text>
-        <text class="orders-title heading-serif">{{ t('orders.title') }}</text>
+        <text class="orders-title heading-serif" role="heading" aria-level="1">{{ t('orders.title') }}</text>
         <text class="orders-subtitle">{{ t('orders.subtitle') }}</text>
       </view>
 
@@ -23,21 +23,21 @@
       <view v-else-if="authRequired" class="state-card">
         <text class="state-title">{{ t('orders.signin_required') }}</text>
         <text class="state-subtitle">{{ t('orders.signin_required_subtitle') }}</text>
-        <button v-if="googleAuthAvailable" class="btn btn-primary state-action" @tap="goLogin">{{ t('orders.signin') }}</button>
+        <button v-if="googleAuthAvailable" class="btn btn-primary state-action" role="button" tabindex="0" @tap="goLogin" @keydown.enter.prevent="goLogin" @keydown.space.prevent="goLogin">{{ t('orders.signin') }}</button>
       </view>
 
       <view v-else-if="error" class="inline-error">
         <text>{{ error }}</text>
-        <button class="btn btn-outline retry-btn" @tap="refresh">{{ t('orders.retry') }}</button>
+        <button class="btn btn-outline retry-btn" role="button" tabindex="0" @tap="refresh" @keydown.enter.prevent="refresh" @keydown.space.prevent="refresh">{{ t('orders.retry') }}</button>
       </view>
 
       <view v-else-if="orders.length === 0" class="state-card">
         <text class="state-title">{{ t('orders.empty') }}</text>
-        <button v-if="creationAvailable" class="btn btn-primary state-action" @tap="goToCreate">{{ t('orders.start') }}</button>
+        <button v-if="creationAvailable" class="btn btn-primary state-action" role="button" tabindex="0" @tap="goToCreate" @keydown.enter.prevent="goToCreate" @keydown.space.prevent="goToCreate">{{ t('orders.start') }}</button>
       </view>
 
       <view v-else class="orders-grid">
-        <view v-for="order in orders" :key="order.id" class="order-card" @tap="viewOrder(order.id)">
+        <a v-for="order in orders" :key="order.id" class="order-card" :href="orderHref(order.id)" @click.prevent="viewOrder(order.id)">
           <view class="order-media-wrap">
             <image :src="order.previewUrl" mode="aspectFit" class="order-media" />
             <view class="status-badge" :class="badgeClass(order.status)">
@@ -55,7 +55,7 @@
               <text class="order-link">{{ t('orders.view') }} ></text>
             </view>
           </view>
-        </view>
+        </a>
       </view>
 
     </view>
@@ -221,6 +221,10 @@ function viewOrder(orderId: string) {
   uni.navigateTo({ url: `/pages/preview/preview?id=${orderId}` });
 }
 
+function orderHref(orderId: string): string {
+  return `/pages/preview/preview?id=${encodeURIComponent(orderId)}`;
+}
+
 function refresh() {
   fetchOrders();
 }
@@ -328,7 +332,15 @@ onMounted(async () => {
 }
 
 .order-card {
+  display: block;
   overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+}
+
+.order-card:focus-visible {
+  outline: 3px solid #116a60;
+  outline-offset: 3px;
 }
 
 .order-media-wrap {

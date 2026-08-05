@@ -12,7 +12,7 @@
     <view v-else-if="error" class="admin-card admin-state">
       <text class="state-title">{{ tr('需要后台权限', 'Admin access required') }}</text>
       <text class="state-copy">{{ error }}</text>
-      <button class="primary-action" @tap="goLogin">{{ tr('登录', 'Sign in') }}</button>
+      <button class="primary-action" role="button" tabindex="0" @tap="goLogin" @keydown.enter.prevent="goLogin" @keydown.space.prevent="goLogin">{{ tr('登录', 'Sign in') }}</button>
     </view>
 
     <template v-else>

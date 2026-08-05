@@ -2,15 +2,15 @@
   <view class="app-container detail-page" style="padding-top: 64px;">
     <NavBar />
 
-    <view v-if="template" class="detail-shell">
+    <view v-if="template" class="detail-shell" role="main">
       <view class="detail-hero shadow-xl">
         <view class="hero-media">
-          <image :src="heroImageUrl" class="hero-image" mode="aspectFill" />
+          <img :src="heroImageUrl" :alt="heroTitle" class="hero-image" />
         </view>
 
         <view class="hero-copy">
           <text class="hero-kicker">{{ heroKicker }}</text>
-          <text class="hero-title heading-serif">{{ heroTitle }}</text>
+          <text class="hero-title heading-serif" role="heading" aria-level="1">{{ heroTitle }}</text>
           <text class="hero-subtitle">{{ heroSubtitle }}</text>
 
           <view class="hero-points">
@@ -86,6 +86,14 @@
           </view>
         </view>
       </view>
+    </view>
+    <view v-else class="detail-loading" role="main" aria-live="polite">
+      <text class="hero-title heading-serif" role="heading" aria-level="1">
+        {{ tr('正在加载风格详情', 'Loading style details') }}
+      </text>
+      <text class="hero-subtitle">
+        {{ tr('正在准备风格预览与创作说明。', 'Preparing the style preview and creative guidance.') }}
+      </text>
     </view>
   </view>
 </template>
@@ -271,6 +279,13 @@ onMounted(async () => {
   max-width: 1440px;
   margin: 0 auto;
   padding: 32px 28px 80px;
+}
+
+.detail-loading {
+  max-width: 760px;
+  margin: 72px auto;
+  padding: 32px 28px;
+  text-align: center;
 }
 
 .detail-hero,
