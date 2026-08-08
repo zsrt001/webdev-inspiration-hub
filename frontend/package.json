@@ -10,7 +10,7 @@
         "openapi:generate": "openapi-typescript ../openapi/openapi.json -o src/generated/api.d.ts",
         "playwright:install": "playwright install --with-deps chromium firefox",
         "test:unit": "vitest run",
-        "test:a11y": "playwright test --grep @a11y",
+        "test:a11y": "node scripts/run-local-a11y.mjs",
         "test:e2e": "playwright test"
     },
     "dependencies": {
