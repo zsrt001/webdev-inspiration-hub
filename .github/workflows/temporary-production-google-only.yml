@@ -116,9 +116,7 @@ jobs:
           ):
               raise SystemExit("Supabase redirect allow-list is not exact and wildcard-free")
           callback = f"{base_url}/pages/auth/callback"
-          site_url = str(auth_config.get("site_url") or "").rstrip("/")
-          if callback not in allow_list and site_url != base_url:
-              raise SystemExit("formal Production Google callback is not configured")
+          formal_callback_present = callback in allow_list
 
           database_url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
               "postgresql+asyncpg://", "postgresql://", 1
@@ -170,6 +168,35 @@ jobs:
           ):
               raise SystemExit("Production capability rows are not cleanly unbound before acceptance")
 
+          formal_callback_added = False
+          if not formal_callback_present:
+              target_allow_list = ",".join((*allow_list, callback))
+              with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+                  patch_response = client.patch(
+                      f"https://api.supabase.com/v1/projects/{project_ref}/config/auth",
+                      headers={
+                          "Authorization": f"Bearer {admin_token}",
+                          "Accept": "application/json",
+                          "Content-Type": "application/json",
+                      },
+                      json={"uri_allow_list": target_allow_list},
+                  )
+                  patch_response.raise_for_status()
+                  verify_response = client.get(
+                      f"https://api.supabase.com/v1/projects/{project_ref}/config/auth",
+                      headers={"Authorization": f"Bearer {admin_token}", "Accept": "application/json"},
+                  )
+                  verify_response.raise_for_status()
+                  verified_config = verify_response.json()
+              verified_allow_list = tuple(
+                  item.strip()
+                  for item in str(verified_config.get("uri_allow_list") or "").split(",")
+                  if item.strip()
+              )
+              if verified_allow_list != (*allow_list, callback):
+                  raise SystemExit("formal Production Google callback update did not converge exactly")
+              formal_callback_added = True
+
           evidence = {
               "schema": "vowpic.google-only-preflight.v1",
               "passed": True,
@@ -181,6 +208,7 @@ jobs:
               "schema_revision": runtime["schema_revision"],
               "google_provider_enabled": True,
               "formal_callback_exact": True,
+              "formal_callback_added": formal_callback_added,
               "capabilities_before": {name: False for name in sorted(expected_capabilities)},
           }
           out = Path(os.environ["RUNNER_TEMP"], "google-only-preflight.json")
