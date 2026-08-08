@@ -136,10 +136,15 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "--kind GOOGLE_AUTH_ONLY",
             "--phase google-auth-only",
             "--phase emergency-off",
+            "npm --prefix frontend run playwright:install",
             "google-only-final-state.json",
             "manage_google_auth_only_activation.py complete",
         ):
             self.assertIn(required, source)
+        self.assertLess(
+            source.index("npm --prefix frontend run playwright:install"),
+            source.index("npm --prefix frontend run test:e2e"),
+        )
         for forbidden in (
             "images/generations",
             "orders/create",
