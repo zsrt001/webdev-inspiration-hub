@@ -43,8 +43,10 @@ async function completeGoogleLogin(page: Page) {
     { timeout: 60_000 },
   );
   if (new URL(page.url()).hostname.endsWith('google.com')) {
-    const account = page.getByText(identityEmail, { exact: false }).first();
+    const escapedEmail = identityEmail.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const account = page.locator(`[data-identifier="${escapedEmail}"]`);
     if (await account.isVisible({ timeout: 15_000 }).catch(() => false)) {
+      expect(await account.count(), 'Google account selector must be unambiguous').toBe(1);
       await account.click();
     }
     const continueButton = page.getByRole('button', { name: /continue|allow/i }).last();
@@ -52,9 +54,29 @@ async function completeGoogleLogin(page: Page) {
       await continueButton.click();
     }
   }
-  await page.waitForURL((url) => url.origin === baseURL && !url.pathname.endsWith('/auth/login'), {
-    timeout: 90_000,
-  });
+  try {
+    await page.waitForURL((url) => url.origin === baseURL && !url.pathname.endsWith('/auth/login'), {
+      timeout: 90_000,
+    });
+  } catch (error) {
+    const current = new URL(page.url());
+    const pageState = await page.evaluate(() => ({
+      account_rows: document.querySelectorAll('[data-identifier]').length,
+      email_field: Boolean(document.querySelector('input[type="email"]')),
+      password_field: Boolean(document.querySelector('input[type="password"]')),
+      verification_code_field: Boolean(
+        document.querySelector('input[autocomplete="one-time-code"], input[type="tel"]'),
+      ),
+    }));
+    throw new Error(
+      `GOOGLE_AUTH_RETURN_TIMEOUT: ${JSON.stringify({
+        hostname: current.hostname,
+        pathname: current.pathname,
+        ...pageState,
+      })}`,
+      { cause: error },
+    );
+  }
 }
 
 async function currentUser(page: Page) {
