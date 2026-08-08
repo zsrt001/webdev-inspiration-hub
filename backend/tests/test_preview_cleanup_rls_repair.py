@@ -56,7 +56,7 @@ class PreviewCleanupRlsRepairTest(unittest.TestCase):
                 self.assertNotEqual(predicate.strip().lower(), "true")
 
         source = REPAIR.read_text(encoding="utf-8")
-        self.assertIn('TARGET_REVISION = "20260710_0020"', source)
+        self.assertIn('TARGET_REVISION = "20260710_0021"', source)
         self.assertIn('MIGRATION_OWNER = "vowpic_migration_owner"', source)
         self.assertIn("rolbypassrls", source)
         self.assertIn("owner_is_migration_role", source)

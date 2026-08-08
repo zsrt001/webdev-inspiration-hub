@@ -119,7 +119,7 @@ class CommercialLedgerMigrationTest(unittest.TestCase):
                 "ELSIF TG_TABLE_NAME = 'order_entitlement_fundings' THEN",
                 source,
             )
-        self.assertIn('TARGET_REVISION = "20260710_0020"', repair)
+        self.assertIn('TARGET_REVISION = "20260710_0021"', repair)
         self.assertEqual(repair.count("SECURITY DEFINER"), 2)
         self.assertGreaterEqual(
             repair.count("SET search_path = pg_catalog, public"),

@@ -36,6 +36,8 @@ MAX_COHORT_TTL_SECONDS = 86400
 IDENTITY_FOUNDATION_CAPABILITIES = frozenset(
     {Capability.GOOGLE_AUTH, Capability.AUTHENTICATED_UPLOAD, Capability.PRIVATE_DOWNLOAD}
 )
+GOOGLE_AUTH_ONLY_CAPABILITIES = frozenset({Capability.GOOGLE_AUTH})
+GOOGLE_AUTH_ONLY_PHASES = frozenset({"ACCEPTANCE_READY"})
 
 
 class CapabilityDisabled(HTTPException):
@@ -391,6 +393,11 @@ async def _validate_activation_for_state(
         raise ValueError("release activation is not active")
     if activation.kind == "PREVIEW_IDENTITY" and capability not in IDENTITY_FOUNDATION_CAPABILITIES:
         raise ValueError("PREVIEW_IDENTITY cannot authorize this capability")
+    if activation.kind == "GOOGLE_AUTH_ONLY":
+        if activation.phase not in GOOGLE_AUTH_ONLY_PHASES:
+            raise ValueError("GOOGLE_AUTH_ONLY activation is not acceptance-ready")
+        if capability not in GOOGLE_AUTH_ONLY_CAPABILITIES:
+            raise ValueError("GOOGLE_AUTH_ONLY cannot authorize this capability")
     return activation
 
 

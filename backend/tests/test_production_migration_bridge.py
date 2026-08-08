@@ -50,7 +50,7 @@ class ProductionMigrationBridgeTest(unittest.TestCase):
         ]
         report = module.build_bridge_report(
             source_sha=source,
-            revision_rows=[{"version_num": "20260710_0020"}],
+            revision_rows=[{"version_num": "20260710_0021"}],
             release_rows=[release],
             safe_baseline_rows=[baseline],
             table_rows=tables,
@@ -61,7 +61,7 @@ class ProductionMigrationBridgeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tables are missing"):
             module.build_bridge_report(
                 source_sha=source,
-                revision_rows=[{"version_num": "20260710_0020"}],
+                revision_rows=[{"version_num": "20260710_0021"}],
                 release_rows=[release],
                 safe_baseline_rows=[baseline],
                 table_rows=tables[:-1],

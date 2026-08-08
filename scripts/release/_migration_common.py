@@ -174,8 +174,8 @@ def load_invocation(
         release_manifest_path,
         normalized_manifest_sha256,
     )
-    if manifest["schema_revision"] != "20260710_0020":
-        raise ValueError("COMMERCIAL_7A manifest must target schema 20260710_0020")
+    if manifest["schema_revision"] != "20260710_0021":
+        raise ValueError("COMMERCIAL_7A manifest must target schema 20260710_0021")
     if not 1 <= int(args.batch_size) <= 5000:
         raise ValueError("batch size must be between 1 and 5000")
     try:

@@ -359,7 +359,7 @@ class ReleaseRegistryTest(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(runtime["schema_revision"], "20260710_0020")
+        self.assertEqual(runtime["schema_revision"], "20260710_0021")
         self.assertEqual(runtime["job_payload_version"], "generation-job.v1")
         for relative_path, expected_hash in runtime["source_sha256"].items():
             actual = hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()

@@ -1,6 +1,6 @@
 {
   "contract_version": "commercial-7a.database-roles.v1",
-  "schema_revision": "20260710_0020",
+  "schema_revision": "20260710_0021",
   "base_contract": "release/safe-baseline-contract.json",
   "runtime_group": "vowpic_runtime",
   "runtime_login": "vowpic_app_runtime",

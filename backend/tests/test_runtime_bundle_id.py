@@ -135,6 +135,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
             ("20260710_0018", "20260710_0018_subscription_facts.py"),
             ("20260710_0019", "20260710_0019_generation_jobs.py"),
             ("20260710_0020", "20260710_0020_partner_consent.py"),
+            ("20260710_0021", "20260710_0021_google_auth_only_activation.py"),
         )
         workflow = (ROOT / ".github" / "workflows" / "integration.yml").read_text(
             encoding="utf-8"
@@ -143,7 +144,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
             workflow.index("- name: Compute the PREVIEW_IDENTITY runtime ID") :
             workflow.index("- name: Reserve one exact Preview activation")
         ]
-        self.assertIn("--schema 20260710_0020", runtime_step)
+        self.assertIn("--schema 20260710_0021", runtime_step)
         self.assertIn(
             "--contract identity_private_media_preview="
             "release/preview-runtime-contract.json",
@@ -164,7 +165,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
             )
         )
         self.assertEqual(preview_contract["release_role"], "PREVIEW_IDENTITY")
-        self.assertEqual(preview_contract["schema_revision"], "20260710_0020")
+        self.assertEqual(preview_contract["schema_revision"], "20260710_0021")
         self.assertEqual(
             preview_contract["api_version"],
             "vowpic-web-identity-private-media.v3",
@@ -186,7 +187,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
             "--source-sha",
             "a" * 40,
             "--schema",
-            "20260710_0020",
+            "20260710_0021",
         ]
         for revision, filename in migrations:
             command.extend(
@@ -315,9 +316,12 @@ class RuntimeBundleIdTest(unittest.TestCase):
             str(SCRIPT),
             "--release-role", "PREVIEW_COMMERCIAL",
             "--source-sha", "a" * 40,
-            "--schema", "20260710_0020",
+            "--schema", "20260710_0021",
             "--migration", "20260710_0020=" + str(
                 ROOT / "backend" / "alembic" / "versions" / "20260710_0020_partner_consent.py"
+            ),
+            "--migration", "20260710_0021=" + str(
+                ROOT / "backend" / "alembic" / "versions" / "20260710_0021_google_auth_only_activation.py"
             ),
             "--runtime-contract", str(
                 ROOT / "backend" / "contracts" / "runtime-contracts.json"
@@ -381,7 +385,7 @@ class RuntimeBundleIdTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source digest is stale"):
                 module._runtime_contract_hashes(
                     str(stale_path),
-                    schema_revision="20260710_0020",
+                    schema_revision="20260710_0021",
                 )
         finally:
             stale_path.unlink(missing_ok=True)

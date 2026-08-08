@@ -29,7 +29,7 @@ from backend.scripts.verify_preview_database_isolation import (  # noqa: E402
 )
 
 
-TARGET_REVISION = "20260710_0020"
+TARGET_REVISION = "20260710_0021"
 MIGRATION_OWNER = "vowpic_migration_owner"
 PREVIEW_MIGRATION_DATABASE_URL_ENV = "PREVIEW_MIGRATION_DATABASE_URL"
 TRUSTED_WORKFLOWS = frozenset(

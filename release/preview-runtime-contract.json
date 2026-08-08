@@ -1,7 +1,7 @@
 {
   "contract_version": "preview-protected-runtime.v5",
   "release_role": "PREVIEW_IDENTITY",
-  "schema_revision": "20260710_0020",
+  "schema_revision": "20260710_0021",
   "api_version": "vowpic-web-identity-private-media.v3",
   "enabled_capabilities": [
     "google_auth",
@@ -48,7 +48,7 @@
   "commercial_extension": {
     "release_role": "PREVIEW_COMMERCIAL",
     "api_role": "PREVIEW_COMMERCIAL_API",
-    "schema_revision": "20260710_0020",
+    "schema_revision": "20260710_0021",
     "backend_executor": {
       "version": "vowpic-backend-executor.v1",
       "runtime_identity": "same-as-api",

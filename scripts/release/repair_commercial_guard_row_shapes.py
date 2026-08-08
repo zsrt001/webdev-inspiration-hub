@@ -28,7 +28,7 @@ from backend.scripts.verify_preview_database_isolation import (  # noqa: E402
 )
 
 
-TARGET_REVISION = "20260710_0020"
+TARGET_REVISION = "20260710_0021"
 PREVIEW_MIGRATION_DATABASE_URL_ENV = "PREVIEW_MIGRATION_DATABASE_URL"
 FUNCTION_SIGNATURES = {
     "commercial_reservation_allocation_guard": (

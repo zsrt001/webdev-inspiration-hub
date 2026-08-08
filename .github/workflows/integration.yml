@@ -192,7 +192,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
-        run: alembic upgrade 20260710_0020
+        run: alembic upgrade 20260710_0021
 
       - name: Repair and verify the exact schema-0020 cross-table guards
         env:
@@ -237,7 +237,7 @@ jobs:
           python scripts/release/build_runtime_bundle_id.py \
             --release-role PREVIEW_IDENTITY \
             --source-sha "$SOURCE_SHA" \
-            --schema 20260710_0020 \
+            --schema 20260710_0021 \
             --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
             --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
             --migration 20260710_0014=backend/alembic/versions/20260710_0014_web_identity_sessions.py \
@@ -247,6 +247,7 @@ jobs:
             --migration 20260710_0018=backend/alembic/versions/20260710_0018_subscription_facts.py \
             --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
             --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
+            --migration 20260710_0021=backend/alembic/versions/20260710_0021_google_auth_only_activation.py \
             --contract identity_private_media_preview=release/preview-runtime-contract.json \
             --builder-contract-version "preview-identity.${{ inputs.acceptance_scope }}.v2.run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --api-version vowpic-web-identity-private-media.v3 \
@@ -1019,7 +1020,7 @@ jobs:
           python scripts/release/build_runtime_bundle_id.py \
             --release-role PREVIEW_COMMERCIAL \
             --source-sha "$SOURCE_SHA" \
-            --schema 20260710_0020 \
+            --schema 20260710_0021 \
             --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
             --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
             --migration 20260710_0014=backend/alembic/versions/20260710_0014_web_identity_sessions.py \
@@ -1029,6 +1030,7 @@ jobs:
             --migration 20260710_0018=backend/alembic/versions/20260710_0018_subscription_facts.py \
             --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
             --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
+            --migration 20260710_0021=backend/alembic/versions/20260710_0021_google_auth_only_activation.py \
             --runtime-contract backend/contracts/runtime-contracts.json \
             --preview-contract release/preview-runtime-contract.json \
             --provider-contract release/provider-capabilities.json \
@@ -1222,7 +1224,7 @@ jobs:
             --expected-deployment-id "$COMMERCIAL_API_DEPLOYMENT_ID" \
             --expected-runtime-bundle-id "$COMMERCIAL_RUNTIME_BUNDLE_ID" \
             --expected-source-sha "$SOURCE_SHA" \
-            --expected-schema 20260710_0020 \
+            --expected-schema 20260710_0021 \
             --expected-release-role PREVIEW_COMMERCIAL \
             --expected-runtime-environment preview \
             --signing-key-env PROVIDER_EVIDENCE_HMAC_KEY \

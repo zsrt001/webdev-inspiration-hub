@@ -102,7 +102,7 @@ class VersionRouteTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(safe_baseline["schema_revision"], "20260712_0014")
-        self.assertEqual(commercial["schema_revision"], "20260710_0020")
+        self.assertEqual(commercial["schema_revision"], "20260710_0021")
 
 
 if __name__ == "__main__":

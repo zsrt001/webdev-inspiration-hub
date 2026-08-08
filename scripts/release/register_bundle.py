@@ -49,7 +49,7 @@ COMMERCIAL_7A_PHASES = (
     "ROLLBACK_BASELINE_VERIFIED",
     "API_TARGET_STAGED",
     "MANIFEST_SEALED",
-    "SCHEMA_0020",
+    "SCHEMA_0021",
     "DATA_SWITCHED",
     "ACCEPTANCE_READY",
     "TARGET_ACCEPTED",
@@ -645,7 +645,7 @@ def build_migration_parent_record(
         "inventory_sha256": inventory,
         "script_sha256": None,
         "source_revision": None,
-        "target_revision": "20260710_0020",
+        "target_revision": "20260710_0021",
         "mode": "COMMERCIAL_7A_PARENT",
         "approval": clean_approval,
         "lease_owner": f"github:{clean_run}:{workflow_attempt}",
@@ -747,7 +747,7 @@ def bind_migration_parent_cas(
 _PHASE_EVIDENCE_ARGUMENTS = {
     "ROLLBACK_BASELINE_VERIFIED": ("inspect_report",),
     "API_TARGET_STAGED": ("build_output", "inspect_report"),
-    "SCHEMA_0020": ("migration_report", "replay_report"),
+    "SCHEMA_0021": ("migration_report", "replay_report"),
     "DATA_SWITCHED": (
         "identity_report",
         "commercial_report",
@@ -986,7 +986,7 @@ def _seal_main(argv: list[str]) -> int:
             "staged_target_deployment_id": activation.get("api_deployment_id"),
             "worker_deployment_id": activation.get("worker_deployment_id"),
             "worker_image_digest": activation.get("worker_image_digest"),
-            "schema_revision": "20260710_0020",
+            "schema_revision": "20260710_0021",
         }
         for field, value in expected.items():
             if manifest.get(field) != value:

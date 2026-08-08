@@ -14,6 +14,7 @@ from typing import Any
 
 
 _DEPLOYMENT_ID = re.compile(r"^dpl_[A-Za-z0-9_-]{3,156}$")
+ACTIVATION_KINDS = ("COMMERCIAL_7A", "GOOGLE_AUTH_ONLY")
 
 
 def _database_url(value: str) -> str:
@@ -26,17 +27,18 @@ def _database_url(value: str) -> str:
 
 
 def validate_activation(
-    activation: dict[str, Any], *, deployment_id: str, approval: str
+    activation: dict[str, Any], *, deployment_id: str, approval: str,
+    kind: str = "COMMERCIAL_7A",
 ) -> None:
     expected = {
         "environment": "production",
-        "kind": "COMMERCIAL_7A",
+        "kind": kind,
         "api_deployment_id": deployment_id,
         "approval": approval,
     }
     if any(str(activation.get(key)) != str(value) for key, value in expected.items()):
         raise ValueError("acceptance binding cleanup activation coordinates are invalid")
-    if activation.get("phase") not in {
+    allowed_phases = {
         "ACCEPTANCE_READY",
         "TARGET_ACCEPTED",
         "TARGET_PROMOTED",
@@ -44,7 +46,10 @@ def validate_activation(
         "ACTIVATED",
         "OBSERVING",
         "7A_ACCEPTED",
-    }:
+    }
+    if kind == "GOOGLE_AUTH_ONLY":
+        allowed_phases = {"ACCEPTANCE_READY"}
+    if activation.get("phase") not in allowed_phases:
         raise ValueError("acceptance binding cleanup activation phase is invalid")
 
 
@@ -122,6 +127,7 @@ def cleanup_bindings(
     *,
     deployment_id: str,
     approval: str,
+    kind: str = "COMMERCIAL_7A",
     require_zero_unused: bool,
 ) -> dict[str, Any]:
     import psycopg2
@@ -136,19 +142,19 @@ def cleanup_bindings(
             cursor.execute(
                 """
                 SELECT * FROM release_activations
-                WHERE environment = 'production' AND kind = 'COMMERCIAL_7A'
+                WHERE environment = 'production' AND kind = %s
                   AND api_deployment_id = %s
                 ORDER BY updated_at DESC LIMIT 2
                 FOR UPDATE
                 """,
-                (deployment_id,),
+                (kind, deployment_id),
             )
             rows = [dict(row) for row in cursor.fetchall()]
             if len(rows) != 1:
                 raise ValueError("exactly one staged Production activation is required")
             activation = rows[0]
             validate_activation(
-                activation, deployment_id=deployment_id, approval=approval
+                activation, deployment_id=deployment_id, approval=approval, kind=kind
             )
             cursor.execute(
                 """
@@ -192,6 +198,7 @@ def _write_create_once(path: Path, payload: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deployment-id", required=True)
+    parser.add_argument("--kind", choices=ACTIVATION_KINDS, default="COMMERCIAL_7A")
     parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
     parser.add_argument("--approval-id-env", default="PRODUCTION_ACCEPTANCE_APPROVAL_ID")
     parser.add_argument("--require-zero-unused", action="store_true")
@@ -208,6 +215,7 @@ def main() -> int:
             os.environ.get(args.database_url_env, ""),
             deployment_id=deployment_id,
             approval=approval,
+            kind=args.kind,
             require_zero_unused=args.require_zero_unused,
         )
         _write_create_once(Path(args.output), report)

@@ -145,7 +145,7 @@ jobs:
             --expected-deployment-id "${{ needs.bootstrap.outputs.api_deployment_id }}" \
             --expected-runtime-bundle-id "${{ needs.bootstrap.outputs.runtime_bundle_id }}" \
             --expected-source-sha "${{ needs.bootstrap.outputs.source_sha }}" \
-            --expected-schema 20260710_0020 \
+            --expected-schema 20260710_0021 \
             --expected-release-role COMMERCIAL_7A \
             --signing-key-env RELEASE_EVIDENCE_HMAC_KEY \
             --output "$RUNNER_TEMP/backend-runtime.json"
