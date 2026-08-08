@@ -23,9 +23,11 @@ settings = get_settings()
 _SUPPORT_REQUIRED_RELEASE_ROLES = frozenset(
     {"PREVIEW_COMMERCIAL", "COMMERCIAL_7A", "CONTRACT_7B"}
 )
-_SAFE_BASELINE_FORWARD_COMPATIBLE_SCHEMA = (
-    "20260712_0014",
-    "20260710_0020",
+_SAFE_BASELINE_FORWARD_COMPATIBLE_SCHEMAS = frozenset(
+    {
+        ("20260712_0014", "20260710_0020"),
+        ("20260712_0014", "20260710_0021"),
+    }
 )
 
 
@@ -198,7 +200,7 @@ async def _check_database_schema() -> tuple[bool, str]:
     if actual != expected:
         if (
             settings.release_role.strip() == "SAFE_BASELINE"
-            and (expected, actual) == _SAFE_BASELINE_FORWARD_COMPATIBLE_SCHEMA
+            and (expected, actual) in _SAFE_BASELINE_FORWARD_COMPATIBLE_SCHEMAS
         ):
             return True, f"forward-compatible expected={expected},actual={actual}"
         return False, f"expected={expected},actual={actual}"

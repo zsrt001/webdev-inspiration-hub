@@ -155,7 +155,7 @@ jobs:
                   )
                   rows = cursor.fetchall()
           if len(revisions) != 1 or revisions[0][0] not in {
-              "20260712_0014", "20260710_0020",
+              "20260712_0014", "20260710_0020", "20260710_0021",
           }:
               raise SystemExit(
                   f"website-only release observed an unsupported Production schema: {revisions!r}"
@@ -217,7 +217,7 @@ jobs:
           python scripts/release/build_runtime_bundle_id.py \
             --release-role "$RELEASE_ROLE" \
             --source-sha "$SOURCE_SHA" \
-            --schema 20260710_0020 \
+            --schema 20260710_0021 \
             --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
             --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
             --migration 20260710_0014=backend/alembic/versions/20260710_0014_web_identity_sessions.py \
@@ -227,6 +227,7 @@ jobs:
             --migration 20260710_0018=backend/alembic/versions/20260710_0018_subscription_facts.py \
             --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
             --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
+            --migration 20260710_0021=backend/alembic/versions/20260710_0021_google_auth_only_activation.py \
             --runtime-contract backend/contracts/runtime-contracts.json \
             --provider-contract release/provider-capabilities.json \
             --catalog-contract release/catalog/catalog-2026-07-10.json \
@@ -432,28 +433,28 @@ jobs:
             --token-env GITHUB_TOKEN \
             --output "$RUNNER_TEMP/main-before-schema.json"
 
-      - name: Advance only schema 0014 to 0020 while every capability stays OFF
+      - name: Advance only the reviewed schema chain to 0021 while every capability stays OFF
         env:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
         run: |
           set -euo pipefail
-          [[ "$SCHEMA_BEFORE" = "20260712_0014" || "$SCHEMA_BEFORE" = "20260710_0020" ]]
+          [[ "$SCHEMA_BEFORE" = "20260712_0014" || "$SCHEMA_BEFORE" = "20260710_0020" || "$SCHEMA_BEFORE" = "20260710_0021" ]]
           python scripts/release/production_database_login_proof.py \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --expected-schema "$SCHEMA_BEFORE" \
             --output "$RUNNER_TEMP/migration-login-before.json"
-          if [[ "$SCHEMA_BEFORE" = "20260712_0014" ]]; then
+          if [[ "$SCHEMA_BEFORE" != "20260710_0021" ]]; then
             (
               cd backend
               DATABASE_URL="$PRODUCTION_MIGRATION_DATABASE_URL" \
               PGOPTIONS="-c lock_timeout=5s -c statement_timeout=1800s" \
-                python -m alembic -c alembic.ini upgrade 20260710_0020
+                python -m alembic -c alembic.ini upgrade 20260710_0021
             )
           fi
           python scripts/release/production_database_login_proof.py \
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --expected-schema 20260710_0020 \
+            --expected-schema 20260710_0021 \
             --output "$RUNNER_TEMP/migration-login-after.json"
           python - <<'PY'
           import json
@@ -481,8 +482,8 @@ jobs:
                       "WHERE environment='production' ORDER BY capability"
                   )
                   rows = cursor.fetchall()
-          if revisions != [("20260710_0020",)]:
-              raise SystemExit(f"Production schema did not converge to 20260710_0020: {revisions!r}")
+          if revisions != [("20260710_0021",)]:
+              raise SystemExit(f"Production schema did not converge to 20260710_0021: {revisions!r}")
           if {row[0] for row in rows} != expected or len(rows) != len(expected):
               raise SystemExit("Production capability inventory changed during schema transition")
           if any(row[1] != "OFF" or any(value is not None for value in row[2:]) for row in rows):
@@ -542,7 +543,7 @@ jobs:
             } catch {}
             await new Promise(resolve => setTimeout(resolve, 2000));
           }
-          if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.RUNTIME_BUNDLE_ID || runtime.release_role !== 'COMMERCIAL_7A' || runtime.schema_revision !== '20260710_0020' || !/^dpl_[A-Za-z0-9]+$/.test(runtime.deployment_id)) throw new Error('candidate runtime coordinates are invalid');
+          if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.RUNTIME_BUNDLE_ID || runtime.release_role !== 'COMMERCIAL_7A' || runtime.schema_revision !== '20260710_0021' || !/^dpl_[A-Za-z0-9]+$/.test(runtime.deployment_id)) throw new Error('candidate runtime coordinates are invalid');
           const readiness = await getJson('/api/v1/ops/readiness');
           if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('candidate readiness is not green');
           const config = await getJson('/api/v1/ops/public_config');

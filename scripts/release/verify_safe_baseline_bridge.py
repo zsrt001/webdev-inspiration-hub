@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the exact safe-baseline-to-0020 bridge after the protected migration."""
+"""Verify the exact safe-baseline-to-0021 bridge after the protected migration."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Any
 
 
 SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
-TARGET_REVISION = "20260710_0020"
+TARGET_REVISION = "20260710_0021"
 REQUIRED_TABLES = (
     "release_activations",
     "release_phase_evidence",
@@ -46,7 +46,7 @@ def build_bridge_report(
     if not SOURCE_SHA.fullmatch(source_sha):
         raise ValueError("bridge source SHA is invalid")
     if revision_rows != [{"version_num": TARGET_REVISION}]:
-        raise ValueError("Production schema is not exactly 20260710_0020")
+        raise ValueError("Production schema is not exactly 20260710_0021")
     if len(release_rows) != 1:
         raise ValueError("exactly one sealed COMMERCIAL_7A release is required")
     release = release_rows[0]
@@ -73,7 +73,7 @@ def build_bridge_report(
     present = {str(row.get("table_name")) for row in table_rows if row.get("present")}
     missing = sorted(set(REQUIRED_TABLES) - present)
     if missing:
-        raise ValueError(f"0020 bridge tables are missing: {', '.join(missing)}")
+        raise ValueError(f"0021 bridge tables are missing: {', '.join(missing)}")
     return {
         "schema": "vowpic.safe-baseline-bridge.v1",
         "passed": True,

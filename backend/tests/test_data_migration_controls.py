@@ -337,7 +337,8 @@ class DataMigrationControlTest(unittest.TestCase):
         source = (
             ROOT / "scripts/release/apply_additive_migrations.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('TARGET = "20260710_0020"', source)
+        self.assertIn('TARGET = "20260710_0021"', source)
+        self.assertIn('"20260710_0021_google_auth_only_activation.py"', source)
         self.assertIn('"upgrade",\n                    TARGET', source)
         self.assertIn("lock_timeout=5s", source)
         self.assertIn("statement_timeout=1800s", source)

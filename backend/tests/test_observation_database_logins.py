@@ -92,7 +92,7 @@ class ObservationDatabaseRoleContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "requires schema 20260710_0020; current schema is 20260712_0014",
+            "requires schema 20260710_0021; current schema is 20260712_0014",
         ):
             provision._require_observation_schema(cursor)
 
@@ -102,11 +102,11 @@ class ObservationDatabaseRoleContractTest(unittest.TestCase):
 
     def test_provisioning_accepts_schema_0020(self) -> None:
         cursor = mock.Mock()
-        cursor.fetchone.return_value = {"version_num": "20260710_0020"}
+        cursor.fetchone.return_value = {"version_num": "20260710_0021"}
 
         self.assertEqual(
             provision._require_observation_schema(cursor),
-            "20260710_0020",
+            "20260710_0021",
         )
 
     def test_additive_bootstrap_never_rotates_existing_production_credentials(self) -> None:
@@ -122,7 +122,7 @@ class ObservationDatabaseRoleContractTest(unittest.TestCase):
             "OWNER TO postgres",
             "FROM PUBLIC",
             "TO vowpic_migration_owner",
-            "current_revision NOT IN ('20260712_0014', '20260710_0020')",
+            "current_revision NOT IN ('20260712_0014', '20260710_0020', '20260710_0021')",
         ):
             self.assertIn(required, source)
         for forbidden in (

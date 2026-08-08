@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply only the reviewed forward additive chain through 20260710_0020."""
+"""Apply only the reviewed forward additive chain through 20260710_0021."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ from scripts.release.verify_commercial_database_roles import (
 )
 
 
-TARGET = "20260710_0020"
+TARGET = "20260710_0021"
 GUARD_REPAIR_PATH = ROOT / "scripts" / "release" / (
     "repair_commercial_guard_row_shapes.py"
 )
@@ -55,6 +55,7 @@ MIGRATION_FILES = (
     "20260710_0018_subscription_facts.py",
     "20260710_0019_generation_jobs.py",
     "20260710_0020_partner_consent.py",
+    "20260710_0021_google_auth_only_activation.py",
 )
 
 
@@ -89,7 +90,7 @@ async def _revision(db: AsyncSession) -> str:
 
 async def _run(args: argparse.Namespace) -> None:
     if args.target_revision != TARGET:
-        raise ValueError("only alembic upgrade 20260710_0020 is allowed")
+        raise ValueError("only alembic upgrade 20260710_0021 is allowed")
     invocation = load_invocation(
         args,
         script_path=Path(__file__),
@@ -131,7 +132,12 @@ async def _run(args: argparse.Namespace) -> None:
                 service = DataMigrationCheckpointService(db)
                 await service.lock_contract(invocation.contract)
                 before = await _revision(db)
-                if before not in {"20260710_0013", "20260712_0014", TARGET}:
+                if before not in {
+                    "20260710_0013",
+                    "20260712_0014",
+                    "20260710_0020",
+                    TARGET,
+                }:
                     raise ValueError(
                         f"unexpected Production revision before 7a migration: {before}"
                     )
@@ -181,7 +187,7 @@ async def _run(args: argparse.Namespace) -> None:
                 await service.lock_contract(invocation.contract)
                 after = await _revision(db)
                 if invocation.write and after != TARGET:
-                    raise ValueError("Production revision did not reach 20260710_0020")
+                    raise ValueError("Production revision did not reach 20260710_0021")
                 if invocation.write:
                     guard_repair_report = (
                         await repair_commercial_guard_row_shapes(db)

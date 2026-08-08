@@ -225,7 +225,7 @@ jobs:
           )
           if [[ -n "$RESUME_FLAG" ]]; then COMMON+=("$RESUME_FLAG"); fi
           case "$OPERATION" in
-            schema-*) python scripts/release/apply_additive_migrations.py "${COMMON[@]}" --target-revision 20260710_0020 ;;
+            schema-*) python scripts/release/apply_additive_migrations.py "${COMMON[@]}" --target-revision 20260710_0021 ;;
             identities-*) python scripts/release/backfill_identities.py "${COMMON[@]}" ;;
             commercial-*) python scripts/release/backfill_commercial_facts.py "${COMMON[@]}" ;;
             generation-*) python scripts/release/backfill_generation_facts.py "${COMMON[@]}" ;;

@@ -13,6 +13,7 @@ _RUNTIME_COMPATIBLE_SCHEMA_REVISIONS = frozenset(
     {
         _MINIMUM_SCHEMA_REVISION,
         "20260710_0020",
+        "20260710_0021",
     }
 )
 _REQUIRED_TABLES = frozenset(
@@ -168,7 +169,7 @@ async def validate_runtime_schema(db: AsyncSession) -> None:
             f"{', '.join(revisions) or 'none'}"
         )
     required_tables = _REQUIRED_TABLES
-    if revisions == ["20260710_0020"]:
+    if revisions in (["20260710_0020"], ["20260710_0021"]):
         required_tables = required_tables | _REQUIRED_0020_TABLES
     missing_tables = sorted(required_tables - tables)
     if missing_tables:

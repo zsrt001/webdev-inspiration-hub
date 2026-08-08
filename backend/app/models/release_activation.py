@@ -18,8 +18,14 @@ class ReleaseActivation(Base):
         CheckConstraint("environment IN ('preview', 'production')", name="ck_release_activation_environment"),
         CheckConstraint(
             "kind IN ('SAFE_BASELINE_INSTALL', 'PREVIEW_IDENTITY', 'PREVIEW_COMMERCIAL', "
-            "'COMMERCIAL_7A', 'CONTRACT_7B')",
+            "'COMMERCIAL_7A', 'GOOGLE_AUTH_ONLY', 'CONTRACT_7B')",
             name="ck_release_activation_kind",
+        ),
+        CheckConstraint(
+            "((environment = 'preview' AND kind IN ('PREVIEW_IDENTITY', 'PREVIEW_COMMERCIAL')) OR "
+            "(environment = 'production' AND kind IN "
+            "('SAFE_BASELINE_INSTALL', 'COMMERCIAL_7A', 'GOOGLE_AUTH_ONLY', 'CONTRACT_7B')))",
+            name="ck_release_activation_environment_kind",
         ),
         CheckConstraint(
             "(api_deployment_id IS NULL AND api_deployment_url IS NULL) OR "

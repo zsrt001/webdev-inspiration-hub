@@ -1,5 +1,5 @@
 -- Run once through the exact Production Supabase SQL Editor or Management API
--- before migration 20260710_0020. This addendum creates only the observation
+-- before migration 20260710_0021. This addendum creates only the observation
 -- roles and their password-rotation function. It never reads or rotates an
 -- existing Production credential.
 
@@ -43,7 +43,7 @@ BEGIN
     END IF;
     SELECT version_num INTO STRICT current_revision
     FROM public.alembic_version;
-    IF current_revision NOT IN ('20260712_0014', '20260710_0020') THEN
+    IF current_revision NOT IN ('20260712_0014', '20260710_0020', '20260710_0021') THEN
         RAISE EXCEPTION
           'unsupported VowPic Production revision for observation roles: %',
           current_revision;

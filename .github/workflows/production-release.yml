@@ -279,7 +279,7 @@ jobs:
           python scripts/release/build_runtime_bundle_id.py \
             --release-role "$RELEASE_ROLE" \
             --source-sha "$SOURCE_SHA" \
-            --schema 20260710_0020 \
+            --schema 20260710_0021 \
             --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
             --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
             --migration 20260710_0014=backend/alembic/versions/20260710_0014_web_identity_sessions.py \
@@ -289,6 +289,7 @@ jobs:
             --migration 20260710_0018=backend/alembic/versions/20260710_0018_subscription_facts.py \
             --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
             --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
+            --migration 20260710_0021=backend/alembic/versions/20260710_0021_google_auth_only_activation.py \
             --runtime-contract backend/contracts/runtime-contracts.json \
             --provider-contract release/provider-capabilities.json \
             --catalog-contract release/catalog/catalog-2026-07-10.json \
@@ -463,7 +464,7 @@ jobs:
               "staged_target_deployment_id": os.environ["STAGED_TARGET_ID"],
               "worker_image_digest": None,
               "worker_deployment_id": None,
-              "schema_revision": "20260710_0020",
+              "schema_revision": "20260710_0021",
               "api_compatibility_version": "vowpic-api.v1",
               "backend_execution_version": "vowpic-backend-executor.v1",
               "backend_executor_digest": "sha256:" + hashlib.sha256(
@@ -610,7 +611,7 @@ jobs:
             --output "$EVIDENCE_DIR/migration-window-replay.json"
           cp "$EVIDENCE_DIR/safe-baseline-bridge.json" "$EVIDENCE_DIR/additive-migrations.json"
           python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase MANIFEST_SEALED --phase SCHEMA_0020 \
+            --kind COMMERCIAL_7A --expected-phase MANIFEST_SEALED --phase SCHEMA_0021 \
             --source-sha "$SOURCE_SHA" \
             --migration-parent-run-id "${{ needs.reserve-stage-seal.outputs.migration_parent_run_id }}" \
             --migration-report "$EVIDENCE_DIR/additive-migrations.json" \
@@ -784,7 +785,7 @@ jobs:
           test -s artifacts/migration/generation/report.json
           test -s artifacts/migration/media/report.json
           python scripts/release/register_bundle.py advance \
-            --kind COMMERCIAL_7A --expected-phase SCHEMA_0020 --phase DATA_SWITCHED \
+            --kind COMMERCIAL_7A --expected-phase SCHEMA_0021 --phase DATA_SWITCHED \
             --source-sha "$SOURCE_SHA" \
             --migration-parent-run-id "${{ needs.reserve-stage-seal.outputs.migration_parent_run_id }}" \
             --identity-report artifacts/migration/identities/report.json \
@@ -817,7 +818,7 @@ jobs:
             --expected-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
             --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
             --expected-source-sha "$SOURCE_SHA" \
-            --expected-schema 20260710_0020 \
+            --expected-schema 20260710_0021 \
             --expected-release-role COMMERCIAL_7A \
             --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
             --output "$RUNNER_TEMP/backend-acceptance-ready.json"
@@ -1172,7 +1173,7 @@ jobs:
           python scripts/release/collect_runtime_report.py \
             --base-url "$PRODUCTION_BASE_URL" --expected-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
             --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
-            --expected-source-sha "$SOURCE_SHA" --expected-schema 20260710_0020 \
+            --expected-source-sha "$SOURCE_SHA" --expected-schema 20260710_0021 \
             --expected-release-role COMMERCIAL_7A \
             --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
             --output "$RUNNER_TEMP/formal-target.json"
@@ -1408,7 +1409,7 @@ jobs:
             --expected-deployment-id "$RELEASE_API_DEPLOYMENT_ID" \
             --expected-runtime-bundle-id "$RELEASE_RUNTIME_BUNDLE_ID" \
             --expected-source-sha "$SOURCE_SHA" \
-            --expected-schema 20260710_0020 \
+            --expected-schema 20260710_0021 \
             --expected-release-role COMMERCIAL_7A \
             --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
             --output "$RUNNER_TEMP/backend-observation-start.json"

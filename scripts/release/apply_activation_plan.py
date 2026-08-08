@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply one audited COMMERCIAL_7A capability cohort or emergency-OFF phase."""
+"""Apply one audited production capability cohort or emergency-OFF phase."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ CAPABILITIES = (
     "partner_invite",
 )
 PHASES = ("google-auth-only", "staged-user-cohort", "formal-cohort", "emergency-off")
+ACTIVATION_KINDS = ("COMMERCIAL_7A", "GOOGLE_AUTH_ONLY")
+GOOGLE_AUTH_ONLY_PHASES = frozenset({"google-auth-only", "emergency-off"})
 SHA64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -111,10 +113,13 @@ def _activation(
     deployment_id: str | None,
     source_sha: str | None,
     approval: str,
+    kind: str = "COMMERCIAL_7A",
     for_update: bool = True,
 ) -> dict[str, Any]:
-    filters = ["environment = 'production'", "kind = 'COMMERCIAL_7A'"]
-    values: list[object] = []
+    if kind not in ACTIVATION_KINDS:
+        raise ValueError("activation plan kind is invalid")
+    filters = ["environment = 'production'", "kind = %s"]
+    values: list[object] = [kind]
     if deployment_id:
         filters.append("api_deployment_id = %s")
         values.append(deployment_id)
@@ -129,7 +134,7 @@ def _activation(
     )
     rows = [dict(row) for row in cursor.fetchall()]
     if len(rows) != 1:
-        raise ValueError("exactly one COMMERCIAL_7A activation is required")
+        raise ValueError(f"exactly one {kind} activation is required")
     activation = rows[0]
     if str(activation.get("approval") or "") != approval:
         raise ValueError("activation plan approval does not match the release")
@@ -227,16 +232,18 @@ def apply_phase(
     phase: str,
     plan: dict[str, Any],
     approval: str,
+    kind: str = "COMMERCIAL_7A",
     deployment_id: str | None,
     source_sha: str | None,
     binding_report: dict[str, Any] | None,
     cohort_user_id: UUID | None = None,
     cohort_user_ids: tuple[UUID, ...] | None = None,
 ) -> dict[str, Any]:
+    validate_plan(plan)
+    if kind == "GOOGLE_AUTH_ONLY" and phase not in GOOGLE_AUTH_ONLY_PHASES:
+        raise ValueError("GOOGLE_AUTH_ONLY permits only Google auth acceptance or emergency OFF")
     import psycopg2
     from psycopg2.extras import Json, RealDictCursor
-
-    validate_plan(plan)
     with psycopg2.connect(_database_url(database_url)) as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -248,6 +255,7 @@ def apply_phase(
                 deployment_id=deployment_id,
                 source_sha=source_sha,
                 approval=approval,
+                kind=kind,
             )
             if phase != "emergency-off" and activation.get("phase") not in {
                 "ACCEPTANCE_READY",
@@ -354,7 +362,7 @@ def apply_phase(
                     """,
                     (
                         str(uuid4()), current["id"], capability,
-                        f"release:{approval}", f"COMMERCIAL_7A {phase}",
+                        f"release:{approval}", f"{kind} {phase}",
                         current["state"], desired["state"], old_hash, new_hash,
                         desired["deployment_id"], desired["runtime_bundle_id"],
                         desired["target_manifest_sha256"],
@@ -530,9 +538,11 @@ def _write_create_once(path: Path, report: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", required=True, choices=PHASES)
+    parser.add_argument("--kind", choices=ACTIVATION_KINDS, default="COMMERCIAL_7A")
     parser.add_argument("--activation-plan", default="release/activation-plan.json")
     parser.add_argument("--manifest")
     parser.add_argument("--deployment-id")
+    parser.add_argument("--source-sha")
     parser.add_argument("--binding-report")
     parser.add_argument("--canonical-users-report")
     parser.add_argument(
@@ -550,12 +560,15 @@ def main() -> int:
         approval = os.environ.get(args.approval_id_env, "").strip()
         if not approval or len(approval) > 160:
             raise ValueError("activation plan approval is required")
-        source_sha = None
+        source_sha = str(args.source_sha or "").strip() or None
         deployment_id = args.deployment_id
         manifest = None
         if args.manifest:
             manifest = _load_object(args.manifest)
-            source_sha = str(manifest.get("source_sha") or "")
+            manifest_source_sha = str(manifest.get("source_sha") or "")
+            if source_sha and source_sha != manifest_source_sha:
+                raise ValueError("activation plan source SHA conflicts with the manifest")
+            source_sha = manifest_source_sha
             if (
                 manifest.get("schema") != "vowpic.bundle-manifest.v1"
                 or manifest.get("release_role") != "COMMERCIAL_7A"
@@ -564,10 +577,19 @@ def main() -> int:
                 raise ValueError("activation plan manifest binding is invalid")
         elif args.release_resolution_report:
             resolution = _load_object(args.release_resolution_report)
-            source_sha = str(resolution.get("source_sha") or "")
+            resolution_source_sha = str(resolution.get("source_sha") or "")
+            if source_sha and source_sha != resolution_source_sha:
+                raise ValueError("activation plan source SHA conflicts with the resolution")
+            source_sha = resolution_source_sha
             deployment_id = str(resolution.get("api_deployment_id") or "")
+        elif args.kind == "GOOGLE_AUTH_ONLY":
+            if not source_sha or not deployment_id:
+                raise ValueError("GOOGLE_AUTH_ONLY requires exact source and deployment coordinates")
         elif args.phase != "emergency-off":
             raise ValueError("activation plan manifest is required")
+
+        if args.kind == "GOOGLE_AUTH_ONLY" and args.phase not in GOOGLE_AUTH_ONLY_PHASES:
+            raise ValueError("GOOGLE_AUTH_ONLY permits only Google auth acceptance or emergency OFF")
 
         binding = None
         cohort_user_ids: tuple[UUID, ...] = ()
@@ -597,6 +619,7 @@ def main() -> int:
                     deployment_id=deployment_id,
                     source_sha=source_sha,
                     approval=approval,
+                    kind=args.kind,
                     for_update=False,
                 )
         if manifest is not None and (
@@ -627,6 +650,7 @@ def main() -> int:
             phase=args.phase,
             plan=plan,
             approval=approval,
+            kind=args.kind,
             deployment_id=deployment_id,
             source_sha=source_sha,
             binding_report=binding,

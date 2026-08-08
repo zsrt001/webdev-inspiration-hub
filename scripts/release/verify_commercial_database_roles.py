@@ -23,7 +23,7 @@ DEFAULT_MIGRATION = (
     / "versions"
     / "20260710_0020_partner_consent.py"
 )
-EXPECTED_SCHEMA_REVISION = "20260710_0020"
+EXPECTED_SCHEMA_REVISION = "20260710_0021"
 RUNTIME_GROUP = "vowpic_runtime"
 RUNTIME_LOGIN = "vowpic_app_runtime"
 CONTROL_WRITER_GROUP = "vowpic_control_writer"

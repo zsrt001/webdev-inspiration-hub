@@ -201,7 +201,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
         self.assertEqual(contract["contract_version"], "preview-protected-runtime.v5")
         self.assertEqual(contract["release_role"], "PREVIEW_IDENTITY")
-        self.assertEqual(contract["schema_revision"], "20260710_0020")
+        self.assertEqual(contract["schema_revision"], "20260710_0021")
         self.assertEqual(
             contract["enabled_capabilities"],
             ["google_auth", "authenticated_upload"],
@@ -1471,8 +1471,9 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
             "configure_preview_identity_flag.py",
             "RUN_PREVIEW_E2E: '1'",
             "cleanup_preview_identity_smoke.py",
-            "--schema 20260710_0020",
+            "--schema 20260710_0021",
             "20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py",
+            "20260710_0021=backend/alembic/versions/20260710_0021_google_auth_only_activation.py",
             "PREVIEW_SECOND_GOOGLE_STORAGE_STATE_B64",
             "PREVIEW_PRIVATE_BLOB_READ_WRITE_TOKEN",
             "--profile stage5_foundation",

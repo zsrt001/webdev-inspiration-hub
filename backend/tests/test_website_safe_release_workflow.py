@@ -65,20 +65,20 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
             "partner_invite",
         ):
             self.assertIn(f'"{capability}"', self.source)
-        self.assertIn('"20260712_0014", "20260710_0020"', self.source)
-        self.assertIn('revisions != [("20260710_0020",)]', self.source)
+        self.assertIn('"20260712_0014", "20260710_0020", "20260710_0021"', self.source)
+        self.assertIn('revisions != [("20260710_0021",)]', self.source)
         self.assertIn('row[1] != "OFF"', self.source)
         self.assertIn("Object.values(capabilities).some(Boolean)", self.source)
 
     def test_schema_transition_is_exact_minimum_privilege_and_forward_only(self) -> None:
         self.assertEqual(
-            self.source.count("python -m alembic -c alembic.ini upgrade 20260710_0020"),
+            self.source.count("python -m alembic -c alembic.ini upgrade 20260710_0021"),
             1,
         )
-        self.assertIn('if [[ "$SCHEMA_BEFORE" = "20260712_0014" ]]', self.source)
+        self.assertIn('if [[ "$SCHEMA_BEFORE" != "20260710_0021" ]]', self.source)
         self.assertIn("production_database_login_proof.py", self.source)
         self.assertIn('--expected-schema "$SCHEMA_BEFORE"', self.source)
-        self.assertIn("--expected-schema 20260710_0020", self.source)
+        self.assertIn("--expected-schema 20260710_0021", self.source)
         self.assertIn("lock_timeout=5s", self.source)
         self.assertIn("statement_timeout=1800s", self.source)
         self.assertIn("rollback baseline readiness is not green after schema transition", self.source)

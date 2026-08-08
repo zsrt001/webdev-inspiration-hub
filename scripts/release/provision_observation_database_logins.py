@@ -42,7 +42,7 @@ from provision_production_database_logins import (  # noqa: E402
 )
 
 
-OBSERVATION_SCHEMA = "20260710_0020"
+OBSERVATION_SCHEMA = "20260710_0021"
 _GITHUB_ENVIRONMENT = re.compile(r"[A-Za-z0-9_.-]+")
 _GITHUB_SECRET = re.compile(r"[A-Z][A-Z0-9_]+")
 
