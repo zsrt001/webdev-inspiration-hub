@@ -104,6 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --prefix frontend --ignore-scripts
+          npm --prefix frontend run playwright:install
           printf '%s' "$PRODUCTION_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/google-subjects.json"
           printf '%s' "$PRODUCTION_GOOGLE_STORAGE_STATE_BASE64" | base64 --decode > "$RUNNER_TEMP/google-state.json"
           printf '%s' "$PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64" | base64 --decode > "$RUNNER_TEMP/google-partner-state.json"
