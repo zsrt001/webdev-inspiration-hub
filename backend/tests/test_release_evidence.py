@@ -115,13 +115,27 @@ class WorkflowFalseGreenTest(unittest.TestCase):
 
         def assert_context_wide_google_boundary(source: str) -> None:
             self.assertIn("test.use({ serviceWorkers: 'block' })", source)
-            self.assertIn("context.waitForEvent('request'", source)
             self.assertIn("context.route('https://accounts.google.com/**'", source)
+            self.assertIn("const googleDocument = new Promise<string>", source)
+            self.assertIn("resolveGoogleDocument(outgoing.url())", source)
             self.assertIn("outgoing.resourceType() === 'document'", source)
             self.assertIn("url.pathname === '/o/oauth2/v2/auth'", source)
             self.assertIn("oauthDocumentAborted = true", source)
             self.assertIn("expect(googleResponses).toEqual([])", source)
             self.assertNotIn("const googleRequest = page.waitForRequest", source)
+            self.assertNotIn("const googleRequest = context.waitForEvent", source)
+            route_start = source.index(
+                "context.route('https://accounts.google.com/**'"
+            )
+            abort_complete = source.index(
+                "await route.abort('blockedbyclient')", route_start
+            )
+            abort_proof = source.index("oauthDocumentAborted = true", route_start)
+            document_resolved = source.index(
+                "resolveGoogleDocument(outgoing.url())", route_start
+            )
+            self.assertLess(abort_complete, abort_proof)
+            self.assertLess(abort_proof, document_resolved)
             self.assertNotIn("page.route('https://accounts.google.com/**'", source)
 
         assert_context_wide_google_boundary(readiness)
@@ -131,13 +145,18 @@ class WorkflowFalseGreenTest(unittest.TestCase):
                 "page.route('https://accounts.google.com/**'",
                 1,
             ),
-            "page_scoped_listener": readiness.replace(
-                "const googleRequest = context.waitForEvent('request'",
-                "const googleRequest = page.waitForRequest",
+            "detached_request_observer": readiness.replace(
+                "const googleDocument = new Promise<string>",
+                "const googleDocument = context.waitForEvent",
                 1,
             ),
             "service_worker_escape": readiness.replace(
                 "test.use({ serviceWorkers: 'block' })", "", 1
+            ),
+            "resolve_before_abort": readiness.replace(
+                "await route.abort('blockedbyclient');\n      oauthDocumentAborted = true;",
+                "oauthDocumentAborted = true;\n      await route.abort('blockedbyclient');",
+                1,
             ),
         }.items():
             with self.subTest(mutation=label), self.assertRaises(AssertionError):
