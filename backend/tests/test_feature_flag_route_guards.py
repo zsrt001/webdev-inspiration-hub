@@ -229,7 +229,7 @@ class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
             access_token="x" * 16,
             intent_token="i" * 32,
         )
-        request = SimpleNamespace(cookies={})
+        request = SimpleNamespace(cookies={}, headers={}, state=SimpleNamespace())
         response = SimpleNamespace()
         database = AsyncMock()
         disabled = SimpleNamespace(allowed=False, reason="global_off")

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.error_response import get_request_id
 from app.core.feature_flags import Capability, FeatureFlagState
 from app.core.security_headers import require_request_origin
 from app.core.supabase_auth import SupabaseAuthError, SupabaseUserClaims, verify_supabase_token
@@ -37,6 +39,7 @@ from app.routers.auth._shared import OAUTH_INTENT_DEVICE_LIMITER, OAUTH_INTENT_I
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _capability_error(reason: str) -> HTTPException:
@@ -164,6 +167,7 @@ async def exchange_supabase_session(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    request_id = get_request_id(request)
     await require_request_origin(request, db)
     initial_decision = await resolve_request_capability(db, Capability.GOOGLE_AUTH)
     if (
@@ -183,6 +187,7 @@ async def exchange_supabase_session(
     try:
         claims = await verify_supabase_token(payload.access_token)
     except SupabaseAuthError as exc:
+        logger.warning("google_session_exchange stage=broker_verification_failed request_id=%s", request_id)
         raise HTTPException(status_code=401, detail={"code": "supabase_session_invalid"}) from exc
 
     identity_hash = compute_subject_hmac(
@@ -191,13 +196,22 @@ async def exchange_supabase_session(
         claims.subject,
     )
     identity, user = await _locked_identity_user(db, claims)
-    decision = await require_request_capability(
-        request,
-        db,
-        Capability.GOOGLE_AUTH,
-        verified_user_id=user.id if user is not None else None,
-        verified_identity_hash=identity_hash,
-    )
+    try:
+        decision = await require_request_capability(
+            request,
+            db,
+            Capability.GOOGLE_AUTH,
+            verified_user_id=user.id if user is not None else None,
+            verified_identity_hash=identity_hash,
+        )
+    except HTTPException as exc:
+        reason = exc.detail.get("reason") if isinstance(exc.detail, dict) else None
+        logger.warning(
+            "google_session_exchange stage=capability_denied request_id=%s reason=%s",
+            request_id,
+            str(reason or "unknown"),
+        )
+        raise
 
     binding = None
     if decision.state is FeatureFlagState.ACCEPTANCE_COHORT:
@@ -209,6 +223,10 @@ async def exchange_supabase_session(
             deployment_id=settings.deployment_id,
         )
         if binding is None:
+            logger.warning(
+                "google_session_exchange stage=authorization_unavailable request_id=%s",
+                request_id,
+            )
             raise HTTPException(status_code=503, detail={"code": "acceptance_identity_binding_required"})
 
     current = datetime.now(timezone.utc)
@@ -232,4 +250,9 @@ async def exchange_supabase_session(
     await db.commit()
     await db.refresh(user)
     clear_oauth_browser_cookie(response)
+    logger.info(
+        "google_session_exchange stage=completed request_id=%s acceptance=%s",
+        request_id,
+        binding is not None,
+    )
     return user

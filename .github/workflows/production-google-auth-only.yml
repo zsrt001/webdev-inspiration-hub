@@ -38,16 +38,26 @@ jobs:
         with:
           node-version: "24.17.0"
 
-      - name: Prove exact deployed main and reserve GOOGLE_AUTH_ONLY
+      - name: Prove exact deployed main and resolve both Google identities
         env:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
-          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+          PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_AUTH_CONFIG_TOKEN: ${{ secrets.SUPABASE_AUTH_CONFIG_TOKEN }}
         run: |
           set -euo pipefail
+          umask 077
+          preflight_cleanup() {
+            original_status=$?
+            trap - EXIT
+            rm -f "$RUNNER_TEMP/google-requested-subjects.json"
+            if [[ "$original_status" -ne 0 ]]; then
+              rm -f "$RUNNER_TEMP/google-resolved-subjects.json"
+            fi
+            exit "$original_status"
+          }
+          trap preflight_cleanup EXIT
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$GITHUB_REF" = "refs/heads/main"
           test "$GITHUB_SHA" = "$SOURCE_SHA"
@@ -76,37 +86,42 @@ jobs:
             --project-ref-env SUPABASE_PROJECT_REF \
             --token-env SUPABASE_AUTH_CONFIG_TOKEN \
             --output "$RUNNER_TEMP/google-formal-callback.json"
-          python scripts/release/manage_google_auth_only_activation.py reserve \
-            --source-sha "$SOURCE_SHA" --base-url "$PRODUCTION_BASE_URL" \
-            --runtime-report "$RUNNER_TEMP/google-runtime.json" \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$RUNNER_TEMP/google-activation-reserved.json"
-          node <<'NODE'
-          const fs = require('fs');
-          const report = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/google-activation-reserved.json', 'utf8'));
-          if (!report.passed || report.phase !== 'ACCEPTANCE_READY') throw new Error('GOOGLE_AUTH_ONLY was not reserved');
-          fs.appendFileSync(process.env.GITHUB_ENV, `GOOGLE_DEPLOYMENT_ID=${report.deployment_id}\nGOOGLE_RUNTIME_BUNDLE_ID=${report.runtime_bundle_id}\nGOOGLE_MANIFEST_SHA256=${report.manifest_sha256}\n`);
-          NODE
+          printf '%s' "$PRODUCTION_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/google-requested-subjects.json"
+          python scripts/release/resolve_google_acceptance_subjects.py \
+            --subjects-file "$RUNNER_TEMP/google-requested-subjects.json" \
+            --project-ref-env SUPABASE_PROJECT_REF \
+            --token-env SUPABASE_AUTH_CONFIG_TOKEN \
+            --resolved-output "$RUNNER_TEMP/google-resolved-subjects.json" \
+            --report-output "$RUNNER_TEMP/google-subject-resolution.json"
+          rm -f "$RUNNER_TEMP/google-requested-subjects.json"
 
       - name: Wait for two interactive Google sessions inside the single-capability boundary
         env:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
         run: |
           set -euo pipefail
-          printf '%s' "$PRODUCTION_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/google-subjects.json"
-          chmod 600 "$RUNNER_TEMP/google-subjects.json"
-
+          umask 077
+          GOOGLE_DEPLOYMENT_ID=""
+          GOOGLE_RUNTIME_BUNDLE_ID=""
+          GOOGLE_MANIFEST_SHA256=""
+          activation_reserved=0
           cleanup() {
             original_status=$?
             trap - EXIT
             set +e
+            if [[ "$activation_reserved" -ne 1 ]]; then
+              rm -f "$RUNNER_TEMP/google-resolved-subjects.json"
+              exit "$original_status"
+            fi
+            if [[ -z "$GOOGLE_DEPLOYMENT_ID" && -f "$RUNNER_TEMP/google-activation-reserved.json" ]]; then
+              GOOGLE_DEPLOYMENT_ID="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["deployment_id"])' "$RUNNER_TEMP/google-activation-reserved.json")"
+              export GOOGLE_DEPLOYMENT_ID
+            fi
             python scripts/release/apply_activation_plan.py \
               --kind GOOGLE_AUTH_ONLY --phase emergency-off \
               --activation-plan release/activation-plan.json \
@@ -227,14 +242,47 @@ jobs:
                 --output "$RUNNER_TEMP/google-activation-cleaned.json"
               complete_status=$?
             fi
-            rm -f "$RUNNER_TEMP/google-subjects.json"
+            rm -f "$RUNNER_TEMP/google-resolved-subjects.json"
             if [[ "$original_status" -ne 0 ]]; then exit "$original_status"; fi
             if [[ "$off_status" -ne 0 || "$session_status" -ne 0 || "$binding_status" -ne 0 || "$verify_status" -ne 0 || "$complete_status" -ne 0 ]]; then exit 1; fi
           }
           trap cleanup EXIT
 
+          if python scripts/release/manage_google_auth_only_activation.py reserve \
+              --source-sha "$SOURCE_SHA" --base-url "$PRODUCTION_BASE_URL" \
+              --runtime-report "$RUNNER_TEMP/google-runtime.json" \
+              --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+              --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+              --output "$RUNNER_TEMP/google-activation-reserved.json"; then
+            activation_reserved=1
+          else
+            exit 1
+          fi
+          readarray -t activation_coordinates < <(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(
+              Path(os.environ["RUNNER_TEMP"], "google-activation-reserved.json").read_text(encoding="utf-8")
+          )
+          if not report.get("passed") or report.get("phase") != "ACCEPTANCE_READY":
+              raise SystemExit("GOOGLE_AUTH_ONLY was not reserved")
+          for key in ("deployment_id", "runtime_bundle_id", "manifest_sha256"):
+              value = str(report.get(key) or "").strip()
+              if not value or "\n" in value or "\r" in value:
+                  raise SystemExit("GOOGLE_AUTH_ONLY reservation coordinates are invalid")
+              print(value)
+          PY
+          )
+          [[ "${#activation_coordinates[@]}" -eq 3 ]]
+          GOOGLE_DEPLOYMENT_ID="${activation_coordinates[0]}"
+          GOOGLE_RUNTIME_BUNDLE_ID="${activation_coordinates[1]}"
+          GOOGLE_MANIFEST_SHA256="${activation_coordinates[2]}"
+          export GOOGLE_DEPLOYMENT_ID GOOGLE_RUNTIME_BUNDLE_ID GOOGLE_MANIFEST_SHA256
+
           python scripts/release/provision_acceptance_identity.py \
-            --subjects-file "$RUNNER_TEMP/google-subjects.json" \
+            --subjects-file "$RUNNER_TEMP/google-resolved-subjects.json" \
             --environment production --deployment-id "$GOOGLE_DEPLOYMENT_ID" \
             --ttl-seconds 1800 --actor "github-actions:$GITHUB_RUN_ID" \
             --reason "GOOGLE_AUTH_ONLY production acceptance" \
@@ -281,6 +329,7 @@ jobs:
             ${{ runner.temp }}/google-runtime.json
             ${{ runner.temp }}/google-activation-reserved.json
             ${{ runner.temp }}/google-formal-callback.json
+            ${{ runner.temp }}/google-subject-resolution.json
             ${{ runner.temp }}/google-identity-bindings.json
             ${{ runner.temp }}/google-auth-cohort.json
             ${{ runner.temp }}/google-interactive-acceptance.json

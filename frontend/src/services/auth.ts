@@ -68,7 +68,9 @@ async function authRequest(method: 'GET' | 'POST', path: string, data?: any) {
 function responseMessage(response: UniNamespace.RequestSuccessCallbackResult, fallback: string): string {
     const payload: any = response.data || {};
     const detail = payload.detail && typeof payload.detail === 'object' ? payload.detail : payload;
-    return String(detail.message || payload.message || fallback);
+    const message = String(detail.message || payload.message || fallback);
+    const requestId = String(detail.request_id || payload.request_id || '').trim();
+    return requestId ? `${message} (Reference: ${requestId})` : message;
 }
 
 function readIntentState(): OAuthIntentState {

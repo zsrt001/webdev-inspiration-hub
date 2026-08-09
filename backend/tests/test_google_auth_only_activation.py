@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import json
@@ -9,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import yaml
@@ -140,6 +141,35 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "inputs.operator_ready == true",
             workflow["jobs"]["google-auth-only"]["if"],
         )
+        upload = next(
+            step
+            for step in workflow["jobs"]["google-auth-only"]["steps"]
+            if str(step.get("uses") or "").startswith("actions/upload-artifact@")
+        )
+        uploaded_paths = str(upload["with"]["path"])
+        self.assertNotIn("google-requested-subjects.json", uploaded_paths)
+        self.assertNotIn("google-resolved-subjects.json", uploaded_paths)
+        self.assertIn("google-subject-resolution.json", uploaded_paths)
+        self.assertLess(
+            source.index("trap preflight_cleanup EXIT"),
+            source.index('base64 --decode > "$RUNNER_TEMP/google-requested-subjects.json"'),
+        )
+        self.assertLess(
+            source.index("umask 077"),
+            source.index('base64 --decode > "$RUNNER_TEMP/google-requested-subjects.json"'),
+        )
+        self.assertLess(
+            source.index("resolve_google_acceptance_subjects.py"),
+            source.index("manage_google_auth_only_activation.py reserve"),
+        )
+        self.assertLess(
+            source.index("trap cleanup EXIT"),
+            source.index("manage_google_auth_only_activation.py reserve"),
+        )
+        self.assertLess(
+            source.index('activation_reserved=0'),
+            source.index("trap cleanup EXIT"),
+        )
         for required in (
             "--kind GOOGLE_AUTH_ONLY",
             "--phase google-auth-only",
@@ -152,6 +182,11 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             '"active_acceptance_sessions": active_sessions',
             "google-only-final-state.json",
             "manage_google_auth_only_activation.py complete",
+            "resolve_google_acceptance_subjects.py",
+            "google-subject-resolution.json",
+            '--subjects-file "$RUNNER_TEMP/google-resolved-subjects.json"',
+            "--project-ref-env SUPABASE_PROJECT_REF",
+            "--token-env SUPABASE_AUTH_CONFIG_TOKEN",
         ):
             self.assertIn(required, source)
         for forbidden in (
@@ -170,6 +205,95 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "vercel promote",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_google_subject_resolution_accepts_current_supabase_or_provider_subjects(self) -> None:
+        module = _path_module(
+            "resolve_google_acceptance_subjects",
+            ROOT / "scripts/release/resolve_google_acceptance_subjects.py",
+        )
+        resolver_source = (
+            ROOT / "scripts/release/resolve_google_acceptance_subjects.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("FROM auth.identities", resolver_source)
+        self.assertIn("provider = 'google'", resolver_source)
+        self.assertIn("/database/query/read-only", resolver_source)
+        self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", resolver_source)
+        self.assertNotIn('"requested": requested', resolver_source)
+        self.assertNotIn('"resolved": resolved', resolver_source)
+        first = "11111111-1111-1111-1111-111111111111"
+        second = "22222222-2222-2222-2222-222222222222"
+        rows = [
+            {
+                "provider": "google",
+                "provider_id": "google-native-a",
+                "identity_sub": "google-native-a",
+                "user_id": first,
+            },
+            {
+                "provider": "google",
+                "provider_id": "google-native-b",
+                "identity_sub": "google-native-b",
+                "user_id": second,
+            },
+        ]
+        resolved, modes = module.resolve_requested_subjects(
+            [first, "google-native-b"], rows
+        )
+        self.assertEqual(
+            resolved,
+            [
+                {"provider": "google", "subject": first},
+                {"provider": "google", "subject": second},
+            ],
+        )
+        self.assertEqual(modes, {"supabase_user_id": 1, "google_provider_subject": 1})
+        requested_path = ROOT / ".test-google-subjects.json"
+        try:
+            requested_path.write_text(
+                json.dumps([first.upper(), "google-native-b"]), encoding="utf-8"
+            )
+            self.assertEqual(module.load_requested_subjects(requested_path)[0], first)
+        finally:
+            requested_path.unlink(missing_ok=True)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            module.resolve_requested_subjects(["missing", "google-native-b"], rows)
+        with self.assertRaisesRegex(ValueError, "two distinct"):
+            module.resolve_requested_subjects([first, "google-native-a"], rows)
+
+        response = MagicMock(status_code=201)
+        response.json.return_value = rows
+        client = MagicMock()
+        client.post.return_value = response
+        queried = module.query_google_identities(
+            project_ref="a" * 20,
+            token="protected-management-token",
+            requested=[first, "google-native-b"],
+            client=client,
+        )
+        self.assertEqual(queried, rows)
+        call = client.post.call_args
+        self.assertTrue(call.args[0].endswith("/database/query/read-only"))
+        self.assertEqual(call.kwargs["json"]["parameters"], [first, "google-native-b"])
+        self.assertIn("$1", call.kwargs["json"]["query"])
+        self.assertNotIn(first, call.kwargs["json"]["query"])
+
+    def test_auth_exchange_logs_stage_without_identity_or_token(self) -> None:
+        source = (ROOT / "backend/app/routers/auth/google.py").read_text(encoding="utf-8")
+        self.assertIn("google_session_exchange stage=capability_denied", source)
+        self.assertIn("google_session_exchange stage=authorization_unavailable", source)
+        self.assertIn("google_session_exchange stage=completed", source)
+        tree = ast.parse(source)
+        logger_calls = [
+            ast.get_source_segment(source, node) or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "logger"
+        ]
+        self.assertTrue(logger_calls)
+        self.assertTrue(all("identity_hash" not in call for call in logger_calls))
+        self.assertTrue(all("payload.access_token" not in call for call in logger_calls))
 
     def test_google_acceptance_session_cleanup_requires_zero_unrevoked(self) -> None:
         module = _path_module(
