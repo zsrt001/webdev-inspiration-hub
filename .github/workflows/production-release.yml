@@ -855,7 +855,6 @@ jobs:
           PRODUCTION_GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_STORAGE_STATE_BASE64 }}
           PRODUCTION_GOOGLE_PARTNER_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_EMAIL }}
           PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64 }}
-          PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
@@ -887,8 +886,13 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --expires-in-seconds 7200 --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$RUNNER_TEMP/auth-origin-add.json"
-          printf '%s' "$PRODUCTION_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/production-google-subjects.json"
-          chmod 600 "$RUNNER_TEMP/production-google-subjects.json"
+          python scripts/release/resolve_google_acceptance_subjects.py \
+            --primary-email-env PRODUCTION_GOOGLE_EMAIL \
+            --partner-email-env PRODUCTION_GOOGLE_PARTNER_EMAIL \
+            --project-ref-env SUPABASE_PROJECT_REF \
+            --token-env SUPABASE_AUTH_CONFIG_TOKEN \
+            --resolved-output "$RUNNER_TEMP/production-google-subjects.json" \
+            --report-output "$RUNNER_TEMP/production-google-subject-resolution.json"
           python scripts/release/provision_acceptance_identity.py \
             --subjects-file "$RUNNER_TEMP/production-google-subjects.json" \
             --environment production --deployment-id "$RELEASE_STAGED_TARGET_DEPLOYMENT_ID" \
@@ -898,6 +902,7 @@ jobs:
             --hmac-key-env ACCEPTANCE_IDENTITY_HMAC_KEY \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$RUNNER_TEMP/identity-bindings.json"
+          rm -f "$RUNNER_TEMP/production-google-subjects.json"
           python scripts/release/apply_activation_plan.py \
             --phase google-auth-only --activation-plan release/activation-plan.json \
             --manifest "$RUNNER_TEMP/release-manifest.json" \

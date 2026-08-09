@@ -60,6 +60,23 @@ def load_requested_subjects(path: Path) -> list[str]:
     return subjects
 
 
+def load_protected_emails(primary: str, partner: str) -> list[str]:
+    emails: list[str] = []
+    for value in (primary, partner):
+        clean = str(value or "").strip().lower()
+        if (
+            not clean
+            or len(clean) > 320
+            or clean.count("@") != 1
+            or any(character.isspace() or ord(character) < 32 for character in clean)
+        ):
+            raise ValueError("two valid protected Google account emails are required")
+        emails.append(clean)
+    if len(set(emails)) != 2:
+        raise ValueError("protected Google account emails must be distinct")
+    return emails
+
+
 def resolve_requested_subjects(
     requested: list[str],
     identity_rows: list[dict[str, Any]],
@@ -99,32 +116,85 @@ def resolve_requested_subjects(
     return resolved, modes
 
 
+def resolve_protected_emails(
+    emails: list[str],
+    identity_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], dict[str, int]]:
+    matches_by_email: dict[str, set[str]] = {email: set() for email in emails}
+    for row in identity_rows:
+        if str(row.get("provider") or "").strip().lower() != "google":
+            continue
+        try:
+            user_id = str(UUID(str(row.get("user_id") or "").strip()))
+        except ValueError as exc:
+            raise ValueError("Supabase Google identity has an invalid user ID") from exc
+        if not bool(row.get("email_verified")):
+            continue
+        row_emails = {
+            str(row.get("auth_email") or "").strip().lower(),
+            str(row.get("identity_email") or "").strip().lower(),
+        }
+        for email in emails:
+            if email in row_emails:
+                matches_by_email[email].add(user_id)
+    if any(len(matches_by_email[email]) != 1 for email in emails):
+        raise ValueError("each protected Google account must resolve to one verified Supabase user")
+    subjects = [next(iter(matches_by_email[email])) for email in emails]
+    if len(set(subjects)) != 2:
+        raise ValueError("protected Google accounts must resolve to two distinct Supabase users")
+    return (
+        [{"provider": "google", "subject": subject} for subject in subjects],
+        {"verified_google_email": 2},
+    )
+
+
 def query_google_identities(
     *,
     project_ref: str,
     token: str,
-    requested: list[str],
+    requested: list[str] | None = None,
+    emails: list[str] | None = None,
     client: httpx.Client,
 ) -> list[dict[str, Any]]:
     clean_ref = str(project_ref or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9]{10,40}", clean_ref):
         raise ValueError("Supabase project ref is invalid")
-    query = """
-        SELECT provider, provider_id, user_id::text AS user_id,
-               identity_data->>'sub' AS identity_sub
-        FROM auth.identities
-        WHERE provider = 'google'
-          AND (
-            provider_id IN ($1, $2)
-            OR user_id::text IN ($1, $2)
-            OR identity_data->>'sub' IN ($1, $2)
-          )
-        LIMIT 5
-    """
+    if (requested is None) == (emails is None):
+        raise ValueError("exactly one protected Google selector type is required")
+    if requested is not None:
+        parameters = requested
+        query = """
+            SELECT provider, provider_id, user_id::text AS user_id,
+                   identity_data->>'sub' AS identity_sub
+            FROM auth.identities
+            WHERE provider = 'google'
+              AND (
+                provider_id IN ($1, $2)
+                OR user_id::text IN ($1, $2)
+                OR identity_data->>'sub' IN ($1, $2)
+              )
+            LIMIT 5
+        """
+    else:
+        parameters = emails or []
+        query = """
+            SELECT identity.provider, identity.user_id::text AS user_id,
+                   auth_user.email AS auth_email,
+                   identity.identity_data->>'email' AS identity_email,
+                   (auth_user.email_confirmed_at IS NOT NULL) AS email_verified
+            FROM auth.identities AS identity
+            JOIN auth.users AS auth_user ON auth_user.id = identity.user_id
+            WHERE identity.provider = 'google'
+              AND (
+                lower(auth_user.email) IN ($1, $2)
+                OR lower(identity.identity_data->>'email') IN ($1, $2)
+              )
+            LIMIT 5
+        """
     response = client.post(
         f"{MANAGEMENT_API}/v1/projects/{clean_ref}/database/query/read-only",
         headers=_headers(token),
-        json={"query": query, "parameters": requested},
+        json={"query": query, "parameters": parameters},
     )
     if response.status_code != 201:
         raise RuntimeError(
@@ -156,22 +226,40 @@ def _write_create_once(path: Path, payload: Any, *, private: bool = False) -> No
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--subjects-file", required=True)
+    parser.add_argument("--subjects-file")
+    parser.add_argument("--primary-email-env")
+    parser.add_argument("--partner-email-env")
     parser.add_argument("--project-ref-env", default="SUPABASE_PROJECT_REF")
     parser.add_argument("--token-env", default="SUPABASE_AUTH_CONFIG_TOKEN")
     parser.add_argument("--resolved-output", required=True)
     parser.add_argument("--report-output", required=True)
     args = parser.parse_args()
     try:
-        requested = load_requested_subjects(Path(args.subjects_file))
+        use_subjects = bool(args.subjects_file)
+        use_emails = bool(args.primary_email_env and args.partner_email_env)
+        if use_subjects == use_emails:
+            raise ValueError("choose either a protected subjects file or two protected email env names")
+        requested = load_requested_subjects(Path(args.subjects_file)) if use_subjects else None
+        emails = (
+            load_protected_emails(
+                os.environ.get(args.primary_email_env, ""),
+                os.environ.get(args.partner_email_env, ""),
+            )
+            if use_emails
+            else None
+        )
         with httpx.Client(timeout=30.0, follow_redirects=False) as client:
             rows = query_google_identities(
                 project_ref=os.environ.get(args.project_ref_env, ""),
                 token=os.environ.get(args.token_env, ""),
                 requested=requested,
+                emails=emails,
                 client=client,
             )
-        resolved, modes = resolve_requested_subjects(requested, rows)
+        if emails is not None:
+            resolved, modes = resolve_protected_emails(emails, rows)
+        else:
+            resolved, modes = resolve_requested_subjects(requested or [], rows)
         _write_create_once(Path(args.resolved_output), resolved, private=True)
         report = {
             "schema": "vowpic.google-subject-resolution.v1",
