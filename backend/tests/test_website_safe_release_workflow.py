@@ -117,10 +117,16 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
         )
 
     def test_injects_the_same_protected_acceptance_identity_key_into_both_targets(self) -> None:
-        self.assertIn(
-            "ACCEPTANCE_IDENTITY_HMAC_KEY: "
+        steps = self.document["jobs"]["website-safe-release"]["steps"]
+        deploy_step = next(
+            step
+            for step in steps
+            if step.get("name")
+            == "Build once and deploy unaliased bridge and website candidates"
+        )
+        self.assertEqual(
+            deploy_step["env"]["ACCEPTANCE_IDENTITY_HMAC_KEY"],
             "${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}",
-            self.source,
         )
         self.assertEqual(
             self.source.count(
