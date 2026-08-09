@@ -7,6 +7,10 @@ on:
         description: Exact deployed main commit authorized for Google-only acceptance
         required: true
         type: string
+      operator_ready:
+        description: Operator is at the browser and will complete both Google accounts within 30 minutes
+        required: true
+        type: boolean
 
 permissions:
   contents: read
@@ -18,7 +22,7 @@ concurrency:
 jobs:
   google-auth-only:
     name: Allow only Google login, prove it, and restore every capability OFF
-    if: github.ref == 'refs/heads/main' && github.sha == inputs.required_source_sha
+    if: github.ref == 'refs/heads/main' && github.sha == inputs.required_source_sha && inputs.operator_ready == true
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: production

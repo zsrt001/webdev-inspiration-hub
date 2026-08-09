@@ -131,8 +131,15 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         source = path.read_text(encoding="utf-8")
         workflow = yaml.safe_load(source)
         self.assertIn("workflow_dispatch", workflow[True])
+        dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
+        self.assertEqual(dispatch_inputs["operator_ready"]["type"], "boolean")
+        self.assertTrue(dispatch_inputs["operator_ready"]["required"])
         self.assertEqual(workflow["concurrency"]["group"], "vowpic-production-release")
         self.assertEqual(workflow["jobs"]["google-auth-only"]["environment"], "production")
+        self.assertIn(
+            "inputs.operator_ready == true",
+            workflow["jobs"]["google-auth-only"]["if"],
+        )
         for required in (
             "--kind GOOGLE_AUTH_ONLY",
             "--phase google-auth-only",
