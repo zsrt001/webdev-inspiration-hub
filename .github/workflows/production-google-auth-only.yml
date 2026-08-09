@@ -265,7 +265,7 @@ jobs:
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --hmac-key-env ACCEPTANCE_IDENTITY_HMAC_KEY \
-            --timeout-seconds 1200 --poll-seconds 2 \
+            --timeout-seconds 1800 --poll-seconds 2 \
             --output "$RUNNER_TEMP/google-interactive-acceptance.json"
 
       - name: Upload sanitized Google-only evidence
