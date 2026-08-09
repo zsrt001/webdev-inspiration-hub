@@ -162,6 +162,14 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             source.index("resolve_google_acceptance_subjects.py"),
             source.index("manage_google_auth_only_activation.py reserve"),
         )
+        self.assertLess(
+            source.index("trap cleanup EXIT"),
+            source.index("manage_google_auth_only_activation.py reserve"),
+        )
+        self.assertLess(
+            source.index('activation_reserved=0'),
+            source.index("trap cleanup EXIT"),
+        )
         for required in (
             "--kind GOOGLE_AUTH_ONLY",
             "--phase google-auth-only",
