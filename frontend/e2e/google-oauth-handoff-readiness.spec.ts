@@ -58,14 +58,10 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
   });
   expect(sessionResponse.status()).toBe(401);
 
-  const googleRequest = context.waitForEvent('request', { predicate: (outgoing) => {
-    const url = new URL(outgoing.url());
-    return (
-      outgoing.resourceType() === 'document'
-      && url.origin === 'https://accounts.google.com'
-      && url.pathname === '/o/oauth2/v2/auth'
-    );
-  } });
+  let resolveGoogleDocument!: (url: string) => void;
+  const googleDocument = new Promise<string>((resolve) => {
+    resolveGoogleDocument = resolve;
+  });
   let oauthDocumentAborted = false;
   const googleResponses: string[] = [];
   context.on('response', (response) => {
@@ -77,10 +73,14 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
     const outgoing = route.request();
     const url = new URL(outgoing.url());
     if (
-      outgoing.resourceType() === 'document'
+      !oauthDocumentAborted
+      && outgoing.resourceType() === 'document'
       && url.pathname === '/o/oauth2/v2/auth'
     ) {
+      await route.abort('blockedbyclient');
       oauthDocumentAborted = true;
+      resolveGoogleDocument(outgoing.url());
+      return;
     }
     await route.abort('blockedbyclient');
   });
@@ -95,8 +95,8 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
   await expect(googleButton).toBeEnabled();
   await googleButton.click();
   const authorizeURL = new URL((await authorizeRequest).url());
-  const googleURL = new URL((await googleRequest).url());
-  await expect.poll(() => oauthDocumentAborted).toBe(true);
+  const googleURL = new URL(await googleDocument);
+  expect(oauthDocumentAborted).toBe(true);
   expect(googleResponses).toEqual([]);
 
   expect(authorizeURL.origin).toBe(supabaseOrigin);
