@@ -138,6 +138,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "--phase google-auth-only",
             "--phase emergency-off",
             "wait_for_google_auth_sessions.py",
+            "--hmac-key-env ACCEPTANCE_IDENTITY_HMAC_KEY",
             "cleanup_google_auth_sessions.py",
             "--timeout-seconds 1200",
             "google-interactive-acceptance.json",
@@ -149,6 +150,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         for forbidden in (
             "PRODUCTION_GOOGLE_STORAGE_STATE_BASE64",
             "PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64",
+            "ACCEPTANCE_EVIDENCE_SIGNING_KEY",
             "npm --prefix frontend run test:e2e",
             "images/generations",
             "orders/create",
