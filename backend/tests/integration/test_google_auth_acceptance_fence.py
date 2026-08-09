@@ -219,44 +219,83 @@ class GoogleAuthAcceptanceFenceIntegrationTest(unittest.TestCase):
 
     def _expire_activation_for_watchdog(self, *, deployment_id: str, source_sha: str) -> None:
         trigger_names = ("trg_release_activation_regression",)
+        time_shift = timedelta(minutes=31)
         with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
             before_states = self._trigger_states(cursor, trigger_names)
             self.assertEqual(before_states, {trigger_names[0]: "O"})
             cursor.execute(
                 """
-                SELECT md5((to_jsonb(activation) - 'reservation_expires_at')::text),
-                       reservation_expires_at
+                SELECT id,
+                       md5((to_jsonb(activation) - 'created_at' - 'reservation_expires_at')::text),
+                       created_at,
+                       reservation_expires_at,
+                       reservation_expires_at - created_at
                 FROM release_activations AS activation
                 WHERE api_deployment_id=%s AND source_sha=%s
                 """,
                 (deployment_id, source_sha),
             )
-            before_fingerprint, before_expiry = cursor.fetchone()
+            before_row = cursor.fetchone()
+            self.assertIsNotNone(before_row)
+            activation_id, before_fingerprint, before_created_at, before_expiry, before_ttl = before_row
+            self.assertGreater(before_ttl, timedelta(0))
+            self.assertLessEqual(before_ttl, timedelta(hours=2))
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       md5(COALESCE(jsonb_agg(to_jsonb(activation) ORDER BY id), '[]'::jsonb)::text)
+                FROM release_activations AS activation
+                WHERE id <> %s
+                """,
+                (activation_id,),
+            )
+            before_other_rows = cursor.fetchone()
             self._set_trigger(cursor, trigger_names[0], enabled=False)
             cursor.execute(
                 """
                 UPDATE release_activations
-                SET reservation_expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
-                WHERE api_deployment_id=%s AND source_sha=%s
+                SET created_at=created_at - INTERVAL '31 minutes',
+                    reservation_expires_at=reservation_expires_at - INTERVAL '31 minutes'
+                WHERE id=%s AND api_deployment_id=%s AND source_sha=%s
+                  AND created_at=%s
                   AND reservation_expires_at=%s
                 """,
-                (deployment_id, source_sha, before_expiry),
+                (activation_id, deployment_id, source_sha, before_created_at, before_expiry),
             )
             self.assertEqual(cursor.rowcount, 1)
             self._set_trigger(cursor, trigger_names[0], enabled=True)
             self.assertEqual(self._trigger_states(cursor, trigger_names), before_states)
             cursor.execute(
                 """
-                SELECT md5((to_jsonb(activation) - 'reservation_expires_at')::text),
-                       reservation_expires_at < CURRENT_TIMESTAMP
+                SELECT md5((to_jsonb(activation) - 'created_at' - 'reservation_expires_at')::text),
+                       created_at,
+                       reservation_expires_at,
+                       reservation_expires_at - created_at,
+                       reservation_expires_at <= CURRENT_TIMESTAMP
                 FROM release_activations AS activation
-                WHERE api_deployment_id=%s AND source_sha=%s
+                WHERE id=%s AND api_deployment_id=%s AND source_sha=%s
                 """,
-                (deployment_id, source_sha),
+                (activation_id, deployment_id, source_sha),
             )
-            after_fingerprint, is_expired = cursor.fetchone()
+            after_fingerprint, after_created_at, after_expiry, after_ttl, is_expired = cursor.fetchone()
             self.assertEqual(after_fingerprint, before_fingerprint)
+            self.assertEqual(before_created_at - after_created_at, time_shift)
+            self.assertEqual(before_expiry - after_expiry, time_shift)
+            self.assertEqual(before_created_at - after_created_at, before_expiry - after_expiry)
+            self.assertEqual(after_ttl, before_ttl)
+            self.assertGreater(after_ttl, timedelta(0))
+            self.assertLessEqual(after_ttl, timedelta(hours=2))
             self.assertTrue(is_expired)
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       md5(COALESCE(jsonb_agg(to_jsonb(activation) ORDER BY id), '[]'::jsonb)::text)
+                FROM release_activations AS activation
+                WHERE id <> %s
+                """,
+                (activation_id,),
+            )
+            self.assertEqual(cursor.fetchone(), before_other_rows)
 
         with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
             self.assertEqual(self._trigger_states(cursor, trigger_names), before_states)
@@ -512,6 +551,8 @@ time.sleep(600)
             self.assertEqual(reservation["phase"], "ACCEPTANCE_READY")
             process.kill()
             process.wait(timeout=10)
+            if process.stderr is not None:
+                process.stderr.close()
             self.assertNotEqual(process.returncode, 0)
 
         consumed_binding = uuid4()
