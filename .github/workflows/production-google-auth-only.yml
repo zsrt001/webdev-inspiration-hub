@@ -6,7 +6,31 @@ on:
   workflow_dispatch:
     inputs:
       required_source_sha:
-        description: Exact deployed main commit authorized for Google-only acceptance
+        description: Exact main commit authorized for isolated Google-only deployment and acceptance
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful CI run ID for this exact source SHA
+        required: true
+        type: string
+      ci_run_attempt:
+        description: Successful CI run attempt for this exact source SHA
+        required: true
+        type: string
+      privacy_run_id:
+        description: Successful protected Google-auth privacy run ID
+        required: true
+        type: string
+      privacy_run_attempt:
+        description: Successful protected Google-auth privacy run attempt
+        required: true
+        type: string
+      preview_readiness_run_id:
+        description: Successful source-free Preview Google readiness run ID
+        required: true
+        type: string
+      preview_readiness_run_attempt:
+        description: Successful source-free Preview Google readiness run attempt
         required: true
         type: string
       operator_ready:
@@ -16,15 +40,659 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: vowpic-production-release
   cancel-in-progress: false
 
 jobs:
+  authorize-google-deploy:
+    name: Verify exact Google-only gates and capture the formal baseline
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha == inputs.required_source_sha && inputs.operator_ready == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.required_source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-release-python
+
+      - name: Verify trusted main and every exact successful prerequisite
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.required_source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" --ref refs/heads/main \
+            --expected-sha "$SOURCE_SHA" --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/google-trusted-main.json"
+          python backend/scripts/verify_github_workflow_run.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "${{ inputs.ci_run_id }}" \
+            --run-attempt "${{ inputs.ci_run_attempt }}" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-path .github/workflows/ci.yml \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/google-ci-verification.json"
+          python backend/scripts/verify_github_workflow_run.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "${{ inputs.privacy_run_id }}" \
+            --run-attempt "${{ inputs.privacy_run_attempt }}" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-path .github/workflows/google-auth-protected-privacy.yml \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/google-privacy-verification.json"
+          python backend/scripts/verify_github_workflow_run.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "${{ inputs.preview_readiness_run_id }}" \
+            --run-attempt "${{ inputs.preview_readiness_run_attempt }}" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-path .github/workflows/integration.yml \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/google-preview-readiness-verification.json"
+
+      - name: Download the exact protected privacy receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: google-auth-privacy-${{ inputs.required_source_sha }}-${{ inputs.privacy_run_id }}-${{ inputs.privacy_run_attempt }}
+          path: ${{ runner.temp }}/google-auth-privacy
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.privacy_run_id }}
+
+      - name: Download the exact source-free Preview readiness receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vowpic-preview-google-readiness-${{ inputs.required_source_sha }}-${{ inputs.preview_readiness_run_id }}-${{ inputs.preview_readiness_run_attempt }}
+          path: ${{ runner.temp }}/google-preview-readiness
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.preview_readiness_run_id }}
+
+      - name: Download the exact Preview cleanup proof
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vowpic-preview-identity-${{ inputs.preview_readiness_run_id }}-${{ inputs.preview_readiness_run_attempt }}-cleanup
+          path: ${{ runner.temp }}/google-preview-cleanup
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.preview_readiness_run_id }}
+
+      - name: Validate source-free privacy, readiness, and restored Preview state
+        env:
+          SOURCE_SHA: ${{ inputs.required_source_sha }}
+          PREVIEW_RUN_ID: ${{ inputs.preview_readiness_run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ inputs.preview_readiness_run_attempt }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          privacy_paths = list((temp / "google-auth-privacy").rglob("google-auth-privacy.json"))
+          readiness_paths = list((temp / "google-preview-readiness").rglob("readiness-receipt.json"))
+          cleanup_paths = list((temp / "google-preview-cleanup").rglob("cleanup-report.json"))
+          if len(privacy_paths) != 1 or len(readiness_paths) != 1 or len(cleanup_paths) != 1:
+              raise SystemExit("exact Google-only prerequisite receipts are missing or ambiguous")
+          privacy = json.loads(privacy_paths[0].read_text(encoding="utf-8"))
+          privacy_keys = {
+              "schema", "passed", "source_sha", "protected_values_zero_hits",
+              "synthetic_canaries_detected", "sanitized_outputs_zero_hits",
+              "scanned_file_count", "scan_scope_manifest_sha256", "scan_corpus_sha256",
+          }
+          if (
+              set(privacy) != privacy_keys
+              or privacy.get("schema") != "vowpic.google-auth-privacy-boundary.v1"
+              or privacy.get("passed") is not True
+              or privacy.get("source_sha") != os.environ["SOURCE_SHA"]
+              or privacy.get("protected_values_zero_hits") is not True
+              or privacy.get("synthetic_canaries_detected") is not True
+              or privacy.get("sanitized_outputs_zero_hits") is not True
+              or type(privacy.get("scanned_file_count")) is not int
+              or privacy["scanned_file_count"] < 1
+              or not re.fullmatch(r"[0-9a-f]{64}", str(privacy.get("scan_scope_manifest_sha256") or ""))
+              or not re.fullmatch(r"[0-9a-f]{64}", str(privacy.get("scan_corpus_sha256") or ""))
+          ):
+              raise SystemExit("protected Google-auth privacy receipt is invalid")
+
+          readiness = json.loads(readiness_paths[0].read_text(encoding="utf-8"))
+          expected_capabilities = {
+              "google_auth": True,
+              "authenticated_upload": False,
+              "generation": False,
+              "credit_pack_checkout": False,
+              "subscription_billing": False,
+              "private_download": False,
+              "partner_invite": False,
+          }
+          readiness_keys = {
+              "schema", "passed", "source_sha", "workflow_run_id", "workflow_attempt",
+              "runtime_bundle_id", "deployment_id", "callback_path",
+              "supabase_authorize_observed", "google_request_intercepted_before_network",
+              "app_session_fail_closed", "capabilities", "real_google_identity_proof",
+          }
+          if (
+              set(readiness) != readiness_keys
+              or readiness.get("schema") != "vowpic.preview-google-handoff-readiness.v1"
+              or readiness.get("passed") is not True
+              or readiness.get("source_sha") != os.environ["SOURCE_SHA"]
+              or readiness.get("workflow_run_id") != os.environ["PREVIEW_RUN_ID"]
+              or readiness.get("workflow_attempt") != int(os.environ["PREVIEW_RUN_ATTEMPT"])
+              or not re.fullmatch(r"rtb_[0-9a-f]{64}", str(readiness.get("runtime_bundle_id") or ""))
+              or not re.fullmatch(r"dpl_[A-Za-z0-9_-]{3,156}", str(readiness.get("deployment_id") or ""))
+              or readiness.get("callback_path") != "/pages/auth/callback"
+              or readiness.get("supabase_authorize_observed") is not True
+              or readiness.get("google_request_intercepted_before_network") is not True
+              or readiness.get("app_session_fail_closed") is not True
+              or readiness.get("capabilities") != expected_capabilities
+              or readiness.get("real_google_identity_proof") != "deferred_to_production_google_only"
+          ):
+              raise SystemExit("source-free Preview Google readiness receipt is invalid")
+
+          cleanup = json.loads(cleanup_paths[0].read_text(encoding="utf-8"))
+          if (
+              cleanup.get("state") != "CLEANED"
+              or cleanup.get("source_sha") != readiness["source_sha"]
+              or cleanup.get("runtime_bundle_id") != readiness["runtime_bundle_id"]
+              or cleanup.get("api_deployment_id") != readiness["deployment_id"]
+              or cleanup.get("origin_restored") is not True
+              or cleanup.get("bindings_revoked") != 0
+              or cleanup.get("sessions_revoked") != 0
+              or cleanup.get("refresh_tokens_revoked") != 0
+              or cleanup.get("consumed_users") != 0
+              or cleanup.get("storage_objects_remaining") != 0
+          ):
+              raise SystemExit("Preview Google readiness did not restore an exact zero state")
+          PY
+
+      - name: Capture exact formal runtime and all-OFF baseline before mutation
+        env:
+          SOURCE_SHA: ${{ inputs.required_source_sha }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import httpx
+          import psycopg2
+          from psycopg2.extras import RealDictCursor
+
+          expected = {
+              "google_auth", "authenticated_upload", "generation",
+              "credit_pack_checkout", "subscription_billing",
+              "private_download", "partner_invite",
+          }
+          base = os.environ["PRODUCTION_BASE_URL"].rstrip("/")
+          with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+              version_response = client.get(f"{base}/api/v1/version")
+              public_response = client.get(f"{base}/api/v1/ops/public_config")
+              intent_response = client.post(
+                  f"{base}/api/v1/auth/oauth-intents",
+                  headers={"Origin": base, "Content-Type": "application/json"},
+                  json={"next_path": "/dashboard"},
+              )
+          version_response.raise_for_status()
+          public_response.raise_for_status()
+          version = version_response.json()
+          capabilities = (public_response.json().get("capabilities") or {})
+          database_url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
+              "postgresql+asyncpg://", "postgresql://", 1
+          )
+          with psycopg2.connect(database_url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                  cursor.execute(
+                      """
+                      SELECT capability, state, deployment_id, runtime_bundle_id,
+                             worker_image_digest, release_activation_id,
+                             target_manifest_sha256, expires_at,
+                             cohort_user_ids, verified_identity_hashes
+                      FROM ops_feature_flags WHERE environment='production'
+                      ORDER BY capability
+                      """
+                  )
+                  flags = [dict(row) for row in cursor.fetchall()]
+          bound = (
+              "deployment_id", "runtime_bundle_id", "worker_image_digest",
+              "release_activation_id", "target_manifest_sha256", "expires_at",
+          )
+          def clean_off(row):
+              return (
+                  row["state"] == "OFF"
+                  and all(row[key] is None for key in bound)
+                  and not list(row["cohort_user_ids"] or [])
+                  and not list(row["verified_identity_hashes"] or [])
+              )
+          database_off = (
+              len(flags) == len(expected)
+              and {row["capability"] for row in flags} == expected
+              and all(clean_off(row) for row in flags)
+          )
+          required_version = {
+              "source_sha", "runtime_bundle_id", "deployment_id", "release_role",
+              "runtime_environment", "schema_revision",
+          }
+          if (
+              not required_version.issubset(version)
+              or not re.fullmatch(r"[0-9a-f]{40}", str(version.get("source_sha") or ""))
+              or not re.fullmatch(r"rtb_[0-9a-f]{64}", str(version.get("runtime_bundle_id") or ""))
+              or not re.fullmatch(r"dpl_[A-Za-z0-9_-]{3,156}", str(version.get("deployment_id") or ""))
+              or version.get("runtime_environment") != "production"
+              or version.get("schema_revision") != "20260710_0021"
+              or not database_off
+              or set(capabilities) != expected
+              or any(capabilities.values())
+              or intent_response.status_code != 503
+          ):
+              raise SystemExit("formal Production baseline is not exact and all OFF")
+          baseline = {
+              "schema": "vowpic.google-only-deploy-baseline.v1",
+              "passed": True,
+              "target_source_sha": os.environ["SOURCE_SHA"],
+              "baseline_source_sha": version["source_sha"],
+              "baseline_runtime_bundle_id": version["runtime_bundle_id"],
+              "baseline_deployment_id": version["deployment_id"],
+              "baseline_release_role": version["release_role"],
+              "baseline_schema_revision": version["schema_revision"],
+              "database_and_public_all_off": database_off and not any(capabilities.values()),
+              "oauth_intent_status": intent_response.status_code,
+          }
+          Path(os.environ["RUNNER_TEMP"], "google-deploy-baseline.json").write_text(
+              json.dumps(baseline, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Persist rollback baseline before any deploy or Production mutation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-google-deploy-${{ github.run_id }}-${{ github.run_attempt }}-baseline
+          path: ${{ runner.temp }}/google-deploy-baseline.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+  deploy-google-runtime:
+    name: Deploy exact runtime while every Production capability remains OFF
+    needs: authorize-google-deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: production
+    env:
+      SOURCE_SHA: ${{ inputs.required_source_sha }}
+      RELEASE_ROLE: COMMERCIAL_7A
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.required_source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-release-python
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.17.0"
+          cache: npm
+          cache-dependency-path: scripts/release-tools/package-lock.json
+
+      - name: Install the pinned Vercel and build tools
+        run: |
+          set -euo pipefail
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          test -x "$VERCEL_CLI"
+          test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
+
+      - name: Download the exact pre-mutation baseline
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: production-google-deploy-${{ github.run_id }}-${{ github.run_attempt }}-baseline
+          path: ${{ runner.temp }}/google-deploy-baseline
+
+      - name: Validate the complete immutable Production runtime before deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          RUNTIME_ENVIRONMENT: production
+          TASK_EXECUTION_MODE: backend
+          STORAGE_PROVIDER: vercel
+          GENERATION_ENGINE: evolink
+          LLM_PROVIDER: wenwen
+          PAYMENT_PROVIDER: creem
+          RATE_LIMIT_ENABLED: "true"
+          QA_REQUIRE_VISION: "true"
+          GATEKEEPER_ALLOW_WITHOUT_PILLOW: "false"
+          QA_ALLOW_WITHOUT_PILLOW: "false"
+          ALLOW_MEMORY_FALLBACK: "false"
+          DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.PRODUCTION_SECRET_KEY }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_BLOB_READ_WRITE_TOKEN }}
+          EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
+          EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
+          PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
+          WENWEN_VISION_API_KEY: ${{ secrets.PRODUCTION_WENWEN_VISION_API_KEY }}
+          WENWEN_API_BASE_URL: https://breakout.wenwen-ai.com/v1
+          CREEM_API_KEY: ${{ secrets.CREEM_API_KEY }}
+          CREEM_WEBHOOK_SECRET: ${{ secrets.CREEM_WEBHOOK_SECRET }}
+          SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.PRODUCTION_SUPABASE_ANON_KEY }}
+          SUPPORT_EMAIL: ${{ vars.PRODUCTION_SUPPORT_EMAIL }}
+          SUPPORT_URL: ${{ vars.PRODUCTION_SUPPORT_URL }}
+          SUPPORT_MONITORED: ${{ vars.PRODUCTION_SUPPORT_MONITORED }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          FRONTEND_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          WEBHOOK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          CORS_ALLOW_ORIGINS: ${{ vars.PRODUCTION_BASE_URL }}
+          EVOLINK_CALLBACK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          EVOLINK_IMAGE_QUALITY: "2K"
+          EVOLINK_IMAGE_SIZE: "3:4"
+          PRODUCTION_CANARY_MAX_COST_MINOR: ${{ vars.PRODUCTION_CANARY_MAX_COST_MINOR }}
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_vercel_runtime_secret.py \
+            --secret-name EVOLINK_API_KEY --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/google-vercel-runtime-secret.json"
+          python scripts/release/validate_production_runtime_environment.py \
+            --source-sha "$SOURCE_SHA" \
+            --vercel-runtime-secret-report "$RUNNER_TEMP/google-vercel-runtime-secret.json"
+
+      - name: Derive the immutable website-backend runtime bundle
+        run: |
+          set -euo pipefail
+          python scripts/release/build_runtime_bundle_id.py \
+            --release-role "$RELEASE_ROLE" --source-sha "$SOURCE_SHA" --schema 20260710_0021 \
+            --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
+            --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
+            --migration 20260710_0014=backend/alembic/versions/20260710_0014_web_identity_sessions.py \
+            --migration 20260710_0015=backend/alembic/versions/20260710_0015_private_media_assets.py \
+            --migration 20260710_0016=backend/alembic/versions/20260710_0016_commercial_ledger.py \
+            --migration 20260710_0017=backend/alembic/versions/20260710_0017_creem_payment_facts.py \
+            --migration 20260710_0018=backend/alembic/versions/20260710_0018_subscription_facts.py \
+            --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
+            --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
+            --migration 20260710_0021=backend/alembic/versions/20260710_0021_google_auth_only_activation.py \
+            --runtime-contract backend/contracts/runtime-contracts.json \
+            --provider-contract release/provider-capabilities.json \
+            --catalog-contract release/catalog/catalog-2026-07-10.json \
+            --flag-contract release/gates.json \
+            --activation-plan release/activation-plan.json \
+            --database-role-contract release/commercial-7a-database-role-contract.json \
+            --builder-contract-version commercial-7a.v1 \
+            --output "$RUNNER_TEMP/google-runtime-bundle-id.txt"
+          RUNTIME_BUNDLE_ID="$(tr -d '\r\n' < "$RUNNER_TEMP/google-runtime-bundle-id.txt")"
+          echo "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" >> "$GITHUB_ENV"
+
+      - name: Build, deploy, promote, and prove the all-OFF formal target
+        id: deployment
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.PRODUCTION_SECRET_KEY }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+          PRIVATE_BLOB_READ_WRITE_TOKEN: ${{ secrets.PRIVATE_BLOB_READ_WRITE_TOKEN }}
+          EVOLINK_API_BASE_URL: ${{ vars.EVOLINK_API_BASE_URL }}
+          EVOLINK_IMAGE_MODEL: ${{ vars.EVOLINK_IMAGE_MODEL }}
+          PROVIDER_GRANT_PROBE_SECRET: ${{ secrets.PROVIDER_GRANT_PROBE_SECRET }}
+          WENWEN_VISION_API_KEY: ${{ secrets.PRODUCTION_WENWEN_VISION_API_KEY }}
+          WENWEN_API_BASE_URL: https://breakout.wenwen-ai.com/v1
+          CREEM_API_KEY: ${{ secrets.CREEM_API_KEY }}
+          CREEM_WEBHOOK_SECRET: ${{ secrets.CREEM_WEBHOOK_SECRET }}
+          SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.PRODUCTION_SUPABASE_ANON_KEY }}
+          SUPPORT_EMAIL: ${{ vars.PRODUCTION_SUPPORT_EMAIL }}
+          SUPPORT_URL: ${{ vars.PRODUCTION_SUPPORT_URL }}
+          SUPPORT_MONITORED: ${{ vars.PRODUCTION_SUPPORT_MONITORED }}
+          CLEANUP_CRON_TOKEN: ${{ secrets.CLEANUP_CRON_TOKEN }}
+          FRONTEND_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          WEBHOOK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          CORS_ALLOW_ORIGINS: ${{ vars.PRODUCTION_BASE_URL }}
+          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          target_created=0
+          target_promoted=0
+          TARGET_DEPLOYMENT_ID=""
+          TARGET_DEPLOYMENT_URL=""
+          baseline="$RUNNER_TEMP/google-deploy-baseline/google-deploy-baseline.json"
+          test -f "$baseline"
+          mapfile -t baseline_coordinates < <(python - "$baseline" <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          if payload.get("passed") is not True:
+              raise SystemExit("rollback baseline is not accepted")
+          for key in (
+              "baseline_deployment_id", "baseline_runtime_bundle_id", "baseline_source_sha",
+              "baseline_schema_revision", "baseline_release_role",
+          ):
+              print(payload[key])
+          PY
+          )
+          [[ "${#baseline_coordinates[@]}" -eq 5 ]]
+          BASELINE_DEPLOYMENT_ID="${baseline_coordinates[0]}"
+          BASELINE_RUNTIME_BUNDLE_ID="${baseline_coordinates[1]}"
+          BASELINE_SOURCE_SHA="${baseline_coordinates[2]}"
+          BASELINE_SCHEMA_REVISION="${baseline_coordinates[3]}"
+          BASELINE_RELEASE_ROLE="${baseline_coordinates[4]}"
+
+          rollback_on_error() {
+            original_status=$?
+            trap - EXIT
+            set +e
+            if [[ "$original_status" -ne 0 && "$target_created" -eq 1 ]]; then
+              if [[ "$target_promoted" -eq 1 ]]; then
+                "$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN"
+                "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"
+              fi
+              "$VERCEL_CLI" remove "$TARGET_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN" || true
+            fi
+            exit "$original_status"
+          }
+          trap rollback_on_error EXIT
+
+          "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
+          test -d .vercel/output
+          API_BUILD_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
+          DEPLOY_ENV_ARGS=(
+            --env "RUNTIME_ENVIRONMENT=production"
+            --env "RELEASE_ROLE=COMMERCIAL_7A"
+            --env "SOURCE_SHA=$SOURCE_SHA"
+            --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA"
+            --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID"
+            --env "DATABASE_URL=$DATABASE_URL"
+            --env "CONTROL_PLANE_DATABASE_URL=$CONTROL_PLANE_DATABASE_URL"
+            --env "TASK_EXECUTION_MODE=backend"
+            --env "SECRET_KEY=$SECRET_KEY"
+            --env "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY"
+            --env "STORAGE_PROVIDER=vercel"
+            --env "PRIVATE_BLOB_READ_WRITE_TOKEN=$PRIVATE_BLOB_READ_WRITE_TOKEN"
+            --env "FRONTEND_BASE_URL=$FRONTEND_BASE_URL"
+            --env "WEBHOOK_BASE_URL=$WEBHOOK_BASE_URL"
+            --env "CORS_ALLOW_ORIGINS=$CORS_ALLOW_ORIGINS"
+            --env "GENERATION_ENGINE=evolink"
+            --env "EVOLINK_API_BASE_URL=$EVOLINK_API_BASE_URL"
+            --env "EVOLINK_IMAGE_MODEL=$EVOLINK_IMAGE_MODEL"
+            --env "EVOLINK_CALLBACK_BASE_URL=$PRODUCTION_BASE_URL"
+            --env "PROVIDER_GRANT_PROBE_SECRET=$PROVIDER_GRANT_PROBE_SECRET"
+            --env "EVOLINK_IMAGE_QUALITY=2K"
+            --env "EVOLINK_IMAGE_SIZE=3:4"
+            --env "LLM_PROVIDER=wenwen"
+            --env "WENWEN_VISION_API_KEY=$WENWEN_VISION_API_KEY"
+            --env "WENWEN_API_BASE_URL=$WENWEN_API_BASE_URL"
+            --env "PAYMENT_PROVIDER=creem"
+            --env "CREEM_API_KEY=$CREEM_API_KEY"
+            --env "CREEM_WEBHOOK_SECRET=$CREEM_WEBHOOK_SECRET"
+            --env "SUPABASE_URL=$SUPABASE_URL"
+            --env "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
+            --env "SUPPORT_EMAIL=$SUPPORT_EMAIL"
+            --env "SUPPORT_URL=$SUPPORT_URL"
+            --env "SUPPORT_MONITORED=$SUPPORT_MONITORED"
+            --env "RATE_LIMIT_ENABLED=true"
+            --env "QA_REQUIRE_VISION=true"
+            --env "GATEKEEPER_ALLOW_WITHOUT_PILLOW=false"
+            --env "QA_ALLOW_WITHOUT_PILLOW=false"
+            --env "ALLOW_MEMORY_FALLBACK=false"
+            --env "CLEANUP_CRON_TOKEN=$CLEANUP_CRON_TOKEN"
+            --env "CRON_SECRET=$CLEANUP_CRON_TOKEN"
+          )
+          DEPLOY_META_ARGS=(
+            --meta "vowpicSourceSha=$SOURCE_SHA"
+            --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID"
+            --meta "vowpicBuildSha256=$API_BUILD_SHA256"
+            --meta "vowpicReleaseRole=COMMERCIAL_7A"
+            --meta "vowpicRuntimeIdentityContract=vowpic-runtime-identity-v1"
+            --meta "vowpicWorkflowRunId=$GITHUB_RUN_ID"
+            --meta "vowpicWorkflowAttempt=$GITHUB_RUN_ATTEMPT"
+          )
+          TARGET_DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain "${DEPLOY_ENV_ARGS[@]}" "${DEPLOY_META_ARGS[@]}" --token="$VERCEL_TOKEN")"
+          "$VERCEL_CLI" inspect "$TARGET_DEPLOYMENT_URL" --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/google-target-inspect.txt"
+          TARGET_DEPLOYMENT_ID="$(python -c 'import re; p=open("'"$RUNNER_TEMP"'/google-target-inspect.txt", encoding="utf-8").read(); v=set(re.findall(r"\bdpl_[A-Za-z0-9_-]{3,156}\b", p)); assert len(v)==1; print(v.pop())')"
+          test "$TARGET_DEPLOYMENT_ID" != "$BASELINE_DEPLOYMENT_ID"
+          target_created=1
+          "$VERCEL_CLI" promote "$TARGET_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
+          target_promoted=1
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/api/v1/version" \
+                | TARGET_DEPLOYMENT_ID="$TARGET_DEPLOYMENT_ID" python -c 'import json,sys,os; p=json.load(sys.stdin); raise SystemExit(0 if p.get("deployment_id")==os.environ["TARGET_DEPLOYMENT_ID"] else 1)'; then
+              break
+            fi
+            sleep 2
+          done
+          export TARGET_DEPLOYMENT_ID TARGET_DEPLOYMENT_URL
+          python scripts/release/collect_runtime_report.py \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --expected-deployment-id "$TARGET_DEPLOYMENT_ID" \
+            --expected-runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-schema 20260710_0021 \
+            --expected-release-role COMMERCIAL_7A \
+            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --output "$RUNNER_TEMP/google-deployed-runtime.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import httpx
+          import psycopg2
+          from psycopg2.extras import RealDictCursor
+
+          expected = {
+              "google_auth", "authenticated_upload", "generation",
+              "credit_pack_checkout", "subscription_billing",
+              "private_download", "partner_invite",
+          }
+          url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
+              "postgresql+asyncpg://", "postgresql://", 1
+          )
+          with psycopg2.connect(url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                  cursor.execute(
+                      """
+                      SELECT capability, state, deployment_id, runtime_bundle_id,
+                             worker_image_digest, release_activation_id,
+                             target_manifest_sha256, expires_at,
+                             cohort_user_ids, verified_identity_hashes
+                      FROM ops_feature_flags WHERE environment='production'
+                      ORDER BY capability
+                      """
+                  )
+                  flags = [dict(row) for row in cursor.fetchall()]
+          bound = (
+              "deployment_id", "runtime_bundle_id", "worker_image_digest",
+              "release_activation_id", "target_manifest_sha256", "expires_at",
+          )
+          def clean_off(row):
+              return (
+                  row["state"] == "OFF"
+                  and all(row[key] is None for key in bound)
+                  and not list(row["cohort_user_ids"] or [])
+                  and not list(row["verified_identity_hashes"] or [])
+              )
+          database_off = (
+              len(flags) == len(expected)
+              and {row["capability"] for row in flags} == expected
+              and all(clean_off(row) for row in flags)
+          )
+          base = os.environ["PRODUCTION_BASE_URL"].rstrip("/")
+          with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+              public = client.get(f"{base}/api/v1/ops/public_config")
+              intent = client.post(
+                  f"{base}/api/v1/auth/oauth-intents",
+                  headers={"Origin": base, "Content-Type": "application/json"},
+                  json={"next_path": "/dashboard"},
+              )
+          public.raise_for_status()
+          capabilities = (public.json().get("capabilities") or {})
+          public_off = set(capabilities) == expected and not any(capabilities.values())
+          report = {
+              "schema": "vowpic.google-only-deployment.v1",
+              "passed": database_off and public_off and intent.status_code == 503,
+              "source_sha": os.environ["SOURCE_SHA"],
+              "runtime_bundle_id": os.environ["RUNTIME_BUNDLE_ID"],
+              "deployment_id": os.environ["TARGET_DEPLOYMENT_ID"],
+              "release_role": "COMMERCIAL_7A",
+              "schema_revision": "20260710_0021",
+              "database_all_off": database_off,
+              "public_all_off": public_off,
+              "oauth_intent_status_before_activation": intent.status_code,
+              "commercial_activation_created": False,
+              "commercial_production_accepted": False,
+          }
+          Path(os.environ["RUNNER_TEMP"], "google-deployment-receipt.json").write_text(
+              json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          if not report["passed"]:
+              raise SystemExit("deployed Google-only runtime is not exact and all OFF")
+          PY
+          {
+            echo "deployment_id=$TARGET_DEPLOYMENT_ID"
+            echo "runtime_bundle_id=$RUNTIME_BUNDLE_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Persist isolated all-OFF deployment evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-google-deploy-${{ github.run_id }}-${{ github.run_attempt }}-target
+          path: |
+            ${{ runner.temp }}/google-deployed-runtime.json
+            ${{ runner.temp }}/google-deployment-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
   google-auth-only:
     name: Allow only Google login, prove it, and restore every capability OFF
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha == inputs.required_source_sha && inputs.operator_ready == true
+    needs: deploy-google-runtime
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha == inputs.required_source_sha && inputs.operator_ready == true && needs.deploy-google-runtime.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: production
@@ -181,7 +849,8 @@ jobs:
                       """
                       SELECT capability, state, deployment_id, runtime_bundle_id,
                              worker_image_digest, release_activation_id,
-                             target_manifest_sha256, expires_at
+                             target_manifest_sha256, expires_at,
+                             cohort_user_ids, verified_identity_hashes
                       FROM ops_feature_flags WHERE environment='production'
                       ORDER BY capability
                       """
@@ -214,10 +883,17 @@ jobs:
               "deployment_id", "runtime_bundle_id", "worker_image_digest",
               "release_activation_id", "target_manifest_sha256", "expires_at",
           )
+          def clean_off(row):
+              return (
+                  row["state"] == "OFF"
+                  and all(row[key] is None for key in bound)
+                  and not list(row["cohort_user_ids"] or [])
+                  and not list(row["verified_identity_hashes"] or [])
+              )
           database_off = (
               len(rows) == len(expected)
               and {row["capability"] for row in rows} == expected
-              and all(row["state"] == "OFF" and all(row[key] is None for key in bound) for row in rows)
+              and all(clean_off(row) for row in rows)
           )
           base = os.environ["PRODUCTION_BASE_URL"].rstrip("/")
           with httpx.Client(timeout=30.0) as client:
@@ -703,6 +1379,350 @@ jobs:
             ${{ runner.temp }}/google-activation-cleaned.json
             ${{ runner.temp }}/google-terminal-state.json
             ${{ runner.temp }}/google-sensitive-canary.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  rollback-google-deploy:
+    name: Restore the captured baseline after any post-deploy failure
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' &&
+      (needs.deploy-google-runtime.result == 'failure' ||
+       needs.deploy-google-runtime.result == 'cancelled' ||
+       needs.google-auth-only.result == 'failure' ||
+       needs.google-auth-only.result == 'cancelled')
+    needs: [authorize-google-deploy, deploy-google-runtime, google-auth-only]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.required_source_sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-release-python
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.17.0"
+          cache: npm
+          cache-dependency-path: scripts/release-tools/package-lock.json
+
+      - name: Install pinned rollback tooling
+        run: |
+          set -euo pipefail
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          test -x "$VERCEL_CLI"
+          test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
+
+      - name: Download the exact pre-mutation baseline
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: production-google-deploy-${{ github.run_id }}-${{ github.run_attempt }}-baseline
+          path: ${{ runner.temp }}/google-deploy-baseline
+
+      - name: Disable, clean, roll back, remove run-owned targets, and prove zero state
+        env:
+          SOURCE_SHA: ${{ inputs.required_source_sha }}
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          set -euo pipefail
+          baseline="$RUNNER_TEMP/google-deploy-baseline/google-deploy-baseline.json"
+          test -f "$baseline"
+          mapfile -t baseline_coordinates < <(python - "$baseline" <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          if payload.get("passed") is not True:
+              raise SystemExit("rollback baseline is invalid")
+          for key in (
+              "baseline_deployment_id", "baseline_runtime_bundle_id", "baseline_source_sha",
+              "baseline_schema_revision", "baseline_release_role",
+          ):
+              print(payload[key])
+          PY
+          )
+          [[ "${#baseline_coordinates[@]}" -eq 5 ]]
+          BASELINE_DEPLOYMENT_ID="${baseline_coordinates[0]}"
+          BASELINE_RUNTIME_BUNDLE_ID="${baseline_coordinates[1]}"
+          BASELINE_SOURCE_SHA="${baseline_coordinates[2]}"
+          BASELINE_SCHEMA_REVISION="${baseline_coordinates[3]}"
+          BASELINE_RELEASE_ROLE="${baseline_coordinates[4]}"
+          export BASELINE_DEPLOYMENT_ID BASELINE_RUNTIME_BUNDLE_ID BASELINE_SOURCE_SHA
+          export BASELINE_SCHEMA_REVISION BASELINE_RELEASE_ROLE
+
+          curl --fail --silent --show-error --max-time 30 \
+            "$PRODUCTION_BASE_URL/api/v1/version" > "$RUNNER_TEMP/google-rollback-current-version.json"
+          CURRENT_DEPLOYMENT_ID="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/google-rollback-current-version.json"))["deployment_id"])')"
+          export CURRENT_DEPLOYMENT_ID
+
+          python - <<'PY'
+          import asyncio
+          import os
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, str(Path.cwd() / "backend"))
+          from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+          from app.core.database import normalize_database_url
+          from app.core.feature_flags import Capability
+          from app.services.feature_flag_service import emergency_disable
+
+          async def disable_all():
+              normalized, connect_args = normalize_database_url(os.environ["PRODUCTION_MIGRATION_DATABASE_URL"])
+              engine = create_async_engine(normalized, connect_args=connect_args)
+              session_factory = async_sessionmaker(engine, expire_on_commit=False)
+              try:
+                  async with session_factory() as db:
+                      async with db.begin():
+                          for capability in Capability:
+                              await emergency_disable(
+                                  db,
+                                  capability,
+                                  environment="production",
+                                  actor=f"github-actions:{os.environ['GITHUB_RUN_ID']}",
+                                  reason="Google-only deployment failure rollback",
+                              )
+              finally:
+                  await engine.dispose()
+
+          asyncio.run(disable_all())
+          PY
+
+          if [[ "$CURRENT_DEPLOYMENT_ID" != "$BASELINE_DEPLOYMENT_ID" ]]; then
+            active_count="$(python - <<'PY'
+          import os
+          import psycopg2
+          from psycopg2.extras import RealDictCursor
+          url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
+          with psycopg2.connect(url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                  cursor.execute(
+                      "SELECT COUNT(*)::integer AS count FROM release_activations "
+                      "WHERE environment='production' AND kind='GOOGLE_AUTH_ONLY' "
+                      "AND source_sha=%s AND api_deployment_id=%s AND phase<>'CLEANED'",
+                      (os.environ["SOURCE_SHA"], os.environ["CURRENT_DEPLOYMENT_ID"]),
+                  )
+                  print(int(cursor.fetchone()["count"]))
+          PY
+            )"
+            if [[ "$active_count" -gt 1 ]]; then
+              echo "ambiguous Google-only activation during rollback" >&2
+              exit 1
+            fi
+            if [[ "$active_count" -eq 1 ]]; then
+              python scripts/release/cleanup_google_auth_sessions.py \
+                --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+                --deployment-id "$CURRENT_DEPLOYMENT_ID" \
+                --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+                --output "$RUNNER_TEMP/google-rollback-session-cleanup.json"
+              python scripts/release/cleanup_acceptance_bindings.py \
+                --kind GOOGLE_AUTH_ONLY \
+                --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+                --deployment-id "$CURRENT_DEPLOYMENT_ID" \
+                --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+                --require-zero-unused \
+                --output "$RUNNER_TEMP/google-rollback-binding-cleanup.json"
+              python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          payload = {
+              "schema": "vowpic.google-auth-only-watchdog-evidence.v1",
+              "passed": True,
+              "source_sha": os.environ["SOURCE_SHA"],
+              "deployment_id": os.environ["CURRENT_DEPLOYMENT_ID"],
+              "sessions_zero": True,
+              "bindings_zero": True,
+          }
+          Path(os.environ["RUNNER_TEMP"], "google-rollback-completion.json").write_text(
+              json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+              python scripts/release/manage_google_auth_only_activation.py complete \
+                --source-sha "$SOURCE_SHA" --deployment-id "$CURRENT_DEPLOYMENT_ID" \
+                --completion-evidence "$RUNNER_TEMP/google-rollback-completion.json" \
+                --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+                --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+                --output "$RUNNER_TEMP/google-rollback-activation-cleaned.json"
+            fi
+            "$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN"
+            "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import httpx
+
+          response = httpx.get(
+              "https://api.vercel.com/v6/deployments",
+              params={
+                  "projectId": os.environ["VERCEL_PROJECT_ID"],
+                  "teamId": os.environ["VERCEL_ORG_ID"],
+                  "limit": "100",
+              },
+              headers={"Authorization": f"Bearer {os.environ['VERCEL_TOKEN']}"},
+              timeout=30.0,
+              follow_redirects=False,
+          )
+          response.raise_for_status()
+          deployments = response.json().get("deployments") or []
+          owned = sorted({
+              str(item.get("uid") or "")
+              for item in deployments
+              if isinstance(item, dict)
+              and isinstance(item.get("meta"), dict)
+              and str(item["meta"].get("vowpicWorkflowRunId") or "") == os.environ["GITHUB_RUN_ID"]
+              and str(item["meta"].get("vowpicWorkflowAttempt") or "") == os.environ["GITHUB_RUN_ATTEMPT"]
+              and str(item.get("uid") or "") != os.environ["BASELINE_DEPLOYMENT_ID"]
+          })
+          Path(os.environ["RUNNER_TEMP"], "google-run-owned-deployments.json").write_text(
+              json.dumps({"deployment_ids": owned}, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+          while IFS= read -r deployment_id; do
+            test -n "$deployment_id"
+            "$VERCEL_CLI" remove "$deployment_id" --yes --token="$VERCEL_TOKEN"
+          done < <(python -c 'import json,os; print("\n".join(json.load(open(os.environ["RUNNER_TEMP"]+"/google-run-owned-deployments.json"))["deployment_ids"]))')
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/api/v1/version" \
+                | BASELINE_DEPLOYMENT_ID="$BASELINE_DEPLOYMENT_ID" python -c 'import json,sys,os; p=json.load(sys.stdin); raise SystemExit(0 if p.get("deployment_id")==os.environ["BASELINE_DEPLOYMENT_ID"] else 1)'; then
+              break
+            fi
+            sleep 2
+          done
+          python scripts/release/collect_runtime_report.py \
+            --base-url "$PRODUCTION_BASE_URL" \
+            --expected-deployment-id "$BASELINE_DEPLOYMENT_ID" \
+            --expected-runtime-bundle-id "$BASELINE_RUNTIME_BUNDLE_ID" \
+            --expected-source-sha "$BASELINE_SOURCE_SHA" \
+            --expected-schema "$BASELINE_SCHEMA_REVISION" \
+            --expected-release-role "$BASELINE_RELEASE_ROLE" \
+            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --output "$RUNNER_TEMP/google-rollback-runtime.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import httpx
+          import psycopg2
+          from psycopg2.extras import RealDictCursor
+
+          expected = {
+              "google_auth", "authenticated_upload", "generation",
+              "credit_pack_checkout", "subscription_billing",
+              "private_download", "partner_invite",
+          }
+          url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
+          with psycopg2.connect(url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                  cursor.execute(
+                      """
+                      SELECT capability, state, deployment_id, runtime_bundle_id,
+                             worker_image_digest, release_activation_id,
+                             target_manifest_sha256, expires_at,
+                             cohort_user_ids, verified_identity_hashes
+                      FROM ops_feature_flags WHERE environment='production'
+                      ORDER BY capability
+                      """
+                  )
+                  flags = [dict(row) for row in cursor.fetchall()]
+                  cursor.execute(
+                      "SELECT COUNT(*)::integer AS count FROM release_activations "
+                      "WHERE environment='production' AND kind='GOOGLE_AUTH_ONLY' "
+                      "AND source_sha=%s AND phase<>'CLEANED'",
+                      (os.environ["SOURCE_SHA"],),
+                  )
+                  active_activations = int(cursor.fetchone()["count"])
+                  cursor.execute(
+                      "SELECT COUNT(*)::integer AS count FROM acceptance_identity_bindings b "
+                      "JOIN release_activations a ON a.api_deployment_id=b.deployment_id "
+                      "WHERE b.environment='production' AND a.kind='GOOGLE_AUTH_ONLY' "
+                      "AND a.source_sha=%s AND b.consumed_at IS NULL AND b.revoked_at IS NULL",
+                      (os.environ["SOURCE_SHA"],),
+                  )
+                  active_unused_bindings = int(cursor.fetchone()["count"])
+                  cursor.execute(
+                      "SELECT COUNT(*)::integer AS count FROM auth_sessions s "
+                      "JOIN acceptance_identity_bindings b ON b.id=s.acceptance_binding_id "
+                      "JOIN release_activations a ON a.api_deployment_id=b.deployment_id "
+                      "WHERE b.environment='production' AND a.kind='GOOGLE_AUTH_ONLY' "
+                      "AND a.source_sha=%s AND s.revoked_at IS NULL",
+                      (os.environ["SOURCE_SHA"],),
+                  )
+                  active_sessions = int(cursor.fetchone()["count"])
+          bound = (
+              "deployment_id", "runtime_bundle_id", "worker_image_digest",
+              "release_activation_id", "target_manifest_sha256", "expires_at",
+          )
+          def clean_off(row):
+              return (
+                  row["state"] == "OFF"
+                  and all(row[key] is None for key in bound)
+                  and not list(row["cohort_user_ids"] or [])
+                  and not list(row["verified_identity_hashes"] or [])
+              )
+          database_off = (
+              len(flags) == len(expected)
+              and {row["capability"] for row in flags} == expected
+              and all(clean_off(row) for row in flags)
+          )
+          base = os.environ["PRODUCTION_BASE_URL"].rstrip("/")
+          with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+              public = client.get(f"{base}/api/v1/ops/public_config")
+              intent = client.post(
+                  f"{base}/api/v1/auth/oauth-intents",
+                  headers={"Origin": base, "Content-Type": "application/json"},
+                  json={"next_path": "/dashboard"},
+              )
+          public.raise_for_status()
+          capabilities = public.json().get("capabilities") or {}
+          public_off = set(capabilities) == expected and not any(capabilities.values())
+          report = {
+              "schema": "vowpic.google-only-deploy-rollback.v1",
+              "passed": database_off and public_off and intent.status_code == 503
+                        and active_activations == 0 and active_unused_bindings == 0
+                        and active_sessions == 0,
+              "source_sha": os.environ["SOURCE_SHA"],
+              "baseline_deployment_id": os.environ["BASELINE_DEPLOYMENT_ID"],
+              "database_all_off": database_off,
+              "public_all_off": public_off,
+              "oauth_intent_status": intent.status_code,
+              "active_google_activations": active_activations,
+              "active_unused_bindings": active_unused_bindings,
+              "active_acceptance_sessions": active_sessions,
+          }
+          Path(os.environ["RUNNER_TEMP"], "google-deploy-rollback.json").write_text(
+              json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          if not report["passed"]:
+              raise SystemExit("Google-only rollback did not restore the exact zero state")
+          PY
+
+      - name: Persist rollback and terminal all-OFF evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-google-deploy-${{ github.run_id }}-${{ github.run_attempt }}-rollback
+          path: |
+            ${{ runner.temp }}/google-rollback-runtime.json
+            ${{ runner.temp }}/google-deploy-rollback.json
+            ${{ runner.temp }}/google-rollback-session-cleanup.json
+            ${{ runner.temp }}/google-rollback-binding-cleanup.json
+            ${{ runner.temp }}/google-rollback-activation-cleaned.json
           if-no-files-found: ignore
           retention-days: 30
 

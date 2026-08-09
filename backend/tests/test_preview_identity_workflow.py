@@ -36,6 +36,27 @@ def _load(name: str, relative_path: str):
 
 
 class PreviewIdentityWorkflowTest(unittest.TestCase):
+    def test_google_readiness_is_github_hosted_source_free_and_cleanup_bound(self) -> None:
+        workflow = (ROOT / ".github/workflows/integration.yml").read_text(encoding="utf-8")
+        self.assertIn('- "google_auth_readiness"', workflow)
+        readiness = workflow[
+            workflow.index("  google-readiness:\n") : workflow.index("  cleanup:\n")
+        ]
+        self.assertIn("if: inputs.acceptance_scope == 'google_auth_readiness'", readiness)
+        self.assertIn("runs-on: ubuntu-24.04", readiness)
+        self.assertNotIn("self-hosted", readiness)
+        self.assertNotIn("PREVIEW_GOOGLE_STORAGE_STATE", readiness)
+        self.assertNotIn("PREVIEW_SECOND_GOOGLE_STORAGE_STATE", readiness)
+        self.assertNotIn("PREVIEW_GOOGLE_EMAIL", readiness)
+        self.assertIn("Capability.GOOGLE_AUTH", readiness)
+        self.assertIn("Preview readiness requires an exact all-OFF baseline", readiness)
+        self.assertIn("verified_identity_hashes", readiness)
+        self.assertIn("identity_count\": 0", readiness)
+        self.assertIn("google-oauth-handoff-readiness.spec.ts", readiness)
+        self.assertIn("vowpic-preview-google-readiness-${{ github.sha }}", readiness)
+        cleanup = workflow[workflow.index("  cleanup:\n") : workflow.index("  commercial:\n")]
+        self.assertIn("needs: [register, smoke, google-readiness]", cleanup)
+
     def test_provider_case_validates_owner_without_role_switching(self) -> None:
         prepare = _load(
             "prepare_preview_provider_case_read_contract",
@@ -1884,7 +1905,7 @@ class PreviewIdentityWorkflowTest(unittest.TestCase):
         ]
         smoke = workflow[
             workflow.index("  smoke:\n") :
-            workflow.index("  cleanup:\n")
+            workflow.index("  google-readiness:\n")
         ]
         stage5 = workflow[workflow.index("  stage5:\n") :]
         self.assertIn("if: inputs.acceptance_scope == 'full'", smoke)

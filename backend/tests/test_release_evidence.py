@@ -108,6 +108,39 @@ class WorkflowFalseGreenTest(unittest.TestCase):
             ROOT / "scripts/release/cleanup_preview_identity_smoke.py"
         ).read_text(encoding="utf-8")
 
+    def test_google_handoff_readiness_never_automates_or_contacts_google_login(self) -> None:
+        readiness = (
+            ROOT / "frontend/e2e/google-oauth-handoff-readiness.spec.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn("RUN_GOOGLE_HANDOFF_E2E", self.playwright_config)
+        self.assertIn("googleHandoffRun", self.playwright_config)
+        self.assertIn("page.route('https://accounts.google.com/**'", readiness)
+        self.assertIn("route.abort('blockedbyclient')", readiness)
+        self.assertIn("/auth/v1/authorize", readiness)
+        self.assertIn("code_challenge", readiness)
+        self.assertIn("code_challenge_method", readiness)
+        self.assertIn("deferred_to_production_google_only", readiness)
+        for forbidden in (
+            "storageState",
+            "PREVIEW_GOOGLE_EMAIL",
+            "PREVIEW_GOOGLE_STORAGE_STATE",
+            ".fill(",
+            "password",
+            "page.goto('https://accounts.google.com",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, readiness)
+        self.assertIn(
+            "vowpic-preview-google-readiness-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+            self.integration,
+        )
+        readiness_job = self.integration[
+            self.integration.index("  google-readiness:\n") :
+            self.integration.index("  cleanup:\n")
+        ]
+        self.assertNotIn("PREVIEW_GOOGLE_STORAGE_STATE", readiness_job)
+        self.assertNotIn("PREVIEW_GOOGLE_EMAIL", readiness_job)
+
     def test_pr_ci_has_nonempty_tests_and_no_external_secret_or_deploy_path(self) -> None:
         self.assertIn("collected_backend_tests", self.ci)
         self.assertIn("npm run test:unit", self.ci)
