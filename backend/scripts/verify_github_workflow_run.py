@@ -20,6 +20,7 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_WORKFLOW_PATH = ".github/workflows/integration.yml"
 WORKFLOW_EVENTS = {
     EXPECTED_WORKFLOW_PATH: "workflow_dispatch",
+    ".github/workflows/ci.yml": "push",
     ".github/workflows/google-auth-protected-privacy.yml": "push",
 }
 
