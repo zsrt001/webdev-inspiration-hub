@@ -51,7 +51,12 @@ def validate_capability_boundary(
     *,
     deployment_id: str,
     activation_id: str,
+    runtime_bundle_id: str,
+    observed_at: datetime | None = None,
 ) -> None:
+    current = observed_at or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("interactive Google acceptance timestamp must be timezone-aware")
     if len(rows) != len(EXPECTED_CAPABILITIES):
         raise ValueError("interactive Google acceptance capability inventory is incomplete")
     by_name = {str(row["capability"]): row for row in rows}
@@ -63,15 +68,20 @@ def validate_capability_boundary(
                 "state": "ACCEPTANCE_COHORT",
                 "deployment_id": deployment_id,
                 "release_activation_id": activation_id,
+                "runtime_bundle_id": runtime_bundle_id,
             }
             if any(str(row.get(key)) != value for key, value in expected.items()):
                 raise ValueError("Google auth is outside the exact interactive acceptance cohort")
-            if row.get("expires_at") is None:
-                raise ValueError("interactive Google acceptance cohort has no expiry")
+            expires_at = row.get("expires_at")
+            if expires_at is None or expires_at <= current:
+                raise ValueError("interactive Google acceptance cohort is expired")
         elif (
             row.get("state") != "OFF"
             or row.get("deployment_id") is not None
+            or row.get("runtime_bundle_id") is not None
+            or row.get("worker_image_digest") is not None
             or row.get("release_activation_id") is not None
+            or row.get("target_manifest_sha256") is not None
             or row.get("expires_at") is not None
         ):
             raise ValueError("a non-Google capability became available during acceptance")
@@ -84,12 +94,13 @@ def build_acceptance_report(
     deployment_id: str,
     activation_id: str,
     hmac_key: str,
+    lease_expires_at: datetime,
     observed_at: datetime | None = None,
 ) -> dict[str, Any] | None:
     if len(bindings) != 2:
         raise ValueError("interactive Google acceptance requires exactly two bindings")
     if any(
-        row.get("provider") != "google"
+        row.get("provider") not in {"google", "google_email"}
         or row.get("revoked_at") is not None
         or not row.get("binding_id")
         for row in bindings
@@ -109,12 +120,28 @@ def build_acceptance_report(
     if any(
         not row.get("session_id")
         or str(row.get("session_user_id")) != str(row["consumed_user_id"])
+        or row.get("session_revoked_at") is not None
+        or row.get("session_expires_at") is None
+        or int(row.get("active_refresh_tokens") or 0) != 1
         for row in consumed
     ):
-        raise ValueError("interactive Google acceptance has no linked browser session")
+        raise ValueError("interactive Google acceptance has no valid linked browser session")
     current = observed_at or datetime.now(timezone.utc)
-    if current.tzinfo is None:
+    if current.tzinfo is None or lease_expires_at.tzinfo is None:
         raise ValueError("interactive Google acceptance timestamp must be timezone-aware")
+    if lease_expires_at <= current:
+        raise ValueError("interactive Google acceptance lease is expired")
+    if any(row["session_expires_at"] <= current for row in consumed):
+        raise ValueError("interactive Google acceptance linked browser session is expired")
+    if any(
+        row.get("binding_expires_at") is None
+        or row.get("active_refresh_expires_at") is None
+        or row["binding_expires_at"] > lease_expires_at
+        or row["session_expires_at"] > row["binding_expires_at"]
+        or row["active_refresh_expires_at"] > row["session_expires_at"]
+        for row in consumed
+    ):
+        raise ValueError("interactive Google acceptance session exceeds its authority lease")
     return {
         "schema": "vowpic.google-auth-interactive-acceptance.v1",
         "passed": True,
@@ -124,6 +151,7 @@ def build_acceptance_report(
         "consumed_bindings": 2,
         "distinct_users": 2,
         "linked_sessions": 2,
+        "lease_expires_at": lease_expires_at.astimezone(timezone.utc).isoformat(),
         "binding_id_hmac_sha256": sorted(
             _coordinate_hmac(hmac_key, "binding", str(row["binding_id"]))
             for row in consumed
@@ -146,10 +174,10 @@ def _snapshot(
     source_sha: str,
     deployment_id: str,
     approval: str,
-) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     cursor.execute(
         """
-        SELECT id::text AS id
+        SELECT id::text AS id, runtime_bundle_id, reservation_expires_at
         FROM release_activations
         WHERE environment = 'production' AND kind = 'GOOGLE_AUTH_ONLY'
           AND source_sha = %s AND api_deployment_id = %s
@@ -161,11 +189,19 @@ def _snapshot(
     activations = [dict(row) for row in cursor.fetchall()]
     if len(activations) != 1:
         raise ValueError("exact interactive GOOGLE_AUTH_ONLY activation is unavailable")
-    activation_id = str(activations[0]["id"])
+    activation = activations[0]
+    if (
+        activation.get("reservation_expires_at") is None
+        or activation["reservation_expires_at"] <= datetime.now(timezone.utc)
+    ):
+        raise ValueError("exact interactive GOOGLE_AUTH_ONLY activation lease is expired")
+    activation_id = str(activation["id"])
     cursor.execute(
         """
-        SELECT capability, state, deployment_id,
-               release_activation_id::text AS release_activation_id, expires_at
+        SELECT capability, state, deployment_id, runtime_bundle_id,
+               worker_image_digest,
+               release_activation_id::text AS release_activation_id,
+               target_manifest_sha256, expires_at
         FROM ops_feature_flags
         WHERE environment = 'production'
         ORDER BY capability
@@ -177,8 +213,25 @@ def _snapshot(
         SELECT binding.id::text AS binding_id, binding.provider,
                binding.consumed_user_id::text AS consumed_user_id,
                binding.consumed_at, binding.revoked_at,
+               binding.expires_at AS binding_expires_at,
                session.id::text AS session_id,
-               session.user_id::text AS session_user_id
+               session.user_id::text AS session_user_id,
+               session.revoked_at AS session_revoked_at,
+               session.expires_at AS session_expires_at,
+               COALESCE((
+                   SELECT COUNT(*)::integer
+                   FROM auth_refresh_tokens AS refresh
+                   WHERE refresh.session_id = session.id
+                     AND refresh.status = 'ACTIVE'
+                     AND refresh.expires_at > CURRENT_TIMESTAMP
+               ), 0) AS active_refresh_tokens,
+               (
+                   SELECT MAX(refresh.expires_at)
+                   FROM auth_refresh_tokens AS refresh
+                   WHERE refresh.session_id = session.id
+                     AND refresh.status = 'ACTIVE'
+                     AND refresh.expires_at > CURRENT_TIMESTAMP
+               ) AS active_refresh_expires_at
         FROM acceptance_identity_bindings AS binding
         LEFT JOIN auth_sessions AS session
           ON session.acceptance_binding_id = binding.id
@@ -188,7 +241,7 @@ def _snapshot(
         """,
         (deployment_id,),
     )
-    return activation_id, flags, [dict(row) for row in cursor.fetchall()]
+    return activation, flags, [dict(row) for row in cursor.fetchall()]
 
 
 def wait_for_sessions(
@@ -210,16 +263,23 @@ def wait_for_sessions(
         with psycopg2.connect(_database_url(database_url)) as connection:
             connection.set_session(readonly=True, autocommit=False)
             with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-                activation_id, flags, bindings = _snapshot(
+                activation, flags, bindings = _snapshot(
                     cursor,
                     source_sha=source_sha,
                     deployment_id=deployment_id,
                     approval=approval,
                 )
+        activation_id = str(activation["id"])
         validate_capability_boundary(
             flags,
             deployment_id=deployment_id,
             activation_id=activation_id,
+            runtime_bundle_id=str(activation["runtime_bundle_id"]),
+        )
+        google_flag = next(row for row in flags if row["capability"] == "google_auth")
+        lease_expires_at = min(
+            activation["reservation_expires_at"],
+            google_flag["expires_at"],
         )
         report = build_acceptance_report(
             bindings,
@@ -227,6 +287,7 @@ def wait_for_sessions(
             deployment_id=deployment_id,
             activation_id=activation_id,
             hmac_key=hmac_key,
+            lease_expires_at=lease_expires_at,
         )
         if report is not None:
             return report

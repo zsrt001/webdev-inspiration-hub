@@ -259,6 +259,136 @@ class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
         resolve.assert_awaited_once_with(database, google.Capability.GOOGLE_AUTH)
         consume.assert_not_awaited()
 
+    async def test_google_first_login_uses_only_the_broker_verified_email_admission(self) -> None:
+        google = importlib.import_module("app.routers.auth.google")
+        payload = importlib.import_module("app.schemas.auth").SupabaseSessionRequest(
+            access_token="x" * 16,
+            intent_token="i" * 32,
+        )
+        request = SimpleNamespace(cookies={}, headers={}, state=SimpleNamespace())
+        response = SimpleNamespace()
+        database = AsyncMock()
+        claims = SimpleNamespace(subject="11111111-1111-1111-1111-111111111111", email="primary@example.com")
+        user = SimpleNamespace(id=__import__("uuid").uuid4())
+        identity = SimpleNamespace(id=__import__("uuid").uuid4())
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        binding = SimpleNamespace(
+            id=__import__("uuid").uuid4(),
+            consumed_at=None,
+            consumed_user_id=None,
+            expires_at=now + __import__("datetime").timedelta(minutes=20),
+        )
+        authority = SimpleNamespace(expires_at=now + __import__("datetime").timedelta(minutes=20))
+        cohort = SimpleNamespace(
+            allowed=False,
+            reason="cohort_identity_missing",
+            state=google.FeatureFlagState.ACCEPTANCE_COHORT,
+        )
+        allowed = SimpleNamespace(allowed=True, reason="allowed", state=google.FeatureFlagState.ACCEPTANCE_COHORT)
+        lock = AsyncMock(side_effect=[None, binding])
+        require = AsyncMock(return_value=allowed)
+        consume = AsyncMock(return_value=True)
+        issue = AsyncMock()
+        with (
+            patch.object(google, "require_request_origin", new=AsyncMock()),
+            patch.object(google, "resolve_request_capability", new=AsyncMock(return_value=cohort)),
+            patch.object(google, "consume_oauth_intent", new=AsyncMock()),
+            patch.object(google, "verify_supabase_token", new=AsyncMock(return_value=claims)),
+            patch.object(google, "lock_google_auth_only_authority", new=AsyncMock(return_value=authority)),
+            patch.object(google, "_locked_identity_user", new=AsyncMock(return_value=(None, None))),
+            patch.object(google, "lock_acceptance_binding", new=lock),
+            patch.object(google, "require_request_capability", new=require),
+            patch.object(google, "_create_identity_user", new=AsyncMock(return_value=(identity, user))),
+            patch.object(google, "consume_binding_row", new=consume),
+            patch.object(google, "issue_session", new=issue),
+            patch.object(google, "clear_oauth_browser_cookie"),
+            patch.multiple(
+                google.settings,
+                runtime_environment="production",
+                vercel_deployment_id="dpl_target",
+                acceptance_identity_hmac_key="k" * 32,
+            ),
+        ):
+            resolved = await google.exchange_supabase_session(
+                payload, request, response, database
+            )
+
+        self.assertIs(resolved, user)
+        self.assertEqual(lock.await_count, 2)
+        self.assertEqual(lock.await_args_list[0].kwargs["provider"], "google")
+        self.assertEqual(lock.await_args_list[1].kwargs["provider"], "google_email")
+        expected_email_hash = google.compute_subject_hmac(
+            "k" * 32, "google_email", "primary@example.com"
+        )
+        self.assertEqual(lock.await_args_list[1].kwargs["subject_hmac"], expected_email_hash)
+        require.assert_not_awaited()
+        consume.assert_awaited_once()
+        self.assertIs(consume.await_args.args[0], binding)
+        self.assertEqual(consume.await_args.args[1], user.id)
+        self.assertEqual(issue.await_args.kwargs["acceptance_binding_id"], binding.id)
+        self.assertEqual(issue.await_args.kwargs["expires_at"], binding.expires_at)
+
+    async def test_google_response_loss_recovers_same_consumed_binding_without_duplicate_issue(self) -> None:
+        google = importlib.import_module("app.routers.auth.google")
+        payload = importlib.import_module("app.schemas.auth").SupabaseSessionRequest(
+            access_token="x" * 16,
+            intent_token="i" * 32,
+        )
+        request = SimpleNamespace(cookies={}, headers={}, state=SimpleNamespace())
+        response = SimpleNamespace()
+        database = AsyncMock()
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        user = SimpleNamespace(id=__import__("uuid").uuid4())
+        identity = SimpleNamespace(id=__import__("uuid").uuid4())
+        claims = SimpleNamespace(
+            subject="11111111-1111-1111-1111-111111111111",
+            email="primary@example.com",
+        )
+        binding = SimpleNamespace(
+            id=__import__("uuid").uuid4(),
+            consumed_at=now,
+            consumed_user_id=user.id,
+            expires_at=now + __import__("datetime").timedelta(minutes=20),
+        )
+        cohort = SimpleNamespace(
+            allowed=False,
+            reason="cohort_identity_missing",
+            state=google.FeatureFlagState.OFF,
+        )
+        authority = SimpleNamespace(expires_at=binding.expires_at)
+        recover = AsyncMock()
+        issue = AsyncMock()
+        consume = AsyncMock()
+
+        with (
+            patch.object(google, "require_request_origin", new=AsyncMock()),
+            patch.object(google, "resolve_request_capability", new=AsyncMock(return_value=cohort)),
+            patch.object(google, "consume_oauth_intent", new=AsyncMock()),
+            patch.object(google, "verify_supabase_token", new=AsyncMock(return_value=claims)),
+            patch.object(google, "lock_google_auth_only_authority", new=AsyncMock(return_value=authority)),
+            patch.object(google, "lock_acceptance_binding", new=AsyncMock(return_value=binding)),
+            patch.object(google, "_locked_identity_user", new=AsyncMock(return_value=(identity, user))),
+            patch.object(google, "_refresh_profile"),
+            patch.object(google, "recover_acceptance_session", new=recover),
+            patch.object(google, "consume_binding_row", new=consume),
+            patch.object(google, "issue_session", new=issue),
+            patch.object(google, "clear_oauth_browser_cookie"),
+            patch.multiple(
+                google.settings,
+                runtime_environment="production",
+                vercel_deployment_id="dpl_target",
+                acceptance_identity_hmac_key="k" * 32,
+            ),
+        ):
+            resolved = await google.exchange_supabase_session(payload, request, response, database)
+
+        self.assertIs(resolved, user)
+        recover.assert_awaited_once()
+        self.assertEqual(recover.await_args.kwargs["acceptance_binding_id"], binding.id)
+        consume.assert_not_awaited()
+        issue.assert_not_awaited()
+        database.commit.assert_awaited_once()
+
     async def test_browser_admin_requires_active_database_role_on_cookie_identity(self) -> None:
         admin_auth = importlib.import_module("app.core.admin_auth")
         request = SimpleNamespace(state=SimpleNamespace())

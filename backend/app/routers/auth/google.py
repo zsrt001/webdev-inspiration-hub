@@ -23,9 +23,17 @@ from app.services.acceptance_identity_service import (
     consume_binding_row,
     lock_acceptance_binding,
 )
-from app.services.auth_session_service import issue_session
+from app.services.auth_session_service import (
+    SessionServiceError,
+    issue_session,
+    recover_acceptance_session,
+)
 from app.services.email_service import is_disposable_email
-from app.services.feature_flag_service import require_request_capability, resolve_request_capability
+from app.services.feature_flag_service import (
+    lock_google_auth_only_authority,
+    require_request_capability,
+    resolve_request_capability,
+)
 from app.services.oauth_intent_service import (
     INTENT_TTL,
     OAUTH_BROWSER_COOKIE,
@@ -190,46 +198,100 @@ async def exchange_supabase_session(
         logger.warning("google_session_exchange stage=broker_verification_failed request_id=%s", request_id)
         raise HTTPException(status_code=401, detail={"code": "supabase_session_invalid"}) from exc
 
+    current = datetime.now(timezone.utc)
     identity_hash = compute_subject_hmac(
         settings.acceptance_identity_hmac_key,
         "google",
         claims.subject,
     )
-    identity, user = await _locked_identity_user(db, claims)
-    try:
-        decision = await require_request_capability(
-            request,
-            db,
-            Capability.GOOGLE_AUTH,
-            verified_user_id=user.id if user is not None else None,
-            verified_identity_hash=identity_hash,
-        )
-    except HTTPException as exc:
-        reason = exc.detail.get("reason") if isinstance(exc.detail, dict) else None
-        logger.warning(
-            "google_session_exchange stage=capability_denied request_id=%s reason=%s",
-            request_id,
-            str(reason or "unknown"),
-        )
-        raise
-
+    acceptance_mode = (
+        initial_decision.state is FeatureFlagState.ACCEPTANCE_COHORT
+        or initial_decision.reason == "cohort_identity_missing"
+    )
     binding = None
-    if decision.state is FeatureFlagState.ACCEPTANCE_COHORT:
+    authorization_hash = identity_hash
+    authority = None
+    if acceptance_mode:
+        authority = await lock_google_auth_only_authority(db, now=current)
         binding = await lock_acceptance_binding(
             db,
             provider="google",
             subject_hmac=identity_hash,
             environment=settings.runtime_environment,
             deployment_id=settings.deployment_id,
+            now=current,
+            include_consumed=True,
         )
+        if binding is None:
+            authorization_hash = compute_subject_hmac(
+                settings.acceptance_identity_hmac_key,
+                "google_email",
+                claims.email,
+            )
+            binding = await lock_acceptance_binding(
+                db,
+                provider="google_email",
+                subject_hmac=authorization_hash,
+                environment=settings.runtime_environment,
+                deployment_id=settings.deployment_id,
+                now=current,
+                include_consumed=True,
+            )
         if binding is None:
             logger.warning(
                 "google_session_exchange stage=authorization_unavailable request_id=%s",
                 request_id,
             )
-            raise HTTPException(status_code=503, detail={"code": "acceptance_identity_binding_required"})
+            raise HTTPException(status_code=403, detail={"code": "acceptance_identity_binding_required"})
 
-    current = datetime.now(timezone.utc)
+    identity, user = await _locked_identity_user(db, claims)
+    if authority is None:
+        try:
+            await require_request_capability(
+                request,
+                db,
+                Capability.GOOGLE_AUTH,
+                verified_user_id=user.id if user is not None else None,
+                verified_identity_hash=authorization_hash,
+            )
+        except HTTPException as exc:
+            reason = exc.detail.get("reason") if isinstance(exc.detail, dict) else None
+            logger.warning(
+                "google_session_exchange stage=capability_denied request_id=%s reason=%s",
+                request_id,
+                str(reason or "unknown"),
+            )
+            raise
+
+    if binding is not None and binding.consumed_at is not None:
+        if (
+            binding.consumed_user_id is None
+            or identity is None
+            or user is None
+            or binding.consumed_user_id != user.id
+        ):
+            raise HTTPException(status_code=409, detail={"code": "acceptance_identity_binding_reused"})
+        _refresh_profile(identity, user, claims, current)
+        await db.flush()
+        try:
+            await recover_acceptance_session(
+                db,
+                user,
+                response,
+                acceptance_binding_id=binding.id,
+                now=current,
+            )
+        except SessionServiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code}) from exc
+        await db.commit()
+        await db.refresh(user)
+        clear_oauth_browser_cookie(response)
+        logger.info(
+            "google_session_exchange stage=recovered request_id=%s acceptance=true",
+            request_id,
+        )
+        return user
+
     if user is None:
         identity, user = await _create_identity_user(db, claims, now=current)
     else:
@@ -246,6 +308,11 @@ async def exchange_supabase_session(
         identity_id=identity.id,
         now=current,
         acceptance_binding_id=binding.id if binding is not None else None,
+        expires_at=(
+            min(authority.expires_at, binding.expires_at)
+            if authority is not None and binding is not None
+            else None
+        ),
     )
     await db.commit()
     await db.refresh(user)

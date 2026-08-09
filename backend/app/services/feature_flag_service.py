@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -10,7 +11,7 @@ from typing import Any, Iterable
 from uuid import UUID
 
 from fastapi import HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -38,6 +39,14 @@ IDENTITY_FOUNDATION_CAPABILITIES = frozenset(
 )
 GOOGLE_AUTH_ONLY_CAPABILITIES = frozenset({Capability.GOOGLE_AUTH})
 GOOGLE_AUTH_ONLY_PHASES = frozenset({"ACCEPTANCE_READY"})
+PRODUCTION_ACTIVATION_FENCE = "vowpic-production-capability-activation"
+
+
+@dataclass(frozen=True)
+class GoogleAuthOnlyAuthority:
+    flag: OpsFeatureFlag
+    activation: ReleaseActivation
+    expires_at: datetime
 
 
 class CapabilityDisabled(HTTPException):
@@ -184,6 +193,78 @@ async def _load_authoritative_row(
     return result.scalar_one_or_none()
 
 
+async def lock_google_auth_only_authority(
+    db: AsyncSession,
+    *,
+    now: datetime | None = None,
+) -> GoogleAuthOnlyAuthority:
+    """Serialize admission with activation cleanup and lock its exact authority."""
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("Google acceptance timestamp must be timezone-aware")
+    if (
+        settings.runtime_environment != "production"
+        or not settings.runtime_coordinates_valid
+        or not settings.deployment_id
+        or not settings.runtime_bundle_id.strip()
+    ):
+        raise CapabilityDisabled(Capability.GOOGLE_AUTH.value, "runtime_coordinates_invalid")
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": PRODUCTION_ACTIVATION_FENCE},
+    )
+    flag_result = await db.execute(
+        select(OpsFeatureFlag)
+        .where(
+            OpsFeatureFlag.environment == "production",
+            OpsFeatureFlag.capability == Capability.GOOGLE_AUTH.value,
+        )
+        .with_for_update()
+    )
+    flag = flag_result.scalar_one_or_none()
+    if flag is None or flag.state != FeatureFlagState.ACCEPTANCE_COHORT.value:
+        raise CapabilityDisabled(Capability.GOOGLE_AUTH.value, "disabled")
+    if (
+        flag.deployment_id != settings.deployment_id
+        or flag.runtime_bundle_id != settings.runtime_bundle_id.strip()
+        or flag.release_activation_id is None
+        or flag.expires_at is None
+        or flag.expires_at.tzinfo is None
+        or flag.expires_at <= current
+    ):
+        raise CapabilityDisabled(Capability.GOOGLE_AUTH.value, "activation_coordinates_invalid")
+
+    activations_result = await db.execute(
+        select(ReleaseActivation)
+        .where(
+            ReleaseActivation.environment == "production",
+            ReleaseActivation.kind == "GOOGLE_AUTH_ONLY",
+            ReleaseActivation.api_deployment_id == settings.deployment_id,
+            ReleaseActivation.phase != "CLEANED",
+        )
+        .with_for_update()
+    )
+    activations = list(activations_result.scalars().all())
+    if len(activations) != 1 or activations[0].id != flag.release_activation_id:
+        raise CapabilityDisabled(Capability.GOOGLE_AUTH.value, "activation_ambiguous")
+    activation = activations[0]
+    if (
+        activation.phase not in GOOGLE_AUTH_ONLY_PHASES
+        or activation.runtime_bundle_id != settings.runtime_bundle_id.strip()
+        or activation.api_deployment_id != settings.deployment_id
+        or activation.reservation_expires_at is None
+        or activation.reservation_expires_at.tzinfo is None
+        or activation.reservation_expires_at <= current
+    ):
+        raise CapabilityDisabled(Capability.GOOGLE_AUTH.value, "activation_expired")
+    return GoogleAuthOnlyAuthority(
+        flag=flag,
+        activation=activation,
+        expires_at=min(flag.expires_at, activation.reservation_expires_at),
+    )
+
+
 async def _with_verified_binding(
     db: AsyncSession,
     row: OpsFeatureFlag,
@@ -191,14 +272,18 @@ async def _with_verified_binding(
 ) -> OpsFeatureFlag | dict[str, Any]:
     if not context.verified_identity_hash:
         return row
-    valid = await has_unconsumed_acceptance_binding(
-        db,
-        provider="google",
-        subject_hmac=context.verified_identity_hash,
-        environment=context.environment,
-        deployment_id=context.deployment_id or "",
-        now=context.now,
-    )
+    valid = False
+    for provider in ("google", "google_email"):
+        valid = await has_unconsumed_acceptance_binding(
+            db,
+            provider=provider,
+            subject_hmac=context.verified_identity_hash,
+            environment=context.environment,
+            deployment_id=context.deployment_id or "",
+            now=context.now,
+        )
+        if valid:
+            break
     if not valid:
         return row
     return {

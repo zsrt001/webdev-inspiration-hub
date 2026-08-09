@@ -160,6 +160,81 @@ class FeatureFlagDecisionTest(unittest.TestCase):
 
 
 class FeatureFlagAuthorityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_google_acceptance_authority_locks_shared_fence_flag_and_activation(self) -> None:
+        service = _service_module()
+        now = datetime.now(timezone.utc)
+        activation_id = uuid4()
+        flag = SimpleNamespace(
+            state="ACCEPTANCE_COHORT",
+            deployment_id="dpl_target",
+            runtime_bundle_id="rtb_" + "a" * 64,
+            release_activation_id=activation_id,
+            expires_at=now + timedelta(minutes=20),
+        )
+        activation = SimpleNamespace(
+            id=activation_id,
+            phase="ACCEPTANCE_READY",
+            runtime_bundle_id="rtb_" + "a" * 64,
+            api_deployment_id="dpl_target",
+            reservation_expires_at=now + timedelta(minutes=10),
+        )
+        flag_result = MagicMock()
+        flag_result.scalar_one_or_none.return_value = flag
+        activation_result = MagicMock()
+        activation_result.scalars.return_value.all.return_value = [activation]
+        database = AsyncMock()
+        database.execute = AsyncMock(side_effect=(MagicMock(), flag_result, activation_result))
+        runtime = SimpleNamespace(
+            runtime_environment="production",
+            runtime_coordinates_valid=True,
+            deployment_id="dpl_target",
+            runtime_bundle_id="rtb_" + "a" * 64,
+        )
+
+        with patch.object(service, "settings", runtime):
+            authority = await service.lock_google_auth_only_authority(database, now=now)
+
+        self.assertEqual(authority.expires_at, activation.reservation_expires_at)
+        fence_parameters = database.execute.await_args_list[0].args[1]
+        self.assertEqual(fence_parameters["key"], service.PRODUCTION_ACTIVATION_FENCE)
+
+    async def test_verified_binding_accepts_email_admission_only_after_exact_subject_miss(self) -> None:
+        flags = _flags_module()
+        service = _service_module()
+        now = datetime.now(timezone.utc)
+        row = SimpleNamespace()
+        row.__table__ = SimpleNamespace(columns=[])
+        context = flags.FeatureFlagContext(
+            environment="production",
+            deployment_id="dpl_target",
+            runtime_bundle_id="rtb_target",
+            verified_identity_hash="a" * 64,
+            now=now,
+        )
+        binding_lookup = AsyncMock(side_effect=[False, True])
+
+        with patch.object(
+            service,
+            "has_unconsumed_acceptance_binding",
+            new=binding_lookup,
+        ):
+            resolved = await service._with_verified_binding(AsyncMock(), row, context)
+
+        self.assertEqual(
+            resolved["verified_identity_hashes"],
+            [context.verified_identity_hash],
+        )
+        self.assertEqual(
+            [call.kwargs["provider"] for call in binding_lookup.await_args_list],
+            ["google", "google_email"],
+        )
+        self.assertTrue(
+            all(
+                call.kwargs["subject_hmac"] == context.verified_identity_hash
+                for call in binding_lookup.await_args_list
+            )
+        )
+
     async def test_admin_mutation_rejects_retired_worker_coordinate(self) -> None:
         flags = _flags_module()
         service = _service_module()

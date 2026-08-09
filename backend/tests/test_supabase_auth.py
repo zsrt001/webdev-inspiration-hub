@@ -20,6 +20,7 @@ from app.core.supabase_auth import (  # noqa: E402
     parse_supabase_claims,
     supabase_issuer_from_url,
 )
+from app.core.google_identity import normalize_google_email  # noqa: E402
 from app.models.user_identity import UserIdentity  # noqa: E402
 from app.schemas.user import UserRead  # noqa: E402
 
@@ -61,7 +62,15 @@ def valid_user_record() -> dict:
             "avatar_url": "https://example.com/avatar.png",
             "email_verified": True,
         },
-        "identities": [{"provider": "google"}],
+        "identities": [
+            {
+                "provider": "google",
+                "identity_data": {
+                    "email": "bride@example.com",
+                    "email_verified": True,
+                },
+            }
+        ],
     }
 
 
@@ -155,6 +164,35 @@ class SupabaseAuthTest(unittest.TestCase):
                     expected_audience="authenticated",
                     now=now,
                 )
+
+    def test_selected_google_identity_must_match_and_be_verified(self) -> None:
+        now = datetime.now(timezone.utc)
+        mismatched = valid_user_record()
+        mismatched["identities"][0]["identity_data"]["email"] = "other@example.com"
+        unverified = valid_user_record()
+        unverified["identities"][0]["identity_data"]["email_verified"] = "true"
+        duplicate = valid_user_record()
+        duplicate["identities"].append(duplicate["identities"][0].copy())
+
+        for user_record in (mismatched, unverified, duplicate):
+            with self.assertRaises(SupabaseAuthError):
+                parse_supabase_claims(
+                    valid_claims(now),
+                    user_record,
+                    expected_issuer="https://project-ref.supabase.co/auth/v1",
+                    expected_audience="authenticated",
+                    now=now,
+                )
+
+    def test_google_email_normalization_is_ascii_only_and_preserves_aliases(self) -> None:
+        self.assertEqual(normalize_google_email(" Bride+Trial@Example.COM "), "bride+trial@example.com")
+        self.assertNotEqual(
+            normalize_google_email("bride+trial@example.com"),
+            normalize_google_email("bride@example.com"),
+        )
+        for value in ("bride＠example.com", "Bride <bride@example.com>", "a..b@example.com"):
+            with self.assertRaises(ValueError):
+                normalize_google_email(value)
 
     def test_normalized_identity_is_provider_subject_only(self) -> None:
         columns = set(UserIdentity.__table__.columns.keys())

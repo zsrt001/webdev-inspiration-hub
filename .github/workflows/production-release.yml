@@ -15,6 +15,14 @@ on:
         description: Exact successful Integration workflow attempt containing the Preview release package
         required: true
         type: string
+      privacy_run_id:
+        description: Exact successful protected Google-auth privacy workflow run for this source SHA
+        required: true
+        type: string
+      privacy_run_attempt:
+        description: Exact successful protected Google-auth privacy workflow attempt
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -66,6 +74,71 @@ jobs:
             --capabilities release/provider-capabilities.json \
             --expected-source-sha "$SOURCE_SHA" \
             --output "$RUNNER_TEMP/provider-readiness.json"
+      - name: Verify the exact successful protected Google-auth privacy attempt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.required_source_sha }}
+          PRIVACY_RUN_ID: ${{ inputs.privacy_run_id }}
+          PRIVACY_RUN_ATTEMPT: ${{ inputs.privacy_run_attempt }}
+        run: |
+          set -euo pipefail
+          python backend/scripts/verify_github_workflow_run.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$PRIVACY_RUN_ID" \
+            --run-attempt "$PRIVACY_RUN_ATTEMPT" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-path .github/workflows/google-auth-protected-privacy.yml \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/privacy-workflow-verification.json"
+      - name: Download the exact protected Google-auth privacy receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: google-auth-privacy-${{ inputs.required_source_sha }}-${{ inputs.privacy_run_id }}-${{ inputs.privacy_run_attempt }}
+          path: ${{ runner.temp }}/google-auth-privacy
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.privacy_run_id }}
+      - name: Verify the exact source-free Google-auth privacy receipt
+        env:
+          SOURCE_SHA: ${{ inputs.required_source_sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t receipts < <(find "$RUNNER_TEMP/google-auth-privacy" -type f -name 'google-auth-privacy.json' -print)
+          test "${#receipts[@]}" -eq 1
+          export PRIVACY_RECEIPT="${receipts[0]}"
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          receipt = json.loads(Path(os.environ["PRIVACY_RECEIPT"]).read_text(encoding="utf-8"))
+          expected_keys = {
+              "schema",
+              "passed",
+              "source_sha",
+              "protected_values_zero_hits",
+              "synthetic_canaries_detected",
+              "sanitized_outputs_zero_hits",
+              "scanned_file_count",
+              "scan_scope_manifest_sha256",
+              "scan_corpus_sha256",
+          }
+          if (
+              set(receipt) != expected_keys
+              or receipt.get("schema") != "vowpic.google-auth-privacy-boundary.v1"
+              or receipt.get("passed") is not True
+              or receipt.get("source_sha") != os.environ["SOURCE_SHA"]
+              or receipt.get("protected_values_zero_hits") is not True
+              or receipt.get("synthetic_canaries_detected") is not True
+              or receipt.get("sanitized_outputs_zero_hits") is not True
+              or type(receipt.get("scanned_file_count")) is not int
+              or receipt["scanned_file_count"] < 1
+              or not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("scan_scope_manifest_sha256") or ""))
+              or not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("scan_corpus_sha256") or ""))
+          ):
+              raise SystemExit("protected Google-auth privacy receipt is invalid")
+          PY
       - name: Verify the exact successful Preview workflow attempt
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -124,6 +197,8 @@ jobs:
         with:
           name: vowpic-production-authorization-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/privacy-workflow-verification.json
+            ${{ runner.temp }}/google-auth-privacy/google-auth-privacy.json
             ${{ runner.temp }}/preview-workflow-verification.json
             ${{ runner.temp }}/preview-release-verification.json
           if-no-files-found: error

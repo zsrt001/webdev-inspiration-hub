@@ -673,9 +673,17 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
                 "required_source_sha",
                 "preview_run_id",
                 "preview_run_attempt",
+                "privacy_run_id",
+                "privacy_run_attempt",
             },
         )
-        for name in ("required_source_sha", "preview_run_id", "preview_run_attempt"):
+        for name in (
+            "required_source_sha",
+            "preview_run_id",
+            "preview_run_attempt",
+            "privacy_run_id",
+            "privacy_run_attempt",
+        ):
             with self.subTest(input=name):
                 self.assertEqual(
                     parsed["on"]["workflow_dispatch"]["inputs"][name]["required"],
@@ -692,6 +700,16 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         )
         self.assertIn("${{ inputs.preview_run_id }}", authorize_text)
         self.assertIn("${{ inputs.preview_run_attempt }}", authorize_text)
+        self.assertIn("${{ inputs.privacy_run_id }}", authorize_text)
+        self.assertIn("${{ inputs.privacy_run_attempt }}", authorize_text)
+        self.assertIn(
+            ".github/workflows/google-auth-protected-privacy.yml",
+            authorize_text,
+        )
+        self.assertIn("google-auth-privacy.json", authorize_text)
+        self.assertIn("protected_values_zero_hits", authorize_text)
+        self.assertIn("synthetic_canaries_detected", authorize_text)
+        self.assertIn("sanitized_outputs_zero_hits", authorize_text)
         self.assertNotIn("secrets.PRODUCTION_DATABASE_URL", authorize_text)
         self.assertNotIn("secrets.VERCEL_TOKEN", authorize_text)
         self.assertLess(
@@ -700,6 +718,14 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
         )
         self.assertLess(
             workflow.index("verify_preview_release_package.py verify"),
+            workflow.index("register_bundle.py reserve"),
+        )
+        self.assertLess(
+            workflow.index("privacy-workflow-verification.json"),
+            workflow.index("register_bundle.py reserve"),
+        )
+        self.assertLess(
+            workflow.index("protected Google-auth privacy receipt is invalid"),
             workflow.index("register_bundle.py reserve"),
         )
         for forbidden in (
@@ -732,6 +758,96 @@ class ProductionWorkflowStaticContractTest(unittest.TestCase):
             "provider-unknown-intent",
         ):
             self.assertNotIn(forbidden_fault_action, workflow)
+
+    def test_authorize_job_binds_both_exact_sha_gates_before_reservation(self) -> None:
+        workflow = PRODUCTION_RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        payload = yaml.load(workflow, Loader=yaml.BaseLoader)
+        authorize_steps = payload["jobs"]["authorize"]["steps"]
+        by_name = {
+            step.get("name"): (index, step)
+            for index, step in enumerate(authorize_steps)
+            if step.get("name")
+        }
+
+        checkout = authorize_steps[0]
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.required_source_sha }}")
+        self.assertEqual(checkout["with"]["persist-credentials"], "false")
+
+        privacy_index, privacy_verify = by_name[
+            "Verify the exact successful protected Google-auth privacy attempt"
+        ]
+        privacy_run = privacy_verify["run"]
+        for exact_argument in (
+            '--run-id "$PRIVACY_RUN_ID"',
+            '--run-attempt "$PRIVACY_RUN_ATTEMPT"',
+            '--source-sha "$SOURCE_SHA"',
+            "--workflow-path .github/workflows/google-auth-protected-privacy.yml",
+        ):
+            self.assertIn(exact_argument, privacy_run)
+
+        download_index, privacy_download = by_name[
+            "Download the exact protected Google-auth privacy receipt"
+        ]
+        self.assertEqual(
+            privacy_download["with"]["name"],
+            "google-auth-privacy-${{ inputs.required_source_sha }}-"
+            "${{ inputs.privacy_run_id }}-${{ inputs.privacy_run_attempt }}",
+        )
+        self.assertEqual(
+            privacy_download["with"]["run-id"],
+            "${{ inputs.privacy_run_id }}",
+        )
+
+        receipt_index, receipt_verify = by_name[
+            "Verify the exact source-free Google-auth privacy receipt"
+        ]
+        receipt_run = receipt_verify["run"]
+        self.assertIn("set(receipt) != expected_keys", receipt_run)
+        self.assertIn('receipt.get("passed") is not True', receipt_run)
+        key_block_start = receipt_run.index("expected_keys = {")
+        key_block_end = receipt_run.index("}\nif (", key_block_start)
+        key_block = receipt_run[key_block_start:key_block_end]
+        for exact_key in (
+            '"schema"',
+            '"passed"',
+            '"source_sha"',
+            '"protected_values_zero_hits"',
+            '"synthetic_canaries_detected"',
+            '"sanitized_outputs_zero_hits"',
+            '"scanned_file_count"',
+            '"scan_scope_manifest_sha256"',
+            '"scan_corpus_sha256"',
+        ):
+            self.assertEqual(key_block.count(exact_key), 1)
+
+        integration_index, integration_verify = by_name[
+            "Verify the exact successful Preview workflow attempt"
+        ]
+        integration_run = integration_verify["run"]
+        self.assertIn("verify_github_workflow_run.py", integration_run)
+        self.assertIn('--run-id "$PREVIEW_RUN_ID"', integration_run)
+        self.assertIn('--run-attempt "$PREVIEW_RUN_ATTEMPT"', integration_run)
+        self.assertIn('--source-sha "$SOURCE_SHA"', integration_run)
+        self.assertNotIn("--workflow-path", integration_run)
+
+        preview_package_index, preview_package = by_name[
+            "Verify the exact Preview package before any Production mutation"
+        ]
+        self.assertIn(
+            "verify_preview_release_package.py verify",
+            preview_package["run"],
+        )
+        self.assertLess(privacy_index, download_index)
+        self.assertLess(download_index, receipt_index)
+        self.assertLess(receipt_index, integration_index)
+        self.assertLess(integration_index, preview_package_index)
+
+        reserve_job = payload["jobs"]["reserve-stage-seal"]
+        self.assertEqual(reserve_job["needs"], "authorize")
+        reserve_run = "\n".join(
+            step.get("run", "") for step in reserve_job["steps"]
+        )
+        self.assertIn("register_bundle.py reserve", reserve_run)
         self.assertNotIn("inputs.worker_image_digest", workflow)
         self.assertLess(
             workflow.index("verify_provider_capabilities.py"),

@@ -15,6 +15,7 @@ from typing import Any
 
 _DEPLOYMENT_ID = re.compile(r"^dpl_[A-Za-z0-9_-]{3,156}$")
 ACTIVATION_KINDS = ("COMMERCIAL_7A", "GOOGLE_AUTH_ONLY")
+PRODUCTION_ACTIVATION_FENCE = "vowpic-production-capability-activation"
 
 
 def _database_url(value: str) -> str:
@@ -137,7 +138,7 @@ def cleanup_bindings(
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (f"vowpic-acceptance-binding-cleanup:{deployment_id}",),
+                (PRODUCTION_ACTIVATION_FENCE,),
             )
             cursor.execute(
                 """

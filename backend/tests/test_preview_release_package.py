@@ -176,3 +176,62 @@ class PreviewReleasePackageTest(unittest.TestCase):
                 run_attempt=RUN_ATTEMPT,
                 source_sha=SOURCE_SHA,
             )
+
+    def test_github_attempt_accepts_only_the_exact_protected_privacy_push(self) -> None:
+        workflow_path = ".github/workflows/google-auth-protected-privacy.yml"
+        payload = {
+            "id": int(RUN_ID),
+            "run_attempt": RUN_ATTEMPT,
+            "head_sha": SOURCE_SHA,
+            "head_branch": "main",
+            "event": "push",
+            "status": "completed",
+            "conclusion": "success",
+            "path": workflow_path,
+            "updated_at": "2026-08-09T12:00:00Z",
+            "repository": {"full_name": "zsrt001/webdev-inspiration-hub"},
+        }
+        proof = validate_workflow_run(
+            payload,
+            repository="zsrt001/webdev-inspiration-hub",
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            source_sha=SOURCE_SHA,
+            workflow_path=workflow_path,
+        )
+        self.assertTrue(proof["passed"])
+        self.assertEqual(proof["event"], "push")
+        self.assertEqual(proof["path"], workflow_path)
+        rejected_attempts = {
+            "status_queued": {"status": "queued"},
+            "status_in_progress": {"status": "in_progress"},
+            "conclusion_failure": {"conclusion": "failure"},
+            "conclusion_cancelled": {"conclusion": "cancelled"},
+            "conclusion_skipped": {"conclusion": "skipped"},
+            "conclusion_timed_out": {"conclusion": "timed_out"},
+            "conclusion_action_required": {"conclusion": "action_required"},
+            "conclusion_neutral": {"conclusion": "neutral"},
+            "conclusion_null": {"conclusion": None},
+            "wrong_repository": {
+                "repository": {"full_name": "someone-else/untrusted"}
+            },
+            "wrong_sha": {"head_sha": "b" * 40},
+            "wrong_branch": {"head_branch": "release"},
+            "wrong_event": {"event": "pull_request"},
+            "wrong_workflow": {"path": ".github/workflows/ci.yml"},
+            "wrong_run_id": {"id": int(RUN_ID) + 1},
+            "wrong_run_attempt": {"run_attempt": RUN_ATTEMPT + 1},
+        }
+        for label, changes in rejected_attempts.items():
+            rejected = {**payload, **changes}
+            with self.subTest(case=label), self.assertRaisesRegex(
+                ValueError, "exact successful"
+            ):
+                validate_workflow_run(
+                    rejected,
+                    repository="zsrt001/webdev-inspiration-hub",
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    source_sha=SOURCE_SHA,
+                    workflow_path=workflow_path,
+                )

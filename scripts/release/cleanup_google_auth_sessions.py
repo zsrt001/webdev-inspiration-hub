@@ -14,6 +14,7 @@ from typing import Any
 
 
 DEPLOYMENT_ID = re.compile(r"^dpl_[A-Za-z0-9_-]{3,156}$")
+PRODUCTION_ACTIVATION_FENCE = "vowpic-production-capability-activation"
 
 
 def _database_url(value: str) -> str:
@@ -84,7 +85,7 @@ def cleanup_sessions(
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (f"vowpic-google-auth-session-cleanup:{deployment_id}",),
+                (PRODUCTION_ACTIVATION_FENCE,),
             )
             cursor.execute(
                 """
@@ -106,8 +107,43 @@ def cleanup_sessions(
             )
             cursor.execute(
                 """
+                SELECT session.id
+                FROM auth_sessions AS session
+                JOIN acceptance_identity_bindings AS binding
+                  ON binding.id = session.acceptance_binding_id
+                WHERE binding.environment = 'production'
+                  AND binding.deployment_id = %s
+                ORDER BY session.id
+                FOR UPDATE OF session
+                """,
+                (deployment_id,),
+            )
+            session_ids = [str(row["id"]) for row in cursor.fetchall()]
+            if session_ids:
+                cursor.execute(
+                    """
+                    SELECT id FROM auth_refresh_tokens
+                    WHERE session_id = ANY(%s::uuid[])
+                    ORDER BY session_id, generation
+                    FOR UPDATE
+                    """,
+                    (session_ids,),
+                )
+                cursor.fetchall()
+                cursor.execute(
+                    """
+                    UPDATE auth_refresh_tokens
+                    SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP
+                    WHERE session_id = ANY(%s::uuid[])
+                      AND status <> 'REVOKED'
+                    """,
+                    (session_ids,),
+                )
+            cursor.execute(
+                """
                 UPDATE auth_sessions AS session
-                SET revoked_at = CURRENT_TIMESTAMP
+                SET revoked_at = CURRENT_TIMESTAMP,
+                    token_version = token_version + 1
                 FROM acceptance_identity_bindings AS binding
                 WHERE binding.id = session.acceptance_binding_id
                   AND binding.environment = 'production'

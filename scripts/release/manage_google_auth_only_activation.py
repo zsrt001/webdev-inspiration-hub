@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,7 @@ CAPABILITIES = frozenset(
 SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 RUNTIME_BUNDLE_ID = re.compile(r"^rtb_[0-9a-f]{64}$")
 DEPLOYMENT_ID = re.compile(r"^dpl_[A-Za-z0-9_-]{3,156}$")
+PRODUCTION_ACTIVATION_FENCE = "vowpic-production-capability-activation"
 
 
 def _database_url(value: str) -> str:
@@ -149,7 +151,7 @@ def reserve_activation(
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                ("vowpic-production-google-auth-only",),
+                (PRODUCTION_ACTIVATION_FENCE,),
             )
             cursor.execute("SELECT version_num FROM alembic_version")
             revisions = tuple(str(row["version_num"]) for row in cursor.fetchall())
@@ -174,10 +176,10 @@ def reserve_activation(
                     id, environment, kind, source_sha, runtime_bundle_id,
                     manifest_sha256, api_deployment_id, api_deployment_url,
                     api_role, workflow_run_id, workflow_attempt, phase,
-                    phase_rank, version, approval
+                    phase_rank, version, approval, reservation_expires_at
                 ) VALUES (
                     %s, 'production', %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, 'ACCEPTANCE_READY', 1, 1, %s
+                    %s, %s, 'ACCEPTANCE_READY', 1, 1, %s, CURRENT_TIMESTAMP + INTERVAL '30 minutes'
                 )
                 RETURNING *
                 """,
@@ -206,6 +208,7 @@ def reserve_activation(
         "runtime_bundle_id": activation["runtime_bundle_id"],
         "deployment_id": activation["api_deployment_id"],
         "manifest_sha256": activation["manifest_sha256"],
+        "reservation_expires_at": activation["reservation_expires_at"].isoformat(),
     }
 
 
@@ -220,12 +223,17 @@ def complete_activation(
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
+    _validate_completion_evidence(
+        completion_evidence,
+        source_sha=source_sha,
+        deployment_id=deployment_id,
+    )
     report_sha256 = hashlib.sha256(completion_evidence).hexdigest()
     with psycopg2.connect(_database_url(database_url)) as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                ("vowpic-production-google-auth-only",),
+                (PRODUCTION_ACTIVATION_FENCE,),
             )
             _require_all_flags_off(cursor)
             cursor.execute(
@@ -280,6 +288,151 @@ def complete_activation(
     }
 
 
+def _validate_completion_evidence(
+    completion_evidence: bytes,
+    *,
+    source_sha: str,
+    deployment_id: str,
+) -> dict[str, Any]:
+    if not completion_evidence or len(completion_evidence) > 64 * 1024:
+        raise ValueError("GOOGLE_AUTH_ONLY completion evidence is invalid")
+    try:
+        payload = json.loads(completion_evidence.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("GOOGLE_AUTH_ONLY completion evidence is invalid") from error
+    if not isinstance(payload, dict) or payload.get("passed") is not True:
+        raise ValueError("GOOGLE_AUTH_ONLY completion evidence did not pass")
+    if payload.get("source_sha") != source_sha or payload.get("deployment_id") != deployment_id:
+        raise ValueError("GOOGLE_AUTH_ONLY completion evidence coordinates mismatch")
+    schema = payload.get("schema")
+    if schema == "vowpic.google-auth-only-final-state.v1":
+        valid = (
+            payload.get("database_all_off") is True
+            and payload.get("public_all_off") is True
+            and payload.get("active_unused_bindings") == 0
+            and payload.get("active_acceptance_sessions") == 0
+            and payload.get("oauth_intent_status_after") == 503
+        )
+    elif schema == "vowpic.google-auth-only-watchdog-evidence.v1":
+        valid = (
+            payload.get("sessions_zero") is True
+            and payload.get("bindings_zero") is True
+        )
+    else:
+        valid = False
+    if not valid:
+        raise ValueError("GOOGLE_AUTH_ONLY completion evidence is incomplete")
+    return payload
+
+
+def _load_release_module(name: str) -> Any:
+    path = Path(__file__).resolve().with_name(f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"vowpic_release_{name}", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load release helper {name}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def reap_expired_activations(
+    database_url: str,
+    *,
+    activation_plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Idempotently restore OFF and clean every expired Google acceptance lease."""
+
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    with psycopg2.connect(_database_url(database_url)) as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (PRODUCTION_ACTIVATION_FENCE,),
+            )
+            cursor.execute(
+                """
+                SELECT source_sha, api_deployment_id, approval
+                FROM release_activations
+                WHERE environment = 'production' AND kind = %s
+                  AND phase = 'ACCEPTANCE_READY'
+                  AND reservation_expires_at IS NOT NULL
+                  AND reservation_expires_at <= CURRENT_TIMESTAMP
+                ORDER BY created_at, id
+                """,
+                (KIND,),
+            )
+            expired = [dict(row) for row in cursor.fetchall()]
+
+    apply_module = _load_release_module("apply_activation_plan")
+    session_module = _load_release_module("cleanup_google_auth_sessions")
+    binding_module = _load_release_module("cleanup_acceptance_bindings")
+    reaped: list[dict[str, str]] = []
+    for activation in expired:
+        source_sha = str(activation["source_sha"])
+        deployment_id = str(activation["api_deployment_id"])
+        approval = str(activation["approval"])
+        apply_module.apply_phase(
+            database_url,
+            phase="emergency-off",
+            plan=activation_plan,
+            approval=approval,
+            kind=KIND,
+            deployment_id=deployment_id,
+            source_sha=source_sha,
+            binding_report=None,
+        )
+        session_report = session_module.cleanup_sessions(
+            database_url,
+            deployment_id=deployment_id,
+            approval=approval,
+        )
+        binding_report = binding_module.cleanup_bindings(
+            database_url,
+            deployment_id=deployment_id,
+            approval=approval,
+            kind=KIND,
+            require_zero_unused=True,
+        )
+        if (
+            session_report.get("passed") is not True
+            or session_report.get("after_unrevoked") != 0
+        ):
+            raise RuntimeError("expired GOOGLE_AUTH_ONLY sessions remain after cleanup")
+        if (
+            binding_report.get("passed") is not True
+            or binding_report.get("after", {}).get("unused_unrevoked") != 0
+            or binding_report.get("after", {}).get("active_unused") != 0
+        ):
+            raise RuntimeError("expired GOOGLE_AUTH_ONLY bindings remain after cleanup")
+        evidence = _canonical(
+            {
+                "schema": "vowpic.google-auth-only-watchdog-evidence.v1",
+                "passed": True,
+                "source_sha": source_sha,
+                "deployment_id": deployment_id,
+                "sessions_zero": True,
+                "bindings_zero": True,
+            }
+        )
+        complete_activation(
+            database_url,
+            source_sha=source_sha,
+            deployment_id=deployment_id,
+            approval=approval,
+            completion_evidence=evidence,
+        )
+        reaped.append({"source_sha": source_sha, "deployment_id": deployment_id})
+    return {
+        "schema": "vowpic.google-auth-only-watchdog-report.v1",
+        "passed": True,
+        "reaped_count": len(reaped),
+        "reaped": reaped,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _write_create_once(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8", newline="\n") as handle:
@@ -289,12 +442,13 @@ def _write_create_once(path: Path, payload: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("reserve", "complete"))
-    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("action", choices=("reserve", "complete", "reap-expired"))
+    parser.add_argument("--source-sha")
     parser.add_argument("--deployment-id")
     parser.add_argument("--base-url")
     parser.add_argument("--runtime-report")
     parser.add_argument("--completion-evidence")
+    parser.add_argument("--activation-plan", default="release/activation-plan.json")
     parser.add_argument("--database-url-env", default="PRODUCTION_MIGRATION_DATABASE_URL")
     parser.add_argument("--approval-id-env", default="PRODUCTION_ACCEPTANCE_APPROVAL_ID")
     parser.add_argument("--output", required=True)
@@ -302,7 +456,7 @@ def main() -> int:
     try:
         source_sha = str(args.source_sha or "").strip().lower()
         approval = os.environ.get(args.approval_id_env, "").strip()
-        if not SOURCE_SHA.fullmatch(source_sha):
+        if args.action != "reap-expired" and not SOURCE_SHA.fullmatch(source_sha):
             raise ValueError("GOOGLE_AUTH_ONLY source SHA is invalid")
         if not approval or len(approval) > 160:
             raise ValueError("GOOGLE_AUTH_ONLY approval is required")
@@ -323,7 +477,7 @@ def main() -> int:
                 workflow_run_id=str(os.environ.get("GITHUB_RUN_ID") or "local"),
                 workflow_attempt=int(os.environ.get("GITHUB_RUN_ATTEMPT") or "1"),
             )
-        else:
+        elif args.action == "complete":
             deployment_id = str(args.deployment_id or "").strip()
             if not DEPLOYMENT_ID.fullmatch(deployment_id) or not args.completion_evidence:
                 raise ValueError("complete requires exact deployment and completion evidence")
@@ -334,6 +488,11 @@ def main() -> int:
                 approval=approval,
                 completion_evidence=Path(args.completion_evidence).read_bytes(),
             )
+        else:
+            plan = json.loads(Path(args.activation_plan).read_text(encoding="utf-8"))
+            if not isinstance(plan, dict):
+                raise ValueError("GOOGLE_AUTH_ONLY activation plan must be an object")
+            report = reap_expired_activations(database_url, activation_plan=plan)
         _write_create_once(Path(args.output), report)
         return 0
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:

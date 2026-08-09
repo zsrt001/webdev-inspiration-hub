@@ -13,6 +13,7 @@ import jwt
 from jwt import PyJWTError
 
 from app.core.config import get_settings
+from app.core.google_identity import normalize_google_email
 
 
 @dataclass(frozen=True)
@@ -84,11 +85,24 @@ def _google_provider(metadata: dict[str, Any]) -> bool:
     return provider == "google" and isinstance(providers, list) and "google" in providers
 
 
-def _has_google_identity(user_record: dict[str, Any]) -> bool:
+def _verified_google_identity_email(user_record: dict[str, Any]) -> str:
     identities = user_record.get("identities")
     if not isinstance(identities, list):
-        return False
-    return any(isinstance(item, dict) and item.get("provider") == "google" for item in identities)
+        raise SupabaseAuthError("supabase_google_identity_missing")
+    matches: list[str] = []
+    for item in identities:
+        if not isinstance(item, dict) or item.get("provider") != "google":
+            continue
+        identity_data = _dict(item.get("identity_data"))
+        if identity_data.get("email_verified") is not True:
+            continue
+        try:
+            matches.append(normalize_google_email(identity_data.get("email")))
+        except ValueError:
+            continue
+    if len(matches) != 1:
+        raise SupabaseAuthError("supabase_google_identity_ambiguous")
+    return matches[0]
 
 
 def _has_oauth_amr(payload: dict[str, Any]) -> bool:
@@ -149,22 +163,22 @@ def parse_supabase_claims(
     broker_app_metadata = _dict(user_record.get("app_metadata"))
     if not _google_provider(signed_app_metadata) or not _google_provider(broker_app_metadata):
         raise SupabaseAuthError("supabase_google_provider_required")
-    if not _has_google_identity(user_record):
-        raise SupabaseAuthError("supabase_google_identity_missing")
+    google_identity_email = _verified_google_identity_email(user_record)
 
     broker_subject = _uuid_text(user_record.get("id"), field="broker_subject")
     if broker_subject != subject:
         raise SupabaseAuthError("supabase_broker_subject_mismatch")
-    signed_email = (_first_text(payload.get("email")) or "").lower()
-    broker_email = (_first_text(user_record.get("email")) or "").lower()
-    if not signed_email or signed_email != broker_email:
+    try:
+        signed_email = normalize_google_email(payload.get("email"))
+        broker_email = normalize_google_email(user_record.get("email"))
+    except ValueError as exc:
+        raise SupabaseAuthError("supabase_broker_email_invalid") from exc
+    if signed_email != broker_email or broker_email != google_identity_email:
         raise SupabaseAuthError("supabase_broker_email_mismatch")
-    broker_user_metadata = _dict(user_record.get("user_metadata"))
-    email_confirmed = bool(_first_text(user_record.get("email_confirmed_at")))
-    email_verified = broker_user_metadata.get("email_verified") is True
-    if not (email_confirmed or email_verified):
+    if not _first_text(user_record.get("email_confirmed_at")):
         raise SupabaseAuthError("supabase_email_unverified")
 
+    broker_user_metadata = _dict(user_record.get("user_metadata"))
     signed_user_metadata = _dict(payload.get("user_metadata"))
     nickname = _first_text(
         broker_user_metadata.get("name"),

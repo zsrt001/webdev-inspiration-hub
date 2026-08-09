@@ -53,8 +53,10 @@ def encode_access_token(
     now: datetime | None = None,
 ) -> str:
     current = now or datetime.now(timezone.utc)
+    if session.expires_at.tzinfo is None or session.expires_at <= current:
+        raise ValueError("session is expired")
     issued_at = int(current.timestamp())
-    expires_at = int((current + ACCESS_TTL).timestamp())
+    expires_at = int(min(current + ACCESS_TTL, session.expires_at).timestamp())
     payload = {
         "iss": ACCESS_ISSUER,
         "aud": ACCESS_AUDIENCE,
@@ -74,17 +76,25 @@ def set_session_cookies(
     access_token: str,
     refresh_token: str,
     csrf_token: str,
+    now: datetime | None = None,
+    session_expires_at: datetime | None = None,
 ) -> None:
+    current = now or datetime.now(timezone.utc)
+    effective_expiry = session_expires_at or (current + REFRESH_TTL)
+    if current.tzinfo is None or effective_expiry.tzinfo is None or effective_expiry <= current:
+        raise ValueError("session cookie expiry is invalid")
+    refresh_seconds = max(1, int((effective_expiry - current).total_seconds()))
+    access_seconds = max(1, min(int(ACCESS_TTL.total_seconds()), refresh_seconds))
     response.set_cookie(
-        ACCESS_COOKIE, access_token, max_age=int(ACCESS_TTL.total_seconds()),
+        ACCESS_COOKIE, access_token, max_age=access_seconds,
         path="/api/v1", secure=True, httponly=True, samesite="lax",
     )
     response.set_cookie(
-        REFRESH_COOKIE, refresh_token, max_age=int(REFRESH_TTL.total_seconds()),
+        REFRESH_COOKIE, refresh_token, max_age=refresh_seconds,
         path="/api/v1/auth/refresh", secure=True, httponly=True, samesite="strict",
     )
     response.set_cookie(
-        CSRF_COOKIE, csrf_token, max_age=int(REFRESH_TTL.total_seconds()),
+        CSRF_COOKIE, csrf_token, max_age=refresh_seconds,
         path="/", secure=True, httponly=False, samesite="lax",
     )
 
@@ -145,8 +155,12 @@ async def issue_session(
     identity_id: uuid.UUID,
     now: datetime | None = None,
     acceptance_binding_id: uuid.UUID | None = None,
+    expires_at: datetime | None = None,
 ) -> AuthSession:
     current = now or datetime.now(timezone.utc)
+    effective_expiry = expires_at or (current + REFRESH_TTL)
+    if effective_expiry.tzinfo is None or effective_expiry <= current:
+        raise ValueError("session expiry is invalid")
     await ensure_welcome_grant_for_identity(
         db,
         identity_id=identity_id,
@@ -160,7 +174,7 @@ async def issue_session(
         family_id=uuid.uuid4(),
         token_version=1,
         csrf_token_hash=hash_secret(raw_csrf),
-        expires_at=current + REFRESH_TTL,
+        expires_at=effective_expiry,
     )
     db.add(session)
     await db.flush()
@@ -170,7 +184,7 @@ async def issue_session(
             generation=1,
             token_hash=hash_secret(raw_refresh),
             status=RefreshTokenStatus.ACTIVE,
-            expires_at=current + REFRESH_TTL,
+            expires_at=effective_expiry,
         )
     )
     await db.flush()
@@ -179,6 +193,68 @@ async def issue_session(
         access_token=encode_access_token(session, user.id, now=current),
         refresh_token=raw_refresh,
         csrf_token=raw_csrf,
+        now=current,
+        session_expires_at=effective_expiry,
+    )
+    return session
+
+
+async def recover_acceptance_session(
+    db: AsyncSession,
+    user: User,
+    response: Response,
+    *,
+    acceptance_binding_id: uuid.UUID,
+    now: datetime | None = None,
+) -> AuthSession:
+    """Re-key the one immutable binding-linked family after response loss."""
+
+    current = now or datetime.now(timezone.utc)
+    session_result = await db.execute(
+        select(AuthSession)
+        .where(AuthSession.acceptance_binding_id == acceptance_binding_id)
+        .with_for_update()
+    )
+    session = session_result.scalar_one_or_none()
+    if (
+        session is None
+        or session.user_id != user.id
+        or session.revoked_at is not None
+        or session.expires_at.tzinfo is None
+        or session.expires_at <= current
+    ):
+        raise SessionServiceError("acceptance_session_unrecoverable", status_code=409)
+    tokens_result = await db.execute(
+        select(AuthRefreshToken)
+        .where(AuthRefreshToken.session_id == session.id)
+        .order_by(AuthRefreshToken.generation.asc())
+        .with_for_update()
+    )
+    tokens = list(tokens_result.scalars().all())
+    for token in tokens:
+        if _status(token.status) != RefreshTokenStatus.REVOKED.value:
+            token.status = RefreshTokenStatus.REVOKED
+            token.revoked_at = current
+    raw_refresh = secrets.token_urlsafe(48)
+    raw_csrf = secrets.token_urlsafe(32)
+    session.token_version = int(session.token_version) + 1
+    session.csrf_token_hash = hash_secret(raw_csrf)
+    replacement = AuthRefreshToken(
+        session_id=session.id,
+        generation=max((int(token.generation) for token in tokens), default=0) + 1,
+        token_hash=hash_secret(raw_refresh),
+        status=RefreshTokenStatus.ACTIVE,
+        expires_at=session.expires_at,
+    )
+    db.add(replacement)
+    await db.flush()
+    set_session_cookies(
+        response,
+        access_token=encode_access_token(session, user.id, now=current),
+        refresh_token=raw_refresh,
+        csrf_token=raw_csrf,
+        now=current,
+        session_expires_at=session.expires_at,
     )
     return session
 
@@ -187,16 +263,16 @@ async def _locked_refresh_context(
     db: AsyncSession,
     raw_refresh: str,
 ) -> tuple[AuthRefreshToken, AuthSession, list[AuthRefreshToken], User]:
-    token_result = await db.execute(
-        select(AuthRefreshToken)
-        .where(AuthRefreshToken.token_hash == hash_secret(raw_refresh))
-        .with_for_update()
+    token_hash = hash_secret(raw_refresh)
+    token_locator = await db.execute(
+        select(AuthRefreshToken.session_id)
+        .where(AuthRefreshToken.token_hash == token_hash)
     )
-    token = token_result.scalar_one_or_none()
-    if token is None:
+    session_id = token_locator.scalar_one_or_none()
+    if session_id is None:
         raise SessionServiceError("refresh_invalid", clear_session=True)
     session_result = await db.execute(
-        select(AuthSession).where(AuthSession.id == token.session_id).with_for_update()
+        select(AuthSession).where(AuthSession.id == session_id).with_for_update()
     )
     session = session_result.scalar_one_or_none()
     if session is None:
@@ -208,6 +284,9 @@ async def _locked_refresh_context(
         .with_for_update()
     )
     tokens = list(tokens_result.scalars().all())
+    token = next((item for item in tokens if item.token_hash == token_hash), None)
+    if token is None:
+        raise SessionServiceError("refresh_invalid", clear_session=True)
     user_result = await db.execute(select(User).where(User.id == session.user_id))
     user = user_result.scalar_one_or_none()
     if user is None:
@@ -280,6 +359,8 @@ async def rotate_session(
         access_token=encode_access_token(session, user.id, now=current),
         refresh_token=raw_replacement,
         csrf_token=raw_csrf,
+        now=current,
+        session_expires_at=session.expires_at,
     )
     return user
 

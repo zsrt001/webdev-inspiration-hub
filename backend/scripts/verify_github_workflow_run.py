@@ -18,6 +18,10 @@ import httpx
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_WORKFLOW_PATH = ".github/workflows/integration.yml"
+WORKFLOW_EVENTS = {
+    EXPECTED_WORKFLOW_PATH: "workflow_dispatch",
+    ".github/workflows/google-auth-protected-privacy.yml": "push",
+}
 
 
 def _canonical(value: Any) -> bytes:
@@ -36,13 +40,16 @@ def validate_workflow_run(
     run_id: str,
     run_attempt: int,
     source_sha: str,
+    workflow_path: str = EXPECTED_WORKFLOW_PATH,
 ) -> dict[str, Any]:
+    expected_event = WORKFLOW_EVENTS.get(workflow_path)
     if (
         not REPOSITORY.fullmatch(repository)
         or not run_id.isdigit()
         or int(run_id) < 1
         or run_attempt < 1
         or not SHA40.fullmatch(source_sha)
+        or expected_event is None
     ):
         raise ValueError("GitHub workflow coordinates are invalid")
     updated_at = datetime.fromisoformat(
@@ -55,10 +62,10 @@ def validate_workflow_run(
         or int(payload.get("run_attempt") or 0) != run_attempt
         or payload.get("head_sha") != source_sha
         or payload.get("head_branch") != "main"
-        or payload.get("event") != "workflow_dispatch"
+        or payload.get("event") != expected_event
         or payload.get("status") != "completed"
         or payload.get("conclusion") != "success"
-        or payload.get("path") != EXPECTED_WORKFLOW_PATH
+        or payload.get("path") != workflow_path
         or repository_payload.get("full_name") != repository
         or updated_at.tzinfo is None
         or updated_at.utcoffset() is None
@@ -70,10 +77,10 @@ def validate_workflow_run(
         "run_attempt": run_attempt,
         "head_sha": source_sha,
         "head_branch": "main",
-        "event": "workflow_dispatch",
+        "event": expected_event,
         "status": "completed",
         "conclusion": "success",
-        "path": EXPECTED_WORKFLOW_PATH,
+        "path": workflow_path,
         "updated_at": updated_at.isoformat(),
     }
     return {
@@ -91,6 +98,7 @@ def verify_workflow_run(
     run_attempt: int,
     source_sha: str,
     token: str,
+    workflow_path: str = EXPECTED_WORKFLOW_PATH,
 ) -> dict[str, Any]:
     if not token:
         raise ValueError("GitHub token is missing")
@@ -119,6 +127,7 @@ def verify_workflow_run(
         run_id=run_id,
         run_attempt=run_attempt,
         source_sha=source_sha,
+        workflow_path=workflow_path,
     )
 
 
@@ -128,6 +137,11 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True, type=int)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument(
+        "--workflow-path",
+        choices=sorted(WORKFLOW_EVENTS),
+        default=EXPECTED_WORKFLOW_PATH,
+    )
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -138,6 +152,7 @@ def main() -> int:
             run_attempt=args.run_attempt,
             source_sha=args.source_sha.strip().lower(),
             token=os.environ.get(args.token_env, "").strip(),
+            workflow_path=args.workflow_path,
         )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
