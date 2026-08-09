@@ -235,3 +235,47 @@ class PreviewReleasePackageTest(unittest.TestCase):
                     source_sha=SOURCE_SHA,
                     workflow_path=workflow_path,
                 )
+
+    def test_github_attempt_accepts_only_the_exact_ci_push(self) -> None:
+        workflow_path = ".github/workflows/ci.yml"
+        payload = {
+            "id": int(RUN_ID),
+            "run_attempt": RUN_ATTEMPT,
+            "head_sha": SOURCE_SHA,
+            "head_branch": "main",
+            "event": "push",
+            "status": "completed",
+            "conclusion": "success",
+            "path": workflow_path,
+            "updated_at": "2026-08-09T12:00:00Z",
+            "repository": {"full_name": "zsrt001/webdev-inspiration-hub"},
+        }
+        proof = validate_workflow_run(
+            payload,
+            repository="zsrt001/webdev-inspiration-hub",
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            source_sha=SOURCE_SHA,
+            workflow_path=workflow_path,
+        )
+        self.assertTrue(proof["passed"])
+        self.assertEqual(proof["event"], "push")
+        self.assertEqual(proof["path"], workflow_path)
+
+        for label, changes in {
+            "wrong_event": {"event": "workflow_dispatch"},
+            "wrong_workflow": {"path": ".github/workflows/integration.yml"},
+            "wrong_sha": {"head_sha": "b" * 40},
+            "failed": {"conclusion": "failure"},
+        }.items():
+            with self.subTest(case=label), self.assertRaisesRegex(
+                ValueError, "exact successful"
+            ):
+                validate_workflow_run(
+                    {**payload, **changes},
+                    repository="zsrt001/webdev-inspiration-hub",
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    source_sha=SOURCE_SHA,
+                    workflow_path=workflow_path,
+                )
