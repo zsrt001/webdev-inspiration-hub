@@ -113,59 +113,82 @@ class WorkflowFalseGreenTest(unittest.TestCase):
             ROOT / "frontend/e2e/google-oauth-handoff-readiness.spec.ts"
         ).read_text(encoding="utf-8")
 
-        def assert_context_wide_google_boundary(source: str) -> None:
+        def assert_source_free_first_hop_boundary(source: str) -> None:
             self.assertIn("test.use({ serviceWorkers: 'block' })", source)
-            self.assertIn("context.route('https://accounts.google.com/**'", source)
-            self.assertIn("const googleDocument = new Promise<string>", source)
-            self.assertIn("resolveGoogleDocument(outgoing.url())", source)
+            self.assertIn("context.route(`${supabaseOrigin}/auth/v1/authorize**`", source)
+            self.assertIn("const authorizeNavigation = new Promise<string>", source)
+            self.assertIn("resolveAuthorizeNavigation(outgoing.url())", source)
             self.assertIn("outgoing.resourceType() === 'document'", source)
-            self.assertIn("url.pathname === '/o/oauth2/v2/auth'", source)
-            self.assertIn("oauthDocumentAborted = true", source)
-            self.assertIn("expect(googleResponses).toEqual([])", source)
-            self.assertNotIn("const googleRequest = page.waitForRequest", source)
-            self.assertNotIn("const googleRequest = context.waitForEvent", source)
-            route_start = source.index(
-                "context.route('https://accounts.google.com/**'"
-            )
-            abort_complete = source.index(
-                "await route.abort('blockedbyclient')", route_start
-            )
-            abort_proof = source.index("oauthDocumentAborted = true", route_start)
-            document_resolved = source.index(
-                "resolveGoogleDocument(outgoing.url())", route_start
-            )
-            self.assertLess(abort_complete, abort_proof)
-            self.assertLess(abort_proof, document_resolved)
+            self.assertIn("url.pathname === '/auth/v1/authorize'", source)
+            self.assertIn("resolveAuthorizeAbort()", source)
+            self.assertIn("expect(browserGoogleRequests).toEqual([])", source)
+            self.assertIn("expect(browserGoogleResponses).toEqual([])", source)
+            self.assertIn("maxRedirects: 0", source)
+            self.assertIn("firstHopResponse.headers().location", source)
+            self.assertIn("google_redirect_followed: false", source)
+            self.assertIn("within(authorizeNavigation", source)
+            self.assertIn("15_000", source)
+            self.assertNotIn("context.route('https://accounts.google.com/**'", source)
             self.assertNotIn("page.route('https://accounts.google.com/**'", source)
+            route_start = source.index(
+                "context.route(`${supabaseOrigin}/auth/v1/authorize**`"
+            )
+            route_end = source.index("await page.goto('/pages/auth/login')", route_start)
+            self.assertNotIn("accounts.google.com", source[route_start:route_end])
+            first_hop = source.index("request.get(authorizeURL.toString()")
+            google_parse = source.index("new URL(googleLocation)", first_hop)
+            self.assertIn("maxRedirects: 0", source[first_hop:google_parse])
+            no_follow = source.index("maxRedirects: 0", first_hop, google_parse)
+            self.assertLess(first_hop, no_follow)
+            self.assertLess(no_follow, google_parse)
 
-        assert_context_wide_google_boundary(readiness)
+        assert_source_free_first_hop_boundary(readiness)
         for label, mutated in {
-            "popup_escape": readiness.replace(
+            "browser_google_route": readiness.replace(
+                "context.route(`${supabaseOrigin}/auth/v1/authorize**`",
                 "context.route('https://accounts.google.com/**'",
-                "page.route('https://accounts.google.com/**'",
                 1,
             ),
-            "detached_request_observer": readiness.replace(
-                "const googleDocument = new Promise<string>",
-                "const googleDocument = context.waitForEvent",
+            "follow_redirect": readiness.replace(
+                "const firstHopResponse = await request.get(authorizeURL.toString(), {\n"
+                "    failOnStatusCode: false,\n"
+                "    maxRedirects: 0,",
+                "const firstHopResponse = await request.get(authorizeURL.toString(), {\n"
+                "    failOnStatusCode: false,\n"
+                "    maxRedirects: 1,",
                 1,
             ),
             "service_worker_escape": readiness.replace(
                 "test.use({ serviceWorkers: 'block' })", "", 1
             ),
-            "resolve_before_abort": readiness.replace(
-                "await route.abort('blockedbyclient');\n      oauthDocumentAborted = true;",
-                "oauthDocumentAborted = true;\n      await route.abort('blockedbyclient');",
+            "missing_zero_request_proof": readiness.replace(
+                "expect(browserGoogleRequests).toEqual([]);", "", 1
+            ),
+            "missing_zero_response_proof": readiness.replace(
+                "expect(browserGoogleResponses).toEqual([]);", "", 1
+            ),
+            "missing_deadline": readiness.replace(
+                "within(authorizeNavigation", "Promise.resolve(authorizeNavigation", 1
+            ),
+            "false_receipt_claim": readiness.replace(
+                "google_redirect_followed: false", "google_redirect_followed: true", 1
+            ),
+            "browser_google_request_authority": readiness.replace(
+                "const authorizeNavigation = new Promise<string>",
+                "const authorizeNavigation = context.waitForEvent",
                 1,
             ),
         }.items():
             with self.subTest(mutation=label), self.assertRaises(AssertionError):
-                assert_context_wide_google_boundary(mutated)
+                assert_source_free_first_hop_boundary(mutated)
 
         self.assertIn("RUN_GOOGLE_HANDOFF_E2E", self.playwright_config)
         self.assertIn("googleHandoffRun", self.playwright_config)
         self.assertIn("route.abort('blockedbyclient')", readiness)
         self.assertNotIn("interceptedGoogleURL", readiness)
+        self.assertNotIn("resolveGoogleDocument", readiness)
+        self.assertIn("within(authorizeNavigation", readiness)
+        self.assertIn("15_000", readiness)
         self.assertIn("/auth/v1/authorize", readiness)
         self.assertIn("code_challenge", readiness)
         self.assertIn("code_challenge_method", readiness)
