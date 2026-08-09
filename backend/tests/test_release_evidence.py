@@ -112,10 +112,41 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         readiness = (
             ROOT / "frontend/e2e/google-oauth-handoff-readiness.spec.ts"
         ).read_text(encoding="utf-8")
+
+        def assert_context_wide_google_boundary(source: str) -> None:
+            self.assertIn("test.use({ serviceWorkers: 'block' })", source)
+            self.assertIn("context.waitForEvent('request'", source)
+            self.assertIn("context.route('https://accounts.google.com/**'", source)
+            self.assertIn("outgoing.resourceType() === 'document'", source)
+            self.assertIn("url.pathname === '/o/oauth2/v2/auth'", source)
+            self.assertIn("oauthDocumentAborted = true", source)
+            self.assertIn("expect(googleResponses).toEqual([])", source)
+            self.assertNotIn("const googleRequest = page.waitForRequest", source)
+            self.assertNotIn("page.route('https://accounts.google.com/**'", source)
+
+        assert_context_wide_google_boundary(readiness)
+        for label, mutated in {
+            "popup_escape": readiness.replace(
+                "context.route('https://accounts.google.com/**'",
+                "page.route('https://accounts.google.com/**'",
+                1,
+            ),
+            "page_scoped_listener": readiness.replace(
+                "const googleRequest = context.waitForEvent('request'",
+                "const googleRequest = page.waitForRequest",
+                1,
+            ),
+            "service_worker_escape": readiness.replace(
+                "test.use({ serviceWorkers: 'block' })", "", 1
+            ),
+        }.items():
+            with self.subTest(mutation=label), self.assertRaises(AssertionError):
+                assert_context_wide_google_boundary(mutated)
+
         self.assertIn("RUN_GOOGLE_HANDOFF_E2E", self.playwright_config)
         self.assertIn("googleHandoffRun", self.playwright_config)
-        self.assertIn("page.route('https://accounts.google.com/**'", readiness)
         self.assertIn("route.abort('blockedbyclient')", readiness)
+        self.assertNotIn("interceptedGoogleURL", readiness)
         self.assertIn("/auth/v1/authorize", readiness)
         self.assertIn("code_challenge", readiness)
         self.assertIn("code_challenge_method", readiness)

@@ -23,8 +23,9 @@ test.skip(
   process.env.RUN_GOOGLE_HANDOFF_E2E !== '1',
   'source-free Google OAuth handoff readiness runs only in its bounded Preview mode',
 );
+test.use({ serviceWorkers: 'block' });
 
-test('Google PKCE handoff is ready without contacting the Google login UI', async ({ page, request }) => {
+test('Google PKCE handoff is ready without contacting the Google login UI', async ({ context, page, request }) => {
   expect(sourceSha).toMatch(/^[0-9a-f]{40}$/);
   expect(workflowRunId).toMatch(/^[1-9][0-9]{0,19}$/);
   expect(workflowAttempt).toMatch(/^[1-9][0-9]{0,9}$/);
@@ -57,9 +58,30 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
   });
   expect(sessionResponse.status()).toBe(401);
 
-  let interceptedGoogleURL = '';
-  await page.route('https://accounts.google.com/**', async (route) => {
-    interceptedGoogleURL = route.request().url();
+  const googleRequest = context.waitForEvent('request', { predicate: (outgoing) => {
+    const url = new URL(outgoing.url());
+    return (
+      outgoing.resourceType() === 'document'
+      && url.origin === 'https://accounts.google.com'
+      && url.pathname === '/o/oauth2/v2/auth'
+    );
+  } });
+  let oauthDocumentAborted = false;
+  const googleResponses: string[] = [];
+  context.on('response', (response) => {
+    if (new URL(response.url()).origin === 'https://accounts.google.com') {
+      googleResponses.push(response.url());
+    }
+  });
+  await context.route('https://accounts.google.com/**', async (route) => {
+    const outgoing = route.request();
+    const url = new URL(outgoing.url());
+    if (
+      outgoing.resourceType() === 'document'
+      && url.pathname === '/o/oauth2/v2/auth'
+    ) {
+      oauthDocumentAborted = true;
+    }
     await route.abort('blockedbyclient');
   });
   const authorizeRequest = page.waitForRequest((outgoing) => {
@@ -73,8 +95,9 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
   await expect(googleButton).toBeEnabled();
   await googleButton.click();
   const authorizeURL = new URL((await authorizeRequest).url());
-  await expect.poll(() => interceptedGoogleURL, { timeout: 30_000 }).not.toBe('');
-  const googleURL = new URL(interceptedGoogleURL);
+  const googleURL = new URL((await googleRequest).url());
+  await expect.poll(() => oauthDocumentAborted).toBe(true);
+  expect(googleResponses).toEqual([]);
 
   expect(authorizeURL.origin).toBe(supabaseOrigin);
   expect(authorizeURL.pathname).toBe('/auth/v1/authorize');
@@ -84,6 +107,7 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
   expect(authorizeURL.searchParams.get('code_challenge_method')?.toLowerCase()).toBe('s256');
 
   expect(googleURL.origin).toBe('https://accounts.google.com');
+  expect(googleURL.pathname).toBe('/o/oauth2/v2/auth');
   expect(googleURL.searchParams.get('client_id')).toBeTruthy();
   expect(googleURL.searchParams.get('redirect_uri')).toBe(`${supabaseOrigin}/auth/v1/callback`);
   expect(googleURL.searchParams.get('response_type')).toBe('code');
