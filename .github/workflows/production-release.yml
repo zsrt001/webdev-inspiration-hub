@@ -876,6 +876,13 @@ jobs:
           . "$RUNNER_TEMP/release.env"
           set +a
           cat "$RUNNER_TEMP/release.env" >> "$GITHUB_ENV"
+          python scripts/release/resolve_google_acceptance_subjects.py \
+            --primary-email-env PRODUCTION_GOOGLE_EMAIL \
+            --partner-email-env PRODUCTION_GOOGLE_PARTNER_EMAIL \
+            --project-ref-env SUPABASE_PROJECT_REF \
+            --token-env SUPABASE_AUTH_CONFIG_TOKEN \
+            --resolved-output "$RUNNER_TEMP/production-google-subjects.json" \
+            --report-output "$RUNNER_TEMP/production-google-subject-resolution.json"
           python scripts/release/configure_staged_auth_origin.py add \
             --manifest "$RUNNER_TEMP/release-manifest.json" \
             --expected-manifest-sha256 "$RELEASE_MANIFEST_SHA256" \
@@ -886,13 +893,6 @@ jobs:
             --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
             --expires-in-seconds 7200 --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
             --output "$RUNNER_TEMP/auth-origin-add.json"
-          python scripts/release/resolve_google_acceptance_subjects.py \
-            --primary-email-env PRODUCTION_GOOGLE_EMAIL \
-            --partner-email-env PRODUCTION_GOOGLE_PARTNER_EMAIL \
-            --project-ref-env SUPABASE_PROJECT_REF \
-            --token-env SUPABASE_AUTH_CONFIG_TOKEN \
-            --resolved-output "$RUNNER_TEMP/production-google-subjects.json" \
-            --report-output "$RUNNER_TEMP/production-google-subject-resolution.json"
           python scripts/release/provision_acceptance_identity.py \
             --subjects-file "$RUNNER_TEMP/production-google-subjects.json" \
             --environment production --deployment-id "$RELEASE_STAGED_TARGET_DEPLOYMENT_ID" \

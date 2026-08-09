@@ -279,14 +279,12 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             {
                 "provider": "google",
                 "user_id": first,
-                "auth_email": "primary@example.com",
                 "identity_email": "primary@example.com",
                 "email_verified": True,
             },
             {
                 "provider": "google",
                 "user_id": second,
-                "auth_email": "partner@example.com",
                 "identity_email": "partner@example.com",
                 "email_verified": True,
             },
@@ -310,8 +308,38 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         email_call = client.post.call_args
         self.assertEqual(email_call.kwargs["json"]["parameters"], emails)
         self.assertNotIn("primary@example.com", email_call.kwargs["json"]["query"])
+        self.assertNotIn("LIMIT", email_call.kwargs["json"]["query"].upper())
         with self.assertRaisesRegex(ValueError, "one verified"):
             module.resolve_protected_emails(emails, email_rows[:1])
+        with self.assertRaisesRegex(ValueError, "one verified"):
+            module.resolve_protected_emails(
+                emails,
+                [
+                    {**email_rows[0], "identity_email": "different@example.com"},
+                    email_rows[1],
+                ],
+            )
+        with self.assertRaisesRegex(ValueError, "one verified"):
+            module.resolve_protected_emails(
+                emails,
+                [{**email_rows[0], "email_verified": "true"}, email_rows[1]],
+            )
+        with self.assertRaisesRegex(ValueError, "one verified"):
+            module.resolve_protected_emails(
+                emails,
+                [
+                    *email_rows,
+                    {**email_rows[0], "user_id": "33333333-3333-3333-3333-333333333333"},
+                ],
+            )
+
+        production_release = (
+            ROOT / ".github/workflows/production-release.yml"
+        ).read_text(encoding="utf-8")
+        self.assertLess(
+            production_release.index("resolve_google_acceptance_subjects.py"),
+            production_release.index("configure_staged_auth_origin.py add"),
+        )
 
     def test_auth_exchange_logs_stage_without_identity_or_token(self) -> None:
         source = (ROOT / "backend/app/routers/auth/google.py").read_text(encoding="utf-8")

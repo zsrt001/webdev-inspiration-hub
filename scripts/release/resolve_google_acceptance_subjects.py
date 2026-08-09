@@ -128,14 +128,11 @@ def resolve_protected_emails(
             user_id = str(UUID(str(row.get("user_id") or "").strip()))
         except ValueError as exc:
             raise ValueError("Supabase Google identity has an invalid user ID") from exc
-        if not bool(row.get("email_verified")):
+        if row.get("email_verified") is not True:
             continue
-        row_emails = {
-            str(row.get("auth_email") or "").strip().lower(),
-            str(row.get("identity_email") or "").strip().lower(),
-        }
+        identity_email = str(row.get("identity_email") or "").strip().lower()
         for email in emails:
-            if email in row_emails:
+            if email == identity_email:
                 matches_by_email[email].add(user_id)
     if any(len(matches_by_email[email]) != 1 for email in emails):
         raise ValueError("each protected Google account must resolve to one verified Supabase user")
@@ -173,23 +170,20 @@ def query_google_identities(
                 OR user_id::text IN ($1, $2)
                 OR identity_data->>'sub' IN ($1, $2)
               )
-            LIMIT 5
         """
     else:
         parameters = emails or []
         query = """
             SELECT identity.provider, identity.user_id::text AS user_id,
-                   auth_user.email AS auth_email,
                    identity.identity_data->>'email' AS identity_email,
-                   (auth_user.email_confirmed_at IS NOT NULL) AS email_verified
+                   (
+                     auth_user.email_confirmed_at IS NOT NULL
+                     AND identity.identity_data->>'email_verified' = 'true'
+                   ) AS email_verified
             FROM auth.identities AS identity
             JOIN auth.users AS auth_user ON auth_user.id = identity.user_id
             WHERE identity.provider = 'google'
-              AND (
-                lower(auth_user.email) IN ($1, $2)
-                OR lower(identity.identity_data->>'email') IN ($1, $2)
-              )
-            LIMIT 5
+              AND lower(identity.identity_data->>'email') IN ($1, $2)
         """
     response = client.post(
         f"{MANAGEMENT_API}/v1/projects/{clean_ref}/database/query/read-only",
