@@ -91,7 +91,6 @@ jobs:
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
-          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
@@ -265,7 +264,7 @@ jobs:
             --deployment-id "$GOOGLE_DEPLOYMENT_ID" \
             --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
             --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --hmac-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --hmac-key-env ACCEPTANCE_IDENTITY_HMAC_KEY \
             --timeout-seconds 1200 --poll-seconds 2 \
             --output "$RUNNER_TEMP/google-interactive-acceptance.json"
 
