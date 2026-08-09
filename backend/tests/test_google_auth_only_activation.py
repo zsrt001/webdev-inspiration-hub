@@ -140,7 +140,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "wait_for_google_auth_sessions.py",
             "--hmac-key-env ACCEPTANCE_IDENTITY_HMAC_KEY",
             "cleanup_google_auth_sessions.py",
-            "--timeout-seconds 1200",
+            "--timeout-seconds 1800",
             "google-interactive-acceptance.json",
             '"active_acceptance_sessions": active_sessions',
             "google-only-final-state.json",
