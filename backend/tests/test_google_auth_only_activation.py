@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -136,16 +137,19 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "--kind GOOGLE_AUTH_ONLY",
             "--phase google-auth-only",
             "--phase emergency-off",
-            "npm --prefix frontend run playwright:install",
+            "wait_for_google_auth_sessions.py",
+            "cleanup_google_auth_sessions.py",
+            "--timeout-seconds 1200",
+            "google-interactive-acceptance.json",
+            '"active_acceptance_sessions": active_sessions',
             "google-only-final-state.json",
             "manage_google_auth_only_activation.py complete",
         ):
             self.assertIn(required, source)
-        self.assertLess(
-            source.index("npm --prefix frontend run playwright:install"),
-            source.index("npm --prefix frontend run test:e2e"),
-        )
         for forbidden in (
+            "PRODUCTION_GOOGLE_STORAGE_STATE_BASE64",
+            "PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64",
+            "npm --prefix frontend run test:e2e",
             "images/generations",
             "orders/create",
             "payments/checkout",
@@ -157,6 +161,143 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "vercel promote",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_google_acceptance_session_cleanup_requires_zero_unrevoked(self) -> None:
+        module = _path_module(
+            "cleanup_google_auth_sessions",
+            ROOT / "scripts/release/cleanup_google_auth_sessions.py",
+        )
+        observed = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        report = module.build_cleanup_report(
+            deployment_id="dpl_target",
+            before_total=2,
+            before_unrevoked=2,
+            revoked_now=2,
+            after_unrevoked=0,
+            completed_at=observed,
+        )
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["revoked_now"], 2)
+        self.assertEqual(report["after_unrevoked"], 0)
+        failed = module.build_cleanup_report(
+            deployment_id="dpl_target",
+            before_total=2,
+            before_unrevoked=2,
+            revoked_now=1,
+            after_unrevoked=1,
+            completed_at=observed,
+        )
+        self.assertFalse(failed["passed"])
+
+    def test_interactive_google_acceptance_requires_two_bound_sessions_without_raw_ids(self) -> None:
+        module = _path_module(
+            "wait_for_google_auth_sessions",
+            ROOT / "scripts/release/wait_for_google_auth_sessions.py",
+        )
+        observed = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        bindings = [
+            {
+                "binding_id": "11111111-1111-1111-1111-111111111111",
+                "provider": "google",
+                "consumed_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "consumed_at": observed,
+                "revoked_at": None,
+                "session_id": "33333333-3333-3333-3333-333333333333",
+                "session_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            },
+            {
+                "binding_id": "22222222-2222-2222-2222-222222222222",
+                "provider": "google",
+                "consumed_user_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "consumed_at": observed,
+                "revoked_at": None,
+                "session_id": "44444444-4444-4444-4444-444444444444",
+                "session_user_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            },
+        ]
+        report = module.build_acceptance_report(
+            bindings,
+            source_sha="a" * 40,
+            deployment_id="dpl_target",
+            activation_id="55555555-5555-5555-5555-555555555555",
+            hmac_key="e" * 32,
+            observed_at=observed,
+        )
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["consumed_bindings"], 2)
+        self.assertEqual(report["distinct_users"], 2)
+        self.assertEqual(report["linked_sessions"], 2)
+        serialized = json.dumps(report, sort_keys=True)
+        for row in bindings:
+            self.assertNotIn(row["binding_id"], serialized)
+            self.assertNotIn(row["consumed_user_id"], serialized)
+            self.assertNotIn(row["session_id"], serialized)
+
+        pending = [{**bindings[0], "consumed_user_id": None, "consumed_at": None,
+                    "session_id": None, "session_user_id": None}, bindings[1]]
+        self.assertIsNone(
+            module.build_acceptance_report(
+                pending,
+                source_sha="a" * 40,
+                deployment_id="dpl_target",
+                activation_id="55555555-5555-5555-5555-555555555555",
+                hmac_key="e" * 32,
+                observed_at=observed,
+            )
+        )
+
+    def test_interactive_google_acceptance_rejects_duplicate_users_and_other_capabilities(self) -> None:
+        module = _path_module(
+            "wait_for_google_auth_sessions_boundary",
+            ROOT / "scripts/release/wait_for_google_auth_sessions.py",
+        )
+        observed = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        bindings = [
+            {
+                "binding_id": str(uuid4()),
+                "provider": "google",
+                "consumed_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "consumed_at": observed,
+                "revoked_at": None,
+                "session_id": str(uuid4()),
+                "session_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            }
+            for _ in range(2)
+        ]
+        with self.assertRaisesRegex(ValueError, "distinct users"):
+            module.build_acceptance_report(
+                bindings,
+                source_sha="a" * 40,
+                deployment_id="dpl_target",
+                activation_id="55555555-5555-5555-5555-555555555555",
+                hmac_key="e" * 32,
+                observed_at=observed,
+            )
+        flags = [
+            {
+                "capability": capability,
+                "state": "ACCEPTANCE_COHORT" if capability == "google_auth" else "OFF",
+                "deployment_id": "dpl_target" if capability == "google_auth" else None,
+                "release_activation_id": (
+                    "55555555-5555-5555-5555-555555555555"
+                    if capability == "google_auth" else None
+                ),
+                "expires_at": observed if capability == "google_auth" else None,
+            }
+            for capability in module.EXPECTED_CAPABILITIES
+        ]
+        module.validate_capability_boundary(
+            flags,
+            deployment_id="dpl_target",
+            activation_id="55555555-5555-5555-5555-555555555555",
+        )
+        next(row for row in flags if row["capability"] == "generation")["state"] = "ON"
+        with self.assertRaisesRegex(ValueError, "non-Google"):
+            module.validate_capability_boundary(
+                flags,
+                deployment_id="dpl_target",
+                activation_id="55555555-5555-5555-5555-555555555555",
+            )
 
 
 if __name__ == "__main__":

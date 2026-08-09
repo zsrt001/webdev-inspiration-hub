@@ -33,8 +33,6 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Prove exact deployed main and reserve GOOGLE_AUTH_ONLY
         env:
@@ -87,14 +85,10 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_ENV, `GOOGLE_DEPLOYMENT_ID=${report.deployment_id}\nGOOGLE_RUNTIME_BUNDLE_ID=${report.runtime_bundle_id}\nGOOGLE_MANIFEST_SHA256=${report.manifest_sha256}\n`);
           NODE
 
-      - name: Run two controlled Google sessions inside the single-capability boundary
+      - name: Wait for two interactive Google sessions inside the single-capability boundary
         env:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          PRODUCTION_GOOGLE_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_EMAIL }}
-          PRODUCTION_GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_STORAGE_STATE_BASE64 }}
-          PRODUCTION_GOOGLE_PARTNER_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_EMAIL }}
-          PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64 }}
           PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
           ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
@@ -103,12 +97,8 @@ jobs:
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
         run: |
           set -euo pipefail
-          npm ci --prefix frontend --ignore-scripts
-          npm --prefix frontend run playwright:install
           printf '%s' "$PRODUCTION_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/google-subjects.json"
-          printf '%s' "$PRODUCTION_GOOGLE_STORAGE_STATE_BASE64" | base64 --decode > "$RUNNER_TEMP/google-state.json"
-          printf '%s' "$PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64" | base64 --decode > "$RUNNER_TEMP/google-partner-state.json"
-          chmod 600 "$RUNNER_TEMP/google-subjects.json" "$RUNNER_TEMP/google-state.json" "$RUNNER_TEMP/google-partner-state.json"
+          chmod 600 "$RUNNER_TEMP/google-subjects.json"
 
           cleanup() {
             original_status=$?
@@ -122,6 +112,12 @@ jobs:
               --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
               --output "$RUNNER_TEMP/google-emergency-off.json"
             off_status=$?
+            python scripts/release/cleanup_google_auth_sessions.py \
+              --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+              --deployment-id "$GOOGLE_DEPLOYMENT_ID" \
+              --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+              --output "$RUNNER_TEMP/google-session-cleanup.json"
+            session_status=$?
             python scripts/release/cleanup_acceptance_bindings.py \
               --kind GOOGLE_AUTH_ONLY \
               --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
@@ -168,6 +164,19 @@ jobs:
                       (os.environ["GOOGLE_DEPLOYMENT_ID"],),
                   )
                   active_unused = int(cursor.fetchone()["active_unused"])
+                  cursor.execute(
+                      """
+                      SELECT COUNT(*)::integer AS active_sessions
+                      FROM auth_sessions AS session
+                      JOIN acceptance_identity_bindings AS binding
+                        ON binding.id = session.acceptance_binding_id
+                      WHERE binding.environment='production'
+                        AND binding.deployment_id=%s
+                        AND session.revoked_at IS NULL
+                      """,
+                      (os.environ["GOOGLE_DEPLOYMENT_ID"],),
+                  )
+                  active_sessions = int(cursor.fetchone()["active_sessions"])
           bound = (
               "deployment_id", "runtime_bundle_id", "worker_image_digest",
               "release_activation_id", "target_manifest_sha256", "expires_at",
@@ -191,10 +200,11 @@ jobs:
           public_off = set(capabilities) == expected and not any(capabilities.values())
           result = {
               "schema": "vowpic.google-auth-only-final-state.v1",
-              "passed": database_off and public_off and active_unused == 0 and intent.status_code == 503,
+              "passed": database_off and public_off and active_unused == 0 and active_sessions == 0 and intent.status_code == 503,
               "database_all_off": database_off,
               "public_all_off": public_off,
               "active_unused_bindings": active_unused,
+              "active_acceptance_sessions": active_sessions,
               "oauth_intent_status_after": intent.status_code,
           }
           Path(os.environ["RUNNER_TEMP"], "google-only-final-state.json").write_text(
@@ -214,9 +224,9 @@ jobs:
                 --output "$RUNNER_TEMP/google-activation-cleaned.json"
               complete_status=$?
             fi
-            rm -f "$RUNNER_TEMP/google-subjects.json" "$RUNNER_TEMP/google-state.json" "$RUNNER_TEMP/google-partner-state.json"
+            rm -f "$RUNNER_TEMP/google-subjects.json"
             if [[ "$original_status" -ne 0 ]]; then exit "$original_status"; fi
-            if [[ "$off_status" -ne 0 || "$binding_status" -ne 0 || "$verify_status" -ne 0 || "$complete_status" -ne 0 ]]; then exit 1; fi
+            if [[ "$off_status" -ne 0 || "$session_status" -ne 0 || "$binding_status" -ne 0 || "$verify_status" -ne 0 || "$complete_status" -ne 0 ]]; then exit 1; fi
           }
           trap cleanup EXIT
 
@@ -250,27 +260,14 @@ jobs:
           })().catch((error) => { console.error(error.message); process.exit(1); });
           NODE
 
-          export RUN_PRODUCTION_E2E=1
-          export PRODUCTION_SOURCE_SHA="$SOURCE_SHA"
-          export PRODUCTION_RUNTIME_BUNDLE_ID="$GOOGLE_RUNTIME_BUNDLE_ID"
-          export PRODUCTION_DEPLOYMENT_ID="$GOOGLE_DEPLOYMENT_ID"
-          export PRODUCTION_MANIFEST_SHA256="$GOOGLE_MANIFEST_SHA256"
-          export PRODUCTION_GOOGLE_STORAGE_STATE_PATH="$RUNNER_TEMP/google-state.json"
-          export AUTH_ACCEPTANCE_INPUT_PATH="$RUNNER_TEMP/google-primary-input.json"
-          npm --prefix frontend run test:e2e -- e2e/main-flow.spec.ts
-          COMMERCIAL_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/google-primary-input.json" \
-            node scripts/release/run_linked_commercial_acceptance.mjs \
-              --phase first-login-and-auth-security --base-url "$PRODUCTION_BASE_URL" \
-              --output "$RUNNER_TEMP/google-primary-acceptance.json"
-
-          export PRODUCTION_GOOGLE_EMAIL="$PRODUCTION_GOOGLE_PARTNER_EMAIL"
-          export PRODUCTION_GOOGLE_STORAGE_STATE_PATH="$RUNNER_TEMP/google-partner-state.json"
-          export AUTH_ACCEPTANCE_INPUT_PATH="$RUNNER_TEMP/google-partner-input.json"
-          npm --prefix frontend run test:e2e -- e2e/main-flow.spec.ts
-          COMMERCIAL_ACCEPTANCE_INPUT_FILE="$RUNNER_TEMP/google-partner-input.json" \
-            node scripts/release/run_linked_commercial_acceptance.mjs \
-              --phase first-login-and-auth-security --base-url "$PRODUCTION_BASE_URL" \
-              --output "$RUNNER_TEMP/google-partner-acceptance.json"
+          python scripts/release/wait_for_google_auth_sessions.py \
+            --source-sha "$SOURCE_SHA" \
+            --deployment-id "$GOOGLE_DEPLOYMENT_ID" \
+            --database-url-env PRODUCTION_READ_ONLY_DATABASE_URL \
+            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+            --hmac-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
+            --timeout-seconds 1200 --poll-seconds 2 \
+            --output "$RUNNER_TEMP/google-interactive-acceptance.json"
 
       - name: Upload sanitized Google-only evidence
         if: ${{ always() }}
@@ -283,9 +280,9 @@ jobs:
             ${{ runner.temp }}/google-formal-callback.json
             ${{ runner.temp }}/google-identity-bindings.json
             ${{ runner.temp }}/google-auth-cohort.json
-            ${{ runner.temp }}/google-primary-acceptance.json
-            ${{ runner.temp }}/google-partner-acceptance.json
+            ${{ runner.temp }}/google-interactive-acceptance.json
             ${{ runner.temp }}/google-emergency-off.json
+            ${{ runner.temp }}/google-session-cleanup.json
             ${{ runner.temp }}/google-binding-cleanup.json
             ${{ runner.temp }}/google-only-final-state.json
             ${{ runner.temp }}/google-activation-cleaned.json
