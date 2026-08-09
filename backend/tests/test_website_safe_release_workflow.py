@@ -116,6 +116,19 @@ class WebsiteSafeReleaseWorkflowTest(unittest.TestCase):
             self.source,
         )
 
+    def test_injects_the_same_protected_acceptance_identity_key_into_both_targets(self) -> None:
+        self.assertIn(
+            "ACCEPTANCE_IDENTITY_HMAC_KEY: "
+            "${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}",
+            self.source,
+        )
+        self.assertEqual(
+            self.source.count(
+                '--env "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY"'
+            ),
+            2,
+        )
+
     def test_injects_the_approved_monitored_support_channel_into_the_candidate(self) -> None:
         job_env = self.document["jobs"]["website-safe-release"]["env"]
         self.assertEqual(
