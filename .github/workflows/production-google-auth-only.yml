@@ -42,7 +42,8 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.required_source_sha }}
           PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          PRODUCTION_GOOGLE_SUBJECTS_B64: ${{ secrets.PRODUCTION_GOOGLE_SUBJECTS_B64 }}
+          PRODUCTION_GOOGLE_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_EMAIL }}
+          PRODUCTION_GOOGLE_PARTNER_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_EMAIL }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_AUTH_CONFIG_TOKEN: ${{ secrets.SUPABASE_AUTH_CONFIG_TOKEN }}
         run: |
@@ -51,7 +52,6 @@ jobs:
           preflight_cleanup() {
             original_status=$?
             trap - EXIT
-            rm -f "$RUNNER_TEMP/google-requested-subjects.json"
             if [[ "$original_status" -ne 0 ]]; then
               rm -f "$RUNNER_TEMP/google-resolved-subjects.json"
             fi
@@ -86,14 +86,13 @@ jobs:
             --project-ref-env SUPABASE_PROJECT_REF \
             --token-env SUPABASE_AUTH_CONFIG_TOKEN \
             --output "$RUNNER_TEMP/google-formal-callback.json"
-          printf '%s' "$PRODUCTION_GOOGLE_SUBJECTS_B64" | base64 --decode > "$RUNNER_TEMP/google-requested-subjects.json"
           python scripts/release/resolve_google_acceptance_subjects.py \
-            --subjects-file "$RUNNER_TEMP/google-requested-subjects.json" \
+            --primary-email-env PRODUCTION_GOOGLE_EMAIL \
+            --partner-email-env PRODUCTION_GOOGLE_PARTNER_EMAIL \
             --project-ref-env SUPABASE_PROJECT_REF \
             --token-env SUPABASE_AUTH_CONFIG_TOKEN \
             --resolved-output "$RUNNER_TEMP/google-resolved-subjects.json" \
             --report-output "$RUNNER_TEMP/google-subject-resolution.json"
-          rm -f "$RUNNER_TEMP/google-requested-subjects.json"
 
       - name: Wait for two interactive Google sessions inside the single-capability boundary
         env:

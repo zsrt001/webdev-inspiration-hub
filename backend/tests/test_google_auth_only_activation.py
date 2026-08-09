@@ -150,14 +150,8 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("google-requested-subjects.json", uploaded_paths)
         self.assertNotIn("google-resolved-subjects.json", uploaded_paths)
         self.assertIn("google-subject-resolution.json", uploaded_paths)
-        self.assertLess(
-            source.index("trap preflight_cleanup EXIT"),
-            source.index('base64 --decode > "$RUNNER_TEMP/google-requested-subjects.json"'),
-        )
-        self.assertLess(
-            source.index("umask 077"),
-            source.index('base64 --decode > "$RUNNER_TEMP/google-requested-subjects.json"'),
-        )
+        self.assertNotIn("PRODUCTION_GOOGLE_SUBJECTS_B64", source)
+        self.assertNotIn("google-requested-subjects.json", source)
         self.assertLess(
             source.index("resolve_google_acceptance_subjects.py"),
             source.index("manage_google_auth_only_activation.py reserve"),
@@ -187,6 +181,8 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             '--subjects-file "$RUNNER_TEMP/google-resolved-subjects.json"',
             "--project-ref-env SUPABASE_PROJECT_REF",
             "--token-env SUPABASE_AUTH_CONFIG_TOKEN",
+            "--primary-email-env PRODUCTION_GOOGLE_EMAIL",
+            "--partner-email-env PRODUCTION_GOOGLE_PARTNER_EMAIL",
         ):
             self.assertIn(required, source)
         for forbidden in (
@@ -214,7 +210,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         resolver_source = (
             ROOT / "scripts/release/resolve_google_acceptance_subjects.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("FROM auth.identities", resolver_source)
+        self.assertIn("auth.identities", resolver_source)
         self.assertIn("provider = 'google'", resolver_source)
         self.assertIn("/database/query/read-only", resolver_source)
         self.assertNotIn("PRODUCTION_MIGRATION_DATABASE_URL", resolver_source)
@@ -276,6 +272,74 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.kwargs["json"]["parameters"], [first, "google-native-b"])
         self.assertIn("$1", call.kwargs["json"]["query"])
         self.assertNotIn(first, call.kwargs["json"]["query"])
+
+        emails = module.load_protected_emails("Primary@Example.com", "partner@example.com")
+        self.assertEqual(emails, ["primary@example.com", "partner@example.com"])
+        email_rows = [
+            {
+                "provider": "google",
+                "user_id": first,
+                "identity_email": "primary@example.com",
+                "email_verified": True,
+            },
+            {
+                "provider": "google",
+                "user_id": second,
+                "identity_email": "partner@example.com",
+                "email_verified": True,
+            },
+        ]
+        resolved, modes = module.resolve_protected_emails(emails, email_rows)
+        self.assertEqual(
+            resolved,
+            [
+                {"provider": "google", "subject": first},
+                {"provider": "google", "subject": second},
+            ],
+        )
+        self.assertEqual(modes, {"verified_google_email": 2})
+        response.json.return_value = email_rows
+        module.query_google_identities(
+            project_ref="a" * 20,
+            token="protected-management-token",
+            emails=emails,
+            client=client,
+        )
+        email_call = client.post.call_args
+        self.assertEqual(email_call.kwargs["json"]["parameters"], emails)
+        self.assertNotIn("primary@example.com", email_call.kwargs["json"]["query"])
+        self.assertNotIn("LIMIT", email_call.kwargs["json"]["query"].upper())
+        with self.assertRaisesRegex(ValueError, "one verified"):
+            module.resolve_protected_emails(emails, email_rows[:1])
+        with self.assertRaisesRegex(ValueError, "one verified"):
+            module.resolve_protected_emails(
+                emails,
+                [
+                    {**email_rows[0], "identity_email": "different@example.com"},
+                    email_rows[1],
+                ],
+            )
+        with self.assertRaisesRegex(ValueError, "one verified"):
+            module.resolve_protected_emails(
+                emails,
+                [{**email_rows[0], "email_verified": "true"}, email_rows[1]],
+            )
+        with self.assertRaisesRegex(ValueError, "one verified"):
+            module.resolve_protected_emails(
+                emails,
+                [
+                    *email_rows,
+                    {**email_rows[0], "user_id": "33333333-3333-3333-3333-333333333333"},
+                ],
+            )
+
+        production_release = (
+            ROOT / ".github/workflows/production-release.yml"
+        ).read_text(encoding="utf-8")
+        self.assertLess(
+            production_release.index("resolve_google_acceptance_subjects.py"),
+            production_release.index("configure_staged_auth_origin.py add"),
+        )
 
     def test_auth_exchange_logs_stage_without_identity_or_token(self) -> None:
         source = (ROOT / "backend/app/routers/auth/google.py").read_text(encoding="utf-8")
