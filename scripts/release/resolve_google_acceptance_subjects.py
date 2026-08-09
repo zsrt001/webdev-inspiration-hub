@@ -15,6 +15,13 @@ from uuid import UUID
 import httpx
 
 
+BACKEND_DIR = Path(__file__).resolve().parents[2] / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.core.google_identity import normalize_google_email  # noqa: E402
+
+
 MANAGEMENT_API = "https://api.supabase.com"
 
 
@@ -63,14 +70,11 @@ def load_requested_subjects(path: Path) -> list[str]:
 def load_protected_emails(primary: str, partner: str) -> list[str]:
     emails: list[str] = []
     for value in (primary, partner):
-        clean = str(value or "").strip().lower()
-        if (
-            not clean
-            or len(clean) > 320
-            or clean.count("@") != 1
-            or any(character.isspace() or ord(character) < 32 for character in clean)
-        ):
+        try:
+            clean = normalize_google_email(value)
+        except ValueError as exc:
             raise ValueError("two valid protected Google account emails are required")
+
         emails.append(clean)
     if len(set(emails)) != 2:
         raise ValueError("protected Google account emails must be distinct")
@@ -130,19 +134,31 @@ def resolve_protected_emails(
             raise ValueError("Supabase Google identity has an invalid user ID") from exc
         if row.get("email_verified") is not True:
             continue
-        identity_email = str(row.get("identity_email") or "").strip().lower()
+        try:
+            identity_email = normalize_google_email(row.get("identity_email"))
+        except ValueError:
+            continue
         for email in emails:
             if email == identity_email:
                 matches_by_email[email].add(user_id)
-    if any(len(matches_by_email[email]) != 1 for email in emails):
-        raise ValueError("each protected Google account must resolve to one verified Supabase user")
-    subjects = [next(iter(matches_by_email[email])) for email in emails]
-    if len(set(subjects)) != 2:
+    if any(len(matches_by_email[email]) > 1 for email in emails):
+        raise ValueError("a protected Google account resolves to multiple Supabase users")
+    resolved: list[dict[str, str]] = []
+    exact_subjects: list[str] = []
+    modes = {"supabase_user_id": 0, "verified_google_email_admission": 0}
+    for email in emails:
+        matches = matches_by_email[email]
+        if matches:
+            subject = next(iter(matches))
+            exact_subjects.append(subject)
+            resolved.append({"provider": "google", "subject": subject})
+            modes["supabase_user_id"] += 1
+        else:
+            resolved.append({"provider": "google_email", "subject": email})
+            modes["verified_google_email_admission"] += 1
+    if len(set(exact_subjects)) != len(exact_subjects):
         raise ValueError("protected Google accounts must resolve to two distinct Supabase users")
-    return (
-        [{"provider": "google", "subject": subject} for subject in subjects],
-        {"verified_google_email": 2},
-    )
+    return resolved, modes
 
 
 def query_google_identities(
@@ -256,11 +272,12 @@ def main() -> int:
             resolved, modes = resolve_requested_subjects(requested or [], rows)
         _write_create_once(Path(args.resolved_output), resolved, private=True)
         report = {
-            "schema": "vowpic.google-subject-resolution.v1",
+            "schema": "vowpic.google-subject-resolution.v2",
             "passed": True,
             "requested_count": 2,
             "resolved_count": 2,
-            "distinct_supabase_users": 2,
+            "existing_supabase_users": modes.get("supabase_user_id", 0),
+            "email_admissions": modes.get("verified_google_email_admission", 0),
             "resolution_modes": modes,
         }
         _write_create_once(Path(args.report_output), report)

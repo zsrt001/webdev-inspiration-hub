@@ -105,21 +105,20 @@ async def lock_acceptance_binding(
     environment: str,
     deployment_id: str,
     now: datetime | None = None,
+    include_consumed: bool = False,
 ) -> AcceptanceIdentityBinding | None:
     current = now or datetime.now(timezone.utc)
-    result = await db.execute(
-        select(AcceptanceIdentityBinding)
-        .where(
+    query = select(AcceptanceIdentityBinding).where(
             AcceptanceIdentityBinding.provider == provider.strip().lower(),
             AcceptanceIdentityBinding.subject_hmac == subject_hmac,
             AcceptanceIdentityBinding.environment == environment,
             AcceptanceIdentityBinding.deployment_id == deployment_id,
             AcceptanceIdentityBinding.expires_at > current,
-            AcceptanceIdentityBinding.consumed_at.is_(None),
             AcceptanceIdentityBinding.revoked_at.is_(None),
         )
-        .with_for_update()
-    )
+    if not include_consumed:
+        query = query.where(AcceptanceIdentityBinding.consumed_at.is_(None))
+    result = await db.execute(query.with_for_update())
     return result.scalar_one_or_none()
 
 

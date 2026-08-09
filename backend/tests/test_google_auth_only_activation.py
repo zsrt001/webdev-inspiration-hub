@@ -6,11 +6,12 @@ import ast
 import importlib
 import importlib.util
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import yaml
@@ -132,11 +133,17 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         source = path.read_text(encoding="utf-8")
         workflow = yaml.safe_load(source)
         self.assertIn("workflow_dispatch", workflow[True])
+        self.assertEqual(workflow[True]["schedule"][0]["cron"], "*/5 * * * *")
         dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
         self.assertEqual(dispatch_inputs["operator_ready"]["type"], "boolean")
         self.assertTrue(dispatch_inputs["operator_ready"]["required"])
         self.assertEqual(workflow["concurrency"]["group"], "vowpic-production-release")
         self.assertEqual(workflow["jobs"]["google-auth-only"]["environment"], "production")
+        self.assertEqual(workflow["jobs"]["expired-lease-watchdog"]["environment"], "production")
+        self.assertIn(
+            "manage_google_auth_only_activation.py reap-expired",
+            source,
+        )
         self.assertIn(
             "inputs.operator_ready == true",
             workflow["jobs"]["google-auth-only"]["if"],
@@ -183,8 +190,17 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "--token-env SUPABASE_AUTH_CONFIG_TOKEN",
             "--primary-email-env PRODUCTION_GOOGLE_EMAIL",
             "--partner-email-env PRODUCTION_GOOGLE_PARTNER_EMAIL",
+            "google-negative-account.json",
+            "google_session_exchange stage=authorization_unavailable",
+            "protected_bindings_still_unconsumed",
+            '"$VERCEL_CLI" logs "$GOOGLE_DEPLOYMENT_ID"',
+            '--status-code 403',
         ):
             self.assertIn(required, source)
+        self.assertLess(
+            source.index('"schema": "vowpic.google-auth-only-negative-account.v1"'),
+            source.index("python scripts/release/wait_for_google_auth_sessions.py"),
+        )
         for forbidden in (
             "PRODUCTION_GOOGLE_STORAGE_STATE_BASE64",
             "PRODUCTION_GOOGLE_PARTNER_STORAGE_STATE_BASE64",
@@ -201,6 +217,118 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "vercel promote",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_protected_privacy_job_is_trusted_main_sha_only_and_source_free(self) -> None:
+        source = (
+            ROOT / ".github/workflows/google-auth-protected-privacy.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("push:\n    branches: [main]", source)
+        self.assertNotIn("pull_request:", source)
+        self.assertNotIn("workflow_dispatch:", source)
+        workflow = yaml.safe_load(source)
+        job = workflow["jobs"]["google-auth-protected-privacy"]
+        condition = str(job["if"])
+        self.assertIn("github.event_name == 'push'", condition)
+        self.assertIn("github.ref == 'refs/heads/main'", condition)
+        self.assertIn("github.event.repository.fork == false", condition)
+        self.assertEqual(job["environment"], "production")
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        checkout = next(
+            step for step in job["steps"] if str(step.get("uses") or "").startswith("actions/checkout@")
+        )
+        self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+        self.assertFalse(checkout["with"]["persist-credentials"])
+        gate = next(
+            step for step in job["steps"] if step.get("name") == "Run the non-echo Google auth privacy boundary"
+        )
+        run = str(gate["run"])
+        self.assertIn("verify_google_auth_privacy_boundary.py", run)
+        self.assertIn('> "$privacy_log" 2>&1', run)
+        self.assertNotIn("${{ secrets.", run)
+        for name in (
+            "PRODUCTION_GOOGLE_EMAIL",
+            "PRODUCTION_GOOGLE_PARTNER_EMAIL",
+            "SUPABASE_AUTH_CONFIG_TOKEN",
+            "VERCEL_TOKEN",
+        ):
+            self.assertEqual(gate["env"][name], "${{ secrets." + name + " }}")
+        upload = next(
+            step for step in job["steps"] if str(step.get("uses") or "").startswith("actions/upload-artifact@")
+        )
+        self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/google-auth-privacy.json")
+        self.assertNotIn("privacy-tests.log", str(upload["with"]))
+
+    def test_privacy_scanner_detects_leaks_without_emitting_protected_values(self) -> None:
+        module = _path_module(
+            "verify_google_auth_privacy_boundary",
+            ROOT / "scripts/release/verify_google_auth_privacy_boundary.py",
+        )
+        protected = (
+            b"primary-protected@example.invalid",
+            b"partner-protected@example.invalid",
+            b"supabase-protected-value",
+            b"vercel-protected-value",
+        )
+        report = module.build_report(
+            source_sha="a" * 40,
+            sources=(("checkout", b"source-free candidate"), ("test-output", b"OK")),
+            protected_values=protected,
+        )
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["protected_values_zero_hits"])
+        self.assertTrue(report["synthetic_canaries_detected"])
+        self.assertTrue(report["sanitized_outputs_zero_hits"])
+        serialized = json.dumps(report, sort_keys=True).encode()
+        self.assertTrue(all(value not in serialized for value in protected))
+        with self.assertRaisesRegex(ValueError, "reached release evidence"):
+            module.build_report(
+                source_sha="a" * 40,
+                sources=(("captured-output", b"prefix " + protected[2] + b" suffix"),),
+                protected_values=protected,
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "privacy.json"
+            module.write_create_once(output, report)
+            with self.assertRaises(FileExistsError):
+                module.write_create_once(output, report)
+
+    def test_real_postgres_gate_forces_runner_death_before_watchdog_takeover(self) -> None:
+        source = (
+            ROOT / "backend/tests/integration/test_google_auth_acceptance_fence.py"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "subprocess.Popen",
+            "process.kill()",
+            "reserve_activation(",
+            "manage.reap_expired_activations(",
+            'self.assertEqual(second["reaped_count"], 0)',
+            "session.revoked_at IS NULL",
+            "refresh.status='ACTIVE'",
+            "consumed_at IS NULL AND revoked_at IS NULL",
+        ):
+            self.assertIn(required, source)
+        self.assertIn(
+            "test_watchdog_never_completes_activation_when_session_cleanup_is_not_zero",
+            (ROOT / "backend/tests/test_google_auth_only_activation.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+
+    def test_runtime_admission_and_every_cleanup_share_one_global_fence(self) -> None:
+        expected = "vowpic-production-capability-activation"
+        paths = (
+            ROOT / "backend/app/services/feature_flag_service.py",
+            ROOT / "scripts/release/apply_activation_plan.py",
+            ROOT / "scripts/release/manage_google_auth_only_activation.py",
+            ROOT / "scripts/release/cleanup_acceptance_bindings.py",
+            ROOT / "scripts/release/cleanup_google_auth_sessions.py",
+        )
+        for path in paths:
+            with self.subTest(path=path.name):
+                self.assertIn(expected, path.read_text(encoding="utf-8"))
+        manage_source = paths[2].read_text(encoding="utf-8")
+        self.assertIn("reservation_expires_at", manage_source)
+        self.assertIn("INTERVAL '30 minutes'", manage_source)
 
     def test_google_subject_resolution_accepts_current_supabase_or_provider_subjects(self) -> None:
         module = _path_module(
@@ -297,7 +425,10 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 {"provider": "google", "subject": second},
             ],
         )
-        self.assertEqual(modes, {"verified_google_email": 2})
+        self.assertEqual(
+            modes,
+            {"supabase_user_id": 2, "verified_google_email_admission": 0},
+        )
         response.json.return_value = email_rows
         module.query_google_identities(
             project_ref="a" * 20,
@@ -309,22 +440,34 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(email_call.kwargs["json"]["parameters"], emails)
         self.assertNotIn("primary@example.com", email_call.kwargs["json"]["query"])
         self.assertNotIn("LIMIT", email_call.kwargs["json"]["query"].upper())
-        with self.assertRaisesRegex(ValueError, "one verified"):
-            module.resolve_protected_emails(emails, email_rows[:1])
-        with self.assertRaisesRegex(ValueError, "one verified"):
-            module.resolve_protected_emails(
-                emails,
-                [
-                    {**email_rows[0], "identity_email": "different@example.com"},
-                    email_rows[1],
-                ],
-            )
-        with self.assertRaisesRegex(ValueError, "one verified"):
-            module.resolve_protected_emails(
-                emails,
-                [{**email_rows[0], "email_verified": "true"}, email_rows[1]],
-            )
-        with self.assertRaisesRegex(ValueError, "one verified"):
+        admissions, admission_modes = module.resolve_protected_emails(
+            emails, email_rows[:1]
+        )
+        self.assertEqual(
+            admissions,
+            [
+                {"provider": "google", "subject": first},
+                {"provider": "google_email", "subject": "partner@example.com"},
+            ],
+        )
+        self.assertEqual(
+            admission_modes,
+            {"supabase_user_id": 1, "verified_google_email_admission": 1},
+        )
+        mismatched, _ = module.resolve_protected_emails(
+            emails,
+            [
+                {**email_rows[0], "identity_email": "different@example.com"},
+                email_rows[1],
+            ],
+        )
+        self.assertEqual(mismatched[0]["provider"], "google_email")
+        unverified, _ = module.resolve_protected_emails(
+            emails,
+            [{**email_rows[0], "email_verified": "true"}, email_rows[1]],
+        )
+        self.assertEqual(unverified[0]["provider"], "google_email")
+        with self.assertRaisesRegex(ValueError, "multiple"):
             module.resolve_protected_emails(
                 emails,
                 [
@@ -341,11 +484,37 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             production_release.index("configure_staged_auth_origin.py add"),
         )
 
+        provision = _path_module(
+            "provision_google_email_admission",
+            ROOT / "scripts/release/provision_acceptance_identity.py",
+        )
+        admissions_path = ROOT / ".test-google-email-admissions.json"
+        try:
+            admissions_path.write_text(
+                json.dumps(
+                    [
+                        {"provider": "google_email", "subject": "Primary@Example.com"},
+                        {"provider": "google_email", "subject": "partner@example.com"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                provision._subjects(admissions_path),
+                [
+                    ("google_email", "primary@example.com"),
+                    ("google_email", "partner@example.com"),
+                ],
+            )
+        finally:
+            admissions_path.unlink(missing_ok=True)
+
     def test_auth_exchange_logs_stage_without_identity_or_token(self) -> None:
         source = (ROOT / "backend/app/routers/auth/google.py").read_text(encoding="utf-8")
         self.assertIn("google_session_exchange stage=capability_denied", source)
         self.assertIn("google_session_exchange stage=authorization_unavailable", source)
         self.assertIn("google_session_exchange stage=completed", source)
+        self.assertIn('"google_email"', source)
         tree = ast.parse(source)
         logger_calls = [
             ast.get_source_segment(source, node) or ""
@@ -395,12 +564,17 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         bindings = [
             {
                 "binding_id": "11111111-1111-1111-1111-111111111111",
-                "provider": "google",
+                "provider": "google_email",
                 "consumed_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "consumed_at": observed,
                 "revoked_at": None,
+                "binding_expires_at": observed + timedelta(minutes=10),
                 "session_id": "33333333-3333-3333-3333-333333333333",
                 "session_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "session_revoked_at": None,
+                "session_expires_at": observed + timedelta(minutes=10),
+                "active_refresh_tokens": 1,
+                "active_refresh_expires_at": observed + timedelta(minutes=10),
             },
             {
                 "binding_id": "22222222-2222-2222-2222-222222222222",
@@ -408,8 +582,13 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 "consumed_user_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 "consumed_at": observed,
                 "revoked_at": None,
+                "binding_expires_at": observed + timedelta(minutes=10),
                 "session_id": "44444444-4444-4444-4444-444444444444",
                 "session_user_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "session_revoked_at": None,
+                "session_expires_at": observed + timedelta(minutes=10),
+                "active_refresh_tokens": 1,
+                "active_refresh_expires_at": observed + timedelta(minutes=10),
             },
         ]
         report = module.build_acceptance_report(
@@ -418,6 +597,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             deployment_id="dpl_target",
             activation_id="55555555-5555-5555-5555-555555555555",
             hmac_key="e" * 32,
+            lease_expires_at=observed + timedelta(minutes=10),
             observed_at=observed,
         )
         self.assertTrue(report["passed"])
@@ -439,9 +619,117 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 deployment_id="dpl_target",
                 activation_id="55555555-5555-5555-5555-555555555555",
                 hmac_key="e" * 32,
+                lease_expires_at=observed + timedelta(minutes=10),
                 observed_at=observed,
             )
         )
+
+        invalid_cases = (
+            ({"session_revoked_at": observed}, "valid linked browser session"),
+            ({"session_expires_at": observed}, "expired"),
+            ({"active_refresh_tokens": 0}, "valid linked browser session"),
+            ({"active_refresh_tokens": 2}, "valid linked browser session"),
+            ({"binding_expires_at": observed + timedelta(minutes=11)}, "authority lease"),
+            ({"session_expires_at": observed + timedelta(minutes=11)}, "authority lease"),
+            ({"active_refresh_expires_at": observed + timedelta(minutes=11)}, "authority lease"),
+        )
+        for override, message in invalid_cases:
+            with self.subTest(override=override):
+                invalid = [{**row} for row in bindings]
+                invalid[0].update(override)
+                with self.assertRaisesRegex(ValueError, message):
+                    module.build_acceptance_report(
+                        invalid,
+                        source_sha="a" * 40,
+                        deployment_id="dpl_target",
+                        activation_id="55555555-5555-5555-5555-555555555555",
+                        hmac_key="e" * 32,
+                        lease_expires_at=observed + timedelta(minutes=10),
+                        observed_at=observed,
+                    )
+
+    def test_completion_evidence_must_prove_cleanup_before_activation_is_cleaned(self) -> None:
+        module = _path_module(
+            "manage_google_completion_evidence",
+            ROOT / "scripts/release/manage_google_auth_only_activation.py",
+        )
+        source_sha = "a" * 40
+        deployment_id = "dpl_target"
+        valid = {
+            "schema": "vowpic.google-auth-only-watchdog-evidence.v1",
+            "passed": True,
+            "source_sha": source_sha,
+            "deployment_id": deployment_id,
+            "sessions_zero": True,
+            "bindings_zero": True,
+        }
+        self.assertEqual(
+            module._validate_completion_evidence(
+                json.dumps(valid).encode(),
+                source_sha=source_sha,
+                deployment_id=deployment_id,
+            ),
+            valid,
+        )
+        for invalid in (
+            {**valid, "passed": False},
+            {**valid, "sessions_zero": False},
+            {**valid, "bindings_zero": False},
+            {**valid, "deployment_id": "dpl_other"},
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    module._validate_completion_evidence(
+                        json.dumps(invalid).encode(),
+                        source_sha=source_sha,
+                        deployment_id=deployment_id,
+                    )
+
+    def test_watchdog_never_completes_activation_when_session_cleanup_is_not_zero(self) -> None:
+        module = _path_module(
+            "manage_google_watchdog_failure",
+            ROOT / "scripts/release/manage_google_auth_only_activation.py",
+        )
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {
+                "source_sha": "a" * 40,
+                "api_deployment_id": "dpl_target",
+                "approval": "approved",
+            }
+        ]
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value.__enter__.return_value = cursor
+        apply_module = SimpleNamespace(apply_phase=MagicMock())
+        session_module = SimpleNamespace(
+            cleanup_sessions=MagicMock(
+                return_value={"passed": False, "after_unrevoked": 1}
+            )
+        )
+        binding_module = SimpleNamespace(
+            cleanup_bindings=MagicMock(
+                return_value={
+                    "passed": True,
+                    "after": {"unused_unrevoked": 0, "active_unused": 0},
+                }
+            )
+        )
+        with (
+            patch("psycopg2.connect", return_value=connection),
+            patch.object(
+                module,
+                "_load_release_module",
+                side_effect=(apply_module, session_module, binding_module),
+            ),
+            patch.object(module, "complete_activation") as complete,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sessions remain"):
+                module.reap_expired_activations(
+                    "postgresql://unused",
+                    activation_plan={"phases": {}},
+                )
+        complete.assert_not_called()
 
     def test_interactive_google_acceptance_rejects_duplicate_users_and_other_capabilities(self) -> None:
         module = _path_module(
@@ -456,8 +744,13 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 "consumed_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "consumed_at": observed,
                 "revoked_at": None,
+                "binding_expires_at": observed + timedelta(minutes=10),
                 "session_id": str(uuid4()),
                 "session_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "session_revoked_at": None,
+                "session_expires_at": observed + timedelta(minutes=10),
+                "active_refresh_tokens": 1,
+                "active_refresh_expires_at": observed + timedelta(minutes=10),
             }
             for _ in range(2)
         ]
@@ -468,6 +761,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 deployment_id="dpl_target",
                 activation_id="55555555-5555-5555-5555-555555555555",
                 hmac_key="e" * 32,
+                lease_expires_at=observed + timedelta(minutes=10),
                 observed_at=observed,
             )
         flags = [
@@ -479,7 +773,10 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                     "55555555-5555-5555-5555-555555555555"
                     if capability == "google_auth" else None
                 ),
-                "expires_at": observed if capability == "google_auth" else None,
+                "runtime_bundle_id": "rtb_" + "b" * 64 if capability == "google_auth" else None,
+                "worker_image_digest": None,
+                "target_manifest_sha256": None,
+                "expires_at": observed + timedelta(minutes=10) if capability == "google_auth" else None,
             }
             for capability in module.EXPECTED_CAPABILITIES
         ]
@@ -487,6 +784,8 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             flags,
             deployment_id="dpl_target",
             activation_id="55555555-5555-5555-5555-555555555555",
+            runtime_bundle_id="rtb_" + "b" * 64,
+            observed_at=observed,
         )
         next(row for row in flags if row["capability"] == "generation")["state"] = "ON"
         with self.assertRaisesRegex(ValueError, "non-Google"):
@@ -494,6 +793,8 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 flags,
                 deployment_id="dpl_target",
                 activation_id="55555555-5555-5555-5555-555555555555",
+                runtime_bundle_id="rtb_" + "b" * 64,
+                observed_at=observed,
             )
 
 

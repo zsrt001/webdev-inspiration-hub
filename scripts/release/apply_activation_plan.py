@@ -154,9 +154,30 @@ def _binding_report(path: str, *, activation: dict[str, Any]) -> dict[str, Any]:
         or report["count"] < 1
     ):
         raise ValueError("acceptance identity binding report is invalid")
+    if activation.get("kind") == "GOOGLE_AUTH_ONLY":
+        provider_counts = report.get("provider_counts")
+        if (
+            report["count"] != 2
+            or not isinstance(provider_counts, dict)
+            or set(provider_counts) != {"google", "google_email"}
+            or any(not isinstance(value, int) or value < 0 for value in provider_counts.values())
+            or sum(provider_counts.values()) != 2
+        ):
+            raise ValueError("GOOGLE_AUTH_ONLY requires exactly two protected Google bindings")
     expires_at = datetime.fromisoformat(str(report.get("expires_at") or ""))
     if expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc):
         raise ValueError("acceptance identity bindings are expired")
+    reservation_expiry = activation.get("reservation_expires_at")
+    if (
+        activation.get("kind") == "GOOGLE_AUTH_ONLY"
+        and (
+            not isinstance(reservation_expiry, datetime)
+            or reservation_expiry.tzinfo is None
+            or reservation_expiry <= datetime.now(timezone.utc)
+            or expires_at > reservation_expiry
+        )
+    ):
+        raise ValueError("GOOGLE_AUTH_ONLY binding lease exceeds the activation reservation")
     return {**report, "expires_at": expires_at}
 
 

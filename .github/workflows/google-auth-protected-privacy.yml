@@ -1,0 +1,94 @@
+name: Protected Google auth privacy boundary
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  google-auth-protected-privacy:
+    name: Protected exact-SHA Google auth privacy boundary
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.event.repository.fork == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11.15"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+      - name: Install the hash-locked privacy-test environment
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+      - name: Run the non-echo Google auth privacy boundary
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          PRODUCTION_GOOGLE_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_EMAIL }}
+          PRODUCTION_GOOGLE_PARTNER_EMAIL: ${{ secrets.PRODUCTION_GOOGLE_PARTNER_EMAIL }}
+          SUPABASE_AUTH_CONFIG_TOKEN: ${{ secrets.SUPABASE_AUTH_CONFIG_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          privacy_log="$RUNNER_TEMP/google-auth-privacy-tests.log"
+          privacy_report="$RUNNER_TEMP/google-auth-privacy.json"
+          cleanup() {
+            status=$?
+            rm -f "$privacy_log"
+            if [[ "$status" -ne 0 ]]; then rm -f "$privacy_report"; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          python -m unittest \
+            backend.tests.test_google_auth_only_activation.GoogleAuthOnlyActivationTest.test_auth_exchange_logs_stage_without_identity_or_token \
+            backend.tests.test_google_auth_only_activation.GoogleAuthOnlyActivationTest.test_privacy_scanner_detects_leaks_without_emitting_protected_values \
+            -v > "$privacy_log" 2>&1
+          python scripts/release/verify_google_auth_privacy_boundary.py \
+            --source-sha "$SOURCE_SHA" \
+            --scan-root "$GITHUB_WORKSPACE" \
+            --captured-output "$privacy_log" \
+            --output "$privacy_report" >/dev/null
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(
+              Path(os.environ["RUNNER_TEMP"], "google-auth-privacy.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          if (
+              report.get("schema") != "vowpic.google-auth-privacy-boundary.v1"
+              or report.get("passed") is not True
+              or report.get("source_sha") != os.environ["SOURCE_SHA"]
+              or report.get("protected_values_zero_hits") is not True
+              or report.get("synthetic_canaries_detected") is not True
+              or report.get("sanitized_outputs_zero_hits") is not True
+          ):
+              raise SystemExit("Google auth privacy receipt is invalid")
+          PY
+          rm -f "$privacy_log"
+          trap - EXIT
+      - name: Persist only the source-free Google auth privacy receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: google-auth-privacy-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/google-auth-privacy.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from fastapi import Response
@@ -35,6 +35,7 @@ from app.services.auth_session_service import (  # noqa: E402
     apply_refresh_rotation,
     encode_access_token,
     revoke_session_family,
+    recover_acceptance_session,
     set_session_cookies,
 )
 from app.services.oauth_intent_service import (  # noqa: E402
@@ -144,6 +145,29 @@ class CookieSessionContractTest(unittest.TestCase):
         self.assertIn("samesite=lax", csrf)
         self.assertIn("path=/", csrf)
 
+    def test_acceptance_lease_caps_access_and_cookie_lifetimes(self) -> None:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        user_id = uuid4()
+        session = AuthSession(
+            id=uuid4(), user_id=user_id, family_id=uuid4(), token_version=1,
+            csrf_token_hash="a" * 64, expires_at=now + timedelta(seconds=120),
+        )
+        response = Response()
+        settings = SimpleNamespace(secret_key="s" * 32)
+        with patch("app.core.session_auth.get_settings", return_value=settings):
+            token = encode_access_token(session, user_id, now=now)
+            claims = decode_access_token(token, now=now)
+        set_session_cookies(
+            response,
+            access_token=token,
+            refresh_token="refresh",
+            csrf_token="csrf",
+            now=now,
+            session_expires_at=session.expires_at,
+        )
+        self.assertEqual(claims.expires_at - claims.issued_at, 120)
+        self.assertTrue(all("max-age=120" in value.lower() for value in response.headers.getlist("set-cookie")))
+
     def test_refresh_rotation_retains_used_hash_and_invalidates_old_access_and_csrf(self) -> None:
         now = datetime.now(timezone.utc)
         session = AuthSession(
@@ -212,6 +236,52 @@ class CookieSessionContractTest(unittest.TestCase):
                 validate_csrf_secret(digest, cookie, header)
 
 
+class AcceptanceSessionRecoveryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_response_loss_rekeys_the_same_binding_linked_family(self) -> None:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        user = SimpleNamespace(id=uuid4())
+        binding_id = uuid4()
+        session = AuthSession(
+            id=uuid4(), user_id=user.id, acceptance_binding_id=binding_id,
+            family_id=uuid4(), token_version=4, csrf_token_hash="a" * 64,
+            expires_at=now + timedelta(minutes=10), revoked_at=None,
+        )
+        old_token = AuthRefreshToken(
+            id=uuid4(), session_id=session.id, generation=3,
+            token_hash="b" * 64, status=RefreshTokenStatus.ACTIVE,
+            expires_at=session.expires_at,
+        )
+        session_result = MagicMock()
+        session_result.scalar_one_or_none.return_value = session
+        tokens_result = MagicMock()
+        tokens_result.scalars.return_value.all.return_value = [old_token]
+        database = MagicMock()
+        database.execute = AsyncMock(side_effect=(session_result, tokens_result))
+        database.flush = AsyncMock()
+        response = Response()
+        settings = SimpleNamespace(secret_key="s" * 32)
+
+        with patch("app.core.session_auth.get_settings", return_value=settings):
+            recovered = await recover_acceptance_session(
+                database,
+                user,
+                response,
+                acceptance_binding_id=binding_id,
+                now=now,
+            )
+
+        self.assertIs(recovered, session)
+        self.assertEqual(session.token_version, 5)
+        self.assertEqual(old_token.status, RefreshTokenStatus.REVOKED)
+        self.assertEqual(old_token.revoked_at, now)
+        replacement = database.add.call_args.args[0]
+        self.assertEqual(replacement.session_id, session.id)
+        self.assertEqual(replacement.generation, 4)
+        self.assertEqual(replacement.status, RefreshTokenStatus.ACTIVE)
+        self.assertEqual(replacement.expires_at, session.expires_at)
+        self.assertTrue(response.headers.getlist("set-cookie"))
+
+
 class OAuthIntentContractTest(unittest.TestCase):
     def test_redirect_is_local_and_rejects_confusable_or_api_paths(self) -> None:
         self.assertEqual(validate_redirect_path("/pages/account/index"), "/pages/account/index")
@@ -278,7 +348,9 @@ class OAuthIntentContractTest(unittest.TestCase):
             if isinstance(node, ast.AsyncFunctionDef) and node.name == "exchange_supabase_session"
         )
         segment = ast.get_source_segment(source, route) or ""
-        self.assertIn("if decision.state is FeatureFlagState.ACCEPTANCE_COHORT", segment)
+        self.assertIn("if acceptance_mode:", segment)
+        self.assertIn("lock_google_auth_only_authority", segment)
+        self.assertIn("include_consumed=True", segment)
         self.assertNotIn("if user is None and decision.state", segment)
         self.assertIn("consume_binding_row(binding, user.id", segment)
         self.assertIn("acceptance_binding_id=binding.id if binding is not None else None", segment)
