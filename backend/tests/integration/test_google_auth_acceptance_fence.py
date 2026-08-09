@@ -21,6 +21,11 @@ from psycopg2.extras import RealDictCursor
 
 FENCE = "vowpic-production-capability-activation"
 ROOT = Path(__file__).resolve().parents[3]
+TRIGGER_TABLES = {
+    "trg_acceptance_identity_bindings_no_delete": "acceptance_identity_bindings",
+    "trg_release_activations_no_delete": "release_activations",
+    "trg_release_activation_regression": "release_activations",
+}
 
 
 def _release_module(name: str):
@@ -38,6 +43,66 @@ def _release_module(name: str):
     "set RUN_POSTGRES_INTEGRATION=1 with GOOGLE_AUTH_FENCE_TEST_DATABASE_URL",
 )
 class GoogleAuthAcceptanceFenceIntegrationTest(unittest.TestCase):
+    @staticmethod
+    def _trigger_states(cursor: object, trigger_names: tuple[str, ...]) -> dict[str, str]:
+        cursor.execute(
+            """
+            SELECT trigger.tgname, trigger.tgenabled
+            FROM pg_trigger AS trigger
+            WHERE trigger.tgisinternal = false
+              AND trigger.tgname = ANY(%s)
+            ORDER BY trigger.tgname
+            """,
+            (list(trigger_names),),
+        )
+        states = {str(name): str(enabled) for name, enabled in cursor.fetchall()}
+        if set(states) != set(trigger_names):
+            raise AssertionError("expected named PostgreSQL trigger is missing")
+        return states
+
+    @staticmethod
+    def _set_trigger(cursor: object, trigger_name: str, *, enabled: bool) -> None:
+        table_name = TRIGGER_TABLES.get(trigger_name)
+        if table_name is None:
+            raise AssertionError("test attempted to alter a non-allowlisted trigger")
+        action = "ENABLE" if enabled else "DISABLE"
+        cursor.execute(
+            f'ALTER TABLE "{table_name}" {action} TRIGGER "{trigger_name}"'
+        )
+
+    @staticmethod
+    def _control_plane_counts(cursor: object, deployments: list[str]) -> dict[str, int]:
+        cursor.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE deployment_id = ANY(%s))::integer AS binding_target,
+              COUNT(*) FILTER (
+                WHERE deployment_id IS NULL OR NOT (deployment_id = ANY(%s))
+              )::integer AS binding_other
+            FROM acceptance_identity_bindings
+            """,
+            (deployments, deployments),
+        )
+        binding_counts = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE api_deployment_id = ANY(%s))::integer AS activation_target,
+              COUNT(*) FILTER (
+                WHERE api_deployment_id IS NULL OR NOT (api_deployment_id = ANY(%s))
+              )::integer AS activation_other
+            FROM release_activations
+            """,
+            (deployments, deployments),
+        )
+        activation_counts = cursor.fetchone()
+        return {
+            "binding_target": int(binding_counts[0]),
+            "binding_other": int(binding_counts[1]),
+            "activation_target": int(activation_counts[0]),
+            "activation_other": int(activation_counts[1]),
+        }
+
     def setUp(self) -> None:
         self.database_url = os.environ.get("GOOGLE_AUTH_FENCE_TEST_DATABASE_URL", "").strip()
         if not self.database_url:
@@ -97,7 +162,16 @@ class GoogleAuthAcceptanceFenceIntegrationTest(unittest.TestCase):
         if not getattr(self, "database_url", ""):
             return
         deployments = [self.deployment_id, *sorted(self.extra_deployments)]
+        cleanup_triggers = (
+            "trg_acceptance_identity_bindings_no_delete",
+            "trg_release_activations_no_delete",
+        )
         with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
+            before_states = self._trigger_states(cursor, cleanup_triggers)
+            self.assertEqual(set(before_states.values()), {"O"})
+            before_counts = self._control_plane_counts(cursor, deployments)
+            for trigger_name in cleanup_triggers:
+                self._set_trigger(cursor, trigger_name, enabled=False)
             cursor.execute(
                 """
                 DELETE FROM auth_refresh_tokens
@@ -124,11 +198,91 @@ class GoogleAuthAcceptanceFenceIntegrationTest(unittest.TestCase):
                 "DELETE FROM acceptance_identity_bindings WHERE deployment_id = ANY(%s)",
                 (deployments,),
             )
+            self.assertEqual(cursor.rowcount, before_counts["binding_target"])
             cursor.execute(
                 "DELETE FROM release_activations WHERE api_deployment_id = ANY(%s)",
                 (deployments,),
             )
+            self.assertEqual(cursor.rowcount, before_counts["activation_target"])
             cursor.execute("DELETE FROM users WHERE id = ANY(%s::uuid[])", ([str(v) for v in self.user_ids],))
+            for trigger_name in reversed(cleanup_triggers):
+                self._set_trigger(cursor, trigger_name, enabled=True)
+            self.assertEqual(self._trigger_states(cursor, cleanup_triggers), before_states)
+
+        with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
+            self.assertEqual(self._trigger_states(cursor, cleanup_triggers), before_states)
+            after_counts = self._control_plane_counts(cursor, deployments)
+        self.assertEqual(after_counts["binding_target"], 0)
+        self.assertEqual(after_counts["activation_target"], 0)
+        self.assertEqual(after_counts["binding_other"], before_counts["binding_other"])
+        self.assertEqual(after_counts["activation_other"], before_counts["activation_other"])
+
+    def _expire_activation_for_watchdog(self, *, deployment_id: str, source_sha: str) -> None:
+        trigger_names = ("trg_release_activation_regression",)
+        with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
+            before_states = self._trigger_states(cursor, trigger_names)
+            self.assertEqual(before_states, {trigger_names[0]: "O"})
+            cursor.execute(
+                """
+                SELECT md5((to_jsonb(activation) - 'reservation_expires_at')::text),
+                       reservation_expires_at
+                FROM release_activations AS activation
+                WHERE api_deployment_id=%s AND source_sha=%s
+                """,
+                (deployment_id, source_sha),
+            )
+            before_fingerprint, before_expiry = cursor.fetchone()
+            self._set_trigger(cursor, trigger_names[0], enabled=False)
+            cursor.execute(
+                """
+                UPDATE release_activations
+                SET reservation_expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
+                WHERE api_deployment_id=%s AND source_sha=%s
+                  AND reservation_expires_at=%s
+                """,
+                (deployment_id, source_sha, before_expiry),
+            )
+            self.assertEqual(cursor.rowcount, 1)
+            self._set_trigger(cursor, trigger_names[0], enabled=True)
+            self.assertEqual(self._trigger_states(cursor, trigger_names), before_states)
+            cursor.execute(
+                """
+                SELECT md5((to_jsonb(activation) - 'reservation_expires_at')::text),
+                       reservation_expires_at < CURRENT_TIMESTAMP
+                FROM release_activations AS activation
+                WHERE api_deployment_id=%s AND source_sha=%s
+                """,
+                (deployment_id, source_sha),
+            )
+            after_fingerprint, is_expired = cursor.fetchone()
+            self.assertEqual(after_fingerprint, before_fingerprint)
+            self.assertTrue(is_expired)
+
+        with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
+            self.assertEqual(self._trigger_states(cursor, trigger_names), before_states)
+
+    def test_named_trigger_bypass_rolls_back_on_failure(self) -> None:
+        trigger_names = tuple(TRIGGER_TABLES)
+        with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
+            before_states = self._trigger_states(cursor, trigger_names)
+        self.assertEqual(set(before_states.values()), {"O"})
+
+        for trigger_name in trigger_names:
+            with self.subTest(trigger_name=trigger_name):
+                connection = psycopg2.connect(self.database_url)
+                try:
+                    with connection.cursor() as cursor:
+                        self._set_trigger(cursor, trigger_name, enabled=False)
+                        raise RuntimeError("fault injection after trigger disable")
+                except RuntimeError:
+                    connection.rollback()
+                finally:
+                    connection.close()
+                with psycopg2.connect(self.database_url) as check_connection, check_connection.cursor() as cursor:
+                    self.assertEqual(
+                        self._trigger_states(cursor, trigger_names),
+                        before_states,
+                    )
 
     def _row(self) -> dict:
         with psycopg2.connect(self.database_url) as connection, connection.cursor(
@@ -417,14 +571,10 @@ time.sleep(600)
                     datetime.now(timezone.utc) + timedelta(minutes=5),
                 ),
             )
-            cursor.execute(
-                """
-                UPDATE release_activations
-                SET reservation_expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
-                WHERE api_deployment_id=%s
-                """,
-                (deployment_id,),
-            )
+        self._expire_activation_for_watchdog(
+            deployment_id=deployment_id,
+            source_sha=source_sha,
+        )
 
         manage = _release_module("manage_google_auth_only_activation")
         activation_plan = json.loads(
