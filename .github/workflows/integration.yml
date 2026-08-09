@@ -18,6 +18,7 @@ on:
         type: choice
         options:
           - "runtime_only"
+          - "google_auth_readiness"
           - "provider_only"
           - "full"
       failure_boundary:
@@ -187,6 +188,21 @@ jobs:
             backend.tests.test_release_coordinate_resolver -v
           npm run typecheck --prefix frontend
           npm run build:web --prefix frontend
+
+      - name: Verify the exact successful CI attempt before Google readiness mutates Preview
+        if: inputs.acceptance_scope == 'google_auth_readiness'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python backend/scripts/verify_github_workflow_run.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "${{ inputs.ci_run_id }}" \
+            --run-attempt "${{ inputs.ci_run_attempt }}" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-path .github/workflows/ci.yml \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/google-readiness-ci.json"
 
       - name: Apply the exact Preview schema through Partner consent revision 0020
         working-directory: backend
@@ -706,10 +722,222 @@ jobs:
           rm -f "$RUNNER_TEMP"/vowpic-connected-edge-*.ready "$RUNNER_TEMP"/vowpic-connected-edge-*.done
           rm -rf "$RUNNER_TEMP/vowpic-python"
 
+  google-readiness:
+    name: Prove source-free Google OAuth handoff readiness
+    if: inputs.acceptance_scope == 'google_auth_readiness'
+    needs: register
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: preview-identity
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install only the application-side readiness harness
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          python -m pip check
+          npm ci --prefix frontend --ignore-scripts
+          npm run playwright:install --prefix frontend
+
+      - name: Resolve exact service-owned Preview coordinates
+        env:
+          PREVIEW_CONTROL_READ_DATABASE_URL: ${{ secrets.PREVIEW_CONTROL_READ_DATABASE_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python scripts/release/resolve_release_coordinates.py \
+            --coordinate-kind preview-identity \
+            --database-url-env PREVIEW_CONTROL_READ_DATABASE_URL \
+            --github-token-env GITHUB_TOKEN \
+            --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/resolved-google-readiness.json" \
+            --job-env "$GITHUB_ENV" \
+            --env-prefix PREVIEW_
+
+      - name: CAS-record the original callback before any Preview mutation
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/preview-origin
+          python scripts/release/configure_preview_auth_origin.py snapshot \
+            --activation-id "$PREVIEW_ACTIVATION_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --state-output artifacts/preview-origin/origin-state.json \
+            --output "$RUNNER_TEMP/google-readiness-origin-snapshot.json"
+
+      - name: Persist restore state before adding the callback
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vowpic-preview-identity-${{ github.run_id }}-${{ github.run_attempt }}-origin
+          path: artifacts/preview-origin/origin-state.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Add only the exact Preview callback
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+          SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.SUPABASE_MANAGEMENT_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          python scripts/release/configure_preview_auth_origin.py add \
+            --database-url-env PREVIEW_MIGRATION_DATABASE_URL \
+            --state-file artifacts/preview-origin/origin-state.json \
+            --output "$RUNNER_TEMP/google-readiness-origin-added.json"
+
+      - name: Enable only a bounded Preview GOOGLE_AUTH handoff cohort
+        env:
+          PREVIEW_MIGRATION_DATABASE_URL: ${{ secrets.PREVIEW_MIGRATION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          from datetime import datetime, timedelta, timezone
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          from uuid import UUID
+
+          sys.path.insert(0, str(Path.cwd() / "backend"))
+          from sqlalchemy import select
+          from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+          from app.core.database import normalize_database_url
+          from app.core.feature_flags import Capability, FeatureFlagState
+          from app.models.ops_feature_flag import OpsFeatureFlag
+          from app.models.release_activation import ReleaseActivation
+          from app.services.feature_flag_service import set_capability_state
+
+          async def enable():
+              normalized, connect_args = normalize_database_url(os.environ["PREVIEW_MIGRATION_DATABASE_URL"])
+              engine = create_async_engine(normalized, connect_args=connect_args)
+              session_factory = async_sessionmaker(engine, expire_on_commit=False)
+              now = datetime.now(timezone.utc)
+              expires_at = now + timedelta(minutes=15)
+              try:
+                  async with session_factory() as db:
+                      async with db.begin():
+                          activation = await db.scalar(
+                              select(ReleaseActivation)
+                              .where(ReleaseActivation.id == UUID(os.environ["PREVIEW_ACTIVATION_ID"]))
+                              .with_for_update()
+                          )
+                          if (
+                              activation is None
+                              or activation.environment != "preview"
+                              or activation.kind != "PREVIEW_IDENTITY"
+                              or activation.api_role != "PREVIEW_IDENTITY"
+                              or activation.phase != "COMPLETED"
+                              or activation.source_sha != os.environ["SOURCE_SHA"]
+                              or activation.runtime_bundle_id != os.environ["PREVIEW_RUNTIME_BUNDLE_ID"]
+                              or activation.api_deployment_id != os.environ["PREVIEW_API_DEPLOYMENT_ID"]
+                              or activation.reservation_expires_at is None
+                              or expires_at > activation.reservation_expires_at
+                          ):
+                              raise ValueError("Preview activation is not eligible for bounded Google readiness")
+                          flags = list((await db.scalars(
+                              select(OpsFeatureFlag)
+                              .where(OpsFeatureFlag.environment == "preview")
+                              .order_by(OpsFeatureFlag.capability)
+                              .with_for_update()
+                          )).all())
+                          expected = tuple(sorted(capability.value for capability in Capability))
+                          if tuple(flag.capability for flag in flags) != expected:
+                              raise ValueError("Preview capability inventory is incomplete")
+                          if any(
+                              flag.state != FeatureFlagState.OFF.value
+                              or flag.deployment_id is not None
+                              or flag.runtime_bundle_id is not None
+                              or flag.release_activation_id is not None
+                              or flag.expires_at is not None
+                              or list(flag.cohort_user_ids or [])
+                              or list(flag.verified_identity_hashes or [])
+                              for flag in flags
+                          ):
+                              raise ValueError("Preview readiness requires an exact all-OFF baseline")
+                          decision = await set_capability_state(
+                              db,
+                              Capability.GOOGLE_AUTH,
+                              environment="preview",
+                              state=FeatureFlagState.ACCEPTANCE_COHORT,
+                              actor=f"github-actions:{os.environ['GITHUB_RUN_ID']}",
+                              reason="source-free Google OAuth handoff readiness",
+                              deployment_id=os.environ["PREVIEW_API_DEPLOYMENT_ID"],
+                              runtime_bundle_id=os.environ["PREVIEW_RUNTIME_BUNDLE_ID"],
+                              release_activation_id=activation.id,
+                              expires_at=expires_at,
+                              now=now,
+                              allow_preview_enable=True,
+                          )
+                  report = {
+                      "schema": "vowpic.preview-google-handoff-cohort.v1",
+                      "state": "ACCEPTANCE_COHORT",
+                      "capabilities": ["google_auth"],
+                      "identity_count": 0,
+                      "source_sha": os.environ["SOURCE_SHA"],
+                      "runtime_bundle_id": os.environ["PREVIEW_RUNTIME_BUNDLE_ID"],
+                      "deployment_id": os.environ["PREVIEW_API_DEPLOYMENT_ID"],
+                      "expires_at": expires_at.isoformat(),
+                      "snapshot_sha256": decision.snapshot_hash,
+                  }
+                  output = Path(os.environ["RUNNER_TEMP"], "google-readiness-cohort.json")
+                  with output.open("x", encoding="utf-8", newline="\n") as handle:
+                      json.dump(report, handle, sort_keys=True, indent=2)
+                      handle.write("\n")
+              finally:
+                  await engine.dispose()
+
+          asyncio.run(enable())
+          PY
+
+      - name: Verify the application-owned handoff without navigating Google UI
+        working-directory: frontend
+        env:
+          RUN_GOOGLE_HANDOFF_E2E: '1'
+          PREVIEW_GOOGLE_HANDOFF_REPORT_PATH: ${{ github.workspace }}/artifacts/preview-google-readiness/readiness-receipt.json
+        run: |
+          set -euo pipefail
+          export PREVIEW_BASE_URL="$PREVIEW_API_DEPLOYMENT_URL"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/preview-google-readiness"
+          npm run test:e2e -- e2e/google-oauth-handoff-readiness.spec.ts
+
+      - name: Persist the exact source-free Google readiness receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vowpic-preview-google-readiness-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/preview-google-readiness/readiness-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
   cleanup:
     name: Independently restore Preview identity state
     if: always()
-    needs: [register, smoke]
+    needs: [register, smoke, google-readiness]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: preview-identity

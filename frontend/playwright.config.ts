@@ -2,11 +2,14 @@ import { defineConfig } from '@playwright/test';
 
 const previewRun = process.env.RUN_PREVIEW_E2E === '1';
 const productionRun = process.env.RUN_PRODUCTION_E2E === '1';
+const googleHandoffRun = process.env.RUN_GOOGLE_HANDOFF_E2E === '1';
 const localA11yRun = process.env.RUN_LOCAL_A11Y === '1';
 const protectedRun = previewRun || productionRun;
-const selectedModes = [previewRun, productionRun, localA11yRun].filter(Boolean).length;
+const remoteRun = protectedRun || googleHandoffRun;
+const selectedModes = [previewRun, productionRun, googleHandoffRun, localA11yRun]
+  .filter(Boolean).length;
 const baseURL = String(
-  previewRun
+  previewRun || googleHandoffRun
     ? process.env.PREVIEW_BASE_URL || ''
     : productionRun
       ? process.env.PRODUCTION_BASE_URL || ''
@@ -23,10 +26,18 @@ const identityEmail = String(
     : process.env.PRODUCTION_GOOGLE_EMAIL || '',
 ).trim();
 const browserChannel = String(process.env.PLAYWRIGHT_BROWSER_CHANNEL || '').trim();
+const chromiumProject = {
+  name: 'chromium',
+  use: {
+    browserName: 'chromium' as const,
+    ...(browserChannel ? { channel: browserChannel } : {}),
+  },
+};
 
 if (selectedModes !== 1) {
   throw new Error(
-    'PLAYWRIGHT_MODE_REQUIRED: select exactly one preview, production, or local-a11y mode.',
+    'PLAYWRIGHT_MODE_REQUIRED: select exactly one preview, production, Google-handoff, '
+    + 'or local-a11y mode.',
   );
 }
 if (protectedRun && (!baseURL || !storageState || !identityEmail)) {
@@ -35,7 +46,7 @@ if (protectedRun && (!baseURL || !storageState || !identityEmail)) {
     + 'are required for the selected mode.',
   );
 }
-if (protectedRun) {
+if (remoteRun) {
   const parsed = new URL(baseURL);
   if (
     parsed.protocol !== 'https:'
@@ -71,22 +82,8 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: protectedRun ? 'retain-on-failure' : 'off',
   },
-  projects: protectedRun ? [
-    {
-      name: 'chromium',
-      use: {
-        browserName: 'chromium',
-        ...(browserChannel ? { channel: browserChannel } : {}),
-      },
-    },
-  ] : [
-    {
-      name: 'chromium',
-      use: {
-        browserName: 'chromium',
-        ...(browserChannel ? { channel: browserChannel } : {}),
-      },
-    },
+  projects: protectedRun ? [chromiumProject] : googleHandoffRun ? [chromiumProject] : [
+    chromiumProject,
     {
       name: 'firefox',
       use: { browserName: 'firefox' },

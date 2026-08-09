@@ -6,6 +6,7 @@ import ast
 import importlib
 import importlib.util
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
@@ -30,6 +31,309 @@ def _path_module(name: str, path: Path):
 
 
 class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
+    def _assert_production_clean_off_contract(self, source: str) -> None:
+        workflow = yaml.safe_load(source)
+        gate_jobs = (
+            "authorize-google-deploy",
+            "deploy-google-runtime",
+            "google-auth-only",
+            "rollback-google-deploy",
+        )
+        gate_blocks = []
+        for job_name in gate_jobs:
+            matches = [
+                step["run"]
+                for step in workflow["jobs"][job_name]["steps"]
+                if isinstance(step, dict)
+                and isinstance(step.get("run"), str)
+                and "SELECT capability, state" in step["run"]
+                and "database_off = (" in step["run"]
+            ]
+            self.assertEqual(len(matches), 1, job_name)
+            gate_blocks.append((job_name, matches[0]))
+
+        expected_select_fields = (
+            "capability",
+            "state",
+            "deployment_id",
+            "runtime_bundle_id",
+            "worker_image_digest",
+            "release_activation_id",
+            "target_manifest_sha256",
+            "expires_at",
+            "cohort_user_ids",
+            "verified_identity_hashes",
+        )
+        expected_bound_fields = (
+            "deployment_id",
+            "runtime_bundle_id",
+            "worker_image_digest",
+            "release_activation_id",
+            "target_manifest_sha256",
+            "expires_at",
+        )
+        clean_row = {
+            "state": "OFF",
+            **{field: None for field in expected_bound_fields},
+            "cohort_user_ids": [],
+            "verified_identity_hashes": [],
+        }
+        expected_capabilities = {
+            "google_auth",
+            "authenticated_upload",
+            "generation",
+            "credit_pack_checkout",
+            "subscription_billing",
+            "private_download",
+            "partner_invite",
+        }
+        cases = (
+            ("clean", {}, True),
+            ("dirty_worker", {"worker_image_digest": "sha256:" + "a" * 64}, False),
+            ("dirty_cohort", {"cohort_user_ids": ["user-1"]}, False),
+            ("dirty_verified", {"verified_identity_hashes": ["b" * 64]}, False),
+        )
+
+        def parenthesized_assignment(block: str, marker: str) -> str:
+            start = block.index(marker)
+            opening = block.index("(", start)
+            depth = 0
+            for index in range(opening, len(block)):
+                if block[index] == "(":
+                    depth += 1
+                elif block[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        line_end = block.find("\n", index + 1)
+                        return block[start : line_end if line_end >= 0 else len(block)]
+            raise AssertionError(f"unterminated assignment: {marker}")
+
+        for job_name, block in gate_blocks:
+            select_match = re.search(
+                r"SELECT capability, state,(.*?)FROM ops_feature_flags",
+                block,
+                flags=re.DOTALL,
+            )
+            self.assertIsNotNone(select_match, job_name)
+            select_fields = (
+                "capability",
+                "state",
+                *re.findall(r"[a-z][a-z0-9_]+", select_match.group(1)),
+            )
+            self.assertEqual(select_fields, expected_select_fields, job_name)
+
+            contract_start = block.index("bound = (")
+            database_start = block.index("database_off = (", contract_start)
+            contract_module = ast.parse(block[contract_start:database_start])
+            self.assertEqual(len(contract_module.body), 2, job_name)
+            self.assertIsInstance(contract_module.body[0], ast.Assign, job_name)
+            self.assertIsInstance(contract_module.body[1], ast.FunctionDef, job_name)
+            namespace = {"all": all, "list": list}
+            exec(compile(contract_module, f"<{job_name}-clean-off>", "exec"), namespace)
+            self.assertEqual(namespace["bound"], expected_bound_fields, job_name)
+
+            database_assignment = ast.parse(
+                parenthesized_assignment(block, "database_off = (")
+            ).body[0]
+            self.assertIsInstance(database_assignment, ast.Assign, job_name)
+            self.assertIsInstance(database_assignment.value, ast.BoolOp, job_name)
+            self.assertIsInstance(database_assignment.value.op, ast.And, job_name)
+            self.assertFalse(
+                any(isinstance(node, ast.Or) for node in ast.walk(database_assignment.value)),
+                job_name,
+            )
+            actual_collection = "rows" if job_name == "google-auth-only" else "flags"
+            actual_gate_calls = []
+            for node in ast.walk(database_assignment.value):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "all"
+                    and len(node.args) == 1
+                    and isinstance(node.args[0], ast.GeneratorExp)
+                ):
+                    generator = node.args[0]
+                    comprehension = generator.generators[0]
+                    if (
+                        isinstance(generator.elt, ast.Call)
+                        and isinstance(generator.elt.func, ast.Name)
+                        and generator.elt.func.id == "clean_off"
+                        and len(generator.elt.args) == 1
+                        and isinstance(generator.elt.args[0], ast.Name)
+                        and len(generator.generators) == 1
+                        and isinstance(comprehension.target, ast.Name)
+                        and generator.elt.args[0].id == comprehension.target.id
+                        and isinstance(comprehension.iter, ast.Name)
+                        and comprehension.iter.id == actual_collection
+                    ):
+                        actual_gate_calls.append(node)
+            self.assertEqual(len(actual_gate_calls), 1, job_name)
+
+            for case_name, changes, expected in cases:
+                row = {**clean_row, **changes}
+                actual = namespace["clean_off"](row)
+                self.assertIs(actual, expected, f"{job_name}:{case_name}")
+
+                inventory = [
+                    {**clean_row, "capability": capability}
+                    for capability in sorted(expected_capabilities)
+                ]
+                inventory[0] = {**inventory[0], **changes}
+                gate_namespace = {
+                    **namespace,
+                    "expected": expected_capabilities,
+                    actual_collection: inventory,
+                }
+                exec(
+                    compile(
+                        ast.Module(body=[database_assignment], type_ignores=[]),
+                        f"<{job_name}-database-off>",
+                        "exec",
+                    ),
+                    gate_namespace,
+                )
+                self.assertIs(
+                    gate_namespace["database_off"],
+                    expected,
+                    f"{job_name}:{case_name}:actual_database_off",
+                )
+
+    def test_all_four_production_clean_off_gates_share_the_complete_contract(self) -> None:
+        source = (ROOT / ".github/workflows/production-google-auth-only.yml").read_text(
+            encoding="utf-8"
+        )
+        self._assert_production_clean_off_contract(source)
+
+        gate_boundaries = (
+            ("authorize-google-deploy", "deploy-google-runtime", "flags"),
+            ("deploy-google-runtime", "google-auth-only", "flags"),
+            ("google-auth-only", "rollback-google-deploy", "rows"),
+            ("rollback-google-deploy", "expired-lease-watchdog", "flags"),
+        )
+        clean_off_body = """          def clean_off(row):
+              return (
+                  row["state"] == "OFF"
+                  and all(row[key] is None for key in bound)
+                  and not list(row["cohort_user_ids"] or [])
+                  and not list(row["verified_identity_hashes"] or [])
+              )"""
+        constant_clean_row = (
+            '{"state": "OFF", "deployment_id": None, "runtime_bundle_id": None, '
+            '"worker_image_digest": None, "release_activation_id": None, '
+            '"target_manifest_sha256": None, "expires_at": None, '
+            '"cohort_user_ids": [], "verified_identity_hashes": []}'
+        )
+
+        def append_or_true(region: str) -> str:
+            marker = "database_off = ("
+            start = region.index(marker)
+            opening = region.index("(", start)
+            depth = 0
+            for index in range(opening, len(region)):
+                if region[index] == "(":
+                    depth += 1
+                elif region[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return region[: index + 1] + " or True" + region[index + 1 :]
+            raise AssertionError("unterminated database_off assignment")
+
+        for job_name, next_job, collection in gate_boundaries:
+            start = source.index(f"  {job_name}:\n")
+            end = source.index(f"  {next_job}:\n", start)
+            region = source[start:end]
+
+            invocation = f"and all(clean_off(row) for row in {collection})"
+            self.assertEqual(region.count(invocation), 1, job_name)
+            detached_region = region.replace(invocation, "and True", 1)
+            detached_source = source[:start] + detached_region + source[end:]
+            with self.subTest(gate=job_name, mutation="detached_invocation"):
+                with self.assertRaises(AssertionError):
+                    self._assert_production_clean_off_contract(detached_source)
+
+            self.assertEqual(region.count(clean_off_body), 1, job_name)
+            permissive_region = region.replace(
+                clean_off_body,
+                "          def clean_off(row):\n              return True",
+                1,
+            )
+            permissive_source = source[:start] + permissive_region + source[end:]
+            with self.subTest(gate=job_name, mutation="permissive_function"):
+                with self.assertRaises(AssertionError):
+                    self._assert_production_clean_off_contract(permissive_source)
+
+            or_true_region = append_or_true(region)
+            or_true_source = source[:start] + or_true_region + source[end:]
+            with self.subTest(gate=job_name, mutation="or_true"):
+                with self.assertRaises(AssertionError):
+                    self._assert_production_clean_off_contract(or_true_source)
+
+            constant_invocation = (
+                f"and all(clean_off({constant_clean_row}) for row in {collection})"
+            )
+            constant_region = region.replace(invocation, constant_invocation, 1)
+            self.assertNotEqual(constant_region, region, job_name)
+            constant_source = source[:start] + constant_region + source[end:]
+            with self.subTest(gate=job_name, mutation="constant_clean_row"):
+                with self.assertRaises(AssertionError):
+                    self._assert_production_clean_off_contract(constant_source)
+
+    def test_isolated_google_deploy_is_exactly_gated_and_rollback_bound(self) -> None:
+        source = (ROOT / ".github/workflows/production-google-auth-only.yml").read_text(
+            encoding="utf-8"
+        )
+        workflow = yaml.safe_load(source)
+        dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
+        for name in (
+            "ci_run_id",
+            "ci_run_attempt",
+            "privacy_run_id",
+            "privacy_run_attempt",
+            "preview_readiness_run_id",
+            "preview_readiness_run_attempt",
+        ):
+            self.assertTrue(dispatch_inputs[name]["required"], name)
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["deploy-google-runtime"]["needs"], "authorize-google-deploy")
+        self.assertEqual(jobs["google-auth-only"]["needs"], "deploy-google-runtime")
+        self.assertEqual(
+            jobs["rollback-google-deploy"]["needs"],
+            ["authorize-google-deploy", "deploy-google-runtime", "google-auth-only"],
+        )
+        authorize = source[
+            source.index("  authorize-google-deploy:\n") :
+            source.index("  deploy-google-runtime:\n")
+        ]
+        deploy = source[
+            source.index("  deploy-google-runtime:\n") : source.index("  google-auth-only:\n")
+        ]
+        rollback = source[
+            source.index("  rollback-google-deploy:\n") :
+            source.index("  expired-lease-watchdog:\n")
+        ]
+        self.assertLess(
+            authorize.index("verify_github_workflow_run.py"),
+            authorize.index("google-deploy-baseline.json"),
+        )
+        self.assertIn("PRODUCTION_READ_ONLY_DATABASE_URL", authorize)
+        self.assertIn("database_and_public_all_off", authorize)
+        self.assertIn("vowpic.preview-google-handoff-readiness.v1", authorize)
+        self.assertIn("real_google_identity_proof", authorize)
+        self.assertIn("deferred_to_production_google_only", authorize)
+        self.assertIn("deploy --prebuilt --prod --skip-domain", deploy)
+        self.assertIn("--expected-release-role COMMERCIAL_7A", deploy)
+        self.assertIn('"commercial_activation_created": False', deploy)
+        self.assertIn('"database_all_off": database_off', deploy)
+        self.assertNotIn("register_bundle.py", deploy)
+        self.assertNotIn("apply_activation_plan.py", deploy)
+        self.assertNotIn("production-release.yml", source)
+        self.assertIn("emergency_disable", rollback)
+        self.assertIn('"active_google_activations": active_activations', rollback)
+        self.assertIn('"active_unused_bindings": active_unused_bindings', rollback)
+        self.assertIn('"active_acceptance_sessions": active_sessions', rollback)
+        self.assertIn('"$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID"', rollback)
+        self.assertIn('"$VERCEL_CLI" remove "$deployment_id"', rollback)
+
     def test_0021_adds_only_the_production_google_auth_activation_kind(self) -> None:
         source = (
             ROOT / "backend/alembic/versions/20260710_0021_google_auth_only_activation.py"
@@ -130,8 +434,12 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
 
     def test_workflow_has_no_generation_payment_or_commercial_activation_path(self) -> None:
         path = ROOT / ".github/workflows/production-google-auth-only.yml"
-        source = path.read_text(encoding="utf-8")
-        workflow = yaml.safe_load(source)
+        full_source = path.read_text(encoding="utf-8")
+        workflow = yaml.safe_load(full_source)
+        source = full_source[
+            full_source.index("  google-auth-only:\n") :
+            full_source.index("  rollback-google-deploy:\n")
+        ]
         self.assertIn("workflow_dispatch", workflow[True])
         self.assertEqual(workflow[True]["schedule"][0]["cron"], "*/5 * * * *")
         dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
@@ -142,7 +450,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workflow["jobs"]["expired-lease-watchdog"]["environment"], "production")
         self.assertIn(
             "manage_google_auth_only_activation.py reap-expired",
-            source,
+            full_source,
         )
         self.assertIn(
             "inputs.operator_ready == true",
