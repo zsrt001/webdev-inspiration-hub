@@ -131,6 +131,8 @@ class WorkflowFalseGreenTest(unittest.TestCase):
                 source,
             )
             self.assertIn("google_oauth_scopes: [...scope].sort()", source)
+            self.assertIn("vowpic.preview-google-handoff-readiness.v3", source)
+            self.assertNotIn("vowpic.preview-google-handoff-readiness.v2", source)
             self.assertNotIn("['openid', 'email', 'profile']", source)
             self.assertIn("within(authorizeNavigation", source)
             self.assertIn("15_000", source)
@@ -183,6 +185,9 @@ class WorkflowFalseGreenTest(unittest.TestCase):
                 "expect(scope).toEqual(new Set(['email', 'profile']))",
                 "expect(scope).toEqual(new Set(['openid', 'email', 'profile']))",
                 1,
+            ),
+            "legacy_receipt_schema": (
+                readiness + "\n// vowpic.preview-google-handoff-readiness.v2\n"
             ),
             "browser_google_request_authority": readiness.replace(
                 "const authorizeNavigation = new Promise<string>",
