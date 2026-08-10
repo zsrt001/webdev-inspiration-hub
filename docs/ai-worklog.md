@@ -3243,11 +3243,15 @@
 
 ### Current stage and evidence
 
-- Status: `PR_222_CI_PENDING`. Commit `bdc5f18` is published on
-  `codex/google-handoff-provider-scopes` in draft PR `#222`. The only allowed
-  action in this stage is to obtain green PR CI and reconcile any finding;
-  protected Preview and Production execution remain prohibited until CI is
-  green and the exact reviewed diff is merged.
+- Status: `RECEIPT_V3_REVIEWED_READY_FOR_PR`. PR `#222` merged as
+  `main@cce44d5a32d4a4e547cb2f2fdd577a051045f96d`. Main CI run
+  `31354812248`, exact-SHA privacy run `31354812257`, and protected Preview
+  readiness run `31355012223` all completed successfully. The only allowed
+  Production preflight found that the new sanitized scope field was not yet in
+  the Production receipt consumer's exact v2 key set. The only allowed action
+  in this stage is to version and verify that producer/consumer contract; no
+  Production mutation is allowed until the synchronized contract is merged and
+  has fresh exact-SHA evidence.
   Production release, Google UI navigation, generation, payment, and other
   commercial actions remain prohibited until this gate has fresh exit evidence.
 - Preview run `31342305906` built and registered the exact runtime successfully.
@@ -3280,6 +3284,28 @@
   that exact scope equality rejects both a reintroduced `openid` requirement
   and any unexpected extra scope, while all no-follow and zero-browser-Google
   safety assertions remain enforced.
+- PR CI run `31354606940` passed every required job and its final
+  `quality-gate`. The merged source then passed main CI and the protected
+  privacy boundary on the exact merge SHA.
+- Protected Preview run `31355012223` passed the application-owned Supabase
+  authorize navigation, exact `email + profile` Google first redirect, PKCE,
+  callback, state, and zero browser Google request/response proof. Its
+  independent cleanup restored the callback and removed the activation,
+  bindings, and exact unbound Preview deployment; the full run concluded
+  `success`.
+- The subsequent read-only Production preflight correctly stopped before
+  dispatch: adding `google_oauth_scopes` changed the exact receipt shape, while
+  the Production consumer still required the old v2 key set. The contract is
+  now explicitly v3; the consumer requires the new key and exact sorted value
+  `["email", "profile"]`. This is a producer/consumer schema repair, not a
+  relaxation or another OAuth execution strategy.
+- Final local verification of the v3 repair passed 20 focused tests, frontend
+  TypeScript compilation, Playwright compilation/discovery of the one Chromium
+  handoff case, all workflow YAML parsing, and `git diff --check`. Five directed
+  consumer mutations prove that deleting exact-key validation, omitting the
+  scope key, allowing v2, relaxing scope equality, or coexisting with v2 is
+  rejected. Independent read-only review returned `GO` with no remaining
+  blocker.
 - Local focused regression, TypeScript compilation, workflow parsing, diff
   checks, independent review, PR CI, and one fresh protected Preview readiness
   run are the exit evidence. Until they pass, this repair is not complete and

@@ -311,17 +311,66 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             source.index("  rollback-google-deploy:\n") :
             source.index("  expired-lease-watchdog:\n")
         ]
+
+        def assert_readiness_receipt_is_exact(block: str) -> None:
+            self.assertIn("set(readiness) != readiness_keys", block)
+            self.assertIn(
+                '"google_redirect_followed", "google_oauth_scopes",',
+                block,
+            )
+            self.assertIn(
+                'readiness.get("schema") != "vowpic.preview-google-handoff-readiness.v3"',
+                block,
+            )
+            self.assertIn(
+                'readiness.get("google_oauth_scopes") != ["email", "profile"]',
+                block,
+            )
+            self.assertNotIn("vowpic.preview-google-handoff-readiness.v2", block)
+
+        assert_readiness_receipt_is_exact(authorize)
+        receipt_mutations = {
+            "missing_exact_key_set": authorize.replace(
+                "set(readiness) != readiness_keys\n              or ",
+                "",
+                1,
+            ),
+            "scope_missing_from_exact_key_set": authorize.replace(
+                '"google_redirect_followed", "google_oauth_scopes",',
+                '"google_redirect_followed",',
+                1,
+            ),
+            "legacy_schema_compatibility": authorize.replace(
+                'readiness.get("schema") != "vowpic.preview-google-handoff-readiness.v3"',
+                'readiness.get("schema") not in {"vowpic.preview-google-handoff-readiness.v2", "vowpic.preview-google-handoff-readiness.v3"}',
+                1,
+            ),
+            "scope_subset_instead_of_exact": authorize.replace(
+                'readiness.get("google_oauth_scopes") != ["email", "profile"]',
+                'not {"email", "profile"}.issubset(set(readiness.get("google_oauth_scopes") or []))',
+                1,
+            ),
+            "legacy_schema_coexists": (
+                authorize + "\n# vowpic.preview-google-handoff-readiness.v2\n"
+            ),
+        }
+        for label, mutated in receipt_mutations.items():
+            with self.subTest(receipt_mutation=label), self.assertRaises(AssertionError):
+                assert_readiness_receipt_is_exact(mutated)
+
         self.assertLess(
             authorize.index("verify_github_workflow_run.py"),
             authorize.index("google-deploy-baseline.json"),
         )
         self.assertIn("PRODUCTION_READ_ONLY_DATABASE_URL", authorize)
         self.assertIn("database_and_public_all_off", authorize)
-        self.assertIn("vowpic.preview-google-handoff-readiness.v2", authorize)
+        self.assertIn("vowpic.preview-google-handoff-readiness.v3", authorize)
         self.assertIn("supabase_first_hop_redirect_validated", authorize)
         self.assertIn("browser_google_requests_observed", authorize)
         self.assertIn("browser_google_responses_observed", authorize)
         self.assertIn("google_redirect_followed", authorize)
+        self.assertIn('"google_oauth_scopes"', authorize)
+        self.assertIn('["email", "profile"]', authorize)
         self.assertIn("real_google_identity_proof", authorize)
         self.assertIn("deferred_to_production_google_only", authorize)
         self.assertIn("deploy --prebuilt --prod --skip-domain", deploy)

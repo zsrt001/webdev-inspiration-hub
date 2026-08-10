@@ -184,12 +184,12 @@ jobs:
               "runtime_bundle_id", "deployment_id", "callback_path",
               "supabase_authorize_observed", "supabase_first_hop_redirect_validated",
               "browser_google_requests_observed", "browser_google_responses_observed",
-              "google_redirect_followed",
+              "google_redirect_followed", "google_oauth_scopes",
               "app_session_fail_closed", "capabilities", "real_google_identity_proof",
           }
           if (
               set(readiness) != readiness_keys
-              or readiness.get("schema") != "vowpic.preview-google-handoff-readiness.v2"
+              or readiness.get("schema") != "vowpic.preview-google-handoff-readiness.v3"
               or readiness.get("passed") is not True
               or readiness.get("source_sha") != os.environ["SOURCE_SHA"]
               or readiness.get("workflow_run_id") != os.environ["PREVIEW_RUN_ID"]
@@ -202,6 +202,7 @@ jobs:
               or readiness.get("browser_google_requests_observed") != 0
               or readiness.get("browser_google_responses_observed") != 0
               or readiness.get("google_redirect_followed") is not False
+              or readiness.get("google_oauth_scopes") != ["email", "profile"]
               or readiness.get("app_session_fail_closed") is not True
               or readiness.get("capabilities") != expected_capabilities
               or readiness.get("real_google_identity_proof") != "deferred_to_production_google_only"

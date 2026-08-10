@@ -158,7 +158,7 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
   expect(scope).toEqual(new Set(['email', 'profile']));
 
   const receipt = {
-    schema: 'vowpic.preview-google-handoff-readiness.v2',
+    schema: 'vowpic.preview-google-handoff-readiness.v3',
     passed: true,
     source_sha: sourceSha,
     workflow_run_id: workflowRunId,
