@@ -150,10 +150,12 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
   expect(googleURL.searchParams.get('redirect_uri')).toBe(`${supabaseOrigin}/auth/v1/callback`);
   expect(googleURL.searchParams.get('response_type')).toBe('code');
   expect(googleURL.searchParams.get('state')).toBeTruthy();
-  const scope = new Set(String(googleURL.searchParams.get('scope') || '').split(/\s+/));
-  for (const requiredScope of ['openid', 'email', 'profile']) {
-    expect(scope.has(requiredScope)).toBe(true);
-  }
+  const scope = new Set(
+    String(googleURL.searchParams.get('scope') || '')
+      .split(/\s+/)
+      .filter(Boolean),
+  );
+  expect(scope).toEqual(new Set(['email', 'profile']));
 
   const receipt = {
     schema: 'vowpic.preview-google-handoff-readiness.v2',
@@ -169,6 +171,7 @@ test('Google PKCE handoff is ready without contacting the Google login UI', asyn
     browser_google_requests_observed: 0,
     browser_google_responses_observed: 0,
     google_redirect_followed: false,
+    google_oauth_scopes: [...scope].sort(),
     app_session_fail_closed: true,
     capabilities: Object.fromEntries(
       expectedCapabilities.map((capability) => [capability, capability === 'google_auth']),

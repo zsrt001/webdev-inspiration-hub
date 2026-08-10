@@ -126,6 +126,12 @@ class WorkflowFalseGreenTest(unittest.TestCase):
             self.assertIn("maxRedirects: 0", source)
             self.assertIn("firstHopResponse.headers().location", source)
             self.assertIn("google_redirect_followed: false", source)
+            self.assertIn(
+                "expect(scope).toEqual(new Set(['email', 'profile']))",
+                source,
+            )
+            self.assertIn("google_oauth_scopes: [...scope].sort()", source)
+            self.assertNotIn("['openid', 'email', 'profile']", source)
             self.assertIn("within(authorizeNavigation", source)
             self.assertIn("15_000", source)
             self.assertNotIn("context.route('https://accounts.google.com/**'", source)
@@ -172,6 +178,11 @@ class WorkflowFalseGreenTest(unittest.TestCase):
             ),
             "false_receipt_claim": readiness.replace(
                 "google_redirect_followed: false", "google_redirect_followed: true", 1
+            ),
+            "openid_scope_requirement": readiness.replace(
+                "expect(scope).toEqual(new Set(['email', 'profile']))",
+                "expect(scope).toEqual(new Set(['openid', 'email', 'profile']))",
+                1,
             ),
             "browser_google_request_authority": readiness.replace(
                 "const authorizeNavigation = new Promise<string>",

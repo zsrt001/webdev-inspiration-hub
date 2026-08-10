@@ -3238,3 +3238,49 @@
   deleted-service active-reference scan, sensitive-literal diff scan, and
   `git diff --check` passed.
 - Proxifier was not modified or restarted.
+
+## 2026-08-10 - Repair the Preview Google handoff scope gate
+
+### Current stage and evidence
+
+- Status: `PR_222_CI_PENDING`. Commit `bdc5f18` is published on
+  `codex/google-handoff-provider-scopes` in draft PR `#222`. The only allowed
+  action in this stage is to obtain green PR CI and reconcile any finding;
+  protected Preview and Production execution remain prohibited until CI is
+  green and the exact reviewed diff is merged.
+  Production release, Google UI navigation, generation, payment, and other
+  commercial actions remain prohibited until this gate has fresh exit evidence.
+- Preview run `31342305906` built and registered the exact runtime successfully.
+  Its application-owned Supabase authorize navigation, PKCE parameters,
+  no-follow first redirect to `accounts.google.com`, Google callback, state, and
+  zero browser Google requests/responses all passed. The sole failing assertion
+  required `openid`, `email`, and `profile` simultaneously.
+- The application does not request extra OAuth scopes. Supabase's Google social
+  provider defaults to `email` and `profile`; `openid` belongs to a different
+  optional/OIDC contract and is not required by VowPic's signed Supabase JWT,
+  Google-provider, verified-email, and identity-consistency checks. Repeating
+  the existing run cannot change this local assertion and is not an allowed
+  recovery path.
+- The run's independent recovery job `93318720416` succeeded: the callback,
+  activation, bindings, and exact unbound Preview deployment were cleaned. No
+  Production workflow was triggered.
+
+### Bounded correction and exit evidence
+
+- The first-hop gate now requires the exact provider-default scope set
+  `email + profile`, retains every PKCE, redirect, callback, state, and
+  zero-browser-Google assertion, and records only the sorted non-sensitive scope
+  names in its sanitized receipt.
+- Focused workflow/false-green regression passed 20 tests. Frontend TypeScript
+  compilation passed; Playwright compiled and discovered exactly the one
+  Chromium handoff case without executing it; all workflow YAML files parsed;
+  `git diff --check` passed. No real Preview or Production request was made by
+  these local checks.
+- An independent read-only review returned `GO` with no blocker. It confirmed
+  that exact scope equality rejects both a reintroduced `openid` requirement
+  and any unexpected extra scope, while all no-follow and zero-browser-Google
+  safety assertions remain enforced.
+- Local focused regression, TypeScript compilation, workflow parsing, diff
+  checks, independent review, PR CI, and one fresh protected Preview readiness
+  run are the exit evidence. Until they pass, this repair is not complete and
+  Production remains out of scope.
