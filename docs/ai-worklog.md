@@ -3243,9 +3243,11 @@
 
 ### Current stage and evidence
 
-- Status: `REVIEWED_READY_FOR_PR_CI`. The only allowed action in this stage is
-  to publish the three-file correction for PR CI; protected Preview and
-  Production execution remain prohibited until CI is green.
+- Status: `PR_222_CI_PENDING`. Commit `bdc5f18` is published on
+  `codex/google-handoff-provider-scopes` in draft PR `#222`. The only allowed
+  action in this stage is to obtain green PR CI and reconcile any finding;
+  protected Preview and Production execution remain prohibited until CI is
+  green and the exact reviewed diff is merged.
   Production release, Google UI navigation, generation, payment, and other
   commercial actions remain prohibited until this gate has fresh exit evidence.
 - Preview run `31342305906` built and registered the exact runtime successfully.
