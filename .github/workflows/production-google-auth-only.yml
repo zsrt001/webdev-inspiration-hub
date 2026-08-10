@@ -359,6 +359,14 @@ jobs:
           cache: npm
           cache-dependency-path: scripts/release-tools/package-lock.json
 
+      - name: Install the Vercel-compatible uv build tool
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.11"
+          checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"
+          enable-cache: false
+          download-from-astral-mirror: false
+
       - name: Install the pinned Vercel and build tools
         run: |
           set -euo pipefail
@@ -366,6 +374,7 @@ jobs:
           VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
           test -x "$VERCEL_CLI"
           test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          test "$(uv --version)" = "uv 0.10.11"
           echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
 
       - name: Download the exact pre-mutation baseline
@@ -1442,6 +1451,25 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
         run: |
           set -euo pipefail
+          ROLLBACK_STAGE="initialize"
+          ROLLBACK_FAILURE_REPORT="$RUNNER_TEMP/google-rollback-failure.json"
+          enter_rollback_stage() {
+            ROLLBACK_STAGE="$1"
+            echo "google_rollback_stage=$ROLLBACK_STAGE"
+          }
+          preserve_rollback_failure() {
+            rc=$?
+            trap - EXIT
+            if [[ "$rc" -ne 0 ]]; then
+              printf '{"schema":"vowpic.google-only-deploy-rollback-failure.v1","passed":false,"stage":"%s","exit_code":%d}\n' \
+                "$ROLLBACK_STAGE" "$rc" > "$ROLLBACK_FAILURE_REPORT"
+              echo "::error title=Google-only rollback failed::stage=$ROLLBACK_STAGE exit_code=$rc"
+            fi
+            exit "$rc"
+          }
+          trap preserve_rollback_failure EXIT
+
+          enter_rollback_stage validate_baseline
           baseline="$RUNNER_TEMP/google-deploy-baseline/google-deploy-baseline.json"
           test -f "$baseline"
           mapfile -t baseline_coordinates < <(python - "$baseline" <<'PY'
@@ -1465,11 +1493,13 @@ jobs:
           export BASELINE_DEPLOYMENT_ID BASELINE_RUNTIME_BUNDLE_ID BASELINE_SOURCE_SHA
           export BASELINE_SCHEMA_REVISION BASELINE_RELEASE_ROLE
 
+          enter_rollback_stage read_current_runtime
           curl --fail --silent --show-error --max-time 30 \
             "$PRODUCTION_BASE_URL/api/v1/version" > "$RUNNER_TEMP/google-rollback-current-version.json"
           CURRENT_DEPLOYMENT_ID="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/google-rollback-current-version.json"))["deployment_id"])')"
           export CURRENT_DEPLOYMENT_ID
 
+          enter_rollback_stage emergency_disable_capabilities
           python - <<'PY'
           import asyncio
           import os
@@ -1504,6 +1534,7 @@ jobs:
           PY
 
           if [[ "$CURRENT_DEPLOYMENT_ID" != "$BASELINE_DEPLOYMENT_ID" ]]; then
+            enter_rollback_stage cleanup_activation_state
             active_count="$(python - <<'PY'
           import os
           import psycopg2
@@ -1561,10 +1592,12 @@ jobs:
                 --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
                 --output "$RUNNER_TEMP/google-rollback-activation-cleaned.json"
             fi
+            enter_rollback_stage restore_baseline_alias
             "$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN"
             "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"
           fi
 
+          enter_rollback_stage enumerate_run_owned_deployments
           python - <<'PY'
           import json
           import os
@@ -1597,18 +1630,24 @@ jobs:
               json.dumps({"deployment_ids": owned}, sort_keys=True) + "\n", encoding="utf-8"
           )
           PY
+          enter_rollback_stage remove_run_owned_deployments
           while IFS= read -r deployment_id; do
             test -n "$deployment_id"
             "$VERCEL_CLI" remove "$deployment_id" --yes --token="$VERCEL_TOKEN"
           done < <(python -c 'import json,os; print("\n".join(json.load(open(os.environ["RUNNER_TEMP"]+"/google-run-owned-deployments.json"))["deployment_ids"]))')
 
+          enter_rollback_stage wait_for_baseline
+          baseline_restored=0
           for _ in $(seq 1 30); do
             if curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/api/v1/version" \
                 | BASELINE_DEPLOYMENT_ID="$BASELINE_DEPLOYMENT_ID" python -c 'import json,sys,os; p=json.load(sys.stdin); raise SystemExit(0 if p.get("deployment_id")==os.environ["BASELINE_DEPLOYMENT_ID"] else 1)'; then
+              baseline_restored=1
               break
             fi
             sleep 2
           done
+          [[ "$baseline_restored" -eq 1 ]]
+          enter_rollback_stage collect_runtime_report
           python scripts/release/collect_runtime_report.py \
             --base-url "$PRODUCTION_BASE_URL" \
             --expected-deployment-id "$BASELINE_DEPLOYMENT_ID" \
@@ -1618,6 +1657,7 @@ jobs:
             --expected-release-role "$BASELINE_RELEASE_ROLE" \
             --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
             --output "$RUNNER_TEMP/google-rollback-runtime.json"
+          enter_rollback_stage prove_zero_state
           python - <<'PY'
           import json
           import os
@@ -1717,6 +1757,8 @@ jobs:
           if not report["passed"]:
               raise SystemExit("Google-only rollback did not restore the exact zero state")
           PY
+          enter_rollback_stage completed
+          trap - EXIT
 
       - name: Persist rollback and terminal all-OFF evidence
         if: ${{ always() }}
@@ -1729,6 +1771,7 @@ jobs:
             ${{ runner.temp }}/google-rollback-session-cleanup.json
             ${{ runner.temp }}/google-rollback-binding-cleanup.json
             ${{ runner.temp }}/google-rollback-activation-cleaned.json
+            ${{ runner.temp }}/google-rollback-failure.json
           if-no-files-found: ignore
           retention-days: 30
 

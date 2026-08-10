@@ -3310,3 +3310,60 @@
   checks, independent review, PR CI, and one fresh protected Preview readiness
   run are the exit evidence. Until they pass, this repair is not complete and
   Production remains out of scope.
+
+## 2026-08-10 - Repair the GOOGLE_AUTH_ONLY Production deploy toolchain
+
+### Current stage and fixed boundaries
+
+- Status: `LOCAL_FIX_REVIEWED_READY_FOR_PR`. PR `#223` merged as
+  `main@dcb7bc9d903057c0c83c176da587a3cdb6038501`; main CI run
+  `31355923201`, privacy run `31355923188`, and protected Preview readiness run
+  `31356111680` succeeded for the required receipt-v3 chain. Production run
+  `31356544070` then stopped in its all-OFF deployment job before creating or
+  promoting a target; the Google-only activation job was skipped.
+- The first retained deploy error is exact: the frontend build completed and
+  Vercel then exited with `uv is required but was not found in PATH`. The
+  Google-only deploy job omitted the pinned `uv 0.10.11` setup already used by
+  the formal Production release workflow. This is a deployment-toolchain
+  defect, not a Google OAuth, credential, or application timeout.
+- The rollback artifact download succeeded and its digest matched. GitHub
+  retained no command or error text between the rollback block's environment
+  preamble and generic exit code 1, and none of its five expected evidence files
+  was produced. The exact inner failing command is therefore unknown; retrying
+  the same opaque block without instrumentation is prohibited.
+- Direct live checks after the failed run prove Production still serves the
+  captured baseline deployment `dpl_DA3yJyDCUBeqSz8szJPXBh5s7Ais`, runtime
+  bundle `rtb_138e9e021e09a9a8f5c0606f3930da61510190852fec95fc5cacb577b6bc1654`,
+  source `8646255360d72a0be698b4deb4a78795d5fb2e3d`, schema `20260710_0021`,
+  release role `COMMERCIAL_7A`. Public Google auth, upload, generation, credit
+  checkout, subscription billing, private download, and partner invite are all
+  OFF. The captured baseline also proves database/public all-OFF and OAuth
+  intent HTTP 503 before the failed deploy.
+
+### Current permitted action and exit evidence
+
+- User-authorized execution window: start `2026-08-10 01:54:55 -04:00`, hard
+  stop `2026-08-10 04:54:55 -04:00`. At most one Production workflow dispatch
+  is allowed in this window. The unavailable ChatGPT Pro browser transport is
+  replaced by one independent read-only subagent review. A repeated failure at
+  the same stage ends execution; it does not authorize another Production run.
+- Only add the same checksum-pinned `uv 0.10.11` setup before `vercel build`,
+  and add a sanitized rollback stage/failure receipt without changing rollback
+  mutations or acceptance criteria. Generation, payment, upload, download,
+  invite, and every other commercial capability must remain OFF.
+- Independent review found one bounded P1 before publication: the baseline wait
+  loop could exhaust all attempts and then misattribute the failure to runtime
+  report collection. The loop now requires an explicit successful baseline
+  observation while the failure stage is still `wait_for_baseline`; regression
+  also locks the trap exit-code preservation and success-path disarm ordering.
+- The same independent reviewer rechecked only that finding and returned `GO`
+  with no remaining same-scope P0/P1. Focused and related release regression
+  passes `169 tests`, `398 subtests`, with one expected skip; all 15 workflow
+  YAML files parse, the rollback Bash block passes syntax validation, Python
+  release scripts compile, the sensitive-literal diff scan is clean, and
+  `git diff --check` passes.
+- Exit requires focused workflow regression, YAML parsing, relevant broader
+  tests, diff/sensitive-literal checks, independent review, green PR/main CI,
+  exact-SHA privacy and Preview evidence, then a single evidence-driven
+  Production rerun. Any repeated failure at the same rollback stage must change
+  the method rather than repeat the run.

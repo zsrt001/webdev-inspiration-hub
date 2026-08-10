@@ -374,6 +374,20 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("real_google_identity_proof", authorize)
         self.assertIn("deferred_to_production_google_only", authorize)
         self.assertIn("deploy --prebuilt --prod --skip-domain", deploy)
+        self.assertIn(
+            "uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
+            deploy,
+        )
+        self.assertIn('version: "0.10.11"', deploy)
+        self.assertIn(
+            'checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"',
+            deploy,
+        )
+        self.assertIn('test "$(uv --version)" = "uv 0.10.11"', deploy)
+        self.assertLess(
+            deploy.index("uses: astral-sh/setup-uv@"),
+            deploy.index('"$VERCEL_CLI" build --prod'),
+        )
         self.assertIn("--expected-release-role COMMERCIAL_7A", deploy)
         self.assertIn('"commercial_activation_created": False', deploy)
         self.assertIn('"database_all_off": database_off', deploy)
@@ -386,6 +400,43 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"active_acceptance_sessions": active_sessions', rollback)
         self.assertIn('"$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID"', rollback)
         self.assertIn('"$VERCEL_CLI" remove "$deployment_id"', rollback)
+        self.assertIn("trap preserve_rollback_failure EXIT", rollback)
+        self.assertIn("google_rollback_stage=$ROLLBACK_STAGE", rollback)
+        self.assertIn("vowpic.google-only-deploy-rollback-failure.v1", rollback)
+        self.assertIn("${{ runner.temp }}/google-rollback-failure.json", rollback)
+        self.assertLess(
+            rollback.index("rc=$?"),
+            rollback.index("trap - EXIT"),
+        )
+        self.assertLess(
+            rollback.index("trap - EXIT"),
+            rollback.index('exit "$rc"'),
+        )
+        self.assertLess(
+            rollback.index("enter_rollback_stage completed"),
+            rollback.rindex("trap - EXIT"),
+        )
+        self.assertIn("baseline_restored=0", rollback)
+        self.assertIn("baseline_restored=1", rollback)
+        self.assertIn('[[ "$baseline_restored" -eq 1 ]]', rollback)
+        self.assertLess(
+            rollback.index('[[ "$baseline_restored" -eq 1 ]]'),
+            rollback.index("enter_rollback_stage collect_runtime_report"),
+        )
+        for stage in (
+            "validate_baseline",
+            "read_current_runtime",
+            "emergency_disable_capabilities",
+            "cleanup_activation_state",
+            "restore_baseline_alias",
+            "enumerate_run_owned_deployments",
+            "remove_run_owned_deployments",
+            "wait_for_baseline",
+            "collect_runtime_report",
+            "prove_zero_state",
+            "completed",
+        ):
+            self.assertIn(f"enter_rollback_stage {stage}", rollback)
 
     def test_0021_adds_only_the_production_google_auth_activation_kind(self) -> None:
         source = (
