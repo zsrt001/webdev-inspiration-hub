@@ -3315,7 +3315,7 @@
 
 ### Current stage and fixed boundaries
 
-- Status: `LOCAL_FIX_REVIEWED_READY_FOR_PR`. PR `#223` merged as
+- Status: `EXACT_SHA_GATES_GREEN_READY_FOR_ONE_PRODUCTION`. PR `#223` merged as
   `main@dcb7bc9d903057c0c83c176da587a3cdb6038501`; main CI run
   `31355923201`, privacy run `31355923188`, and protected Preview readiness run
   `31356111680` succeeded for the required receipt-v3 chain. Production run
@@ -3362,8 +3362,85 @@
   YAML files parse, the rollback Bash block passes syntax validation, Python
   release scripts compile, the sensitive-literal diff scan is clean, and
   `git diff --check` passes.
+- Fix PR `#224` merged as
+  `main@6f2b6306032522d7b0d739604a01f984d10636a5`. Exact-SHA main CI run
+  `31360777980`, protected privacy run `31360777981`, Preview Google handoff
+  readiness run `31361338502`, and its independent Preview cleanup all
+  completed successfully. Their run attempts are all `1`; the privacy,
+  readiness, and cleanup artifact names match the Production consumer
+  contract. Production dispatch count remains `0/1` at this checkpoint.
 - Exit requires focused workflow regression, YAML parsing, relevant broader
   tests, diff/sensitive-literal checks, independent review, green PR/main CI,
   exact-SHA privacy and Preview evidence, then a single evidence-driven
   Production rerun. Any repeated failure at the same rollback stage must change
   the method rather than repeat the run.
+
+### Terminal result under the user-approved hard stop
+
+- Status: `STOPPED_SAFE_PRODUCTION_ATTEMPT_FAILED`. The sole authorized
+  Production workflow dispatch was run `31362030838` (`1/1`) for exact main SHA
+  `6f2b6306032522d7b0d739604a01f984d10636a5`. Its formal baseline job passed,
+  its all-OFF deploy job failed, Google activation was skipped, and no second
+  dispatch is authorized.
+- The uv repair worked: Vercel built the Python function, created Ready candidate
+  deployment `dpl_3KbqN8zrbgPFC7odVHBAf1Ac94yz`, and returned its inspection.
+  The deploy step then parsed only `vercel inspect` stdout even though the CLI
+  emitted the deployment details to stderr; the resulting empty deployment-ID
+  set caused the retained `AssertionError`. This is the next code owner if the
+  work is ever explicitly reopened; it is not being patched or retried now.
+- The same run's rollback advanced through baseline validation, current-runtime
+  read, emergency all-OFF, run-owned deployment removal, and successful baseline
+  observation. It then failed at `collect_runtime_report`; the new sanitized
+  artifact records schema `vowpic.google-only-deploy-rollback-failure.v1`,
+  `stage=collect_runtime_report`, and `exit_code=1`. All four non-secret baseline
+  coordinates satisfy the collector regexes. The Production environment Secret
+  name exists, so evidence only supports a runtime empty/short signing-key value
+  or injection fault, not a missing Secret name; no stronger claim is made.
+- Direct terminal checks at `2026-08-10T02:39:04-04:00` prove the formal baseline
+  deployment `dpl_DA3yJyDCUBeqSz8szJPXBh5s7Ais`, runtime bundle
+  `rtb_138e9e021e09a9a8f5c0606f3930da61510190852fec95fc5cacb577b6bc1654`,
+  source `8646255360d72a0be698b4deb4a78795d5fb2e3d`, schema `20260710_0021`, and
+  release role `COMMERCIAL_7A` are live. OAuth intent returns HTTP 503; all seven
+  public capabilities are present and all seven are OFF. Because activation was
+  skipped and rollback reached the post-removal baseline stage, this attempt
+  created no Google acceptance users, bindings, sessions, or active activation,
+  and the run-owned candidate was removed before evidence collection failed.
+
+### Reopened engineering stage after the terminal stop
+
+- Status: `LOCAL_FIX_REVIEWED_READY_FOR_PR`. The user asked to
+  continue planning and engineering after the single Production attempt, but
+  did not yet authorize a second Production dispatch. The current stage may
+  change code, tests, PRs, and exact-SHA non-Production evidence only.
+- Pinned Vercel CLI `56.2.0` documents and implements
+  `vercel inspect <deployment> --format=json`; its machine output contains exact
+  top-level `id`, `url`, `readyState`, and `target` fields on stdout. The repair
+  parses only this JSON contract and rejects a wrong URL, non-READY state,
+  non-Production target, or malformed deployment ID.
+- The existing project evidence helper rejects
+  `ACCEPTANCE_EVIDENCE_SIGNING_KEY` values shorter than 32 bytes without
+  exposing their contents. That check is moved into the first protected
+  prerequisite step and repeated before Vercel build/deploy, so a bad injected
+  value fails before any candidate or Production mutation. Secret rotation and
+  any second Production workflow require separate explicit user authority.
+- The first independent review rejected the initial repair because two remote
+  side effects were armed too late: a deploy could create a candidate before
+  inspect/JSON failure, and a promote could take effect before its CLI returned
+  failure. The revised trap marks the deploy attempt before calling Vercel,
+  marks promotion attempted before promote, restores the baseline after any
+  uncertain promote result, then enumerates and deletes only deployments whose
+  project, source SHA, release role, workflow run ID, and run attempt match this
+  exact job. An uncertain promote must first read the live version endpoint back
+  as the baseline deployment. Deployment cleanup polls for up to 15 checks,
+  requires at least 10 checks and three consecutive exact-metadata zero checks,
+  and requires a 404 readback for every deletion. The helper unit tests cover an
+  initially empty listing followed by a late candidate, reject mismatched
+  metadata, and prove another workflow attempt is not deleted.
+- Local evidence after this revision: the focused GOOGLE_AUTH_ONLY suite passes
+  `21` tests / `53` subtests; the broader release-contract group passes `172`
+  tests with `1` environment skip / `408` subtests. All 15 workflow YAML files
+  parse, the deploy shell block passes Bash syntax validation, both new Python
+  scripts compile, the sensitive-literal scan is clean, and `git diff --check`
+  passes. The third independent review reports `GO` with no remaining P0/P1.
+  PR CI and exact merged-SHA non-Production gates remain; Production remains
+  unauthorized.

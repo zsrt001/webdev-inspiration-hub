@@ -66,6 +66,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.required_source_sha }}
+          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -73,6 +74,13 @@ jobs:
           test "$GITHUB_SHA" = "$SOURCE_SHA"
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          python - <<'PY'
+          from scripts.release._acceptance_evidence import signing_key
+          try:
+              signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")
+          except ValueError:
+              raise SystemExit("Production acceptance evidence signing key is missing or too short")
+          PY
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --expected-sha "$SOURCE_SHA" --token-env GITHUB_TOKEN \
@@ -491,8 +499,15 @@ jobs:
           ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          target_created=0
-          target_promoted=0
+          python - <<'PY'
+          from scripts.release._acceptance_evidence import signing_key
+          try:
+              signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")
+          except ValueError:
+              raise SystemExit("Production acceptance evidence signing key is missing or too short")
+          PY
+          deployment_attempted=0
+          promotion_attempted=0
           TARGET_DEPLOYMENT_ID=""
           TARGET_DEPLOYMENT_URL=""
           baseline="$RUNNER_TEMP/google-deploy-baseline/google-deploy-baseline.json"
@@ -520,12 +535,38 @@ jobs:
             original_status=$?
             trap - EXIT
             set +e
-            if [[ "$original_status" -ne 0 && "$target_created" -eq 1 ]]; then
-              if [[ "$target_promoted" -eq 1 ]]; then
-                "$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN"
-                "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"
+            if [[ "$original_status" -ne 0 && "$deployment_attempted" -eq 1 ]]; then
+              baseline_restore_confirmed=1
+              if [[ "$promotion_attempted" -eq 1 ]]; then
+                baseline_restore_confirmed=0
+                if "$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN" \
+                    && "$VERCEL_CLI" rollback status --token="$VERCEL_TOKEN"; then
+                  for _ in $(seq 1 10); do
+                    if curl --fail --silent --show-error --max-time 15 \
+                        "$PRODUCTION_BASE_URL/api/v1/version" \
+                        | BASELINE_DEPLOYMENT_ID="$BASELINE_DEPLOYMENT_ID" python -c 'import json,sys,os; p=json.load(sys.stdin); raise SystemExit(0 if p.get("deployment_id")==os.environ["BASELINE_DEPLOYMENT_ID"] else 1)'; then
+                      baseline_restore_confirmed=1
+                      break
+                    fi
+                    sleep 2
+                  done
+                fi
               fi
-              "$VERCEL_CLI" remove "$TARGET_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN" || true
+              if [[ "$baseline_restore_confirmed" -eq 1 ]]; then
+                cleanup_status=0
+                python scripts/release/cleanup_run_owned_production_deployments.py \
+                  --expected-project-id "$VERCEL_PROJECT_ID" \
+                  --expected-team-id "$VERCEL_ORG_ID" \
+                  --source-sha "$SOURCE_SHA" \
+                  --workflow-run-id "$GITHUB_RUN_ID" \
+                  --workflow-attempt "$GITHUB_RUN_ATTEMPT" \
+                  --baseline-deployment-id "$BASELINE_DEPLOYMENT_ID" \
+                  --output "$RUNNER_TEMP/google-inline-deployment-cleanup.json" \
+                  || cleanup_status=$?
+                if [[ "$cleanup_status" -ne 0 ]]; then
+                  echo "::error title=Inline Production deployment cleanup failed::run-owned zero state was not proven"
+                fi
+              fi
             fi
             exit "$original_status"
           }
@@ -586,13 +627,15 @@ jobs:
             --meta "vowpicWorkflowRunId=$GITHUB_RUN_ID"
             --meta "vowpicWorkflowAttempt=$GITHUB_RUN_ATTEMPT"
           )
+          deployment_attempted=1
           TARGET_DEPLOYMENT_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain "${DEPLOY_ENV_ARGS[@]}" "${DEPLOY_META_ARGS[@]}" --token="$VERCEL_TOKEN")"
-          "$VERCEL_CLI" inspect "$TARGET_DEPLOYMENT_URL" --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/google-target-inspect.txt"
-          TARGET_DEPLOYMENT_ID="$(python -c 'import re; p=open("'"$RUNNER_TEMP"'/google-target-inspect.txt", encoding="utf-8").read(); v=set(re.findall(r"\bdpl_[A-Za-z0-9_-]{3,156}\b", p)); assert len(v)==1; print(v.pop())')"
+          "$VERCEL_CLI" inspect "$TARGET_DEPLOYMENT_URL" --format=json --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/google-target-inspect.json"
+          TARGET_DEPLOYMENT_ID="$(python scripts/release/resolve_vercel_inspect.py \
+            --input "$RUNNER_TEMP/google-target-inspect.json" \
+            --expected-url "$TARGET_DEPLOYMENT_URL")"
           test "$TARGET_DEPLOYMENT_ID" != "$BASELINE_DEPLOYMENT_ID"
-          target_created=1
+          promotion_attempted=1
           "$VERCEL_CLI" promote "$TARGET_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
-          target_promoted=1
 
           for _ in $(seq 1 30); do
             if curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/api/v1/version" \
