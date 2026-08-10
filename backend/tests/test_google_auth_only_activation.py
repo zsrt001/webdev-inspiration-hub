@@ -373,6 +373,18 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('["email", "profile"]', authorize)
         self.assertIn("real_google_identity_proof", authorize)
         self.assertIn("deferred_to_production_google_only", authorize)
+        self.assertIn(
+            "ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}",
+            authorize,
+        )
+        self.assertIn(
+            'signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")',
+            authorize,
+        )
+        self.assertLess(
+            authorize.index('signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")'),
+            authorize.index("google-deploy-baseline.json"),
+        )
         self.assertIn("deploy --prebuilt --prod --skip-domain", deploy)
         self.assertIn(
             "uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
@@ -388,6 +400,40 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             deploy.index("uses: astral-sh/setup-uv@"),
             deploy.index('"$VERCEL_CLI" build --prod'),
         )
+        self.assertLess(
+            deploy.index('signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")'),
+            deploy.index('"$VERCEL_CLI" pull'),
+        )
+        self.assertIn(
+            'inspect "$TARGET_DEPLOYMENT_URL" --format=json',
+            deploy,
+        )
+        self.assertIn("scripts/release/resolve_vercel_inspect.py", deploy)
+        self.assertIn(
+            "scripts/release/cleanup_run_owned_production_deployments.py",
+            deploy,
+        )
+        self.assertNotIn("google-target-inspect.txt", deploy)
+        self.assertLess(
+            deploy.index("deployment_attempted=1"),
+            deploy.index('TARGET_DEPLOYMENT_URL="$("$VERCEL_CLI" deploy'),
+        )
+        self.assertLess(
+            deploy.index("promotion_attempted=1"),
+            deploy.index('"$VERCEL_CLI" promote'),
+        )
+        trap_start = deploy.index("rollback_on_error()")
+        trap_end = deploy.index("trap rollback_on_error EXIT")
+        trap = deploy[trap_start:trap_end]
+        self.assertLess(
+            trap.index('"$VERCEL_CLI" rollback "$BASELINE_DEPLOYMENT_ID"'),
+            trap.index("cleanup_run_owned_production_deployments.py"),
+        )
+        self.assertIn("baseline_restore_confirmed=0", trap)
+        self.assertIn('[[ "$baseline_restore_confirmed" -eq 1 ]]', trap)
+        self.assertIn('"$PRODUCTION_BASE_URL/api/v1/version"', trap)
+        self.assertIn('p.get("deployment_id")==os.environ["BASELINE_DEPLOYMENT_ID"]', trap)
+        self.assertIn("cleanup_status=$?", trap)
         self.assertIn("--expected-release-role COMMERCIAL_7A", deploy)
         self.assertIn('"commercial_activation_created": False', deploy)
         self.assertIn('"database_all_off": database_off', deploy)
@@ -437,6 +483,187 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "completed",
         ):
             self.assertIn(f"enter_rollback_stage {stage}", rollback)
+
+    def test_vercel_inspect_json_resolver_is_exact_and_fail_closed(self) -> None:
+        module = _path_module(
+            "resolve_vercel_inspect_contract",
+            ROOT / "scripts/release/resolve_vercel_inspect.py",
+        )
+        deployment_id = "dpl_3KbqN8zrbgPFC7odVHBAf1Ac94yz"
+        expected_url = "https://webdev-inspiration-9839612cd.example.vercel.app"
+        payload = {
+            "id": deployment_id,
+            "url": "webdev-inspiration-9839612cd.example.vercel.app",
+            "readyState": "READY",
+            "target": "production",
+            "aliases": ["untrusted-dpl_other-value.vercel.app"],
+        }
+        self.assertEqual(
+            module.resolve_vercel_inspect(payload, expected_url=expected_url),
+            deployment_id,
+        )
+        invalid = {
+            "non_object": [],
+            "missing_id": {**payload, "id": None},
+            "invalid_id": {**payload, "id": "not-a-deployment"},
+            "wrong_url": {**payload, "url": "other.vercel.app"},
+            "not_ready": {**payload, "readyState": "ERROR"},
+            "not_production": {**payload, "target": "preview"},
+        }
+        for label, candidate in invalid.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                module.resolve_vercel_inspect(candidate, expected_url=expected_url)
+        for expected in (
+            "http://webdev-inspiration-9839612cd.example.vercel.app",
+            "https://user@example.vercel.app",
+            "https://example.vercel.app/unexpected",
+            "https://example.vercel.app?unexpected=1",
+        ):
+            with self.subTest(expected_url=expected), self.assertRaises(ValueError):
+                module.resolve_vercel_inspect(payload, expected_url=expected)
+
+    def test_run_owned_production_cleanup_deletes_only_exact_metadata(self) -> None:
+        module = _path_module(
+            "cleanup_run_owned_production_deployments_contract",
+            ROOT / "scripts/release/cleanup_run_owned_production_deployments.py",
+        )
+        source_sha = "a" * 40
+        calls: list[tuple[str, str]] = []
+
+        class Response:
+            def __init__(self, status_code: int, payload=None):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise AssertionError(f"unexpected HTTP status {self.status_code}")
+
+        class Client:
+            def __init__(self, *_args, **_kwargs):
+                self.list_calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def get(self, url, **_kwargs):
+                calls.append(("GET", url))
+                if url.endswith("/v6/deployments"):
+                    self.list_calls += 1
+                    if self.list_calls == 1 or self.list_calls >= 3:
+                        return Response(200, {"deployments": []})
+                    return Response(
+                        200,
+                        {
+                            "deployments": [
+                                {
+                                    "uid": "dpl_RunOwned123",
+                                    "projectId": "prj_Example123",
+                                    "meta": {
+                                        "vowpicWorkflowRunId": "456",
+                                        "vowpicWorkflowAttempt": "1",
+                                        "vowpicSourceSha": source_sha,
+                                        "vowpicReleaseRole": "COMMERCIAL_7A",
+                                    },
+                                },
+                                {
+                                    "uid": "dpl_OtherAttempt123",
+                                    "projectId": "prj_Example123",
+                                    "meta": {
+                                        "vowpicWorkflowRunId": "456",
+                                        "vowpicWorkflowAttempt": "2",
+                                        "vowpicSourceSha": source_sha,
+                                        "vowpicReleaseRole": "COMMERCIAL_7A",
+                                    },
+                                },
+                            ]
+                        },
+                    )
+                return Response(404)
+
+            def delete(self, url, **_kwargs):
+                calls.append(("DELETE", url))
+                return Response(204)
+
+        with patch.object(module.httpx, "Client", Client):
+            proof = module.cleanup_run_owned_production_deployments(
+                token="secret",
+                expected_project_id="prj_Example123",
+                expected_team_id="team_Example123",
+                source_sha=source_sha,
+                workflow_run_id="456",
+                workflow_attempt="1",
+                baseline_deployment_id="dpl_Baseline123",
+                check_interval_seconds=0,
+            )
+        self.assertTrue(proof["passed"])
+        self.assertEqual(proof["deployment_ids"], ["dpl_RunOwned123"])
+        self.assertEqual(proof["checks_completed"], 10)
+        self.assertEqual(proof["consecutive_zero_checks"], 8)
+        self.assertEqual(
+            [call for call in calls if call[0] == "DELETE"],
+            [("DELETE", "https://api.vercel.com/v13/deployments/dpl_RunOwned123")],
+        )
+        delete_index = calls.index(
+            ("DELETE", "https://api.vercel.com/v13/deployments/dpl_RunOwned123")
+        )
+        self.assertEqual(
+            calls[delete_index + 1],
+            ("GET", "https://api.vercel.com/v13/deployments/dpl_RunOwned123"),
+        )
+        self.assertEqual(calls[-1], ("GET", "https://api.vercel.com/v6/deployments"))
+
+    def test_run_owned_production_cleanup_rejects_boundary_mismatch(self) -> None:
+        module = _path_module(
+            "cleanup_run_owned_production_deployments_rejection",
+            ROOT / "scripts/release/cleanup_run_owned_production_deployments.py",
+        )
+        source_sha = "b" * 40
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "deployments": [
+                        {
+                            "uid": "dpl_RunOwned123",
+                            "projectId": "prj_Example123",
+                            "meta": {
+                                "vowpicWorkflowRunId": "456",
+                                "vowpicWorkflowAttempt": "1",
+                                "vowpicSourceSha": "c" * 40,
+                                "vowpicReleaseRole": "COMMERCIAL_7A",
+                            },
+                        }
+                    ]
+                }
+
+            def raise_for_status(self):
+                return None
+
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.__exit__.return_value = False
+        client.get.return_value = Response()
+        with patch.object(module.httpx, "Client", return_value=client):
+            with self.assertRaisesRegex(ValueError, "outside the Production boundary"):
+                module.cleanup_run_owned_production_deployments(
+                    token="secret",
+                    expected_project_id="prj_Example123",
+                    expected_team_id="team_Example123",
+                    source_sha=source_sha,
+                    workflow_run_id="456",
+                    workflow_attempt="1",
+                    baseline_deployment_id="dpl_Baseline123",
+                )
+        client.delete.assert_not_called()
 
     def test_0021_adds_only_the_production_google_auth_activation_kind(self) -> None:
         source = (
