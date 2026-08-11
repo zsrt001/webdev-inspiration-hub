@@ -783,6 +783,105 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 base_url="https://www.vowpic.com",
             )
 
+    def test_cleaned_release_history_allows_only_a_new_deployment_retry(self) -> None:
+        module = _path_module(
+            "manage_google_auth_only_retry_history",
+            ROOT / "scripts/release/manage_google_auth_only_activation.py",
+        )
+        cleaned = {
+            "phase": "CLEANED",
+            "report_sha256": "a" * 64,
+            "api_deployment_id": "dpl_previous",
+        }
+        module._require_retryable_release_history(
+            [cleaned], deployment_id="dpl_new"
+        )
+
+        invalid_rows = (
+            {**cleaned, "phase": "ACCEPTANCE_READY"},
+            {**cleaned, "report_sha256": None},
+            {**cleaned, "api_deployment_id": "dpl_new"},
+        )
+        for row in invalid_rows:
+            with self.subTest(row=row), self.assertRaisesRegex(
+                ValueError, "not cleanly retryable"
+            ):
+                module._require_retryable_release_history(
+                    [row], deployment_id="dpl_new"
+                )
+
+    def test_reserve_inserts_a_new_attempt_after_cleaned_history(self) -> None:
+        module = _path_module(
+            "manage_google_auth_only_retry_reserve",
+            ROOT / "scripts/release/manage_google_auth_only_activation.py",
+        )
+        coordinates = {
+            "source_sha": "a" * 40,
+            "runtime_bundle_id": "rtb_" + "b" * 64,
+            "deployment_id": "dpl_new",
+            "api_deployment_url": "https://www.vowpic.com",
+            "release_role": "COMMERCIAL_7A",
+            "runtime_environment": "production",
+            "schema_revision": "20260710_0021",
+        }
+        off_rows = [
+            {
+                "capability": capability,
+                "state": "OFF",
+                "deployment_id": None,
+                "runtime_bundle_id": None,
+                "worker_image_digest": None,
+                "release_activation_id": None,
+                "target_manifest_sha256": None,
+                "expires_at": None,
+            }
+            for capability in module.CAPABILITIES
+        ]
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [
+            [{"version_num": "20260710_0021"}],
+            off_rows,
+            [
+                {
+                    "id": uuid4(),
+                    "phase": "CLEANED",
+                    "report_sha256": "c" * 64,
+                    "api_deployment_id": "dpl_previous",
+                }
+            ],
+        ]
+        cursor.fetchone.return_value = {
+            "id": uuid4(),
+            "phase": "ACCEPTANCE_READY",
+            "source_sha": coordinates["source_sha"],
+            "runtime_bundle_id": coordinates["runtime_bundle_id"],
+            "api_deployment_id": coordinates["deployment_id"],
+            "manifest_sha256": "d" * 64,
+            "reservation_expires_at": datetime.now(timezone.utc) + timedelta(minutes=30),
+        }
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cursor
+        connection = MagicMock()
+        connection.cursor.return_value = cursor_context
+        connection_context = MagicMock()
+        connection_context.__enter__.return_value = connection
+
+        with patch("psycopg2.connect", return_value=connection_context):
+            report = module.reserve_activation(
+                "postgresql://example.invalid/db",
+                coordinates=coordinates,
+                approval="approved",
+                workflow_run_id="new-run",
+                workflow_attempt=1,
+            )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["deployment_id"], "dpl_new")
+        history_query, history_parameters = cursor.execute.call_args_list[3].args
+        self.assertIn("api_deployment_id = %s", history_query)
+        self.assertIn("FOR UPDATE", history_query)
+        self.assertEqual(history_parameters[-1], "dpl_new")
+
     def test_workflow_has_no_generation_payment_or_commercial_activation_path(self) -> None:
         path = ROOT / ".github/workflows/production-google-auth-only.yml"
         full_source = path.read_text(encoding="utf-8")
