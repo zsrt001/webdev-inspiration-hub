@@ -66,7 +66,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.required_source_sha }}
-          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -74,13 +73,6 @@ jobs:
           test "$GITHUB_SHA" = "$SOURCE_SHA"
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-          python - <<'PY'
-          from scripts.release._acceptance_evidence import signing_key
-          try:
-              signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")
-          except ValueError:
-              raise SystemExit("Production acceptance evidence signing key is missing or too short")
-          PY
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --expected-sha "$SOURCE_SHA" --token-env GITHUB_TOKEN \
@@ -244,7 +236,6 @@ jobs:
           import json
           import os
           from pathlib import Path
-          import re
           import httpx
           import psycopg2
           from psycopg2.extras import RealDictCursor
@@ -496,16 +487,8 @@ jobs:
           FRONTEND_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           WEBHOOK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           CORS_ALLOW_ORIGINS: ${{ vars.PRODUCTION_BASE_URL }}
-          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from scripts.release._acceptance_evidence import signing_key
-          try:
-              signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")
-          except ValueError:
-              raise SystemExit("Production acceptance evidence signing key is missing or too short")
-          PY
           deployment_attempted=0
           promotion_attempted=0
           TARGET_DEPLOYMENT_ID=""
@@ -637,27 +620,24 @@ jobs:
           promotion_attempted=1
           "$VERCEL_CLI" promote "$TARGET_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
 
+          target_ready=0
           for _ in $(seq 1 30); do
-            if curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/api/v1/version" \
-                | TARGET_DEPLOYMENT_ID="$TARGET_DEPLOYMENT_ID" python -c 'import json,sys,os; p=json.load(sys.stdin); raise SystemExit(0 if p.get("deployment_id")==os.environ["TARGET_DEPLOYMENT_ID"] else 1)'; then
+            if curl --fail --silent --show-error --max-time 15 \
+                "$PRODUCTION_BASE_URL/api/v1/version" \
+                > "$RUNNER_TEMP/google-deployed-runtime.json" \
+                && TARGET_DEPLOYMENT_ID="$TARGET_DEPLOYMENT_ID" python -c 'import json,os; p=json.load(open(os.environ["RUNNER_TEMP"]+"/google-deployed-runtime.json", encoding="utf-8")); raise SystemExit(0 if p.get("deployment_id")==os.environ["TARGET_DEPLOYMENT_ID"] else 1)'; then
+              target_ready=1
               break
             fi
             sleep 2
           done
+          [[ "$target_ready" -eq 1 ]]
           export TARGET_DEPLOYMENT_ID TARGET_DEPLOYMENT_URL
-          python scripts/release/collect_runtime_report.py \
-            --base-url "$PRODUCTION_BASE_URL" \
-            --expected-deployment-id "$TARGET_DEPLOYMENT_ID" \
-            --expected-runtime-bundle-id "$RUNTIME_BUNDLE_ID" \
-            --expected-source-sha "$SOURCE_SHA" \
-            --expected-schema 20260710_0021 \
-            --expected-release-role COMMERCIAL_7A \
-            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
-            --output "$RUNNER_TEMP/google-deployed-runtime.json"
           python - <<'PY'
           import json
           import os
           from pathlib import Path
+          import re
           import httpx
           import psycopg2
           from psycopg2.extras import RealDictCursor
@@ -667,6 +647,30 @@ jobs:
               "credit_pack_checkout", "subscription_billing",
               "private_download", "partner_invite",
           }
+          version = json.loads(
+              Path(os.environ["RUNNER_TEMP"], "google-deployed-runtime.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          expected_version = {
+              "schema": "vowpic.runtime-bundle-report.v1",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "runtime_bundle_id": os.environ["RUNTIME_BUNDLE_ID"],
+              "deployment_id": os.environ["TARGET_DEPLOYMENT_ID"],
+              "release_role": "COMMERCIAL_7A",
+              "runtime_environment": "production",
+              "schema_revision": "20260710_0021",
+          }
+          runtime_exact = (
+              all(version.get(key) == value for key, value in expected_version.items())
+              and version.get("backend_execution_version")
+              == "vowpic-backend-executor.v1"
+              and re.fullmatch(
+                  r"sha256:[0-9a-f]{64}",
+                  str(version.get("backend_executor_digest") or "").lower(),
+              )
+              is not None
+          )
           url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
               "postgresql+asyncpg://", "postgresql://", 1
           )
@@ -702,23 +706,39 @@ jobs:
           )
           base = os.environ["PRODUCTION_BASE_URL"].rstrip("/")
           with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+              liveness = client.get(f"{base}/health")
+              readiness = client.get(f"{base}/health/ready")
               public = client.get(f"{base}/api/v1/ops/public_config")
               intent = client.post(
                   f"{base}/api/v1/auth/oauth-intents",
                   headers={"Origin": base, "Content-Type": "application/json"},
                   json={"next_path": "/dashboard"},
               )
-          public.raise_for_status()
-          capabilities = (public.json().get("capabilities") or {})
+          runtime_healthy = (
+              liveness.status_code == 200
+              and readiness.status_code == 200
+              and public.status_code == 200
+              and liveness.json()
+              == {"status": "healthy", "kind": "liveness", "readiness": "/health/ready"}
+              and readiness.json().get("ready") is True
+          )
+          capabilities = (
+              public.json().get("capabilities") or {}
+              if public.status_code == 200
+              else {}
+          )
           public_off = set(capabilities) == expected and not any(capabilities.values())
           report = {
               "schema": "vowpic.google-only-deployment.v1",
-              "passed": database_off and public_off and intent.status_code == 503,
+              "passed": runtime_exact and runtime_healthy and database_off
+                        and public_off and intent.status_code == 503,
               "source_sha": os.environ["SOURCE_SHA"],
               "runtime_bundle_id": os.environ["RUNTIME_BUNDLE_ID"],
               "deployment_id": os.environ["TARGET_DEPLOYMENT_ID"],
               "release_role": "COMMERCIAL_7A",
               "schema_revision": "20260710_0021",
+              "runtime_exact": runtime_exact,
+              "runtime_healthy": runtime_healthy,
               "database_all_off": database_off,
               "public_all_off": public_off,
               "oauth_intent_status_before_activation": intent.status_code,
@@ -1488,7 +1508,6 @@ jobs:
           PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
           PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
           PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
-          ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -1682,29 +1701,22 @@ jobs:
           enter_rollback_stage wait_for_baseline
           baseline_restored=0
           for _ in $(seq 1 30); do
-            if curl --fail --silent --show-error --max-time 15 "$PRODUCTION_BASE_URL/api/v1/version" \
-                | BASELINE_DEPLOYMENT_ID="$BASELINE_DEPLOYMENT_ID" python -c 'import json,sys,os; p=json.load(sys.stdin); raise SystemExit(0 if p.get("deployment_id")==os.environ["BASELINE_DEPLOYMENT_ID"] else 1)'; then
+            if curl --fail --silent --show-error --max-time 15 \
+                "$PRODUCTION_BASE_URL/api/v1/version" \
+                > "$RUNNER_TEMP/google-rollback-runtime.json" \
+                && BASELINE_DEPLOYMENT_ID="$BASELINE_DEPLOYMENT_ID" python -c 'import json,os; p=json.load(open(os.environ["RUNNER_TEMP"]+"/google-rollback-runtime.json", encoding="utf-8")); raise SystemExit(0 if p.get("deployment_id")==os.environ["BASELINE_DEPLOYMENT_ID"] else 1)'; then
               baseline_restored=1
               break
             fi
             sleep 2
           done
           [[ "$baseline_restored" -eq 1 ]]
-          enter_rollback_stage collect_runtime_report
-          python scripts/release/collect_runtime_report.py \
-            --base-url "$PRODUCTION_BASE_URL" \
-            --expected-deployment-id "$BASELINE_DEPLOYMENT_ID" \
-            --expected-runtime-bundle-id "$BASELINE_RUNTIME_BUNDLE_ID" \
-            --expected-source-sha "$BASELINE_SOURCE_SHA" \
-            --expected-schema "$BASELINE_SCHEMA_REVISION" \
-            --expected-release-role "$BASELINE_RELEASE_ROLE" \
-            --signing-key-env ACCEPTANCE_EVIDENCE_SIGNING_KEY \
-            --output "$RUNNER_TEMP/google-rollback-runtime.json"
-          enter_rollback_stage prove_zero_state
+          enter_rollback_stage prove_runtime_and_zero_state
           python - <<'PY'
           import json
           import os
           from pathlib import Path
+          import re
           import httpx
           import psycopg2
           from psycopg2.extras import RealDictCursor
@@ -1714,6 +1726,30 @@ jobs:
               "credit_pack_checkout", "subscription_billing",
               "private_download", "partner_invite",
           }
+          version = json.loads(
+              Path(os.environ["RUNNER_TEMP"], "google-rollback-runtime.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          expected_version = {
+              "schema": "vowpic.runtime-bundle-report.v1",
+              "source_sha": os.environ["BASELINE_SOURCE_SHA"],
+              "runtime_bundle_id": os.environ["BASELINE_RUNTIME_BUNDLE_ID"],
+              "deployment_id": os.environ["BASELINE_DEPLOYMENT_ID"],
+              "release_role": os.environ["BASELINE_RELEASE_ROLE"],
+              "runtime_environment": "production",
+              "schema_revision": os.environ["BASELINE_SCHEMA_REVISION"],
+          }
+          runtime_exact = (
+              all(version.get(key) == value for key, value in expected_version.items())
+              and version.get("backend_execution_version")
+              == "vowpic-backend-executor.v1"
+              and re.fullmatch(
+                  r"sha256:[0-9a-f]{64}",
+                  str(version.get("backend_executor_digest") or "").lower(),
+              )
+              is not None
+          )
           url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
           with psycopg2.connect(url) as connection:
               connection.set_session(readonly=True, autocommit=False)
@@ -1771,22 +1807,38 @@ jobs:
           )
           base = os.environ["PRODUCTION_BASE_URL"].rstrip("/")
           with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+              liveness = client.get(f"{base}/health")
+              readiness = client.get(f"{base}/health/ready")
               public = client.get(f"{base}/api/v1/ops/public_config")
               intent = client.post(
                   f"{base}/api/v1/auth/oauth-intents",
                   headers={"Origin": base, "Content-Type": "application/json"},
                   json={"next_path": "/dashboard"},
               )
-          public.raise_for_status()
-          capabilities = public.json().get("capabilities") or {}
+          runtime_healthy = (
+              liveness.status_code == 200
+              and readiness.status_code == 200
+              and public.status_code == 200
+              and liveness.json()
+              == {"status": "healthy", "kind": "liveness", "readiness": "/health/ready"}
+              and readiness.json().get("ready") is True
+          )
+          capabilities = (
+              public.json().get("capabilities") or {}
+              if public.status_code == 200
+              else {}
+          )
           public_off = set(capabilities) == expected and not any(capabilities.values())
           report = {
               "schema": "vowpic.google-only-deploy-rollback.v1",
-              "passed": database_off and public_off and intent.status_code == 503
+              "passed": runtime_exact and runtime_healthy and database_off
+                        and public_off and intent.status_code == 503
                         and active_activations == 0 and active_unused_bindings == 0
                         and active_sessions == 0,
               "source_sha": os.environ["SOURCE_SHA"],
               "baseline_deployment_id": os.environ["BASELINE_DEPLOYMENT_ID"],
+              "runtime_exact": runtime_exact,
+              "runtime_healthy": runtime_healthy,
               "database_all_off": database_off,
               "public_all_off": public_off,
               "oauth_intent_status": intent.status_code,
