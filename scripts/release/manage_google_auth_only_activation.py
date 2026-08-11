@@ -35,6 +35,11 @@ RUNTIME_BUNDLE_ID = re.compile(r"^rtb_[0-9a-f]{64}$")
 DEPLOYMENT_ID = re.compile(r"^dpl_[A-Za-z0-9_-]{3,156}$")
 REPORT_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PRODUCTION_ACTIVATION_FENCE = "vowpic-production-capability-activation"
+RUNTIME_BUNDLE_INDEX = "uq_release_activation_runtime_bundle"
+LEGACY_RUNTIME_BUNDLE_PREDICATE = "runtime_bundle_idisnotnull"
+RETRYABLE_RUNTIME_BUNDLE_PREDICATE = (
+    "runtime_bundle_idisnotnullandnotkind='google_auth_only'andphase='cleaned'"
+)
 
 
 def _database_url(value: str) -> str:
@@ -150,6 +155,77 @@ def _require_retryable_release_history(
             )
 
 
+def _normalized_index_predicate(value: object) -> str:
+    clean = str(value or "").strip().lower()
+    clean = re.sub(r"::[a-z_][a-z0-9_]*(?:\[\])?", "", clean)
+    return re.sub(r"[\s()]+", "", clean)
+
+
+def _runtime_bundle_index(cursor: Any) -> dict[str, Any]:
+    cursor.execute(
+        """
+        SELECT index.indisunique, index.indisvalid, index.indisready,
+               ARRAY(
+                 SELECT attribute.attname
+                 FROM unnest(index.indkey) WITH ORDINALITY AS key(attnum, position)
+                 JOIN pg_attribute AS attribute
+                   ON attribute.attrelid = index.indrelid
+                  AND attribute.attnum = key.attnum
+                 WHERE key.position <= index.indnkeyatts
+                 ORDER BY key.position
+               ) AS key_columns,
+               pg_get_expr(index.indpred, index.indrelid) AS predicate
+        FROM pg_index AS index
+        JOIN pg_class AS relation ON relation.oid = index.indrelid
+        JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+        JOIN pg_class AS index_relation ON index_relation.oid = index.indexrelid
+        WHERE namespace.nspname = 'public'
+          AND relation.relname = 'release_activations'
+          AND index_relation.relname = %s
+        """,
+        (RUNTIME_BUNDLE_INDEX,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise ValueError("GOOGLE_AUTH_ONLY runtime-bundle index is missing")
+    result = dict(row)
+    if (
+        result.get("indisunique") is not True
+        or result.get("indisvalid") is not True
+        or result.get("indisready") is not True
+        or list(result.get("key_columns") or [])
+        != ["environment", "kind", "runtime_bundle_id"]
+    ):
+        raise ValueError("GOOGLE_AUTH_ONLY runtime-bundle index is invalid")
+    return result
+
+
+def _ensure_retryable_runtime_bundle_index(cursor: Any) -> None:
+    index = _runtime_bundle_index(cursor)
+    predicate = _normalized_index_predicate(index.get("predicate"))
+    if predicate == RETRYABLE_RUNTIME_BUNDLE_PREDICATE:
+        return
+    if predicate != LEGACY_RUNTIME_BUNDLE_PREDICATE:
+        raise ValueError("GOOGLE_AUTH_ONLY runtime-bundle index predicate is unknown")
+
+    cursor.execute("LOCK TABLE public.release_activations IN SHARE ROW EXCLUSIVE MODE")
+    cursor.execute(f"DROP INDEX public.{RUNTIME_BUNDLE_INDEX}")
+    cursor.execute(
+        f"""
+        CREATE UNIQUE INDEX {RUNTIME_BUNDLE_INDEX}
+        ON public.release_activations (environment, kind, runtime_bundle_id)
+        WHERE runtime_bundle_id IS NOT NULL
+          AND NOT (kind = 'GOOGLE_AUTH_ONLY' AND phase = 'CLEANED')
+        """
+    )
+    repaired = _runtime_bundle_index(cursor)
+    if (
+        _normalized_index_predicate(repaired.get("predicate"))
+        != RETRYABLE_RUNTIME_BUNDLE_PREDICATE
+    ):
+        raise ValueError("GOOGLE_AUTH_ONLY runtime-bundle index repair failed")
+
+
 def reserve_activation(
     database_url: str,
     *,
@@ -174,6 +250,7 @@ def reserve_activation(
             if revisions != (SCHEMA_REVISION,):
                 raise ValueError("production schema is not exactly 20260710_0021")
             _require_all_flags_off(cursor)
+            _ensure_retryable_runtime_bundle_index(cursor)
             cursor.execute(
                 """
                 SELECT id, phase, report_sha256, api_deployment_id

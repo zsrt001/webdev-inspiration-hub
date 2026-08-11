@@ -199,6 +199,12 @@ class ReleaseActivationSchemaTest(unittest.TestCase):
             "phase rank must advance", "release_activations", "_no_delete BEFORE DELETE",
         ):
             self.assertIn(value, source)
+        runtime_index = source[
+            source.index('"uq_release_activation_runtime_bundle"') :
+            source.index('"uq_release_activation_active_source"')
+        ]
+        self.assertIn("kind = 'GOOGLE_AUTH_ONLY'", runtime_index)
+        self.assertIn("phase = 'CLEANED'", runtime_index)
 
     def test_fault_intent_is_hash_only_short_lived_and_production_7a_only(self) -> None:
         path = ROOT / "backend" / "alembic" / "versions" / "20260710_0013_ops_feature_flags.py"
