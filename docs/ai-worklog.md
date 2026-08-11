@@ -3526,3 +3526,17 @@
   passed. A public readback after the failed Production attempt showed the
   original baseline deployment, all seven capabilities OFF, and OAuth intent
   HTTP 503. No second Production run is authorized or scheduled.
+
+### Renewed single Production authority
+
+- Status: `AUTHORIZED_FOR_ONE_NEW_CONTROLLED_PRODUCTION_EXECUTION`. At
+  2026-08-11T03:10:37-04:00 the user explicitly authorized one new Production
+  Google-only execution after the pre-mutation failure was fixed. This
+  supersedes only the prior `NO_RETRY_AUTHORIZED` boundary and resets the new
+  execution count to `0/1`.
+- The exact final main SHA must first pass main CI, the protected privacy gate,
+  and a fresh Preview Google-readiness run with independent cleanup evidence.
+  The three-hour hard limit ends at 2026-08-11T06:10:37-04:00. Credential
+  mutation, image generation, payment, other Commercial capabilities, more
+  than one new Production dispatch, and leaving any capability enabled remain
+  prohibited.
