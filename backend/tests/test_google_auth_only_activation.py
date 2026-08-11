@@ -398,6 +398,15 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("target_ready=0", deploy)
         self.assertIn('[[ "$target_ready" -eq 1 ]]', deploy)
         self.assertIn("google-deployed-runtime.json", deploy)
+        self.assertIn("candidate_ready=0", deploy)
+        self.assertIn('[[ "$candidate_ready" -eq 1 ]]', deploy)
+        self.assertIn("google-candidate-runtime.json", deploy)
+        self.assertIn('for _ in $(seq 1 90); do', deploy)
+        self.assertIn('"$VERCEL_CLI" promote status --token="$VERCEL_TOKEN"', deploy)
+        self.assertLess(
+            deploy.index('"$TARGET_DEPLOYMENT_URL/api/v1/version"'),
+            deploy.index("promotion_attempted=1"),
+        )
         self.assertIn('"runtime_exact": runtime_exact', deploy)
         self.assertIn('"runtime_healthy": runtime_healthy', deploy)
         self.assertIn('"runtime_environment": "production"', deploy)
@@ -484,6 +493,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "completed",
         ):
             self.assertIn(f"enter_rollback_stage {stage}", rollback)
+        self.assertIn('[[ -z "$deployment_id" ]] && continue', rollback)
 
     def test_vercel_inspect_json_resolver_is_exact_and_fail_closed(self) -> None:
         module = _path_module(
