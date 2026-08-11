@@ -33,6 +33,7 @@ CAPABILITIES = frozenset(
 SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 RUNTIME_BUNDLE_ID = re.compile(r"^rtb_[0-9a-f]{64}$")
 DEPLOYMENT_ID = re.compile(r"^dpl_[A-Za-z0-9_-]{3,156}$")
+REPORT_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PRODUCTION_ACTIVATION_FENCE = "vowpic-production-capability-activation"
 
 
@@ -134,6 +135,21 @@ def _require_all_flags_off(cursor: Any) -> None:
         raise ValueError("production capabilities are not cleanly OFF")
 
 
+def _require_retryable_release_history(
+    rows: list[dict[str, Any]], *, deployment_id: str
+) -> None:
+    for row in rows:
+        report_sha256 = str(row.get("report_sha256") or "").strip().lower()
+        if (
+            row.get("phase") != "CLEANED"
+            or not REPORT_SHA256.fullmatch(report_sha256)
+            or row.get("api_deployment_id") == deployment_id
+        ):
+            raise ValueError(
+                "GOOGLE_AUTH_ONLY release history is not cleanly retryable"
+            )
+
+
 def reserve_activation(
     database_url: str,
     *,
@@ -160,15 +176,27 @@ def reserve_activation(
             _require_all_flags_off(cursor)
             cursor.execute(
                 """
-                SELECT id FROM release_activations
+                SELECT id, phase, report_sha256, api_deployment_id
+                FROM release_activations
                 WHERE environment = 'production' AND kind = %s
-                  AND (runtime_bundle_id = %s OR source_sha = %s)
-                LIMIT 2
+                  AND (
+                    runtime_bundle_id = %s OR source_sha = %s
+                    OR api_deployment_id = %s
+                  )
+                ORDER BY created_at, id
+                FOR UPDATE
                 """,
-                (KIND, coordinates["runtime_bundle_id"], coordinates["source_sha"]),
+                (
+                    KIND,
+                    coordinates["runtime_bundle_id"],
+                    coordinates["source_sha"],
+                    coordinates["deployment_id"],
+                ),
             )
-            if cursor.fetchall():
-                raise ValueError("GOOGLE_AUTH_ONLY activation already exists for this release")
+            _require_retryable_release_history(
+                [dict(row) for row in cursor.fetchall()],
+                deployment_id=coordinates["deployment_id"],
+            )
             activation_id = str(uuid4())
             cursor.execute(
                 """
