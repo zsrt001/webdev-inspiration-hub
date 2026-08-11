@@ -3506,7 +3506,7 @@
 
 ### Controlled Production attempt 31465551011
 
-- Status: `FAILED_BEFORE_MUTATION_FIX_IN_PROGRESS`. PR `#226` merged as
+- Status: `FAILED_BEFORE_MUTATION_FIX_MERGED_NO_RETRY_AUTHORIZED`. PR `#226` merged as
   `main@669403502cf938e9d2836b8150c2d67375708f5a`. Exact-SHA main CI run
   `31464782109`, protected privacy run `31464782153`, and Preview Google
   readiness run `31465010335` all passed. The Preview cleanup artifact proved
@@ -3520,5 +3520,9 @@
   `1/1`; this fix must not trigger another Production run.
 - The focused repair adds the missing standard-library `re` import to that
   exact embedded Python block and adds a regression assertion that the import
-  precedes `re.fullmatch`. Only non-Production PR CI is authorized for this
-  repair.
+  precedes `re.fullmatch`. PR `#227` merged the repair as
+  `main@b6bb7b4a947288a345f4db628784bd61fc827968`; PR CI run `31466013028`,
+  exact-main CI run `31466235638`, and protected privacy run `31466235657`
+  passed. A public readback after the failed Production attempt showed the
+  original baseline deployment, all seven capabilities OFF, and OAuth intent
+  HTTP 503. No second Production run is authorized or scheduled.
