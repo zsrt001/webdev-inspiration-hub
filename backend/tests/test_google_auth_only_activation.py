@@ -364,6 +364,11 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("PRODUCTION_READ_ONLY_DATABASE_URL", authorize)
         self.assertIn("database_and_public_all_off", authorize)
+        baseline_start = authorize.index(
+            "Capture exact formal runtime and all-OFF baseline before mutation"
+        )
+        baseline_step = authorize[baseline_start:]
+        self.assertLess(baseline_step.index("import re"), baseline_step.index("re.fullmatch"))
         self.assertIn("vowpic.preview-google-handoff-readiness.v3", authorize)
         self.assertIn("supabase_first_hop_redirect_validated", authorize)
         self.assertIn("browser_google_requests_observed", authorize)

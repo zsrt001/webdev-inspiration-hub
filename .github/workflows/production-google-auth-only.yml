@@ -236,6 +236,7 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import re
           import httpx
           import psycopg2
           from psycopg2.extras import RealDictCursor

@@ -3503,3 +3503,22 @@
   has a three-hour hard limit ending at 2026-08-11T05:18:03-04:00. Credential
   mutation, image generation, payment, other Commercial capabilities, a second
   Production dispatch, and leaving any capability enabled remain prohibited.
+
+### Controlled Production attempt 31465551011
+
+- Status: `FAILED_BEFORE_MUTATION_FIX_IN_PROGRESS`. PR `#226` merged as
+  `main@669403502cf938e9d2836b8150c2d67375708f5a`. Exact-SHA main CI run
+  `31464782109`, protected privacy run `31464782153`, and Preview Google
+  readiness run `31465010335` all passed. The Preview cleanup artifact proved
+  `state=CLEANED`, `origin_restored=true`, `storage_objects_remaining=0`, gate
+  `status=PASS`, and `capability_enabled=false`.
+- The sole authorized Production dispatch was run `31465551011`. It failed in
+  the read-only `Capture exact formal runtime and all-OFF baseline before
+  mutation` step with `NameError: name 're' is not defined`. No deployment,
+  promotion, activation, login window, credential mutation, or Commercial
+  capability action began. The Production dispatch allowance is exhausted at
+  `1/1`; this fix must not trigger another Production run.
+- The focused repair adds the missing standard-library `re` import to that
+  exact embedded Python block and adds a regression assertion that the import
+  precedes `re.fullmatch`. Only non-Production PR CI is authorized for this
+  repair.
