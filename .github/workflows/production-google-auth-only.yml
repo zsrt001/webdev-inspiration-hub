@@ -618,11 +618,26 @@ jobs:
             --input "$RUNNER_TEMP/google-target-inspect.json" \
             --expected-url "$TARGET_DEPLOYMENT_URL")"
           test "$TARGET_DEPLOYMENT_ID" != "$BASELINE_DEPLOYMENT_ID"
+
+          candidate_ready=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 15 \
+                "$TARGET_DEPLOYMENT_URL/api/v1/version" \
+                > "$RUNNER_TEMP/google-candidate-runtime.json" \
+                && TARGET_DEPLOYMENT_ID="$TARGET_DEPLOYMENT_ID" python -c 'import json,os; p=json.load(open(os.environ["RUNNER_TEMP"]+"/google-candidate-runtime.json", encoding="utf-8")); raise SystemExit(0 if p.get("deployment_id")==os.environ["TARGET_DEPLOYMENT_ID"] else 1)'; then
+              candidate_ready=1
+              break
+            fi
+            sleep 2
+          done
+          [[ "$candidate_ready" -eq 1 ]]
+
           promotion_attempted=1
           "$VERCEL_CLI" promote "$TARGET_DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" promote status --token="$VERCEL_TOKEN"
 
           target_ready=0
-          for _ in $(seq 1 30); do
+          for _ in $(seq 1 90); do
             if curl --fail --silent --show-error --max-time 15 \
                 "$PRODUCTION_BASE_URL/api/v1/version" \
                 > "$RUNNER_TEMP/google-deployed-runtime.json" \
@@ -1695,7 +1710,7 @@ jobs:
           PY
           enter_rollback_stage remove_run_owned_deployments
           while IFS= read -r deployment_id; do
-            test -n "$deployment_id"
+            [[ -z "$deployment_id" ]] && continue
             "$VERCEL_CLI" remove "$deployment_id" --yes --token="$VERCEL_TOKEN"
           done < <(python -c 'import json,os; print("\n".join(json.load(open(os.environ["RUNNER_TEMP"]+"/google-run-owned-deployments.json"))["deployment_ids"]))')
 
