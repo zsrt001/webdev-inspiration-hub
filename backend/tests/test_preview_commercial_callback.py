@@ -147,6 +147,22 @@ class PreviewCommercialCallbackTest(unittest.TestCase):
             main.settings.evolink_callback_base_url = original_origin
             main.settings.provider_grant_probe_secret = original_probe
 
+    def test_empty_evolink_callback_origin_keeps_formal_runtime_routes_available(self) -> None:
+        from app import main
+
+        original_origin = main.settings.evolink_callback_base_url
+        main.settings.evolink_callback_base_url = ""
+        try:
+            self.assertTrue(
+                main._evolink_callback_request_is_allowed(
+                    host_header="www.vowpic.com",
+                    method="GET",
+                    path="/api/v1/version",
+                )
+            )
+        finally:
+            main.settings.evolink_callback_base_url = original_origin
+
 
 if __name__ == "__main__":
     unittest.main()

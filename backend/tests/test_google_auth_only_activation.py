@@ -381,6 +381,15 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ACCEPTANCE_EVIDENCE_SIGNING_KEY", source)
         self.assertNotIn("collect_runtime_report.py", source)
         self.assertIn("deploy --prebuilt --prod --skip-domain", deploy)
+        self.assertNotIn(
+            "EVOLINK_CALLBACK_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}",
+            deploy,
+        )
+        self.assertNotIn(
+            '--env "EVOLINK_CALLBACK_BASE_URL=$PRODUCTION_BASE_URL"',
+            deploy,
+        )
+        self.assertIn('--env "EVOLINK_CALLBACK_BASE_URL="', deploy)
         self.assertIn(
             "uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
             deploy,
