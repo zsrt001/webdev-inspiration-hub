@@ -265,6 +265,7 @@ class GoogleAuthAcceptanceFenceIntegrationTest(unittest.TestCase):
             self.assertEqual(cursor.rowcount, 1)
             self._set_trigger(cursor, trigger_names[0], enabled=True)
             self.assertEqual(self._trigger_states(cursor, trigger_names), before_states)
+
             cursor.execute(
                 """
                 SELECT md5((to_jsonb(activation) - 'created_at' - 'reservation_expires_at')::text),
@@ -299,6 +300,87 @@ class GoogleAuthAcceptanceFenceIntegrationTest(unittest.TestCase):
 
         with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
             self.assertEqual(self._trigger_states(cursor, trigger_names), before_states)
+
+    def test_cleaned_google_runtime_bundle_allows_one_new_active_attempt(self) -> None:
+        runtime_bundle_id = "rtb_" + uuid4().hex + uuid4().hex
+        cleaned_deployment = f"dpl_test_{uuid4().hex}"
+        active_deployment = f"dpl_test_{uuid4().hex}"
+        self.extra_deployments.update({cleaned_deployment, active_deployment})
+        with psycopg2.connect(self.database_url) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT pg_get_expr(index.indpred, index.indrelid)
+                FROM pg_index AS index
+                JOIN pg_class AS relation ON relation.oid=index.indexrelid
+                WHERE relation.relname='uq_release_activation_runtime_bundle'
+                """
+            )
+            predicate = str(cursor.fetchone()[0])
+            self.assertIn("GOOGLE_AUTH_ONLY", predicate)
+            self.assertIn("CLEANED", predicate)
+            cursor.execute(
+                """
+                INSERT INTO release_activations (
+                    id, environment, kind, source_sha, runtime_bundle_id,
+                    manifest_sha256, report_sha256, api_deployment_id,
+                    api_deployment_url, api_role, workflow_run_id,
+                    workflow_attempt, phase, phase_rank, version, approval,
+                    reservation_expires_at
+                ) VALUES (
+                    %s, 'production', 'GOOGLE_AUTH_ONLY', %s, %s, %s, %s, %s,
+                    'https://integration.invalid', 'COMMERCIAL_7A', %s, 1,
+                    'CLEANED', 2, 2, %s, %s
+                )
+                """,
+                (
+                    str(uuid4()),
+                    uuid4().hex + uuid4().hex[:8],
+                    runtime_bundle_id,
+                    uuid4().hex + uuid4().hex,
+                    uuid4().hex + uuid4().hex,
+                    cleaned_deployment,
+                    f"integration-{uuid4().hex}",
+                    self.approval,
+                    datetime.now(timezone.utc) + timedelta(minutes=5),
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO release_activations (
+                    id, environment, kind, source_sha, runtime_bundle_id,
+                    manifest_sha256, api_deployment_id, api_deployment_url,
+                    api_role, workflow_run_id, workflow_attempt, phase,
+                    phase_rank, version, approval, reservation_expires_at
+                ) VALUES (
+                    %s, 'production', 'GOOGLE_AUTH_ONLY', %s, %s, %s, %s,
+                    'https://integration.invalid', 'COMMERCIAL_7A', %s, 1,
+                    'ACCEPTANCE_READY', 1, 1, %s, %s
+                )
+                """,
+                (
+                    str(uuid4()),
+                    uuid4().hex + uuid4().hex[:8],
+                    runtime_bundle_id,
+                    uuid4().hex + uuid4().hex,
+                    active_deployment,
+                    f"integration-{uuid4().hex}",
+                    self.approval,
+                    datetime.now(timezone.utc) + timedelta(minutes=5),
+                ),
+            )
+            cursor.execute(
+                """
+                SELECT phase
+                FROM release_activations
+                WHERE runtime_bundle_id=%s
+                ORDER BY phase
+                """,
+                (runtime_bundle_id,),
+            )
+            self.assertEqual(
+                [row[0] for row in cursor.fetchall()],
+                ["ACCEPTANCE_READY", "CLEANED"],
+            )
 
     def test_named_trigger_bypass_rolls_back_on_failure(self) -> None:
         trigger_names = tuple(TRIGGER_TABLES)

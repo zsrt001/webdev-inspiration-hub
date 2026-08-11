@@ -810,6 +810,44 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                     [row], deployment_id="dpl_new"
                 )
 
+    def test_runtime_bundle_index_repair_is_exact_and_fail_closed(self) -> None:
+        module = _path_module(
+            "manage_google_auth_only_retry_index",
+            ROOT / "scripts/release/manage_google_auth_only_activation.py",
+        )
+        legacy = {
+            "indisunique": True,
+            "indisvalid": True,
+            "indisready": True,
+            "key_columns": ["environment", "kind", "runtime_bundle_id"],
+            "predicate": "(runtime_bundle_id IS NOT NULL)",
+        }
+        repaired = {
+            **legacy,
+            "predicate": (
+                "((runtime_bundle_id IS NOT NULL) AND NOT "
+                "(((kind)::text = 'GOOGLE_AUTH_ONLY'::text) AND "
+                "((phase)::text = 'CLEANED'::text)))"
+            ),
+        }
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [legacy, repaired]
+
+        module._ensure_retryable_runtime_bundle_index(cursor)
+
+        statements = [str(call.args[0]) for call in cursor.execute.call_args_list]
+        self.assertTrue(any("LOCK TABLE public.release_activations" in value for value in statements))
+        self.assertTrue(any("DROP INDEX public.uq_release_activation_runtime_bundle" in value for value in statements))
+        self.assertTrue(any("CREATE UNIQUE INDEX uq_release_activation_runtime_bundle" in value for value in statements))
+        self.assertTrue(any("phase = 'CLEANED'" in value for value in statements))
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {**legacy, "predicate": "phase <> 'FAILED'"}
+        with self.assertRaisesRegex(ValueError, "predicate is unknown"):
+            module._ensure_retryable_runtime_bundle_index(cursor)
+        statements = [str(call.args[0]) for call in cursor.execute.call_args_list]
+        self.assertFalse(any("DROP INDEX" in value for value in statements))
+
     def test_reserve_inserts_a_new_attempt_after_cleaned_history(self) -> None:
         module = _path_module(
             "manage_google_auth_only_retry_reserve",
@@ -850,15 +888,27 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         ]
-        cursor.fetchone.return_value = {
-            "id": uuid4(),
-            "phase": "ACCEPTANCE_READY",
-            "source_sha": coordinates["source_sha"],
-            "runtime_bundle_id": coordinates["runtime_bundle_id"],
-            "api_deployment_id": coordinates["deployment_id"],
-            "manifest_sha256": "d" * 64,
-            "reservation_expires_at": datetime.now(timezone.utc) + timedelta(minutes=30),
-        }
+        cursor.fetchone.side_effect = [
+            {
+                "indisunique": True,
+                "indisvalid": True,
+                "indisready": True,
+                "key_columns": ["environment", "kind", "runtime_bundle_id"],
+                "predicate": (
+                    "runtime_bundle_id IS NOT NULL AND NOT "
+                    "(kind = 'GOOGLE_AUTH_ONLY' AND phase = 'CLEANED')"
+                ),
+            },
+            {
+                "id": uuid4(),
+                "phase": "ACCEPTANCE_READY",
+                "source_sha": coordinates["source_sha"],
+                "runtime_bundle_id": coordinates["runtime_bundle_id"],
+                "api_deployment_id": coordinates["deployment_id"],
+                "manifest_sha256": "d" * 64,
+                "reservation_expires_at": datetime.now(timezone.utc) + timedelta(minutes=30),
+            },
+        ]
         cursor_context = MagicMock()
         cursor_context.__enter__.return_value = cursor
         connection = MagicMock()
@@ -877,7 +927,12 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["deployment_id"], "dpl_new")
-        history_query, history_parameters = cursor.execute.call_args_list[3].args
+        history_call = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "SELECT id, phase, report_sha256" in str(call.args[0])
+        )
+        history_query, history_parameters = history_call.args
         self.assertIn("api_deployment_id = %s", history_query)
         self.assertIn("FOR UPDATE", history_query)
         self.assertEqual(history_parameters[-1], "dpl_new")

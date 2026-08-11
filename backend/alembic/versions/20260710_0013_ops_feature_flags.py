@@ -185,7 +185,10 @@ def _create_release_activations() -> None:
         "release_activations",
         ["environment", "kind", "runtime_bundle_id"],
         unique=True,
-        postgresql_where=sa.text("runtime_bundle_id IS NOT NULL"),
+        postgresql_where=sa.text(
+            "runtime_bundle_id IS NOT NULL AND "
+            "NOT (kind = 'GOOGLE_AUTH_ONLY' AND phase = 'CLEANED')"
+        ),
     )
     op.create_index(
         "uq_release_activation_active_source",
