@@ -373,18 +373,8 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('["email", "profile"]', authorize)
         self.assertIn("real_google_identity_proof", authorize)
         self.assertIn("deferred_to_production_google_only", authorize)
-        self.assertIn(
-            "ACCEPTANCE_EVIDENCE_SIGNING_KEY: ${{ secrets.ACCEPTANCE_EVIDENCE_SIGNING_KEY }}",
-            authorize,
-        )
-        self.assertIn(
-            'signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")',
-            authorize,
-        )
-        self.assertLess(
-            authorize.index('signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")'),
-            authorize.index("google-deploy-baseline.json"),
-        )
+        self.assertNotIn("ACCEPTANCE_EVIDENCE_SIGNING_KEY", source)
+        self.assertNotIn("collect_runtime_report.py", source)
         self.assertIn("deploy --prebuilt --prod --skip-domain", deploy)
         self.assertIn(
             "uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
@@ -400,10 +390,17 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             deploy.index("uses: astral-sh/setup-uv@"),
             deploy.index('"$VERCEL_CLI" build --prod'),
         )
-        self.assertLess(
-            deploy.index('signing_key("ACCEPTANCE_EVIDENCE_SIGNING_KEY")'),
-            deploy.index('"$VERCEL_CLI" pull'),
-        )
+        self.assertIn("target_ready=0", deploy)
+        self.assertIn('[[ "$target_ready" -eq 1 ]]', deploy)
+        self.assertIn("google-deployed-runtime.json", deploy)
+        self.assertIn('"runtime_exact": runtime_exact', deploy)
+        self.assertIn('"runtime_healthy": runtime_healthy', deploy)
+        self.assertIn('"runtime_environment": "production"', deploy)
+        self.assertIn('"vowpic-backend-executor.v1"', deploy)
+        self.assertIn('r"sha256:[0-9a-f]{64}"', deploy)
+        self.assertEqual(source.count("liveness.status_code == 200"), 2)
+        self.assertEqual(source.count("readiness.status_code == 200"), 2)
+        self.assertEqual(source.count("public.status_code == 200"), 4)
         self.assertIn(
             'inspect "$TARGET_DEPLOYMENT_URL" --format=json',
             deploy,
@@ -434,7 +431,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"$PRODUCTION_BASE_URL/api/v1/version"', trap)
         self.assertIn('p.get("deployment_id")==os.environ["BASELINE_DEPLOYMENT_ID"]', trap)
         self.assertIn("cleanup_status=$?", trap)
-        self.assertIn("--expected-release-role COMMERCIAL_7A", deploy)
+        self.assertIn('"release_role": "COMMERCIAL_7A"', deploy)
         self.assertIn('"commercial_activation_created": False', deploy)
         self.assertIn('"database_all_off": database_off', deploy)
         self.assertNotIn("register_bundle.py", deploy)
@@ -467,7 +464,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('[[ "$baseline_restored" -eq 1 ]]', rollback)
         self.assertLess(
             rollback.index('[[ "$baseline_restored" -eq 1 ]]'),
-            rollback.index("enter_rollback_stage collect_runtime_report"),
+            rollback.index("enter_rollback_stage prove_runtime_and_zero_state"),
         )
         for stage in (
             "validate_baseline",
@@ -478,8 +475,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             "enumerate_run_owned_deployments",
             "remove_run_owned_deployments",
             "wait_for_baseline",
-            "collect_runtime_report",
-            "prove_zero_state",
+            "prove_runtime_and_zero_state",
             "completed",
         ):
             self.assertIn(f"enter_rollback_stage {stage}", rollback)

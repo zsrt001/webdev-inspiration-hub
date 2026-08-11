@@ -3444,3 +3444,62 @@
   passes. The third independent review reports `GO` with no remaining P0/P1.
   PR CI and exact merged-SHA non-Production gates remain; Production remains
   unauthorized.
+
+### Exact merged-SHA evidence and current authority boundary
+
+- Status: `EXACT_SHA_GATES_GREEN_AWAITING_SECOND_PRODUCTION_AUTHORITY`. PR
+  `#225` merged as
+  `main@25f5a5897944c4e8f2f9aeb3b87dacef63b432a9`. PR CI run
+  `31379594690` and exact-main CI run `31379876324` completed successfully,
+  including the real PostgreSQL Google admission/cleanup fence and the final
+  quality gate.
+- Protected privacy run `31379876298` succeeded for the same SHA. Protected
+  Preview Google handoff readiness run `31380149180` succeeded with CI input
+  run `31379876324` attempt `1`; the real Google session, Commercial, and
+  Stage-5 paths were correctly skipped. Its independent cleanup also succeeded.
+- Sanitized cleanup artifact `vowpic-preview-identity-31380149180-1-cleanup`
+  records `state=CLEANED`, `origin_restored=true`,
+  `storage_objects_remaining=0`, gate `status=PASS`, and
+  `capability_enabled=false`. No Production workflow was dispatched in this
+  reopened engineering stage.
+- A final GitHub state check finds zero active manual (`workflow_dispatch`)
+  Production Google-only runs and zero pending approvals for Preview run
+  `31380149180`. Runs still shown as pending/waiting for the same workflow are
+  `event=schedule` expired-lease OFF/watchdogs; their deploy and activation jobs
+  are conditionally skipped and they are not Production acceptance dispatches.
+- The previously approved Production count remains exhausted at `1/1`. A second
+  Production Google-only acceptance run is not authorized. The earlier proposal
+  to rotate `ACCEPTANCE_EVIDENCE_SIGNING_KEY` is withdrawn: its value was not
+  proven invalid, rotation would invalidate verification of older signatures,
+  and the key is unrelated to Google OAuth itself.
+
+### Simplify Google-only runtime evidence
+
+- Status: `AUTHORIZED_FOR_ONE_CONTROLLED_PRODUCTION_EXECUTION`. The user explicitly
+  rejected the extra acceptance-signing dependency and required the system to
+  stay simple. Project history confirms the key was introduced for the older
+  Commercial 7A evidence system, not for Google login, and no explicit request
+  for this Google-only dependency was found.
+- The Google-only workflow no longer injects or preflights
+  `ACCEPTANCE_EVIDENCE_SIGNING_KEY` and no longer calls the signed runtime-report
+  collector. It retains the business and safety checks directly: exact live
+  SHA/runtime/deployment/role/schema, exact liveness/readiness, database and
+  public capabilities all OFF, OAuth intent 503 before activation, and exact
+  rollback baseline plus zero active activations/bindings/sessions.
+- The global Secret and legacy Commercial workflows remain unchanged. This
+  stage changes no image-generation model, provider, payment path, Production
+  deployment, capability state, or credential value.
+- Local verification passed: all 15 workflow YAML files parse; all 14 shell
+  blocks and all 12 embedded Python blocks in the Google-only workflow pass
+  syntax validation; the complete focused test file passes 21 tests and 53
+  subtests; `git diff --check` is clean. No Production workflow was dispatched.
+- On 2026-08-11 the user authorized committing and pushing this simplification
+  and running non-Production CI only. Merge, Production deployment, credential
+  mutation, and any second Production acceptance execution remain unauthorized.
+- At 2026-08-11T02:18:03-04:00 the user superseded the earlier boundary and
+  authorized the complete staged plan: merge PR `#226`, require exact merge-SHA
+  main CI, privacy, and Preview Google-readiness cleanup evidence, then perform
+  at most one Production Google-only acceptance execution. The total execution
+  has a three-hour hard limit ending at 2026-08-11T05:18:03-04:00. Credential
+  mutation, image generation, payment, other Commercial capabilities, a second
+  Production dispatch, and leaving any capability enabled remain prohibited.
