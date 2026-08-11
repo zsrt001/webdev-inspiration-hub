@@ -3475,7 +3475,7 @@
 
 ### Simplify Google-only runtime evidence
 
-- Status: `AUTHORIZED_FOR_NONPRODUCTION_PUBLISH`. The user explicitly
+- Status: `AUTHORIZED_FOR_ONE_CONTROLLED_PRODUCTION_EXECUTION`. The user explicitly
   rejected the extra acceptance-signing dependency and required the system to
   stay simple. Project history confirms the key was introduced for the older
   Commercial 7A evidence system, not for Google login, and no explicit request
@@ -3496,3 +3496,10 @@
 - On 2026-08-11 the user authorized committing and pushing this simplification
   and running non-Production CI only. Merge, Production deployment, credential
   mutation, and any second Production acceptance execution remain unauthorized.
+- At 2026-08-11T02:18:03-04:00 the user superseded the earlier boundary and
+  authorized the complete staged plan: merge PR `#226`, require exact merge-SHA
+  main CI, privacy, and Preview Google-readiness cleanup evidence, then perform
+  at most one Production Google-only acceptance execution. The total execution
+  has a three-hour hard limit ending at 2026-08-11T05:18:03-04:00. Credential
+  mutation, image generation, payment, other Commercial capabilities, a second
+  Production dispatch, and leaving any capability enabled remain prohibited.
