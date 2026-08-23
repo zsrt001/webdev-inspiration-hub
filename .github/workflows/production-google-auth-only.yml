@@ -1,8 +1,6 @@
 name: Production Google-auth-only acceptance
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       required_source_sha:
@@ -800,6 +798,19 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.17.0"
+
+      - name: Clean expired Google-only state before a new manual attempt
+        env:
+          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python scripts/release/manage_google_auth_only_activation.py reap-expired \
+            --activation-plan release/activation-plan.json \
+            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
+            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
+            --output "$RUNNER_TEMP/google-expired-cleanup.json"
 
       - name: Install pinned production log tooling
         run: |
@@ -1882,40 +1893,5 @@ jobs:
             ${{ runner.temp }}/google-rollback-binding-cleanup.json
             ${{ runner.temp }}/google-rollback-activation-cleaned.json
             ${{ runner.temp }}/google-rollback-failure.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-  expired-lease-watchdog:
-    name: Restore OFF for expired Google-only leases
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    environment: production
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup-release-python
-
-      - name: Reap every expired Google-only activation
-        env:
-          PRODUCTION_MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
-          PRODUCTION_ACCEPTANCE_APPROVAL_ID: ${{ secrets.PRODUCTION_ACCEPTANCE_APPROVAL_ID }}
-        run: |
-          set -euo pipefail
-          umask 077
-          python scripts/release/manage_google_auth_only_activation.py reap-expired \
-            --activation-plan release/activation-plan.json \
-            --database-url-env PRODUCTION_MIGRATION_DATABASE_URL \
-            --approval-id-env PRODUCTION_ACCEPTANCE_APPROVAL_ID \
-            --output "$RUNNER_TEMP/google-watchdog.json"
-
-      - name: Upload sanitized watchdog evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: production-google-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/google-watchdog.json
           if-no-files-found: ignore
           retention-days: 30

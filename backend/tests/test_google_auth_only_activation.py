@@ -208,7 +208,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             ("authorize-google-deploy", "deploy-google-runtime", "flags"),
             ("deploy-google-runtime", "google-auth-only", "flags"),
             ("google-auth-only", "rollback-google-deploy", "rows"),
-            ("rollback-google-deploy", "expired-lease-watchdog", "flags"),
+            ("rollback-google-deploy", None, "flags"),
         )
         clean_off_body = """          def clean_off(row):
               return (
@@ -240,7 +240,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
 
         for job_name, next_job, collection in gate_boundaries:
             start = source.index(f"  {job_name}:\n")
-            end = source.index(f"  {next_job}:\n", start)
+            end = source.index(f"  {next_job}:\n", start) if next_job else len(source)
             region = source[start:end]
 
             invocation = f"and all(clean_off(row) for row in {collection})"
@@ -309,7 +309,6 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
         ]
         rollback = source[
             source.index("  rollback-google-deploy:\n") :
-            source.index("  expired-lease-watchdog:\n")
         ]
 
         def assert_readiness_receipt_is_exact(block: str) -> None:
@@ -946,16 +945,20 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             full_source.index("  rollback-google-deploy:\n")
         ]
         self.assertIn("workflow_dispatch", workflow[True])
-        self.assertEqual(workflow[True]["schedule"][0]["cron"], "*/5 * * * *")
+        self.assertNotIn("schedule", workflow[True])
         dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
         self.assertEqual(dispatch_inputs["operator_ready"]["type"], "boolean")
         self.assertTrue(dispatch_inputs["operator_ready"]["required"])
         self.assertEqual(workflow["concurrency"]["group"], "vowpic-production-release")
         self.assertEqual(workflow["jobs"]["google-auth-only"]["environment"], "production")
-        self.assertEqual(workflow["jobs"]["expired-lease-watchdog"]["environment"], "production")
+        self.assertNotIn("expired-lease-watchdog", workflow["jobs"])
         self.assertIn(
             "manage_google_auth_only_activation.py reap-expired",
-            full_source,
+            source,
+        )
+        self.assertLess(
+            source.index("manage_google_auth_only_activation.py reap-expired"),
+            source.index("manage_google_auth_only_activation.py reserve"),
         )
         self.assertIn(
             "inputs.operator_ready == true",
@@ -1105,7 +1108,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(FileExistsError):
                 module.write_create_once(output, report)
 
-    def test_real_postgres_gate_forces_runner_death_before_watchdog_takeover(self) -> None:
+    def test_real_postgres_gate_forces_runner_death_before_manual_retry_cleanup(self) -> None:
         source = (
             ROOT / "backend/tests/integration/test_google_auth_acceptance_fence.py"
         ).read_text(encoding="utf-8")
@@ -1498,7 +1501,7 @@ class GoogleAuthOnlyActivationTest(unittest.IsolatedAsyncioTestCase):
                         deployment_id=deployment_id,
                     )
 
-    def test_watchdog_never_completes_activation_when_session_cleanup_is_not_zero(self) -> None:
+    def test_reap_expired_never_completes_activation_when_session_cleanup_is_not_zero(self) -> None:
         module = _path_module(
             "manage_google_watchdog_failure",
             ROOT / "scripts/release/manage_google_auth_only_activation.py",
