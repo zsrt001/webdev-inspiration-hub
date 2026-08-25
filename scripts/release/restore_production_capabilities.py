@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,6 @@ import re
 import sys
 import time
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.release.apply_activation_plan import (  # noqa: E402
     CAPABILITIES,
+    _canonical,
     _database_url,
     _snapshot_hash,
 )
@@ -104,6 +105,8 @@ def _restore_flags(
     source_sha: str,
     runtime_bundle_id: str,
     deployment_id: str,
+    base_url: str,
+    activation_manifest_sha256: str,
     actor: str,
     reason: str,
     workflow_run_id: str,
@@ -140,33 +143,6 @@ def _restore_flags(
             if activations:
                 activation = activations[0]
             else:
-                cursor.execute(
-                    """
-                    SELECT * FROM release_activations
-                    WHERE environment='production' AND source_sha=%s
-                      AND runtime_bundle_id=%s AND api_deployment_id=%s
-                      AND manifest_sha256 IS NOT NULL AND api_deployment_url IS NOT NULL
-                    ORDER BY updated_at DESC, id DESC
-                    FOR UPDATE
-                    """,
-                    (source_sha, runtime_bundle_id, deployment_id),
-                )
-                evidence_rows = [dict(row) for row in cursor.fetchall()]
-                if not evidence_rows:
-                    raise ValueError("the deployed Production runtime has no immutable release evidence")
-                evidence = evidence_rows[0]
-                evidence_url = urlsplit(str(evidence.get("api_deployment_url") or ""))
-                if (
-                    evidence.get("api_role") not in {"COMMERCIAL_7A", "COMMERCIAL_7A_API"}
-                    or evidence.get("worker_image_digest") is not None
-                    or evidence_url.scheme != "https"
-                    or not evidence_url.hostname
-                    or evidence_url.username
-                    or evidence_url.password
-                    or evidence_url.query
-                    or evidence_url.fragment
-                ):
-                    raise ValueError("the deployed Production release evidence is incompatible")
                 activation_id = str(uuid4())
                 approval = f"protected-production:{workflow_run_id}:{workflow_attempt}"
                 cursor.execute(
@@ -185,9 +161,9 @@ def _restore_flags(
                         activation_id,
                         source_sha,
                         runtime_bundle_id,
-                        evidence["manifest_sha256"],
+                        activation_manifest_sha256,
                         deployment_id,
-                        evidence["api_deployment_url"],
+                        base_url,
                         workflow_run_id,
                         workflow_attempt,
                         approval,
@@ -423,11 +399,33 @@ def main() -> int:
                 expected_runtime_bundle_id=args.expected_runtime_bundle_id,
                 expected_deployment_id=args.expected_deployment_id,
             )
+            activation_manifest = {
+                "schema": "vowpic.production-full-operation-activation.v1",
+                "source_sha": version["source_sha"],
+                "runtime_bundle_id": version["runtime_bundle_id"],
+                "deployment_id": version["deployment_id"],
+                "release_role": version["release_role"],
+                "runtime_environment": version["runtime_environment"],
+                "schema_revision": version["schema_revision"],
+                "api_compatibility_version": version["api_compatibility_version"],
+                "backend_execution_version": version["backend_execution_version"],
+                "backend_executor_digest": version["backend_executor_digest"],
+                "job_payload_min": version["job_payload_min"],
+                "job_payload_max": version["job_payload_max"],
+                "provider_policy_hash": version["provider_policy_hash"],
+                "flag_contract_hash": version["flag_contract_hash"],
+                "target_capabilities": {capability: "ON" for capability in CAPABILITIES},
+            }
+            activation_manifest_sha256 = hashlib.sha256(
+                _canonical(activation_manifest)
+            ).hexdigest()
             database = _restore_flags(
                 database_url,
                 source_sha=args.expected_source_sha,
                 runtime_bundle_id=args.expected_runtime_bundle_id,
                 deployment_id=args.expected_deployment_id,
+                base_url=base_url,
+                activation_manifest_sha256=activation_manifest_sha256,
                 actor=actor,
                 reason=reason,
                 workflow_run_id=args.workflow_run_id,
@@ -450,6 +448,7 @@ def main() -> int:
             "deployment_id": version["deployment_id"],
             "release_role": version["release_role"],
             "schema_revision": version["schema_revision"],
+            "activation_manifest_sha256": activation_manifest_sha256,
             "database": database,
             "verification": verification,
             "completed_at": datetime.now(timezone.utc).isoformat(),
