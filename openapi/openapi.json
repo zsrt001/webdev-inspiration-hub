@@ -3431,6 +3431,12 @@
             "title": "Price Cents",
             "type": "integer"
           },
+          "product_kind": {
+            "const": "credit_pack",
+            "default": "credit_pack",
+            "title": "Product Kind",
+            "type": "string"
+          },
           "refund_policy_url": {
             "default": "/pages/legal/refund",
             "title": "Refund Policy Url",

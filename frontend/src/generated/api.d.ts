@@ -2973,6 +2973,12 @@ export interface components {
              */
             price_cents: number;
             /**
+             * Product Kind
+             * @default credit_pack
+             * @constant
+             */
+            product_kind: "credit_pack";
+            /**
              * Refund Policy Url
              * @default /pages/legal/refund
              */
