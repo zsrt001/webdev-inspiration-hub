@@ -88,7 +88,7 @@ const TEMPLATE_COPY: Record<string, TemplateCopyEntry> = {
   custom_mode: {
     title: { zh: '自由定制', en: 'Custom Mode' },
     marketingTitle: { zh: '设计你的专属婚纱风格', en: 'Design your own wedding style' },
-    marketingSubtitle: { zh: '上传参考图并描述服装与场景，直接控制生成方向', en: 'Upload references and describe outfit and scene to direct the generation' },
+    marketingSubtitle: { zh: '上传人物照片，并用文字描述服装、场景与氛围', en: 'Upload portraits and describe outfit, scene, and mood in text' },
   },
 };
 

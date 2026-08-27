@@ -54,8 +54,10 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
+import { onLoad } from '@dcloudio/uni-app';
 import { useI18nStore } from '../../stores/i18n';
 import { signInWithGoogle } from '../../utils/auth';
+import { sanitizeLoginNextPath } from '../../utils/billingDisplay';
 import { refreshSupabaseConfig } from '../../utils/supabase';
 
 const i18nStore = useI18nStore();
@@ -64,6 +66,7 @@ const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 const supabaseEnabled = ref(false);
 const submitting = ref(false);
 const error = ref('');
+const nextPath = ref('/pages/account/index');
 
 async function googleSignIn() {
   if (!supabaseEnabled.value) return;
@@ -71,12 +74,16 @@ async function googleSignIn() {
   submitting.value = true;
   error.value = '';
   try {
-    await signInWithGoogle();
+    await signInWithGoogle(nextPath.value);
   } catch (err: any) {
     error.value = err?.message || tr('Google sign-in failed.', 'Google sign-in failed.');
     submitting.value = false;
   }
 }
+
+onLoad((options) => {
+  nextPath.value = sanitizeLoginNextPath(String(options?.next || ''));
+});
 
 function goHome() {
   uni.reLaunch({ url: '/pages/index/index' });

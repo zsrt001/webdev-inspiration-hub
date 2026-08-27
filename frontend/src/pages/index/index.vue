@@ -1,6 +1,6 @@
 <template>
   <view class="app-container product-landing" style="padding-top: 64px;">
-    <a class="skip-link" href="#benefits">Skip to main content</a>
+    <a class="skip-link" href="#gallery">Skip to main content</a>
     <NavBar ref="navBarRef" @show-payment="openPaymentModal" />
 
     <view v-if="homeBanner.enabled" class="hero-section">
@@ -20,7 +20,8 @@
             {{ tr('无需预约影棚。上传人像、选择风格或描述想法，快速生成适合请柬、头像、纪念日和社交分享的婚纱影像。', 'Upload a portrait, choose a look, and generate polished AI wedding images for invitations, profiles, anniversaries, and keepsakes.') }}
           </text>
           <view class="hero-actions">
-            <a v-if="creationAvailable" class="btn primary" href="/pages/create/index" @click.prevent="goToCustom">{{ tr('开始免费预览', 'Start a Free Preview') }}</a>
+            <view v-if="!opsStore.loaded" class="availability-notice loading-notice" aria-busy="true">{{ tr('正在确认创作能力…', 'Checking studio availability…') }}</view>
+            <a v-else-if="creationAvailable" class="btn primary" href="/pages/create/index" @click.prevent="goToCustom">{{ tr('开始免费预览', 'Start a Free Preview') }}</a>
             <view v-else class="availability-notice">{{ tr('创作功能暂未开放', 'Studio temporarily unavailable') }}</view>
             <a class="btn secondary" href="#gallery" @click.prevent="scrollToGallery">{{ tr('浏览婚纱风格', 'Explore Styles') }}</a>
           </view>
@@ -49,78 +50,11 @@
     </view>
 
     <view class="landing-body" role="main">
-      <section class="benefits-section section-block" id="benefits">
-        <view class="section-heading">
-          <text class="section-label">{{ tr('为什么选择 VowPic', 'Why VowPic') }}</text>
-          <text class="section-title heading-serif">{{ tr('先看到成片灵感，再决定是否继续', 'Preview the look before you continue') }}</text>
-        </view>
-        <view class="benefit-grid">
-          <view v-for="item in benefitItems" :key="item.title" class="benefit-card">
-            <text class="card-mark">{{ item.mark }}</text>
-            <text class="card-title">{{ item.title }}</text>
-            <text class="card-desc">{{ item.desc }}</text>
-          </view>
-        </view>
-      </section>
-
-      <section class="features-section section-block" id="features">
-        <view class="section-heading">
-          <text class="section-label">{{ tr('核心功能', 'Core Features') }}</text>
-          <text class="section-title heading-serif">{{ tr('从一张照片到婚纱大片，只需要几步', 'From upload to keepsake in a few guided steps') }}</text>
-        </view>
-
-        <view class="feature-layout">
-          <a
-            class="feature-panel"
-            :class="{ disabled: !creationAvailable }"
-            :href="creationAvailable ? '/pages/create/index' : undefined"
-            :aria-disabled="!creationAvailable"
-            :tabindex="creationAvailable ? 0 : -1"
-            @click.prevent="goToCustom"
-          >
-            <img
-              src="/static/style-previews/couple_old_money.jpg"
-              class="feature-image"
-              alt="Classic couple wedding portrait example"
-            />
-            <view class="feature-copy">
-              <text class="feature-kicker">{{ tr('自由定制', 'Custom Creation') }}</text>
-              <text class="feature-title heading-serif">{{ tr('描述你想要的婚纱、场景和氛围', 'Describe the dress, scene, and mood you want') }}</text>
-              <text class="feature-desc">{{ tr('上传人物照片后，可以选择模板，也可以补充服装、场景和参考图，让画面更接近你的审美。', 'Upload portraits, choose a style, then add outfit, scene, or reference guidance to bring the result closer to your taste.') }}</text>
-              <view v-if="creationAvailable" class="feature-action">{{ tr('开始定制', 'Start Customizing') }}</view>
-              <view v-else class="feature-status">{{ tr('暂未开放', 'Temporarily unavailable') }}</view>
-            </view>
-          </a>
-
-          <a
-            class="feature-panel alt"
-            :class="{ disabled: !creationAvailable }"
-            :href="creationAvailable ? '/pages/create/index?mode=golden_anniversary&id=golden_vintage_studio_8090' : undefined"
-            :aria-disabled="!creationAvailable"
-            :tabindex="creationAvailable ? 0 : -1"
-            @click.prevent="goToGoldenCreate"
-          >
-            <img
-              src="/static/style-previews/golden_chinese_courtyard.jpg"
-              class="feature-image"
-              alt="Golden anniversary wedding portrait example"
-            />
-            <view class="feature-copy">
-              <text class="feature-kicker">{{ tr('金婚纪念', 'Legacy Series') }}</text>
-              <text class="feature-title heading-serif">{{ tr('为父母和长辈重做一组纪念婚纱照', 'Create anniversary portraits for parents and elders') }}</text>
-              <text class="feature-desc">{{ tr('适合结婚纪念日、金婚礼物和家庭相册，用更体面的方式留下珍贵关系与家庭记忆。', 'Perfect for anniversaries, legacy gifts, and family albums, with a more polished way to preserve important memories.') }}</text>
-              <view v-if="creationAvailable" class="feature-action">{{ tr('开始纪念创作', 'Start Legacy Creation') }}</view>
-              <view v-else class="feature-status">{{ tr('暂未开放', 'Temporarily unavailable') }}</view>
-            </view>
-          </a>
-        </view>
-      </section>
-
       <section class="gallery-section section-block" id="gallery">
         <view class="section-heading split">
           <view>
-            <text class="section-label">{{ tr('风格灵感', 'Style Inspiration') }}</text>
-            <text class="section-title heading-serif">{{ tr('选择一个喜欢的风格，马上开始生成', 'Choose a direction, then make it yours') }}</text>
+            <text class="section-label">{{ tr('结果示例', 'Result Examples') }}</text>
+            <text class="section-title heading-serif">{{ tr('先看真实风格方向，再开始生成', 'See the result direction before you create') }}</text>
           </view>
           <text class="section-note">{{ tr('支持单人婚纱照和双人同机合拍。进入详情后可继续上传照片。', 'Supports solo portraits and local couple creation. Open a style to upload photos.') }}</text>
         </view>
@@ -176,7 +110,16 @@
           </view>
         </view>
 
-        <view v-if="filteredTemplates.length > 0" class="style-grid">
+        <view v-if="templateStore.loading && filteredTemplates.length === 0" class="style-grid" aria-busy="true" aria-label="Loading result examples">
+          <view v-for="index in 4" :key="index" class="style-card style-skeleton">
+            <view class="style-image-frame skeleton-block"></view>
+            <view class="style-copy">
+              <view class="skeleton-line wide"></view>
+              <view class="skeleton-line"></view>
+            </view>
+          </view>
+        </view>
+        <view v-else-if="filteredTemplates.length > 0" class="style-grid">
           <a
             v-for="template in filteredTemplates"
             :key="template.id"
@@ -189,6 +132,7 @@
                 :src="resolveTemplateCardImage(template)"
                 class="style-image"
                 :alt="displayTemplateTitle(template)"
+                loading="lazy"
                 @error="onTemplateImageError(template)"
               />
             </view>
@@ -200,8 +144,22 @@
           </a>
         </view>
         <view v-else class="empty-gallery">
-          <text class="empty-title">{{ tr('正在加载风格作品', 'Loading styles') }}</text>
-          <text class="empty-desc">{{ tr('请稍候，模板库会自动使用本地保底数据。', 'Please wait. The gallery falls back safely if the API is unavailable.') }}</text>
+          <text class="empty-title">{{ tr('暂时无法读取风格作品', 'Result examples are temporarily unavailable') }}</text>
+          <text class="empty-desc">{{ tr('请稍后刷新；不会因此误报创作或付款能力已关闭。', 'Refresh shortly. This does not change studio or billing availability.') }}</text>
+        </view>
+      </section>
+
+      <section class="benefits-section section-block" id="steps">
+        <view class="section-heading">
+          <text class="section-label">{{ tr('三步完成', 'Three Simple Steps') }}</text>
+          <text class="section-title heading-serif">{{ tr('从人物照片到私密成片', 'From portraits to private delivery') }}</text>
+        </view>
+        <view class="benefit-grid">
+          <view v-for="item in benefitItems" :key="item.title" class="benefit-card">
+            <text class="card-mark">{{ item.mark }}</text>
+            <text class="card-title">{{ item.title }}</text>
+            <text class="card-desc">{{ item.desc }}</text>
+          </view>
         </view>
       </section>
 
@@ -218,12 +176,74 @@
         </view>
       </section>
 
+      <section class="pricing-section section-block" id="pricing">
+        <view class="section-heading">
+          <text class="section-label">{{ tr('定价', 'Pricing') }}</text>
+          <text class="section-title heading-serif">{{ tr('先看清积分和续费规则，再决定购买', 'See credits and renewal terms before you buy') }}</text>
+          <text class="pricing-intro">{{ generationCostSummary }}</text>
+        </view>
+        <view v-if="pricingLoading" class="pricing-inline-grid" aria-busy="true" aria-label="Loading current pricing">
+          <view v-for="index in 2" :key="index" class="pricing-inline-card">
+            <view class="skeleton-line wide"></view>
+            <view class="skeleton-line"></view>
+            <view class="skeleton-line"></view>
+          </view>
+        </view>
+        <view v-else class="pricing-inline-grid">
+          <view v-for="card in pricingCards" :key="card.mode" class="pricing-inline-card">
+            <text class="pricing-kind">{{ card.kicker }}</text>
+            <text class="pricing-name heading-serif">{{ card.title }}</text>
+            <text class="pricing-price">{{ card.price }}</text>
+            <text class="pricing-copy">{{ card.copy }}</text>
+          </view>
+        </view>
+        <view class="section-action-row">
+          <view
+            v-if="billingAvailable"
+            class="btn primary"
+            role="button"
+            tabindex="0"
+            @tap="openPaymentModal"
+            @keydown.enter.prevent="openPaymentModal"
+            @keydown.space.prevent="openPaymentModal"
+          >{{ tr('比较全部套餐', 'Compare All Plans') }}</view>
+          <text v-else-if="opsStore.loaded" class="availability-notice">{{ tr('当前付款入口暂未开放', 'Billing is temporarily unavailable') }}</text>
+        </view>
+      </section>
+
+      <section class="trust-section section-block" id="privacy">
+        <view class="section-heading">
+          <text class="section-label">{{ tr('隐私与安全', 'Privacy & Security') }}</text>
+          <text class="section-title heading-serif">{{ tr('照片、账户和付款各自有清晰边界', 'Clear boundaries for photos, accounts, and payments') }}</text>
+        </view>
+        <view class="trust-grid">
+          <view v-for="item in trustItems" :key="item.title" class="trust-card">
+            <text class="card-title">{{ item.title }}</text>
+            <text class="card-desc">{{ item.desc }}</text>
+          </view>
+        </view>
+      </section>
+
+      <section class="faq-section section-block" id="faq">
+        <view class="section-heading">
+          <text class="section-label">{{ tr('常见问题', 'FAQ') }}</text>
+          <text class="section-title heading-serif">{{ tr('开始前需要知道的事', 'What to know before you start') }}</text>
+        </view>
+        <view class="faq-list">
+          <details v-for="item in faqItems" :key="item.question" class="faq-item">
+            <summary>{{ item.question }}</summary>
+            <text class="faq-answer">{{ item.answer }}</text>
+          </details>
+        </view>
+      </section>
+
       <section class="cta-section section-block" id="cta">
         <text class="section-label">{{ tr('开始体验', 'Start Now') }}</text>
         <text class="cta-title heading-serif">{{ tr('从真实照片开始，逐步完成你的婚纱创作', 'Start with your photos and a guided creation flow') }}</text>
         <text class="cta-desc">{{ tr('系统会在提交前显示当前部署可用的能力和所需额度；未启用的付费选项不会提前展示。', 'The app shows available capabilities and required credits before submission. Paid options remain hidden until billing is available on this deployment.') }}</text>
         <view class="hero-actions centered">
-          <a v-if="creationAvailable" class="btn primary" href="/pages/create/index" @click.prevent="goToCustom">{{ tr('立即开始', 'Start Now') }}</a>
+          <view v-if="!opsStore.loaded" class="availability-notice loading-notice" aria-busy="true">{{ tr('正在确认创作能力…', 'Checking studio availability…') }}</view>
+          <a v-else-if="creationAvailable" class="btn primary" href="/pages/create/index" @click.prevent="goToCustom">{{ tr('立即开始', 'Start Now') }}</a>
           <view v-else class="availability-notice">{{ tr('当前部署仅开放浏览', 'This deployment is browse-only') }}</view>
           <view
             v-if="billingAvailable"
@@ -282,7 +302,43 @@ import {
   getLocalizedTemplateMarketingSubtitle,
   getLocalizedTemplateTitle,
 } from '../../stores/template';
-import { post, resolvePublicUrl } from '../../utils/api';
+import { get, post, resolvePublicUrl } from '../../utils/api';
+import { filterCreditPackages, readBillingIntent } from '../../utils/billingDisplay';
+
+interface PublicCreditPackage {
+  id: string;
+  product_kind?: string;
+  credits: number;
+  price_cents?: number;
+  price?: number;
+  currency?: string;
+  display_price?: string | null;
+}
+
+interface PublicSubscriptionPlan {
+  code: string;
+  credits: number;
+  pre_tax_minor_units: number;
+  currency: string;
+  display_price: string;
+}
+
+interface PublicLegalPolicies {
+  pricing?: {
+    single?: number;
+    couple_local?: number;
+    golden_anniversary?: number;
+    summary?: string;
+  };
+  retention?: {
+    source_images_days?: number;
+    free_generated_days?: number;
+    paid_generated_days?: number;
+    subscription_generated_days?: number;
+    studio_generated_days?: number;
+    summary?: string;
+  };
+}
 
 const templateStore = useTemplateStore();
 const opsStore = useOpsStore();
@@ -294,6 +350,10 @@ const templates = ref<Template[]>([]);
 const selectedCategory = ref<'all' | 'single' | 'vintage' | 'custom'>('all');
 const showPaymentModal = ref(false);
 const templateImageAttempts = ref<Record<string, number>>({});
+const creditPackages = ref<PublicCreditPackage[]>([]);
+const subscriptionPlans = ref<PublicSubscriptionPlan[]>([]);
+const legalPolicies = ref<PublicLegalPolicies | null>(null);
+const pricingLoading = ref(true);
 
 const homeBanner = computed(() => opsStore.publicConfig.placements.home_banner);
 const creationAvailable = computed(() => opsStore.creationAvailable);
@@ -357,18 +417,18 @@ const heroProofs = computed(() => [
 const benefitItems = computed(() => [
   {
     mark: '01',
-    title: tr('先看效果再决定', 'Preview with your real photos'),
-    desc: tr('先用自己的照片试不同婚纱风格，看清楚氛围、构图和人物感觉，再决定是否继续。', 'Test the look with your own portrait before deciding whether to continue.'),
+    title: tr('上传清晰人物照片', 'Upload clear portraits'),
+    desc: tr('选择单人、双人或金婚模式，只上传本人拥有或已获授权的人物照片。', 'Choose solo, couple, or anniversary mode and upload only portraits you own or are authorized to use.'),
   },
   {
     mark: '02',
-    title: tr('风格选择更自由', 'Solo and local couple creation'),
-    desc: tr('可选择现成风格，也能用文字补充服装、场景和氛围，适合婚礼灵感、情侣写真和纪念礼物。', 'Choose a ready-made style or add outfit, scene, and mood guidance for solo, local couple, and anniversary portraits.'),
+    title: tr('选择风格并写下方向', 'Choose a look and direction'),
+    desc: tr('从现有风格开始，再用文字描述服装、场景、氛围、镜头和布光。', 'Start from a curated look, then describe outfit, scene, mood, lens, and lighting in text.'),
   },
   {
     mark: '03',
-    title: tr('额度与能力透明', 'Clear credits and availability'),
-    desc: tr('提交前会显示生成所需额度；未启用的购买或订阅能力不会展示。', 'Generation cost is shown before submission, while unavailable purchase or subscription options stay hidden.'),
+    title: tr('确认积分并私密下载', 'Confirm credits and download privately'),
+    desc: tr('提交前确认实际积分；完成后在自己的账户中预览订单并下载私密成片。', 'Confirm the exact credit cost before submission, then review and download private results from your account.'),
   },
 ]);
 
@@ -380,6 +440,127 @@ const testimonials = computed(() => [
   {
     quote: tr('给父母准备结婚纪念日礼物时，可以用一组更正式的纪念婚纱照，补上过去没有好好拍过的遗憾。', 'Create a more formal anniversary portrait set for parents and family milestones.'),
     name: tr('金婚 / 结婚周年纪念', 'Anniversary and legacy gifts'),
+  },
+]);
+
+const generationCostSummary = computed(() => {
+  const pricing = legalPolicies.value?.pricing;
+  if (pricing?.single && pricing?.couple_local && pricing?.golden_anniversary) {
+    return tr(
+      `单人生成 ${pricing.single} 积分；双人同机和金婚纪念各 ${pricing.couple_local} 积分。提交前再次确认实际扣除。`,
+      `Solo generation costs ${pricing.single} credits; local couple and anniversary generation cost ${pricing.couple_local} credits. The exact charge is confirmed before submission.`,
+    );
+  }
+  return tr(
+    '实际积分会在生成提交前显示并确认。',
+    'The exact credit charge is shown and confirmed before generation.',
+  );
+});
+
+function publicPrice(
+  displayPrice: string | null | undefined,
+  minorUnits: number | undefined,
+  currency = 'USD',
+): string {
+  if (displayPrice) return displayPrice;
+  if (Number.isFinite(minorUnits) && Number(minorUnits) > 0) {
+    const prefix = String(currency).toUpperCase() === 'USD' ? '$' : `${currency} `;
+    return `${prefix}${(Number(minorUnits) / 100).toFixed(2)}`;
+  }
+  return tr('查看当前价格', 'See current price');
+}
+
+const pricingCards = computed(() => {
+  const cards: Array<{
+    mode: string;
+    kicker: string;
+    title: string;
+    price: string;
+    copy: string;
+  }> = [];
+  const pack = [...creditPackages.value].sort((a, b) => Number(a.price_cents || 0) - Number(b.price_cents || 0))[0];
+  if (opsStore.publicConfig.capabilities.credit_pack_checkout) {
+    cards.push({
+      mode: 'credits',
+      kicker: tr('一次性购买', 'One-time purchase'),
+      title: tr('按需补充积分', 'Pay as you go'),
+      price: pack
+        ? tr(
+          `${publicPrice(pack.display_price, pack.price_cents, pack.currency)} 起 / ${pack.credits} 积分`,
+          `From ${publicPrice(pack.display_price, pack.price_cents, pack.currency)} / ${pack.credits} credits`,
+        )
+        : tr('在套餐中查看当前价格', 'See current price in plans'),
+      copy: tr('一次性到账，不会自动续费。适合试风格、继续生成或按项目使用。', 'Credits are added once with no auto-renewal. Best for occasional or project-based use.'),
+    });
+  }
+  const plan = [...subscriptionPlans.value].sort((a, b) => a.pre_tax_minor_units - b.pre_tax_minor_units)[0];
+  if (opsStore.publicConfig.capabilities.subscription_billing) {
+    cards.push({
+      mode: 'subscription',
+      kicker: tr('月度订阅', 'Monthly subscription'),
+      title: tr('持续创作套餐', 'Ongoing creation'),
+      price: plan
+        ? tr(
+          `${publicPrice(plan.display_price, plan.pre_tax_minor_units, plan.currency)} 起 / 月，${plan.credits} 积分`,
+          `From ${publicPrice(plan.display_price, plan.pre_tax_minor_units, plan.currency)} / month, ${plan.credits} credits`,
+        )
+        : tr('在套餐中查看当前价格', 'See current price in plans'),
+      copy: tr('每月自动加入积分并按月续费，取消后下一周期不再扣款。', 'Credits are added monthly and the plan renews until canceled.'),
+    });
+  }
+  if (cards.length === 0) {
+    cards.push({
+      mode: 'unavailable',
+      kicker: tr('当前状态', 'Current status'),
+      title: tr('付款入口暂未开放', 'Billing is temporarily unavailable'),
+      price: tr('不会创建订单', 'No checkout will be created'),
+      copy: tr('创作和浏览状态以页面当前提示为准。', 'Use the current page status for studio and gallery availability.'),
+    });
+  }
+  return cards;
+});
+
+const trustItems = computed(() => {
+  const retention = legalPolicies.value?.retention;
+  const sourceDays = retention?.source_images_days;
+  const paidDays = retention?.paid_generated_days;
+  return [
+    {
+      title: tr('账户级私密访问', 'Account-bound private access'),
+      desc: tr('上传、订单和下载绑定到已验证 Google 账号；私密文件不作为公开作品墙展示。', 'Uploads, orders, and downloads stay bound to the verified Google account and are not published as a public gallery.'),
+    },
+    {
+      title: tr('保留规则如实公开', 'Retention disclosed clearly'),
+      desc: sourceDays && paidDays
+        ? tr(
+          `原图计划保留 ${sourceDays} 天，付费作品计划保留 ${paidDays} 天；自动删除目前仍暂停，等待可审计清理流程完成验证。`,
+          `Source uploads are scheduled for ${sourceDays} days and paid results for ${paidDays} days. Automated deletion remains paused pending an audited cleanup flow.`,
+        )
+        : tr('具体保留期和当前删除状态以隐私政策为准。', 'Exact retention periods and deletion status are published in the Privacy Policy.'),
+    },
+    {
+      title: tr('支付信息由 Creem 处理', 'Checkout handled by Creem'),
+      desc: tr('VowPic 不保存银行卡号、CVV 或原始支付凭据；适用税费会在付款前显示。', 'VowPic does not store card numbers, CVV, or raw payment credentials. Applicable taxes are shown before payment.'),
+    },
+  ];
+});
+
+const faqItems = computed(() => [
+  {
+    question: tr('一次生成需要多少积分？', 'How many credits does one generation use?'),
+    answer: generationCostSummary.value,
+  },
+  {
+    question: tr('可以上传服装或场景参考图吗？', 'Can I upload outfit or scene reference images?'),
+    answer: tr('当前私有上传合同只接收人物照片。服装、场景与氛围请使用文字描述，页面不会承诺尚未开放的参考图上传。', 'The current private upload contract accepts portraits only. Describe outfit, scene, and mood in text; the site does not promise reference-image uploads that are not available.'),
+  },
+  {
+    question: tr('积分包和订阅有什么区别？', 'What is the difference between credit packs and subscriptions?'),
+    answer: tr('积分包是一次性购买且不续费；订阅每月发放积分并自动续费，直到你取消。付款前会显示最终金额。', 'Credit packs are one-time purchases with no renewal. Subscriptions add credits monthly and renew until canceled. The final amount is shown before payment.'),
+  },
+  {
+    question: tr('照片和生成结果是否公开？', 'Are uploads or generated results public?'),
+    answer: tr('不会自动公开。上传、订单、预览和私密下载绑定到你的已验证账户；保留期和自动删除状态请查看隐私政策。', 'They are not published automatically. Uploads, orders, previews, and private downloads stay bound to your verified account; see the Privacy Policy for retention and deletion status.'),
   },
 ]);
 
@@ -405,24 +586,6 @@ const goToRefund = () => {
 const goToCustom = () => {
   if (!creationAvailable.value) return;
   uni.navigateTo({ url: '/pages/create/index' });
-};
-
-const goToGoldenCreate = () => {
-  if (!creationAvailable.value) return;
-  const goldenTemplate =
-    templates.value.find((item) => item.id === 'golden_vintage_studio_8090') ||
-    templateStore.templates.find((item) => item.id === 'golden_vintage_studio_8090');
-  if (goldenTemplate) templateStore.selectTemplate(goldenTemplate);
-  post(
-    '/analytics/click',
-    {
-      event_type: 'golden_anniversary_start',
-      source_page: 'index',
-      template_id: 'golden_vintage_studio_8090',
-    },
-    { showLoading: false, showError: false } as any
-  ).catch(() => {});
-  uni.navigateTo({ url: '/pages/create/index?mode=golden_anniversary&id=golden_vintage_studio_8090' });
 };
 
 const goToDetail = (template: Template) => {
@@ -538,20 +701,6 @@ const selectCategory = (category: 'all' | 'single' | 'vintage' | 'custom') => {
   selectedCategory.value = category;
 };
 
-const focusCategory = (category: 'single' | 'vintage' | 'custom') => {
-  post(
-    '/analytics/click',
-    {
-      event_type: 'collection_focus',
-      source_page: 'index',
-      template_id: category,
-    },
-    { showLoading: false, showError: false } as any
-  ).catch(() => {});
-  selectedCategory.value = category;
-  scrollToGallery();
-};
-
 const scrollToGallery = () => {
   uni.pageScrollTo({
     selector: '#gallery',
@@ -569,12 +718,67 @@ function onPurchaseComplete() {
   navBarRef.value?.refreshBalance();
 }
 
+async function fetchCommercialFacts() {
+  pricingLoading.value = true;
+  const tasks: Promise<unknown>[] = [
+    get<PublicLegalPolicies>('/legal/policies', { showLoading: false, showError: false } as any)
+      .then((result) => {
+        legalPolicies.value = result;
+      })
+      .catch(() => {
+        legalPolicies.value = null;
+      }),
+  ];
+  if (opsStore.publicConfig.capabilities.credit_pack_checkout) {
+    tasks.push(
+      get<{ packages: PublicCreditPackage[] }>(
+        `/credits/packages?locale=${encodeURIComponent(i18nStore.locale)}`,
+        { showLoading: false, showError: false } as any,
+      )
+        .then((result) => {
+          creditPackages.value = filterCreditPackages(
+            Array.isArray(result.packages) ? result.packages : [],
+          );
+        })
+        .catch(() => {
+          creditPackages.value = [];
+        }),
+    );
+  }
+  if (opsStore.publicConfig.capabilities.subscription_billing) {
+    tasks.push(
+      get<PublicSubscriptionPlan[]>(
+        '/subscriptions/plans',
+        { showLoading: false, showError: false } as any,
+      )
+        .then((result) => {
+          subscriptionPlans.value = Array.isArray(result) ? result : [];
+        })
+        .catch(() => {
+          subscriptionPlans.value = [];
+        }),
+    );
+  }
+  await Promise.allSettled(tasks);
+  pricingLoading.value = false;
+}
+
 onMounted(async () => {
-  await opsStore.fetchPublicConfig();
-  await templateStore.fetchTemplates();
+  await Promise.all([
+    opsStore.fetchPublicConfig(),
+    templateStore.fetchTemplates(),
+  ]);
   templates.value = templateStore.templates;
   if (!vintageTemplates.value.length && selectedCategory.value === 'vintage') {
     selectedCategory.value = 'all';
+  }
+  await fetchCommercialFacts();
+  if (
+    billingAvailable.value
+    && typeof window !== 'undefined'
+    && readBillingIntent(window.location.href)
+  ) {
+    showPaymentModal.value = true;
   }
 });
 </script>
@@ -1101,6 +1305,39 @@ onMounted(async () => {
   font-size: 14px;
 }
 
+.style-skeleton {
+  cursor: default;
+}
+
+.skeleton-block,
+.skeleton-line {
+  background: linear-gradient(90deg, #e4e8e5 25%, #f1f3f1 50%, #e4e8e5 75%);
+  background-size: 200% 100%;
+  animation: skeletonPulse 1.4s ease-in-out infinite;
+}
+
+.skeleton-line {
+  width: 68%;
+  height: 12px;
+  margin-top: 10px;
+  border-radius: 6px;
+}
+
+.skeleton-line.wide {
+  width: 88%;
+  height: 18px;
+  margin-top: 0;
+}
+
+@keyframes skeletonPulse {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
 .testimonials-section {
   border-top: 1px solid #dde1e8;
 }
@@ -1121,6 +1358,119 @@ onMounted(async () => {
   margin-top: 20px;
   margin-bottom: 0;
   color: #116a60;
+}
+
+.pricing-section {
+  width: 100vw;
+  margin-left: calc((100% - 100vw) / 2);
+  padding-left: max(24px, calc((100vw - 1280px) / 2));
+  padding-right: max(24px, calc((100vw - 1280px) / 2));
+  background: #eef1ee;
+  border-top: 1px solid rgba(32, 43, 62, 0.08);
+  border-bottom: 1px solid rgba(32, 43, 62, 0.08);
+}
+
+.pricing-intro {
+  display: block;
+  max-width: 720px;
+  margin: 16px auto 0;
+  color: #4c5360;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.pricing-inline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.pricing-inline-card,
+.trust-card {
+  min-width: 0;
+  padding: 28px;
+  border: 1px solid rgba(32, 43, 62, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 36px rgba(23, 25, 31, 0.05);
+}
+
+.pricing-kind {
+  display: block;
+  margin-bottom: 10px;
+  color: #116a60;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.pricing-name {
+  display: block;
+  color: #17191f;
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.pricing-price {
+  display: block;
+  margin-top: 16px;
+  color: #17191f;
+  font-size: 21px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.pricing-copy {
+  display: block;
+  margin-top: 12px;
+  color: #4c5360;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.section-action-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 28px;
+}
+
+.trust-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.faq-section {
+  border-top: 1px solid #dde1e8;
+}
+
+.faq-list {
+  max-width: 900px;
+  margin: 0 auto;
+  border-top: 1px solid #cfd5de;
+}
+
+.faq-item {
+  border-bottom: 1px solid #cfd5de;
+}
+
+.faq-item summary {
+  min-height: 64px;
+  padding: 18px 44px 18px 0;
+  display: flex;
+  align-items: center;
+  color: #17191f;
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.faq-answer {
+  display: block;
+  padding: 0 44px 22px 0;
+  color: #4c5360;
+  font-size: 15px;
+  line-height: 1.75;
 }
 
 .cta-section {
@@ -1201,6 +1551,7 @@ onMounted(async () => {
 .feature-panel:focus-visible,
 .cat-chip:focus-visible,
 .style-card:focus-visible,
+.faq-item summary:focus-visible,
 .footer-links a:focus-visible,
 .footer-links [role="button"]:focus-visible {
   outline: 3px solid #116a60;
@@ -1275,7 +1626,9 @@ onMounted(async () => {
   }
 
   .benefit-grid,
-  .testimonial-list {
+  .testimonial-list,
+  .pricing-inline-grid,
+  .trust-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1413,8 +1766,22 @@ onMounted(async () => {
   }
 
   .benefit-card,
-  .testimonial-card {
+  .testimonial-card,
+  .pricing-inline-card,
+  .trust-card {
     padding: 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block,
+  .skeleton-line {
+    animation: none;
+  }
+
+  .btn,
+  .style-card {
+    transition: none;
   }
 }
 </style>

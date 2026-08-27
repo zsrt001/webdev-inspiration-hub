@@ -131,14 +131,31 @@ class BillingCatalogTest(unittest.IsolatedAsyncioTestCase):
                 locale="en-US",
                 db=snapshot_db,
             )
-        self.assertEqual(len(response.packages), len(EXPECTED_RELEASE_PRODUCTS))
+        expected_credit_packs = {
+            code: contract
+            for code, contract in EXPECTED_RELEASE_PRODUCTS.items()
+            if contract.product_kind == "credit_pack"
+        }
+        self.assertEqual(
+            {item.id for item in response.packages},
+            {"pack_50", "pack_120", "pack_300"},
+        )
+        self.assertTrue(all(item.product_kind == "credit_pack" for item in response.packages))
+        self.assertFalse(
+            any("_monthly" in item.id for item in response.packages),
+        )
         self.assertEqual(
             {item.id: item.price_cents for item in response.packages},
             {
                 code: contract.pre_tax_minor_units
-                for code, contract in EXPECTED_RELEASE_PRODUCTS.items()
+                for code, contract in expected_credit_packs.items()
             },
         )
+        self.assertEqual(
+            [item.id for item in response.packages if item.popular],
+            ["pack_120"],
+        )
+        self.assertTrue(all("_" not in item.label for item in response.packages))
 
         with (
             patch.object(credits.settings, "runtime_environment", "production"),

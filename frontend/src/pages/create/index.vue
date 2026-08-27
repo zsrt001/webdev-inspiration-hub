@@ -2,7 +2,16 @@
   <view class="app-container create-page" style="padding-top: 64px;">
     <NavBar ref="navBarRef" @show-payment="openPaymentModal" />
     <view class="create-shell" role="main">
-      <view v-if="!creationAvailable" class="capability-unavailable">
+      <view v-if="!opsStore.loaded" class="capability-unavailable" aria-busy="true">
+        <text class="unavailable-kicker">{{ tr('正在连接', 'Connecting') }}</text>
+        <text class="unavailable-title heading-serif" role="heading" aria-level="1">
+          {{ tr('正在读取创作能力', 'Loading the secure studio') }}
+        </text>
+        <text class="unavailable-copy">
+          {{ tr('正在确认上传、生成与私密交付状态，请稍候。', 'Checking upload, generation, and private-delivery availability.') }}
+        </text>
+      </view>
+      <view v-else-if="!creationAvailable" class="capability-unavailable">
         <text class="unavailable-kicker">{{ tr('安全基线', 'Safe baseline') }}</text>
         <text class="unavailable-title heading-serif" role="heading" aria-level="1">
           {{ tr('创作功能暂未开放', 'Studio temporarily unavailable') }}
@@ -19,7 +28,7 @@
         <view class="hero-main">
           <text class="hero-kicker">{{ tr('AI 婚纱创作台', 'AI Wedding Studio') }}</text>
           <text class="hero-title heading-serif">{{ tr('先把照片上传好，再决定要不要加风格', 'Upload portraits first, then add style if needed') }}</text>
-          <text class="hero-subtitle">{{ tr('主线只有两步：选择生成对象、上传人物照片。身份和人数会被锁定；参考图优先控制场景/服装，没参考图时文字就是主创作指令。', 'The core path has two steps: choose the subject count and upload portraits. Identity and count stay locked; references control scene/outfit first, and text becomes the main creative brief when no reference is uploaded.') }}</text>
+          <text class="hero-subtitle">{{ tr('主线只有两步：选择生成对象、上传人物照片。身份和人数会被锁定；服装、场景与氛围目前统一使用文字描述。', 'The core path has two steps: choose the subject count and upload portraits. Identity and count stay locked; outfit, scene, and mood are currently directed with text.') }}</text>
           <view class="flow-strip">
             <view class="flow-step primary">{{ tr('1 选人数', '1 Choose count') }}</view>
             <view class="flow-step primary">{{ tr('2 上传照片', '2 Upload portraits') }}</view>
@@ -30,7 +39,7 @@
         <view class="hero-aside">
           <text class="aside-title">{{ tr('当前主线', 'Core Flow') }}</text>
           <text class="aside-mode">{{ outputModeLabel }}</text>
-          <text class="aside-copy">{{ tr('照片齐了就能生成；参考图是强参考，文字在无参考图时主控，有参考图时负责氛围、镜头、布光和质感。', 'Once portraits are ready, generation can start. References are strong controls; text leads when no reference exists and otherwise refines mood, lens, lighting, and texture.') }}</text>
+          <text class="aside-copy">{{ tr('照片齐了就能生成；文字负责服装、场景、氛围、镜头、布光和质感，提交前会显示实际积分。', 'Once portraits are ready, generation can start. Text directs outfit, scene, mood, lens, lighting, and texture, with the exact credit cost shown before submission.') }}</text>
         </view>
       </view>
 
@@ -146,7 +155,7 @@
             </view>
 
             <view class="style-section-head reference-head">
-              <text>{{ tr('参考图', 'Reference Images') }}</text>
+              <text>{{ tr('当前上传范围', 'Current upload scope') }}</text>
               <text>{{ tr('当前私有资产合同仅接收人物照片；场景和服装请先使用文字描述。', 'The current private-asset contract accepts portraits only; use text for scene and outfit direction.') }}</text>
             </view>
           </view>
@@ -367,7 +376,7 @@ const priorityGuideItems = computed(() => [
     key: 'text',
     index: '03',
     title: tr('文字创作', 'Text direction'),
-    copy: tr('无参考图时主控；有参考图时微调氛围、镜头和布光。', 'Controls when no reference exists; otherwise refines mood, lens, and lighting.'),
+    copy: tr('负责服装、场景、氛围、镜头和布光方向。', 'Directs outfit, scene, mood, lens, and lighting.'),
     active: hasDirectionText.value,
   },
   {

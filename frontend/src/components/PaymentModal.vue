@@ -1,7 +1,7 @@
 <template>
   <view v-if="visible && billingAvailable" class="pricing-overlay" @tap="handleClose">
     <view class="pricing-dialog" @tap.stop>
-      <button class="close-button" aria-label="Close" @tap="handleClose">x</button>
+      <button class="close-button" aria-label="Close" @tap="handleClose">×</button>
 
       <view class="pricing-header">
         <text class="pricing-title heading-serif">{{ tr('选择适合你的套餐', 'Choose Your Plan') }}</text>
@@ -37,7 +37,7 @@
           <text class="balance-value">{{ currentBalance }}</text>
         </view>
         <view class="balance-meta">
-          <text>{{ tr('基础生成', 'Base generation') }} {{ costPerGeneration }} {{ tr('积分起', 'credits and up') }}</text>
+          <text>{{ tr(`单人 ${costPerGeneration} 积分；双人 / 金婚 3 积分`, `Solo ${costPerGeneration} credits; couple / anniversary 3 credits`) }}</text>
           <text v-if="activePlanName">{{ tr('当前订阅', 'Current subscription') }}: {{ activePlanName }}</text>
         </view>
       </view>
@@ -81,7 +81,7 @@
             </view>
 
             <text class="plan-description">
-              {{ pkg.credits }} {{ tr('积分，可用于生成预览、继续出图和高清权益', 'credits for previews, more generations, and HD access') }}
+              {{ pkg.credits }} {{ tr('积分一次性加入同一账户余额，不会自动续费', 'credits added once to the same account balance, with no auto-renewal') }}
             </text>
 
             <button
@@ -134,7 +134,7 @@
             </view>
 
             <text class="plan-description">
-              {{ plan.credits }} {{ tr('积分 / 月，进入同一个积分余额', 'credits / month added to the same balance') }}
+              {{ plan.credits }} {{ tr('积分 / 月，按月自动续费，取消后不再续期', 'credits / month, renewing monthly until canceled') }}
             </text>
 
             <button
@@ -162,7 +162,7 @@
         <view class="pricing-footer">
           <LegalConsentInline v-model="paymentConsentAccepted" mode="payment" compact />
           <text class="provider-note">
-            {{ tr('支付完成后通常会自动到账，如遇延迟可在账户中心查看记录。', 'Credits are usually added automatically after payment. Check your account if there is a delay.') }}
+            {{ checkoutDisclosure }}
           </text>
         </view>
       </template>
@@ -178,9 +178,20 @@ import { useOpsStore } from '../stores/ops';
 import { useSubscriptionStore, type SubscriptionPlan } from '../stores/subscription';
 import { get, post } from '../utils/api';
 import { trackEvent } from '../utils/analytics';
+import { ensureSession } from '../utils/auth';
+import {
+  buildBillingReturnPath,
+  creditPackageDisplayName,
+  filterCreditPackages,
+  readBillingIntent,
+  retentionDescription,
+  subscriptionDisplayName,
+  type BillingMode,
+} from '../utils/billingDisplay';
 
 interface CreditPackage {
   id: string;
+  product_kind?: string;
   credits: number;
   price: number;
   currency?: string;
@@ -227,8 +238,6 @@ interface PendingPurchase {
   checkoutId?: string;
 }
 
-type BillingMode = 'credits' | 'subscription';
-
 const PENDING_PURCHASE_KEY = 'aws_pending_credit_purchase';
 
 const props = defineProps<{ visible: boolean }>();
@@ -270,6 +279,11 @@ const modeSummary = computed(() => {
   }
   return tr('每月自动获得固定积分，适合持续创作和成套出图。', 'Monthly credits for ongoing creation and portrait sets.');
 });
+
+const checkoutDisclosure = computed(() => tr(
+  '一次性积分包不会续费；订阅按月自动续费，取消后下一周期不再扣款。页面价格为税前 USD，Creem 会在付款前显示含适用税费的最终金额。支付完成后积分通常会自动到账。',
+  'Credit packs never renew. Subscriptions renew monthly until canceled. Listed USD prices exclude applicable taxes; Creem shows the final total before payment. Credits are usually added automatically after payment.',
+));
 
 function isWeb(): boolean {
   return typeof window !== 'undefined' && typeof document !== 'undefined';
@@ -369,14 +383,7 @@ function packageUnitPriceLabel(pkg: CreditPackage): string {
 }
 
 function packageTitle(pkg: CreditPackage): string {
-  const label = String(pkg.label || pkg.id).replace(/^AI Wedding\s*/i, '').trim();
-  if (i18nStore.locale !== 'zh') return label || pkg.id;
-  const zhNames: Record<string, string> = {
-    pack_50: 'Starter 积分包',
-    pack_120: 'Popular 积分包',
-    pack_300: 'Premium 积分包',
-  };
-  return zhNames[pkg.id] || label || pkg.id;
+  return creditPackageDisplayName(pkg, i18nStore.locale);
 }
 
 function packageShortName(pkg: CreditPackage): string {
@@ -401,14 +408,7 @@ function packageFeatureLines(pkg: CreditPackage): string[] {
 }
 
 function planDisplayName(plan: SubscriptionPlan): string {
-  const name = String(plan.code).replace(/_monthly$/i, '').trim();
-  if (i18nStore.locale !== 'zh') return name || plan.code;
-  const zhNames: Record<string, string> = {
-    starter_monthly: 'Starter 月度',
-    creator_monthly: 'Creator 月度',
-    studio_monthly: 'Studio 月度',
-  };
-  return zhNames[plan.code] || name || plan.code;
+  return subscriptionDisplayName(plan.code, i18nStore.locale);
 }
 
 function planShortName(plan: SubscriptionPlan): string {
@@ -439,7 +439,7 @@ function planFeatureLines(plan: SubscriptionPlan): string[] {
     generationEstimate(plan.credits),
   ];
   lines.push(tr('每月积分自动加入账户余额', 'Monthly credits are added to your account balance'));
-  lines.push(`${tr('保留层级', 'Retention tier')}: ${plan.retention_tier}`);
+  lines.push(retentionDescription(plan.retention_tier, i18nStore.locale));
   return lines;
 }
 
@@ -447,17 +447,29 @@ function selectPackage(pkg: CreditPackage) {
   selectedPackage.value = pkg;
 }
 
-function normalizeSelections() {
+function normalizeSelections(intent = isWeb() ? readBillingIntent(window.location.href) : null) {
+  if (intent?.mode === 'credits' && creditCheckoutAvailable.value) {
+    activeBillingMode.value = 'credits';
+  } else if (intent?.mode === 'subscription' && subscriptionBillingAvailable.value) {
+    activeBillingMode.value = 'subscription';
+  }
   if (packages.value.length > 0) {
+    const intentPackage = intent?.mode === 'credits'
+      ? packages.value.find((pkg) => pkg.id === intent.productCode)
+      : null;
     const existing = selectedPackage.value
       ? packages.value.find((pkg) => pkg.id === selectedPackage.value?.id)
       : null;
-    selectedPackage.value = existing || packages.value.find((pkg) => pkg.popular) || packages.value[0] || null;
+    selectedPackage.value = intentPackage || existing || packages.value.find((pkg) => pkg.popular) || packages.value[0] || null;
   }
 
   if (subscriptionStore.plans.length > 0) {
+    const intentPlan = intent?.mode === 'subscription'
+      ? subscriptionStore.plans.find((plan) => plan.code === intent.productCode)
+      : null;
     const existingPlan = subscriptionStore.plans.find((plan) => plan.code === selectedPlanCode.value);
-    selectedPlanCode.value = existingPlan?.code
+    selectedPlanCode.value = intentPlan?.code
+      || existingPlan?.code
       || subscriptionStore.current?.product_code
       || subscriptionStore.plans.find((plan) => plan.code.includes('creator'))?.code
       || subscriptionStore.plans[0]?.code
@@ -495,7 +507,7 @@ async function fetchData() {
     dataTasks.push(
       get<PackagesResponse>(`/credits/packages?locale=${encodeURIComponent(i18nStore.locale)}`, { showLoading: false, showError: false })
         .then((result) => {
-          packages.value = Array.isArray(result.packages) ? result.packages : [];
+          packages.value = filterCreditPackages(Array.isArray(result.packages) ? result.packages : []);
         })
         .catch(() => {
           packages.value = [];
@@ -506,6 +518,33 @@ async function fetchData() {
   }
   await Promise.allSettled(dataTasks);
   normalizeSelections();
+}
+
+function clearBillingIntentParams() {
+  if (!isWeb()) return;
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('pricing') && !url.searchParams.has('product')) return;
+  url.searchParams.delete('pricing');
+  url.searchParams.delete('product');
+  window.history.replaceState({}, '', url.toString());
+}
+
+async function ensurePurchaseSession(mode: BillingMode, productCode: string): Promise<boolean> {
+  try {
+    if (await ensureSession()) return true;
+  } catch (error: any) {
+    uni.showToast({
+      title: error?.message || tr('暂时无法确认登录状态', 'Unable to verify sign-in status'),
+      icon: 'none',
+    });
+    return false;
+  }
+  const nextPath = buildBillingReturnPath(currentReturnUrl() || '/pages/index/index', mode, productCode);
+  emit('close');
+  uni.navigateTo({
+    url: `/pages/auth/login?next=${encodeURIComponent(nextPath)}`,
+  });
+  return false;
 }
 
 async function reconcilePendingPurchase() {
@@ -580,6 +619,7 @@ async function handlePurchase(pkg?: CreditPackage) {
     uni.showToast({ title: tr('请先同意隐私政策与服务条款', 'Accept the legal terms first'), icon: 'none' });
     return;
   }
+  if (!await ensurePurchaseSession('credits', targetPackage.id)) return;
 
   processing.value = true;
   processingText.value = tr('正在创建支付订单...', 'Creating checkout...');
@@ -625,6 +665,7 @@ async function handleSubscriptionPurchase(planCode?: string) {
     uni.showToast({ title: tr('请先同意隐私政策与服务条款', 'Accept the legal terms first'), icon: 'none' });
     return;
   }
+  if (!await ensurePurchaseSession('subscription', targetPlanCode)) return;
 
   processing.value = true;
   processingText.value = tr('正在创建订阅订单...', 'Creating subscription checkout...');
@@ -672,12 +713,15 @@ watch(
     newBalance.value = 0;
     paymentConsentAccepted.value = false;
     await fetchData();
+    clearBillingIntentParams();
     await reconcilePendingPurchase();
   },
 );
 
 onMounted(async () => {
+  if (!props.visible) return;
   await fetchData();
+  clearBillingIntentParams();
   await reconcilePendingPurchase();
 });
 </script>

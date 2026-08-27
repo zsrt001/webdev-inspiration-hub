@@ -20,7 +20,10 @@
             </view>
           </view>
 
-          <view v-if="creationAvailable" class="hero-actions">
+          <view v-if="!opsStore.loaded" class="availability-notice" aria-busy="true">
+            {{ tr('正在确认创作能力…', 'Checking studio availability…') }}
+          </view>
+          <view v-else-if="creationAvailable" class="hero-actions">
             <button v-if="isGoldenTemplate" class="btn btn-primary action-btn shadow-glow" @tap="goCreate('golden_anniversary')">
               {{ tr('开始金婚重塑', 'Start Golden Anniversary') }}
             </button>
@@ -38,7 +41,7 @@
           <view class="logic-card">
             <text class="logic-title">{{ tr('创作建议', 'Creation Tip') }}</text>
             <text class="logic-line">
-              {{ tr('进入创作页后，可继续补充服装、场景或参考图，让结果更贴近你的想法。', 'After opening the studio, add outfit, scene, or reference guidance to make the result closer to your idea.') }}
+              {{ tr('进入创作页后，可继续用文字补充服装、场景和氛围，让结果更贴近你的想法。', 'After opening the studio, add outfit, scene, and mood direction in text to make the result closer to your idea.') }}
             </text>
           </view>
         </view>
@@ -59,7 +62,7 @@
             </view>
             <view class="support-row">
               <view class="support-dot"></view>
-              <text class="support-copy">{{ tr('场景参考图与服装参考图', 'Scene and outfit references') }}</text>
+              <text class="support-copy">{{ tr('人物照片上传，场景与服装使用文字描述', 'Portrait uploads with scene and outfit direction in text') }}</text>
             </view>
             <view class="support-row">
               <view class="support-dot"></view>
@@ -81,7 +84,7 @@
             </view>
             <view class="support-row">
               <text class="step-chip">03</text>
-              <text class="support-copy">{{ tr('想要更接近参考效果时，再上传参考图生成', 'Upload references when you want the result to follow a specific look') }}</text>
+              <text class="support-copy">{{ tr('提交前确认实际积分，再开始生成', 'Confirm the exact credit cost before generation') }}</text>
             </view>
           </view>
         </view>
@@ -221,8 +224,8 @@ const heroSubtitle = computed(() => {
   if (copy.value) return i18nStore.locale === 'zh' ? copy.value.subtitleZh : copy.value.subtitleEn;
   const subtitle = getLocalizedTemplateMarketingSubtitle(template.value, i18nStore.locale);
   return subtitle || tr(
-    '进入创作页后，你可以继续补充服装、场景和参考图，让画面更贴近你的想法。',
-    'After opening the studio, you can add outfit, scene, and reference guidance to shape the result.',
+    '进入创作页后，你可以继续用文字补充服装、场景和氛围，让画面更贴近你的想法。',
+    'After opening the studio, you can add outfit, scene, and mood direction in text to shape the result.',
   );
 });
 const differentiatedPoints = computed(() => {
@@ -233,7 +236,7 @@ const differentiatedPoints = computed(() => {
 });
 const supportUsage = computed(() => {
   if (copy.value) return i18nStore.locale === 'zh' ? copy.value.usageZh : copy.value.usageEn;
-  return tr('适合作为起始风格，再用文字和参考图继续细化。', 'Best used as a starting style and refined with text or references.');
+  return tr('适合作为起始风格，再用文字继续细化服装、场景和氛围。', 'Best used as a starting style and refined with text for outfit, scene, and mood.');
 });
 
 function currentQuery(): Record<string, string> {
