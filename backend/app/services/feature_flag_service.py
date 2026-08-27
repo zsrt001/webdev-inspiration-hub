@@ -149,13 +149,24 @@ def decide_flag(
         return _off_decision(known_capability, row, "runtime_environment_invalid")
     if _row_value(row, "environment") != context.environment:
         return _off_decision(known_capability, row, "environment_mismatch")
-    if not context.deployment_id or context.deployment_id != _row_value(row, "deployment_id"):
-        return _off_decision(known_capability, row, "deployment_mismatch")
-    if not context.runtime_bundle_id or context.runtime_bundle_id != _row_value(row, "runtime_bundle_id"):
-        return _off_decision(known_capability, row, "runtime_bundle_mismatch")
+    if not context.deployment_id or not context.runtime_bundle_id:
+        return _off_decision(known_capability, row, "runtime_coordinates_invalid")
     bound_worker = str(_row_value(row, "worker_image_digest") or "").strip()
     if bound_worker or context.worker_image_digest is not None:
         return _off_decision(known_capability, row, "worker_coordinate_retired")
+
+    # Production ON is the durable public operating state. Once an audited
+    # capability is ON, a later valid Production deployment must inherit it;
+    # otherwise every ordinary code release silently disables the live site.
+    # Preview ON and temporary acceptance cohorts remain deployment-bound.
+    inherit_production_on = (
+        state is FeatureFlagState.ON and context.environment == "production"
+    )
+    if not inherit_production_on:
+        if context.deployment_id != _row_value(row, "deployment_id"):
+            return _off_decision(known_capability, row, "deployment_mismatch")
+        if context.runtime_bundle_id != _row_value(row, "runtime_bundle_id"):
+            return _off_decision(known_capability, row, "runtime_bundle_mismatch")
 
     if state is FeatureFlagState.ACCEPTANCE_COHORT:
         expires_at = _row_value(row, "expires_at")

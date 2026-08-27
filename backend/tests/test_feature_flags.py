@@ -147,6 +147,66 @@ class FeatureFlagDecisionTest(unittest.TestCase):
             self.assertFalse(decision.allowed)
             self.assertEqual(decision.reason, "worker_coordinate_retired")
 
+    def test_production_on_is_inherited_by_a_new_valid_runtime(self) -> None:
+        flags = _flags_module()
+        service = _service_module()
+        row = {
+            "environment": "production",
+            "state": "ON",
+            "deployment_id": "dpl_previous",
+            "runtime_bundle_id": "rtb_previous",
+        }
+        context = flags.FeatureFlagContext(
+            environment="production",
+            deployment_id="dpl_current",
+            runtime_bundle_id="rtb_current",
+        )
+
+        decision = service.decide_flag(flags.Capability.GENERATION, row, context)
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.state, flags.FeatureFlagState.ON)
+        self.assertEqual(decision.reason, "allowed")
+
+    def test_preview_on_remains_bound_to_its_exact_deployment(self) -> None:
+        flags = _flags_module()
+        service = _service_module()
+        row = {
+            "environment": "preview",
+            "state": "ON",
+            "deployment_id": "dpl_previous",
+            "runtime_bundle_id": "rtb_previous",
+        }
+        context = flags.FeatureFlagContext(
+            environment="preview",
+            deployment_id="dpl_current",
+            runtime_bundle_id="rtb_current",
+        )
+
+        decision = service.decide_flag(flags.Capability.GENERATION, row, context)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "deployment_mismatch")
+
+    def test_production_on_still_requires_valid_runtime_coordinates(self) -> None:
+        flags = _flags_module()
+        service = _service_module()
+        row = {
+            "environment": "production",
+            "state": "ON",
+            "deployment_id": "dpl_previous",
+            "runtime_bundle_id": "rtb_previous",
+        }
+
+        decision = service.decide_flag(
+            flags.Capability.GENERATION,
+            row,
+            flags.FeatureFlagContext(environment="production"),
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "runtime_coordinates_invalid")
+
     def test_cohort_ttl_above_86400_is_rejected(self) -> None:
         service = _service_module()
         now = datetime.now(timezone.utc)
