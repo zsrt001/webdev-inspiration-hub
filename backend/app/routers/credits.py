@@ -1,7 +1,7 @@
 """Credits API routes for balance and payments."""
 
 import logging
-from typing import List
+from typing import List, Literal
 
 from asyncpg import PostgresError
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -51,6 +51,7 @@ class BalanceResponse(BaseModel):
 class CreditPackage(BaseModel):
     """Credit package model."""
     id: str
+    product_kind: Literal["credit_pack"] = "credit_pack"
     credits: int
     price: float
     currency: str = "USD"
@@ -119,7 +120,12 @@ async def list_packages(
             db,
             environment=settings.runtime_environment,
         )
-        localized = localize_catalog_products(catalog.products, locale=locale)
+        credit_products = tuple(
+            product
+            for product in catalog.products
+            if product.product_kind == "credit_pack"
+        )
+        localized = localize_catalog_products(credit_products, locale=locale)
     except (BillingCatalogUnavailable, PostgresError, SQLAlchemyError, OSError) as exc:
         logger.warning(
             "credit_catalog_unavailable exception_type=%s",
@@ -131,6 +137,7 @@ async def list_packages(
         packages=[
             CreditPackage(
                 id=item["product_code"],
+                product_kind="credit_pack",
                 credits=item["credits"],
                 price=item["pre_tax_minor_units"] / 100,
                 currency=item["currency"],
@@ -139,8 +146,12 @@ async def list_packages(
                 region=item["region"],
                 payment_methods=[],
                 localized_pricing_ready=item["localized_pricing_ready"],
-                label=item["product_code"],
-                popular=False,
+                label={
+                    "pack_50": "Starter credits",
+                    "pack_120": "Popular credits",
+                    "pack_300": "Premium credits",
+                }.get(item["product_code"], "Credits"),
+                popular=item["product_code"] == "pack_120",
             )
             for item in localized
         ]

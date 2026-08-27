@@ -1,6 +1,16 @@
 <template>
   <view class="legal-consent" :class="{ compact }">
-    <view class="consent-toggle" :class="{ checked: modelValue }" @tap="toggle">
+    <view
+      class="consent-toggle"
+      :class="{ checked: modelValue }"
+      role="checkbox"
+      tabindex="0"
+      :aria-checked="modelValue"
+      :aria-label="tr('同意隐私政策与服务条款', 'Agree to the Privacy Policy and Terms of Service')"
+      @tap="toggle"
+      @keydown.enter.prevent="toggle"
+      @keydown.space.prevent="toggle"
+    >
       <text class="consent-mark">{{ modelValue ? '✓' : '' }}</text>
     </view>
     <view class="consent-copy">
@@ -94,6 +104,11 @@ function openLegal(path: string) {
 .consent-toggle.checked {
   background: $uni-color-primary;
   border-color: $uni-color-primary;
+}
+
+.consent-toggle:focus-visible {
+  outline: 3px solid $uni-color-primary;
+  outline-offset: 3px;
 }
 
 .consent-mark {

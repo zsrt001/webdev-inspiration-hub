@@ -26,7 +26,7 @@ const messages: Record<Locale, Record<string, string>> = {
     'index.hero_secondary_label': '浏览模板',
     'index.portal_label': '自由定制',
     'index.portal_title': 'AI 设计中心',
-    'index.portal_desc': '用文字、参考图和风格模板，定义你的婚纱影像方向。',
+    'index.portal_desc': '用人物照片、文字和风格模板，定义你的婚纱影像方向。',
     'index.portal_action': '开始定制',
     'index.portal_enter': '进入',
     'index.legacy_kicker': '纪念系列',
