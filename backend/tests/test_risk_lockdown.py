@@ -106,15 +106,18 @@ class RiskLockdownTest(unittest.TestCase):
         )
         self.assertIn("if (!googleAuthAvailable.value) return;", navigation_source)
 
-        self.assertIn('v-if="creationAvailable" class="btn primary"', home_source)
+        self.assertGreaterEqual(home_source.count('v-if="!opsStore.loaded"'), 2)
+        self.assertGreaterEqual(home_source.count('v-else-if="creationAvailable" class="btn primary"'), 2)
         self.assertIn('v-else class="availability-notice"', home_source)
-        self.assertGreaterEqual(home_source.count("if (!creationAvailable.value) return;"), 2)
+        self.assertIn("if (!creationAvailable.value) return;", home_source)
 
-        self.assertIn('v-if="creationAvailable" class="hero-actions"', detail_source)
+        self.assertIn('v-if="!opsStore.loaded" class="availability-notice"', detail_source)
+        self.assertIn('v-else-if="creationAvailable" class="hero-actions"', detail_source)
         self.assertIn('v-else class="availability-notice"', detail_source)
         self.assertIn("if (!creationAvailable.value) return;", detail_source)
 
-        self.assertIn('v-if="!creationAvailable" class="capability-unavailable"', create_source)
+        self.assertIn('v-if="!opsStore.loaded" class="capability-unavailable"', create_source)
+        self.assertIn('v-else-if="!creationAvailable" class="capability-unavailable"', create_source)
         self.assertIn("<template v-else>", create_source)
         self.assertGreaterEqual(create_source.count("if (!creationAvailable.value) return"), 2)
         self.assertIn("await opsStore.fetchPublicConfig();", create_source)
