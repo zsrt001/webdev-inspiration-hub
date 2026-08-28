@@ -353,6 +353,41 @@ class FeatureFlagAuthorityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.reason, "authority_unavailable")
         cache_off.assert_awaited_once()
 
+    async def test_bulk_resolution_reads_capabilities_with_one_database_query(self) -> None:
+        flags = _flags_module()
+        service = _service_module()
+        row = SimpleNamespace(
+            environment="production",
+            capability=flags.Capability.GENERATION.value,
+            state=flags.FeatureFlagState.ON.value,
+            deployment_id="dpl_previous",
+            runtime_bundle_id="rtb_previous",
+            worker_image_digest=None,
+            cohort_user_ids=[],
+            verified_identity_hashes=[],
+            expires_at=None,
+            version=1,
+        )
+        scalar_result = SimpleNamespace(all=lambda: [row])
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalars=lambda: scalar_result)
+        context = flags.FeatureFlagContext(
+            environment="production",
+            deployment_id="dpl_current",
+            runtime_bundle_id="rtb_current",
+        )
+
+        with patch.object(service, "_cache_off_decision", new=AsyncMock()):
+            decisions = await service.resolve_capabilities(
+                db,
+                (flags.Capability.GENERATION, flags.Capability.GOOGLE_AUTH),
+                context,
+            )
+
+        db.execute.assert_awaited_once()
+        self.assertTrue(decisions[flags.Capability.GENERATION].allowed)
+        self.assertEqual(decisions[flags.Capability.GOOGLE_AUTH].reason, "flag_missing")
+
     async def test_off_cache_ttl_is_capped_at_thirty_seconds(self) -> None:
         flags = _flags_module()
         service = _service_module()

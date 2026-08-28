@@ -180,16 +180,23 @@ class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
         ops = importlib.import_module("app.routers.ops")
         database = AsyncMock()
 
-        def decision_for(_database, capability):
-            if capability is ops.Capability.GOOGLE_AUTH:
-                return SimpleNamespace(allowed=False, reason="cohort_identity_missing")
-            return SimpleNamespace(allowed=False, reason="disabled")
+        decisions = {
+            capability: SimpleNamespace(
+                allowed=False,
+                reason=(
+                    "cohort_identity_missing"
+                    if capability is ops.Capability.GOOGLE_AUTH
+                    else "disabled"
+                ),
+            )
+            for capability in ops.Capability
+        }
 
         with (
             patch.object(
                 ops,
-                "resolve_request_capability",
-                new=AsyncMock(side_effect=decision_for),
+                "resolve_request_capabilities",
+                new=AsyncMock(return_value=decisions),
             ),
             patch.multiple(
                 ops.settings,
@@ -206,11 +213,12 @@ class FeatureFlagDependencyTest(unittest.IsolatedAsyncioTestCase):
     async def test_public_config_keeps_globally_disabled_google_entry_hidden(self) -> None:
         ops = importlib.import_module("app.routers.ops")
         disabled = SimpleNamespace(allowed=False, reason="disabled")
+        decisions = {capability: disabled for capability in ops.Capability}
         with (
             patch.object(
                 ops,
-                "resolve_request_capability",
-                new=AsyncMock(return_value=disabled),
+                "resolve_request_capabilities",
+                new=AsyncMock(return_value=decisions),
             ),
             patch.multiple(
                 ops.settings,

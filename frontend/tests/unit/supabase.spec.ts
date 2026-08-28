@@ -69,6 +69,22 @@ describe('Supabase public browser config', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('reuses the public auth config across the OAuth page navigation', async () => {
+    const firstModule = await import('../../src/utils/supabase');
+    expect(firstModule.primeSupabaseConfig({
+      auth: {
+        google_oauth_enabled: true,
+        supabase_url: 'https://preview.supabase.co/',
+        supabase_publishable_key: 'public-key',
+      },
+    })).toBe(true);
+
+    vi.resetModules();
+    const callbackModule = await import('../../src/utils/supabase');
+    await expect(callbackModule.refreshSupabaseConfig()).resolves.toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('persists only the PKCE verifier across the OAuth navigation', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, {
       auth: {

@@ -86,7 +86,7 @@ const configLoading = ref(true);
 const submitting = ref(false);
 const rawError = ref<unknown>(null);
 const error = computed(() => rawError.value ? localizedAuthError(rawError.value, i18nStore.locale) : '');
-const nextPath = ref('/pages/account/index');
+const nextPath = ref('/pages/index/index');
 
 async function googleSignIn(selectAccount = false) {
   if (!supabaseEnabled.value) return;

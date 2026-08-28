@@ -131,12 +131,18 @@ import { useI18nStore } from '../stores/i18n';
 import { useOpsStore } from '../stores/ops';
 import { get } from '../utils/api';
 import { ensureSession } from '../utils/auth';
+import {
+  isCoreRoute,
+  isCoreRoutePrefetched,
+  prefetchCoreRoute,
+} from '../utils/routePrefetch';
 
 const creditBalance = ref(0);
 const showMenu = ref(false);
 const accountAuthed = ref(false);
 const username = ref('');
 const isAdmin = ref(false);
+const navigationPending = ref(false);
 const i18nStore = useI18nStore();
 const opsStore = useOpsStore();
 const t = i18nStore.t;
@@ -189,11 +195,28 @@ const toggleMenu = () => {
   showMenu.value = !showMenu.value;
 };
 
-const navigate = (path: string) => {
+const navigate = async (path: string) => {
   if (path === '/pages/create/index' && !creationAvailable.value) return;
   if (path === '/pages/auth/login' && !googleAuthAvailable.value) return;
   if (currentPath.value === path) return;
   if (pushPages.has(path)) {
+    if (navigationPending.value) return;
+    if (isCoreRoute(path) && !isCoreRoutePrefetched(path)) {
+      navigationPending.value = true;
+      uni.showLoading({
+        title: i18nStore.locale === 'zh' ? '正在打开' : 'Opening',
+        mask: true,
+      });
+      try {
+        await prefetchCoreRoute(path);
+      } catch {
+        // The router gets one normal loading attempt if proactive prefetch fails.
+      } finally {
+        uni.hideLoading();
+        navigationPending.value = false;
+      }
+      if (currentPath.value === path) return;
+    }
     uni.navigateTo({ url: path });
     return;
   }
@@ -235,11 +258,11 @@ const refreshAuthState = async () => {
 const handleAuthTap = async () => {
   showMenu.value = false;
   if (accountAuthed.value) {
-    navigate('/pages/account/index');
+    await navigate('/pages/account/index');
     return;
   }
   if (!googleAuthAvailable.value) return;
-  navigate('/pages/auth/login');
+  await navigate('/pages/auth/login');
 };
 
 const showTopUp = () => {

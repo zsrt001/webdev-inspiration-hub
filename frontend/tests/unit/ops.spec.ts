@@ -73,4 +73,20 @@ describe('operations capability fallback', () => {
     expect(store.privateDownloadAvailable).toBe(false);
     expect(store.partnerInviteAvailable).toBe(false);
   });
+
+  it('shares one in-flight public config request across page components', async () => {
+    let resolveConfig: ((value: any) => void) | undefined;
+    getMock.mockReturnValue(new Promise((resolve) => {
+      resolveConfig = resolve;
+    }));
+    const store = useOpsStore();
+
+    const navbarRequest = store.fetchPublicConfig();
+    const pageRequest = store.fetchPublicConfig();
+    expect(getMock).toHaveBeenCalledTimes(1);
+
+    resolveConfig?.({ capabilities: { google_auth: true } });
+    await Promise.all([navbarRequest, pageRequest]);
+    expect(store.googleAuthAvailable).toBe(true);
+  });
 });
