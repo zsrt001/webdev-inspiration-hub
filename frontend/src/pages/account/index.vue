@@ -232,7 +232,7 @@ import { useI18nStore } from '../../stores/i18n';
 import { useOpsStore } from '../../stores/ops';
 import { useSubscriptionStore } from '../../stores/subscription';
 import { get, post, resolvePublicUrl } from '../../utils/api';
-import { clearCachedSession, ensureSession, logout, signInWithGoogle } from '../../utils/auth';
+import { clearCachedSession, ensureSession, localizedAuthError, logout, signInWithGoogle } from '../../utils/auth';
 import { refreshSupabaseConfig } from '../../utils/supabase';
 
 interface UserProfile {
@@ -466,7 +466,7 @@ async function signIn(): Promise<void> {
   try {
     await signInWithGoogle();
   } catch (err: any) {
-    uni.showToast({ title: err?.message || tr('登录失败', 'Sign-in failed'), icon: 'none' });
+    uni.showToast({ title: localizedAuthError(err, i18nStore.locale), icon: 'none' });
   }
 }
 

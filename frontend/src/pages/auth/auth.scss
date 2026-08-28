@@ -57,6 +57,47 @@
   box-shadow: 0 22px 60px rgba(23, 25, 31, 0.1);
 }
 
+.auth-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.auth-card-head .auth-kicker {
+  margin-bottom: 0;
+}
+
+.language-toggle,
+.switch-account-button {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #116a60;
+  font-weight: 900;
+  line-height: 1.4;
+}
+
+.language-toggle {
+  min-width: 44px;
+  padding: 5px 10px;
+  border: 1px solid #d7dfdd;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.switch-account-button {
+  align-self: center;
+  font-size: 13px;
+}
+
+.language-toggle::after,
+.switch-account-button::after {
+  display: none;
+}
+
 .auth-kicker {
   display: block;
   margin-bottom: 10px;
@@ -188,7 +229,9 @@
 .brand:focus-visible,
 .link:focus-visible,
 .home-link:focus-visible,
-.auth-button:focus-visible {
+.auth-button:focus-visible,
+.language-toggle:focus-visible,
+.switch-account-button:focus-visible {
   outline: 3px solid #116a60;
   outline-offset: 3px;
 }

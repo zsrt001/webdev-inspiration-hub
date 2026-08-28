@@ -7,6 +7,14 @@ import {
 } from '../utils/supabase';
 
 const OAUTH_INTENT_KEY = 'vowpic_oauth_intent';
+const AUTH_REQUEST_TIMEOUT_MS = 10000;
+const SUPABASE_AUTH_TIMEOUT_MS = 12000;
+
+export type AuthLocale = 'zh' | 'en';
+
+export interface GoogleLoginOptions {
+    selectAccount?: boolean;
+}
 
 export interface SessionUser {
     id: string;
@@ -62,7 +70,22 @@ async function authRequest(method: 'GET' | 'POST', path: string, data?: any) {
         data,
         header: authHeaders(method),
         withCredentials: true,
+        timeout: AUTH_REQUEST_TIMEOUT_MS,
     });
+}
+
+async function withAuthDeadline<T>(operation: PromiseLike<T>, timeoutMessage: string): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            Promise.resolve(operation),
+            new Promise<T>((_, reject) => {
+                timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), SUPABASE_AUTH_TIMEOUT_MS);
+            }),
+        ]);
+    } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
 }
 
 function responseMessage(response: UniNamespace.RequestSuccessCallbackResult, fallback: string): string {
@@ -71,6 +94,79 @@ function responseMessage(response: UniNamespace.RequestSuccessCallbackResult, fa
     const message = String(detail.message || payload.message || fallback);
     const requestId = String(detail.request_id || payload.request_id || '').trim();
     return requestId ? `${message} (Reference: ${requestId})` : message;
+}
+
+const AUTH_ERROR_COPY: Record<string, Record<AuthLocale, string>> = {
+    'Google sign-in is only available in the web app.': {
+        zh: 'Google 登录仅支持网页版。',
+        en: 'Google sign-in is only available in the web app.',
+    },
+    'Google sign-in is not available on this deployment.': {
+        zh: 'Google 登录当前不可用，请稍后重试。',
+        en: 'Google sign-in is currently unavailable. Please try again shortly.',
+    },
+    'Google sign-in is not configured on this deployment.': {
+        zh: 'Google 登录当前不可用，请稍后重试。',
+        en: 'Google sign-in is currently unavailable. Please try again shortly.',
+    },
+    'Unable to start sign-in.': {
+        zh: '无法启动登录，请重试。',
+        en: 'Unable to start sign-in. Please retry.',
+    },
+    'The sign-in service returned an invalid intent.': {
+        zh: '登录请求无效，请重新开始。',
+        en: 'The sign-in request is invalid. Please start again.',
+    },
+    'Unable to open Google sign-in.': {
+        zh: '无法打开 Google 登录，请重试。',
+        en: 'Unable to open Google sign-in. Please retry.',
+    },
+    'Opening Google sign-in timed out.': {
+        zh: '连接 Google 超时，请重试。',
+        en: 'Connecting to Google timed out. Please retry.',
+    },
+    'Completing Google sign-in timed out.': {
+        zh: '完成 Google 登录超时，请重新开始。',
+        en: 'Completing Google sign-in timed out. Please start again.',
+    },
+    'The sign-in request is missing or expired. Please start again.': {
+        zh: '登录请求已失效，请重新开始。',
+        en: 'The sign-in request is missing or expired. Please start again.',
+    },
+    'Google sign-in was not completed.': {
+        zh: 'Google 登录未完成，请重新开始。',
+        en: 'Google sign-in was not completed. Please start again.',
+    },
+    'The Google authorization code is missing.': {
+        zh: '缺少 Google 授权信息，请重新开始。',
+        en: 'The Google authorization code is missing. Please start again.',
+    },
+    'Google sign-in exchange failed.': {
+        zh: 'Google 登录验证失败，请重新开始。',
+        en: 'Google sign-in verification failed. Please start again.',
+    },
+    'The local sign-in session could not be created.': {
+        zh: '无法创建登录会话，请重试。',
+        en: 'The sign-in session could not be created. Please retry.',
+    },
+    'Implicit OAuth token fragments are not accepted. Please start again.': {
+        zh: '登录返回格式不受支持，请重新开始。',
+        en: 'The sign-in response is not supported. Please start again.',
+    },
+};
+
+export function localizedAuthError(error: unknown, locale: AuthLocale): string {
+    const raw = String((error as any)?.message || error || '').trim();
+    const reference = raw.match(/\s*\(Reference:\s*([^)]+)\)\s*$/i)?.[1]?.trim() || '';
+    const core = raw.replace(/\s*\(Reference:\s*([^)]+)\)\s*$/i, '').trim();
+    const known = AUTH_ERROR_COPY[core]?.[locale];
+    const message = known || (locale === 'zh'
+        ? '登录暂未完成，请重试。'
+        : core || 'Sign-in could not be completed. Please retry.');
+    if (!reference) return message;
+    return locale === 'zh'
+        ? `${message}（参考编号：${reference}）`
+        : `${message} (Reference: ${reference})`;
 }
 
 function readIntentState(): OAuthIntentState {
@@ -102,12 +198,18 @@ function clearCallbackState(): void {
     window.history.replaceState(null, document.title, window.location.pathname);
 }
 
-export async function startGoogleLogin(nextPath = '/pages/account/index'): Promise<void> {
+export async function startGoogleLogin(
+    nextPath = '/pages/account/index',
+    options: GoogleLoginOptions = {},
+): Promise<void> {
     if (!isWebRuntime()) throw new Error('Google sign-in is only available in the web app.');
-    if (!await refreshSupabaseConfig(true)) {
+    if (!await refreshSupabaseConfig()) {
         throw new Error('Google sign-in is not available on this deployment.');
     }
-    const intentResponse = await authRequest('POST', '/auth/oauth-intents', { next_path: nextPath });
+    const [intentResponse, supabase] = await Promise.all([
+        authRequest('POST', '/auth/oauth-intents', { next_path: nextPath }),
+        getSupabaseClient(),
+    ]);
     if (intentResponse.statusCode < 200 || intentResponse.statusCode >= 300) {
         throw new Error(responseMessage(intentResponse, 'Unable to start sign-in.'));
     }
@@ -124,15 +226,17 @@ export async function startGoogleLogin(nextPath = '/pages/account/index'): Promi
     window.sessionStorage.setItem(OAUTH_INTENT_KEY, JSON.stringify(state));
 
     try {
-        const supabase = await getSupabaseClient();
-        const { data, error } = await supabase.auth.signInWithOAuth({
+        const oauthOptions: Record<string, unknown> = {
+            redirectTo: String(payload.callback_url),
+            skipBrowserRedirect: true,
+        };
+        if (options.selectAccount) {
+            oauthOptions.queryParams = { prompt: 'select_account' };
+        }
+        const { data, error } = await withAuthDeadline(supabase.auth.signInWithOAuth({
             provider: 'google',
-            options: {
-                redirectTo: String(payload.callback_url),
-                skipBrowserRedirect: true,
-                queryParams: { prompt: 'select_account' },
-            },
-        });
+            options: oauthOptions,
+        }), 'Opening Google sign-in timed out.');
         if (error || !data.url) {
             throw new Error(error?.message || 'Unable to open Google sign-in.');
         }
@@ -171,7 +275,10 @@ export async function finishGoogleLogin(): Promise<SessionUser> {
     try {
         intent = readIntentState();
         const supabase = await getSupabaseClient();
-        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        const { data, error } = await withAuthDeadline(
+            supabase.auth.exchangeCodeForSession(code),
+            'Completing Google sign-in timed out.',
+        );
         const accessToken = String(data.session?.access_token || '').trim();
         if (error || !accessToken) {
             throw new Error(error?.message || 'Google sign-in exchange failed.');

@@ -44,7 +44,7 @@
           <view v-if="!orderStore.isCompleted" class="exhibition-tag draft">{{ tr('预览草稿', 'STUDIO 3.0 DRAFT') }}</view>
           <view v-else class="exhibition-tag hd">{{ tr('高清成片', 'HD MASTERPIECE') }}</view>
           <view v-if="downloadLocked" class="artistic-watermark">
-            <text v-for="n in 9" :key="n" class="watermark-item">AI WEDDING PREVIEW</text>
+            <text v-for="n in 9" :key="n" class="watermark-item">{{ tr('AI 婚纱预览', 'AI WEDDING PREVIEW') }}</text>
           </view>
         </view>
         

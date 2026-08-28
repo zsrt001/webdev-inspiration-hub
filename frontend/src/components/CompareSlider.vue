@@ -13,13 +13,14 @@
       </view>
     </view>
 
-    <view class="label label-before">ORIGINAL</view>
-    <view class="label label-after">STUDIO 3.0</view>
+    <view class="label label-before">{{ tr('原图', 'ORIGINAL') }}</view>
+    <view class="label label-after">{{ tr('成片', 'STUDIO 3.0') }}</view>
   </view>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { useI18nStore } from '../stores/i18n';
 
 defineProps<{
   beforeImage: string;
@@ -28,6 +29,8 @@ defineProps<{
 
 const sliderPos = ref(50);
 const containerWidth = ref(0);
+const i18nStore = useI18nStore();
+const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
 
 const handleTouchStart = (e: any) => {
   updatePos(e);

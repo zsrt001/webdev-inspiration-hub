@@ -1,7 +1,7 @@
 <template>
   <view v-if="visible && billingAvailable" class="pricing-overlay" @tap="handleClose">
     <view class="pricing-dialog" @tap.stop>
-      <button class="close-button" aria-label="Close" @tap="handleClose">×</button>
+      <button class="close-button" :aria-label="tr('关闭', 'Close')" @tap="handleClose">×</button>
 
       <view class="pricing-header">
         <text class="pricing-title heading-serif">{{ tr('选择适合你的套餐', 'Choose Your Plan') }}</text>

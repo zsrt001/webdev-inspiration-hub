@@ -1,7 +1,7 @@
 <template>
   <view class="legal-page">
     <NavBar />
-    <view class="legal-shell" role="main" tabindex="0" aria-label="Refunds and Support">
+    <view class="legal-shell" role="main" tabindex="0" :aria-label="tr('退款与客服说明', 'Refunds and Support')">
       <view class="legal-hero">
         <text class="eyebrow">{{ tr('法务与支持', 'Legal & Support') }}</text>
         <text class="title heading-serif" role="heading" aria-level="1">{{ tr('退款与客服说明', 'Refunds & Support') }}</text>
