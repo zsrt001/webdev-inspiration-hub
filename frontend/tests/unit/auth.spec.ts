@@ -135,6 +135,10 @@ describe('browser Cookie session discovery', () => {
     await expect(startGoogleLogin()).rejects.toThrow('Unable to open Google sign-in.');
 
     expect(supabaseMocks.refreshSupabaseConfig).toHaveBeenCalledTimes(1);
+    expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'POST',
+      data: { next_path: '/pages/index/index' },
+    }));
     expect(supabaseMocks.signInWithOAuth).toHaveBeenCalledWith({
       provider: 'google',
       options: {

@@ -23,7 +23,7 @@ from app.services.acceptance_media_verification_service import (
 )
 from app.services.ops_alert_service import get_ops_alerts, push_critical_alerts
 from app.services.ops_config_service import get_public_ops_config
-from app.services.feature_flag_service import require_request_capability, resolve_request_capability
+from app.services.feature_flag_service import require_request_capability, resolve_request_capabilities
 from app.services.generation_executor_service import run_backend_generation_maintenance
 from app.services.media_deletion_service import run_deletion_cleanup
 from app.services.retention_service import cleanup_expired_orders, cleanup_expired_source_images
@@ -100,9 +100,10 @@ async def readiness(
 async def public_config(db: AsyncSession = Depends(get_db)):
     """Return sanitized operator-managed config for the storefront."""
     config = get_public_ops_config()
+    decisions = await resolve_request_capabilities(db, Capability)
     capability_states: dict[str, bool] = {}
     for capability in Capability:
-        decision = await resolve_request_capability(db, capability)
+        decision = decisions[capability]
         capability_states[capability.value] = bool(
             decision.allowed
             or (

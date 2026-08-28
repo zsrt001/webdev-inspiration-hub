@@ -3,6 +3,8 @@ import { API_BASE_URL, isWebRuntime } from './apiConfig';
 
 const SUPABASE_PKCE_STORAGE_KEY = 'vowpic_supabase_pkce';
 const SUPABASE_PKCE_CODE_VERIFIER_KEY = `${SUPABASE_PKCE_STORAGE_KEY}-code-verifier`;
+const SUPABASE_PUBLIC_CONFIG_STORAGE_KEY = 'vowpic_supabase_public_config';
+const SUPABASE_PUBLIC_CONFIG_MAX_AGE_MS = 15 * 60 * 1000;
 const AUTH_CONFIG_TIMEOUT_MS = 6000;
 
 interface PublicAuthConfig {
@@ -53,9 +55,52 @@ function isUsableConfig(config: PublicAuthConfig | null): boolean {
     }
 }
 
+function persistAuthConfig(config: PublicAuthConfig | null): void {
+    if (!isWebRuntime()) return;
+    try {
+        if (!isUsableConfig(config)) {
+            window.sessionStorage.removeItem(SUPABASE_PUBLIC_CONFIG_STORAGE_KEY);
+            return;
+        }
+        window.sessionStorage.setItem(SUPABASE_PUBLIC_CONFIG_STORAGE_KEY, JSON.stringify({
+            auth: config,
+            stored_at: Date.now(),
+        }));
+    } catch {
+        // Session storage is only a performance cache; the network path remains authoritative.
+    }
+}
+
+function restoreAuthConfig(): PublicAuthConfig | null {
+    if (!isWebRuntime()) return null;
+    try {
+        const stored = JSON.parse(window.sessionStorage.getItem(SUPABASE_PUBLIC_CONFIG_STORAGE_KEY) || '{}');
+        const storedAt = Number(stored?.stored_at || 0);
+        if (!storedAt || Date.now() - storedAt > SUPABASE_PUBLIC_CONFIG_MAX_AGE_MS) {
+            window.sessionStorage.removeItem(SUPABASE_PUBLIC_CONFIG_STORAGE_KEY);
+            return null;
+        }
+        const restored = normalizedAuthConfig(stored);
+        return isUsableConfig(restored) ? restored : null;
+    } catch {
+        return null;
+    }
+}
+
+export function primeSupabaseConfig(payload: unknown): boolean {
+    const nextConfig = normalizedAuthConfig(payload);
+    const changed = authConfig?.supabase_url !== nextConfig.supabase_url
+        || authConfig?.supabase_publishable_key !== nextConfig.supabase_publishable_key;
+    authConfig = nextConfig;
+    if (changed || !isUsableConfig(authConfig)) client = null;
+    persistAuthConfig(authConfig);
+    return isUsableConfig(authConfig);
+}
+
 export async function refreshSupabaseConfig(force = false): Promise<boolean> {
     if (!isWebRuntime()) return false;
     if (configRequest) return configRequest;
+    if (!force && !authConfig) authConfig = restoreAuthConfig();
     if (!force && authConfig) return isUsableConfig(authConfig);
 
     const controller = new AbortController();
@@ -66,14 +111,12 @@ export async function refreshSupabaseConfig(force = false): Promise<boolean> {
         headers: { Accept: 'application/json' },
         signal: controller.signal,
     }).then(async (response) => {
-        authConfig = response.ok
-            ? normalizedAuthConfig(await response.json())
-            : null;
-        if (!isUsableConfig(authConfig)) client = null;
-        return isUsableConfig(authConfig);
+        if (!response.ok) return primeSupabaseConfig(null);
+        return primeSupabaseConfig(await response.json());
     }).catch(() => {
         authConfig = null;
         client = null;
+        persistAuthConfig(null);
         return false;
     }).finally(() => {
         window.clearTimeout(timeoutId);

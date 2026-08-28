@@ -86,7 +86,7 @@ export function readBillingIntent(url: string): {
 }
 
 export function sanitizeLoginNextPath(value: string | null | undefined): string {
-  const fallback = '/pages/account/index';
+  const fallback = '/pages/index/index';
   let path = String(value || '').trim();
   try {
     path = decodeURIComponent(path);

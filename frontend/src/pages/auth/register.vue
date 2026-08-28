@@ -92,7 +92,7 @@ async function googleSignIn(selectAccount = false) {
   submitting.value = true;
   rawError.value = null;
   try {
-    await signInWithGoogle('/pages/account/index', { selectAccount });
+    await signInWithGoogle('/pages/index/index', { selectAccount });
   } catch (err: any) {
     rawError.value = err || new Error('Google sign-in was not completed.');
     submitting.value = false;

@@ -1,5 +1,6 @@
 ﻿import { defineStore } from 'pinia';
 import { get } from '../utils/api';
+import { primeSupabaseConfig } from '../utils/supabase';
 import { normalizeSupportConfig, supportHref, type PublicSupportConfig } from '../utils/support';
 
 export interface HomeBannerConfig {
@@ -66,6 +67,8 @@ const DEFAULT_CONFIG: PublicOpsConfig = {
   capabilities: { ...DEFAULT_CAPABILITIES },
 };
 
+let pendingPublicConfig: Promise<PublicOpsConfig> | null = null;
+
 export const useOpsStore = defineStore('ops', {
   state: () => ({
     publicConfig: DEFAULT_CONFIG as PublicOpsConfig,
@@ -89,50 +92,62 @@ export const useOpsStore = defineStore('ops', {
   actions: {
     async fetchPublicConfig(force = false) {
       if (this.loaded && !force) return this.publicConfig;
-      try {
-        const res = await get<PublicOpsConfig>('/ops/public_config', {
-          showLoading: false,
-          showError: false,
-        } as any);
-        this.publicConfig = {
-          ...DEFAULT_CONFIG,
-          ...res,
-          placements: {
-            ...DEFAULT_CONFIG.placements,
-            ...(res?.placements || {}),
-            home_banner: {
-              ...DEFAULT_CONFIG.placements.home_banner,
-              ...(res?.placements?.home_banner || {}),
+      if (pendingPublicConfig) return pendingPublicConfig;
+      const store = this;
+      const request = (async (): Promise<PublicOpsConfig> => {
+        try {
+          const res = await get<PublicOpsConfig>('/ops/public_config', {
+            showLoading: false,
+            showError: false,
+          } as any);
+          primeSupabaseConfig(res);
+          store.publicConfig = {
+            ...DEFAULT_CONFIG,
+            ...res,
+            placements: {
+              ...DEFAULT_CONFIG.placements,
+              ...(res?.placements || {}),
+              home_banner: {
+                ...DEFAULT_CONFIG.placements.home_banner,
+                ...(res?.placements?.home_banner || {}),
+              },
             },
-          },
-          support: normalizeSupportConfig(res?.support),
-          capabilities: normalizeCapabilities(res?.capabilities),
-        };
-        const heroImage = String(this.publicConfig.placements.home_banner.image_url || '').trim();
-        if (
-          !heroImage ||
-          heroImage === '/static/hero_banner.jpg' ||
-          heroImage === '/hero_banner.jpg' ||
-          heroImage === '/style-previews/hero_banner.jpg' ||
-          heroImage === '/static/style-previews/hero_banner.jpg' ||
-          heroImage === '/hero_wedding_luxury_bg.jpg' ||
-          heroImage === '/static/hero_wedding_luxury_bg.jpg' ||
-          heroImage === '/style-previews/royal_castle.jpg' ||
-          heroImage === '/static/style-previews/royal_castle.jpg' ||
-          heroImage === '/style-previews/solo_royal_castle.jpg' ||
-          heroImage === '/static/style-previews/solo_royal_castle.jpg' ||
-          heroImage === '/style-previews/couple_royal_castle.jpg' ||
-          heroImage === '/static/style-previews/couple_royal_castle.jpg'
-        ) {
-          this.publicConfig.placements.home_banner.image_url =
-            DEFAULT_CONFIG.placements.home_banner.image_url;
+            support: normalizeSupportConfig(res?.support),
+            capabilities: normalizeCapabilities(res?.capabilities),
+          };
+          const heroImage = String(store.publicConfig.placements.home_banner.image_url || '').trim();
+          if (
+            !heroImage ||
+            heroImage === '/static/hero_banner.jpg' ||
+            heroImage === '/hero_banner.jpg' ||
+            heroImage === '/style-previews/hero_banner.jpg' ||
+            heroImage === '/static/style-previews/hero_banner.jpg' ||
+            heroImage === '/hero_wedding_luxury_bg.jpg' ||
+            heroImage === '/static/hero_wedding_luxury_bg.jpg' ||
+            heroImage === '/style-previews/royal_castle.jpg' ||
+            heroImage === '/static/style-previews/royal_castle.jpg' ||
+            heroImage === '/style-previews/solo_royal_castle.jpg' ||
+            heroImage === '/static/style-previews/solo_royal_castle.jpg' ||
+            heroImage === '/style-previews/couple_royal_castle.jpg' ||
+            heroImage === '/static/style-previews/couple_royal_castle.jpg'
+          ) {
+            store.publicConfig.placements.home_banner.image_url =
+              DEFAULT_CONFIG.placements.home_banner.image_url;
+          }
+        } catch {
+          primeSupabaseConfig(null);
+          store.publicConfig = DEFAULT_CONFIG;
+        } finally {
+          store.loaded = true;
         }
-      } catch {
-        this.publicConfig = DEFAULT_CONFIG;
+        return store.publicConfig;
+      })();
+      pendingPublicConfig = request;
+      try {
+        return await request;
       } finally {
-        this.loaded = true;
+        if (pendingPublicConfig === request) pendingPublicConfig = null;
       }
-      return this.publicConfig;
     },
   },
 });

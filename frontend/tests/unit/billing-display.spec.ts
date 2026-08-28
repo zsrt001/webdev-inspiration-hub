@@ -44,8 +44,8 @@ describe('billing display boundary', () => {
   });
 
   it('rejects external and auth-loop login return paths', () => {
-    expect(sanitizeLoginNextPath('https://evil.example')).toBe('/pages/account/index');
-    expect(sanitizeLoginNextPath('//evil.example')).toBe('/pages/account/index');
-    expect(sanitizeLoginNextPath('/pages/auth/login?next=/')).toBe('/pages/account/index');
+    expect(sanitizeLoginNextPath('https://evil.example')).toBe('/pages/index/index');
+    expect(sanitizeLoginNextPath('//evil.example')).toBe('/pages/index/index');
+    expect(sanitizeLoginNextPath('/pages/auth/login?next=/')).toBe('/pages/index/index');
   });
 });

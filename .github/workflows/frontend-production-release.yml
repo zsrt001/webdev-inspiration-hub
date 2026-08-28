@@ -72,8 +72,12 @@ jobs:
           test -z "$(git status --porcelain)"
           git merge-base --is-ancestor "$SOURCE_SHA" "$GITHUB_SHA"
           mapfile -t NEWER_PATHS < <(git diff --name-only "$SOURCE_SHA..$GITHUB_SHA")
-          test "${#NEWER_PATHS[@]}" -eq 1
-          test "${NEWER_PATHS[0]}" = ".github/workflows/frontend-production-release.yml"
+          if [ "$SOURCE_SHA" = "$GITHUB_SHA" ]; then
+            test "${#NEWER_PATHS[@]}" -eq 0
+          else
+            test "${#NEWER_PATHS[@]}" -eq 1
+            test "${NEWER_PATHS[0]}" = ".github/workflows/frontend-production-release.yml"
+          fi
           python scripts/release/verify_github_ref.py \
             --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main \

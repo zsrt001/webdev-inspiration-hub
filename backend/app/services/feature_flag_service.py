@@ -204,6 +204,26 @@ async def _load_authoritative_row(
     return result.scalar_one_or_none()
 
 
+async def _load_authoritative_rows(
+    db: AsyncSession,
+    environment: str,
+    capabilities: Iterable[Capability],
+) -> dict[Capability, OpsFeatureFlag]:
+    known_capabilities = tuple(dict.fromkeys(capabilities))
+    if not known_capabilities:
+        return {}
+    result = await db.execute(
+        select(OpsFeatureFlag).where(
+            OpsFeatureFlag.environment == environment,
+            OpsFeatureFlag.capability.in_([capability.value for capability in known_capabilities]),
+        )
+    )
+    return {
+        coerce_capability(row.capability): row
+        for row in result.scalars().all()
+    }
+
+
 async def lock_google_auth_only_authority(
     db: AsyncSession,
     *,
@@ -361,6 +381,44 @@ async def resolve_capability(
     return decision
 
 
+async def resolve_capabilities(
+    db: AsyncSession,
+    capabilities: Iterable[Capability | str],
+    context: FeatureFlagContext,
+) -> dict[Capability, FeatureFlagDecision]:
+    known_capabilities = tuple(dict.fromkeys(coerce_capability(value) for value in capabilities))
+    if not known_capabilities:
+        return {}
+    if (
+        context.environment not in {"preview", "production"}
+        or not context.deployment_id
+        or not context.runtime_bundle_id
+    ):
+        return {
+            capability: _off_decision(capability, None, "runtime_coordinates_invalid")
+            for capability in known_capabilities
+        }
+    try:
+        rows = await _load_authoritative_rows(db, context.environment, known_capabilities)
+        decisions: dict[Capability, FeatureFlagDecision] = {}
+        for capability in known_capabilities:
+            row: OpsFeatureFlag | dict[str, Any] | None = rows.get(capability)
+            if row is not None and str(_row_value(row, "state")) == FeatureFlagState.ACCEPTANCE_COHORT.value:
+                row = await _with_verified_binding(db, row, context)
+            decisions[capability] = decide_flag(capability, row, context)
+    except Exception:
+        decisions = {
+            capability: _off_decision(capability, None, "authority_unavailable")
+            for capability in known_capabilities
+        }
+    await asyncio.gather(*(
+        _cache_off_decision(decision, context.environment, ttl_seconds=30)
+        for decision in decisions.values()
+        if not decision.allowed
+    ))
+    return decisions
+
+
 def _request_context(
     *,
     verified_user_id: UUID | None,
@@ -387,6 +445,23 @@ async def resolve_request_capability(
     return await resolve_capability(
         db,
         capability,
+        _request_context(
+            verified_user_id=verified_user_id,
+            verified_identity_hash=verified_identity_hash,
+        ),
+    )
+
+
+async def resolve_request_capabilities(
+    db: AsyncSession,
+    capabilities: Iterable[Capability | str],
+    *,
+    verified_user_id: UUID | None = None,
+    verified_identity_hash: str | None = None,
+) -> dict[Capability, FeatureFlagDecision]:
+    return await resolve_capabilities(
+        db,
+        capabilities,
         _request_context(
             verified_user_id=verified_user_id,
             verified_identity_hash=verified_identity_hash,

@@ -199,7 +199,7 @@ function clearCallbackState(): void {
 }
 
 export async function startGoogleLogin(
-    nextPath = '/pages/account/index',
+    nextPath = '/pages/index/index',
     options: GoogleLoginOptions = {},
 ): Promise<void> {
     if (!isWebRuntime()) throw new Error('Google sign-in is only available in the web app.');
