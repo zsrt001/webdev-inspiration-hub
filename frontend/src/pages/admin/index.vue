@@ -116,7 +116,7 @@
               <view class="quality-row quality-head-row template-quality-row">
                 <text class="th">{{ tr('模板', 'Template') }}</text>
                 <text class="th">{{ tr('订单', 'Orders') }}</text>
-                <text class="th">QA fail</text>
+                <text class="th">{{ tr('质检失败', 'QA fail') }}</text>
                 <text class="th">{{ tr('身份', 'Identity') }}</text>
                 <text class="th">{{ tr('布光', 'Lighting') }}</text>
                 <text class="th">{{ tr('首要原因', 'Top reason') }}</text>
@@ -256,7 +256,7 @@
 
           <view class="diagnostic-list">
             <view class="diag-row">
-              <text>Resend API key</text>
+              <text>{{ tr('Resend API 密钥', 'Resend API key') }}</text>
               <text class="status-pill" :class="{ active: emailDiagnostics?.resend_api_key_configured }">
                 {{ emailDiagnostics?.resend_api_key_configured ? tr('已配置', 'Configured') : tr('缺失', 'Missing') }}
               </text>

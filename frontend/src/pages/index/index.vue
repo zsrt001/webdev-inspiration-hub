@@ -1,13 +1,13 @@
 <template>
   <view class="app-container product-landing" style="padding-top: 64px;">
-    <a class="skip-link" href="#gallery">Skip to main content</a>
+    <a class="skip-link" href="#gallery">{{ tr('跳到主要内容', 'Skip to main content') }}</a>
     <NavBar ref="navBarRef" @show-payment="openPaymentModal" />
 
     <view v-if="homeBanner.enabled" class="hero-section">
       <img
         :src="heroImageUrl"
         class="hero-media"
-        alt="AI wedding portrait style preview"
+        :alt="tr('AI 婚纱照风格预览', 'AI wedding portrait style preview')"
       />
       <view class="hero-overlay"></view>
       <view class="hero-content">
@@ -38,7 +38,7 @@
             <img
               :src="heroPreviewUrl"
               class="preview-image"
-              alt="Curated wedding look preview"
+              :alt="tr('精选婚纱风格预览', 'Curated wedding look preview')"
             />
           </view>
           <view class="preview-copy">
@@ -110,7 +110,7 @@
           </view>
         </view>
 
-        <view v-if="templateStore.loading && filteredTemplates.length === 0" class="style-grid" aria-busy="true" aria-label="Loading result examples">
+        <view v-if="templateStore.loading && filteredTemplates.length === 0" class="style-grid" aria-busy="true" :aria-label="tr('正在加载结果示例', 'Loading result examples')">
           <view v-for="index in 4" :key="index" class="style-card style-skeleton">
             <view class="style-image-frame skeleton-block"></view>
             <view class="style-copy">
@@ -182,7 +182,7 @@
           <text class="section-title heading-serif">{{ tr('先看清积分和续费规则，再决定购买', 'See credits and renewal terms before you buy') }}</text>
           <text class="pricing-intro">{{ generationCostSummary }}</text>
         </view>
-        <view v-if="pricingLoading" class="pricing-inline-grid" aria-busy="true" aria-label="Loading current pricing">
+        <view v-if="pricingLoading" class="pricing-inline-grid" aria-busy="true" :aria-label="tr('正在加载当前价格', 'Loading current pricing')">
           <view v-for="index in 2" :key="index" class="pricing-inline-card">
             <view class="skeleton-line wide"></view>
             <view class="skeleton-line"></view>

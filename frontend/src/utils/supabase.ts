@@ -3,6 +3,7 @@ import { API_BASE_URL, isWebRuntime } from './apiConfig';
 
 const SUPABASE_PKCE_STORAGE_KEY = 'vowpic_supabase_pkce';
 const SUPABASE_PKCE_CODE_VERIFIER_KEY = `${SUPABASE_PKCE_STORAGE_KEY}-code-verifier`;
+const AUTH_CONFIG_TIMEOUT_MS = 6000;
 
 interface PublicAuthConfig {
     google_oauth_enabled?: boolean;
@@ -54,13 +55,16 @@ function isUsableConfig(config: PublicAuthConfig | null): boolean {
 
 export async function refreshSupabaseConfig(force = false): Promise<boolean> {
     if (!isWebRuntime()) return false;
+    if (configRequest) return configRequest;
     if (!force && authConfig) return isUsableConfig(authConfig);
-    if (!force && configRequest) return configRequest;
 
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), AUTH_CONFIG_TIMEOUT_MS);
     configRequest = fetch(`${API_BASE_URL}/ops/public_config`, {
         method: 'GET',
         credentials: 'include',
         headers: { Accept: 'application/json' },
+        signal: controller.signal,
     }).then(async (response) => {
         authConfig = response.ok
             ? normalizedAuthConfig(await response.json())
@@ -72,6 +76,7 @@ export async function refreshSupabaseConfig(force = false): Promise<boolean> {
         client = null;
         return false;
     }).finally(() => {
+        window.clearTimeout(timeoutId);
         configRequest = null;
     });
     return configRequest;

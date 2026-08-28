@@ -1,7 +1,7 @@
 <template>
   <view class="legal-page">
     <NavBar />
-    <view class="legal-shell" role="main" tabindex="0" aria-label="Privacy Policy">
+    <view class="legal-shell" role="main" tabindex="0" :aria-label="tr('隐私政策', 'Privacy Policy')">
       <view class="legal-hero">
         <text class="eyebrow">{{ tr('法务与合规', 'Legal & Compliance') }}</text>
         <text class="title heading-serif" role="heading" aria-level="1">{{ tr('隐私政策', 'Privacy Policy') }}</text>

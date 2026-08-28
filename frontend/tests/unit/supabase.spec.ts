@@ -29,11 +29,12 @@ describe('Supabase public browser config', () => {
     const { refreshSupabaseConfig } = await import('../../src/utils/supabase');
 
     await expect(refreshSupabaseConfig(true)).resolves.toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/ops\/public_config$/), {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/ops\/public_config$/), expect.objectContaining({
       method: 'GET',
       credentials: 'include',
       headers: { Accept: 'application/json' },
-    });
+      signal: expect.any(AbortSignal),
+    }));
   });
 
   it('fails closed when OAuth is disabled or the endpoint fails', async () => {
@@ -50,6 +51,22 @@ describe('Supabase public browser config', () => {
 
     await expect(refreshSupabaseConfig(true)).resolves.toBe(false);
     await expect(refreshSupabaseConfig(true)).resolves.toBe(false);
+  });
+
+  it('reuses one successful public config instead of delaying the login click', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, {
+      auth: {
+        google_oauth_enabled: true,
+        supabase_url: 'https://preview.supabase.co/',
+        supabase_publishable_key: 'public-key',
+      },
+    }));
+    const { refreshSupabaseConfig } = await import('../../src/utils/supabase');
+
+    await expect(refreshSupabaseConfig()).resolves.toBe(true);
+    await expect(refreshSupabaseConfig()).resolves.toBe(true);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('persists only the PKCE verifier across the OAuth navigation', async () => {

@@ -7,10 +7,13 @@ export {
     getCachedSessionUser,
     getCsrfToken,
     isSupabaseLoggedIn,
+    localizedAuthError,
     logout,
     refreshLocalSession,
     signInWithGoogle,
     startGoogleLogin,
+    type AuthLocale,
+    type GoogleLoginOptions,
     type SessionUser,
 } from '../../services/auth';
 

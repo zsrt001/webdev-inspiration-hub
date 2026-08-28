@@ -298,7 +298,9 @@ class WorkflowFalseGreenTest(unittest.TestCase):
         self.assertIn("url.searchParams.delete('prompt')", self.google_oauth_acceptance)
         self.assertIn("url.searchParams.set('login_hint', identityEmail)", self.google_oauth_acceptance)
         self.assertIn("{ times: 1 }", self.google_oauth_acceptance)
-        self.assertIn("queryParams: { prompt: 'select_account' }", self.browser_auth)
+        self.assertIn("if (options.selectAccount)", self.browser_auth)
+        self.assertIn("oauthOptions.queryParams = { prompt: 'select_account' }", self.browser_auth)
+        self.assertNotIn("refreshSupabaseConfig(true)", self.browser_auth)
         self.assertIn("npm run test:e2e -- --headed e2e/google-session-smoke.spec.ts", self.integration)
         for source in (
             self.preview_test,

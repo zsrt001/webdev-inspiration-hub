@@ -123,9 +123,12 @@ class RiskLockdownTest(unittest.TestCase):
         self.assertIn("await opsStore.fetchPublicConfig();", create_source)
 
         for auth_source in (login_source, register_source):
-            self.assertIn('v-if="supabaseEnabled"', auth_source)
+            self.assertIn('v-if="configLoading"', auth_source)
+            self.assertIn('v-else-if="supabaseEnabled"', auth_source)
+            self.assertIn('v-else class="btn btn-primary auth-button" disabled', auth_source)
             self.assertIn("if (!supabaseEnabled.value) return;", auth_source)
-            self.assertIn("refreshSupabaseConfig(true)", auth_source)
+            self.assertIn("refreshSupabaseConfig()", auth_source)
+            self.assertNotIn("refreshSupabaseConfig(true)", auth_source)
             self.assertNotIn("opsStore.fetchPublicConfig()", auth_source)
         self.assertIn("if (!isWebRuntime() || !config?.google_oauth_enabled) return false;", supabase_source)
         self.assertIn("if (!config.supabase_url || !config.supabase_publishable_key) return false;", supabase_source)

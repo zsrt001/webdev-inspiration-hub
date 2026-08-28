@@ -9,7 +9,14 @@
       </a>
 
       <view class="auth-card">
-        <text class="auth-kicker">{{ tr('安全登录', 'Secure sign in') }}</text>
+        <view class="auth-card-head">
+          <text class="auth-kicker">{{ tr('安全登录', 'Secure sign in') }}</text>
+          <button
+            class="language-toggle"
+            :aria-label="tr('切换到英文', 'Switch to Chinese')"
+            @tap="i18nStore.toggleLocale()"
+          >{{ localeButtonText }}</button>
+        </view>
         <text class="auth-title heading-serif" role="heading" aria-level="1">{{ tr('使用 Google 继续', 'Continue with Google') }}</text>
         <text class="auth-copy">
           {{ tr('VowPic 使用 Google 作为网站的统一登录方式。', 'VowPic uses Google as the single sign-in method for the web app.') }}
@@ -18,15 +25,19 @@
         <view class="form-stack">
           <text v-if="error" class="error-text">{{ error }}</text>
 
+          <button v-if="configLoading" class="btn btn-primary auth-button" disabled>
+            {{ tr('正在准备登录...', 'Preparing sign-in...') }}
+          </button>
+
           <button
-            v-if="supabaseEnabled"
+            v-else-if="supabaseEnabled"
             class="btn btn-primary auth-button google-button"
             :disabled="submitting"
             role="button"
             :tabindex="submitting ? -1 : 0"
-            @tap="googleSignIn"
-            @keydown.enter.prevent="googleSignIn"
-            @keydown.space.prevent="googleSignIn"
+            @tap="googleSignIn(false)"
+            @keydown.enter.prevent="googleSignIn(false)"
+            @keydown.space.prevent="googleSignIn(false)"
           >
             <text class="google-mark">G</text>
             <text>{{ submitting ? tr('连接中...', 'Connecting...') : tr('使用 Google 登录', 'Sign in with Google') }}</text>
@@ -35,6 +46,12 @@
           <button v-else class="btn btn-primary auth-button" disabled>
             {{ tr('Google 登录暂不可用', 'Google sign-in unavailable') }}
           </button>
+
+          <button
+            v-if="supabaseEnabled && !submitting"
+            class="switch-account-button"
+            @tap="googleSignIn(true)"
+          >{{ tr('使用其他 Google 账号', 'Use another Google account') }}</button>
 
           <view class="auth-note">
             <text class="auth-note-title">{{ tr('账户保护', 'Account protection') }}</text>
@@ -53,30 +70,33 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import { useI18nStore } from '../../stores/i18n';
-import { signInWithGoogle } from '../../utils/auth';
+import { localizedAuthError, signInWithGoogle } from '../../utils/auth';
 import { sanitizeLoginNextPath } from '../../utils/billingDisplay';
-import { refreshSupabaseConfig } from '../../utils/supabase';
+import { getSupabaseClient, refreshSupabaseConfig } from '../../utils/supabase';
 
 const i18nStore = useI18nStore();
 const tr = (zh: string, en: string) => (i18nStore.locale === 'zh' ? zh : en);
+const localeButtonText = computed(() => (i18nStore.locale === 'zh' ? 'EN' : '中文'));
 
 const supabaseEnabled = ref(false);
+const configLoading = ref(true);
 const submitting = ref(false);
-const error = ref('');
+const rawError = ref<unknown>(null);
+const error = computed(() => rawError.value ? localizedAuthError(rawError.value, i18nStore.locale) : '');
 const nextPath = ref('/pages/account/index');
 
-async function googleSignIn() {
+async function googleSignIn(selectAccount = false) {
   if (!supabaseEnabled.value) return;
   if (submitting.value) return;
   submitting.value = true;
-  error.value = '';
+  rawError.value = null;
   try {
-    await signInWithGoogle(nextPath.value);
+    await signInWithGoogle(nextPath.value, { selectAccount });
   } catch (err: any) {
-    error.value = err?.message || tr('Google sign-in failed.', 'Google sign-in failed.');
+    rawError.value = err || new Error('Google sign-in was not completed.');
     submitting.value = false;
   }
 }
@@ -90,9 +110,15 @@ function goHome() {
 }
 
 onMounted(async () => {
-  supabaseEnabled.value = await refreshSupabaseConfig(true);
-  if (!supabaseEnabled.value) {
-    error.value = tr('Google sign-in is not configured on this deployment.', 'Google sign-in is not configured on this deployment.');
+  try {
+    supabaseEnabled.value = await refreshSupabaseConfig();
+    if (supabaseEnabled.value) await getSupabaseClient();
+    else rawError.value = new Error('Google sign-in is not configured on this deployment.');
+  } catch (err) {
+    supabaseEnabled.value = false;
+    rawError.value = err || new Error('Google sign-in is not configured on this deployment.');
+  } finally {
+    configLoading.value = false;
   }
 });
 </script>
