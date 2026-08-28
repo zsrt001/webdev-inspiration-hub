@@ -1,0 +1,448 @@
+name: Frontend-only full Production release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact already-gated application commit to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: vowpic-production-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_ROLE: COMMERCIAL_7A
+      PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+      PRODUCTION_SUPPORT_EMAIL: ${{ vars.PRODUCTION_SUPPORT_EMAIL }}
+      PRODUCTION_SUPPORT_URL: ${{ vars.PRODUCTION_SUPPORT_URL }}
+      PRODUCTION_SUPPORT_MONITORED: ${{ vars.PRODUCTION_SUPPORT_MONITORED }}
+    steps:
+      - name: Check out the exact gated application source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned release runtimes
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: 3.11.15
+          cache: pip
+          cache-dependency-path: backend/requirements.lock.txt
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.17.0"
+          cache: npm
+          cache-dependency-path: scripts/release-tools/package-lock.json
+
+      - name: Install the Vercel-compatible uv build tool
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.11"
+          checksum: "5a360b0de092ddf4131f5313d0411b48c4e95e8107e40c3f8f2e9fcb636b3583"
+          enable-cache: false
+          download-from-astral-mirror: false
+
+      - name: Prove the source and its non-production gates
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          git merge-base --is-ancestor "$SOURCE_SHA" "$GITHUB_SHA"
+          mapfile -t NEWER_PATHS < <(git diff --name-only "$SOURCE_SHA..$GITHUB_SHA")
+          test "${#NEWER_PATHS[@]}" -eq 1
+          test "${NEWER_PATHS[0]}" = ".github/workflows/frontend-production-release.yml"
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$GITHUB_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/current-main.json"
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def get_json(path: str):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}{path}",
+                  headers=headers,
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)
+
+          checks = get_json(
+              f"/commits/{os.environ['SOURCE_SHA']}/check-runs?per_page=100"
+          ).get("check_runs", [])
+          gates = [item for item in checks if item.get("name") == "quality-gate"]
+          if len(gates) != 1 or gates[0].get("conclusion") != "success":
+              raise SystemExit("the exact application source does not have one successful quality gate")
+
+          query = urllib.parse.urlencode({
+              "head_sha": os.environ["SOURCE_SHA"],
+              "status": "completed",
+              "per_page": 100,
+          })
+          privacy_runs = get_json(
+              f"/actions/workflows/google-auth-protected-privacy.yml/runs?{query}"
+          ).get("workflow_runs", [])
+          passed_privacy = [run for run in privacy_runs if run.get("conclusion") == "success"]
+          if not passed_privacy:
+              raise SystemExit("the exact application source does not have a successful privacy gate")
+
+          output = {
+              "source_sha": os.environ["SOURCE_SHA"],
+              "quality_gate": "success",
+              "privacy_gate": "success",
+              "privacy_run_id": passed_privacy[0]["id"],
+          }
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "source-gates.json"), "w", encoding="utf-8") as handle:
+              json.dump(output, handle, sort_keys=True)
+          PY
+
+      - name: Install hash-locked verification and deployment tools
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock.txt
+          npm ci --prefix scripts/release-tools --ignore-scripts
+          VERCEL_CLI="$GITHUB_WORKSPACE/scripts/release-tools/node_modules/.bin/vercel"
+          test -x "$VERCEL_CLI"
+          test "$("$VERCEL_CLI" --version)" = "56.2.0"
+          echo "VERCEL_CLI=$VERCEL_CLI" >> "$GITHUB_ENV"
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/prod-ca-2021.crt" \
+            https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt
+          echo "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7  $RUNNER_TEMP/prod-ca-2021.crt" \
+            | sha256sum --check --strict
+          echo "PGSSLROOTCERT=$RUNNER_TEMP/prod-ca-2021.crt" >> "$GITHUB_ENV"
+
+      - name: Prove the live database has all seven capabilities ON
+        env:
+          PRODUCTION_RUNTIME_DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          PRODUCTION_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
+          PRODUCTION_READ_ONLY_DATABASE_URL: ${{ secrets.PRODUCTION_READ_ONLY_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_production_database_credentials.py \
+            --output "$RUNNER_TEMP/production-database-credential-proof.json"
+          python - <<'PY'
+          import json
+          import os
+
+          import psycopg2
+
+          expected = {
+              "google_auth", "authenticated_upload", "generation",
+              "credit_pack_checkout", "subscription_billing",
+              "private_download", "partner_invite",
+          }
+          url = os.environ["PRODUCTION_READ_ONLY_DATABASE_URL"].replace(
+              "postgresql+asyncpg://", "postgresql://", 1
+          )
+          with psycopg2.connect(url) as connection:
+              connection.set_session(readonly=True, autocommit=False)
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version_num FROM alembic_version")
+                  revisions = cursor.fetchall()
+                  cursor.execute(
+                      "SELECT capability, state FROM ops_feature_flags "
+                      "WHERE environment='production' ORDER BY capability"
+                  )
+                  rows = cursor.fetchall()
+          if revisions != [("20260710_0021",)]:
+              raise SystemExit(f"unsupported Production schema: {revisions!r}")
+          if {row[0] for row in rows} != expected or len(rows) != len(expected):
+              raise SystemExit("Production capability inventory is incomplete")
+          if any(row[1] != "ON" for row in rows):
+              raise SystemExit("every Production capability must already be ON")
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "database-capabilities.json"), "w", encoding="utf-8") as handle:
+              json.dump({"schema_revision": revisions[0][0], "capabilities": {name: True for name in sorted(expected)}}, handle, sort_keys=True)
+          PY
+
+      - name: Capture the exact live rollback deployment
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          (async () => {
+            const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+            if (!/^https:\/\/[^/]+$/.test(base)) throw new Error('Production base URL must be one exact HTTPS origin');
+            const getJson = async (path) => {
+              const response = await fetch(base + path, {cache: 'no-store'});
+              if (!response.ok) throw new Error(`live ${path} returned ${response.status}`);
+              return response.json();
+            };
+            const runtime = await getJson('/version');
+            const readiness = await getJson('/api/v1/ops/readiness');
+            const config = await getJson('/api/v1/ops/public_config');
+            const capabilities = config.capabilities || {};
+            if (runtime.release_role !== 'COMMERCIAL_7A' || runtime.schema_revision !== '20260710_0021') throw new Error('live runtime is not the commercial rollback baseline');
+            if (!/^dpl_[A-Za-z0-9_-]+$/.test(runtime.deployment_id)) throw new Error('live deployment ID is not canonical');
+            if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('live readiness is not green');
+            if (Object.keys(capabilities).length !== 7 || Object.values(capabilities).some(value => value !== true)) throw new Error('live capabilities are not all ON');
+            if (config.auth?.google_oauth_enabled !== true) throw new Error('live Google login is not enabled');
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/rollback-baseline.json`, JSON.stringify({runtime, capabilities}));
+            fs.appendFileSync(process.env.GITHUB_ENV, `ROLLBACK_DEPLOYMENT_ID=${runtime.deployment_id}\n`);
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Derive the immutable commercial runtime bundle
+        run: |
+          set -euo pipefail
+          python scripts/release/build_runtime_bundle_id.py \
+            --release-role "$RELEASE_ROLE" \
+            --source-sha "$SOURCE_SHA" \
+            --schema 20260710_0021 \
+            --ops-migration backend/alembic/versions/20260710_0013_ops_feature_flags.py \
+            --migration 20260712_0014=backend/alembic/versions/20260712_0014_repair_click_stats_values.py \
+            --migration 20260710_0014=backend/alembic/versions/20260710_0014_web_identity_sessions.py \
+            --migration 20260710_0015=backend/alembic/versions/20260710_0015_private_media_assets.py \
+            --migration 20260710_0016=backend/alembic/versions/20260710_0016_commercial_ledger.py \
+            --migration 20260710_0017=backend/alembic/versions/20260710_0017_creem_payment_facts.py \
+            --migration 20260710_0018=backend/alembic/versions/20260710_0018_subscription_facts.py \
+            --migration 20260710_0019=backend/alembic/versions/20260710_0019_generation_jobs.py \
+            --migration 20260710_0020=backend/alembic/versions/20260710_0020_partner_consent.py \
+            --migration 20260710_0021=backend/alembic/versions/20260710_0021_google_auth_only_activation.py \
+            --runtime-contract backend/contracts/runtime-contracts.json \
+            --provider-contract release/provider-capabilities.json \
+            --catalog-contract release/catalog/catalog-2026-07-10.json \
+            --flag-contract release/gates.json \
+            --activation-plan release/activation-plan.json \
+            --database-role-contract release/commercial-7a-database-role-contract.json \
+            --builder-contract-version commercial-7a.v1 \
+            --output "$RUNNER_TEMP/runtime-bundle-id.txt"
+          RUNTIME_BUNDLE_ID="$(tr -d '\r\n' < "$RUNNER_TEMP/runtime-bundle-id.txt")"
+          [[ "$RUNTIME_BUNDLE_ID" =~ ^rtb_[0-9a-f]{64}$ ]]
+          echo "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" >> "$GITHUB_ENV"
+
+      - name: Build once and deploy one unaliased Production candidate
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PRODUCTION_RUNTIME_DATABASE_URL: ${{ secrets.PRODUCTION_RUNTIME_DATABASE_URL }}
+          PRODUCTION_CONTROL_PLANE_DATABASE_URL: ${{ secrets.PRODUCTION_CONTROL_PLANE_DATABASE_URL }}
+          ACCEPTANCE_IDENTITY_HMAC_KEY: ${{ secrets.ACCEPTANCE_IDENTITY_HMAC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$PRODUCTION_SUPPORT_EMAIL" || -n "$PRODUCTION_SUPPORT_URL" ]]
+          test "$PRODUCTION_SUPPORT_MONITORED" = "true"
+          "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+          "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
+          test -d .vercel/output
+          BUILD_SHA256="$(python -c 'from pathlib import Path; from scripts.release.register_safe_baseline import _directory_sha256; print(_directory_sha256(Path(".vercel/output")))')"
+          [[ "$BUILD_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          CANDIDATE_URL="$("$VERCEL_CLI" deploy --prebuilt --prod --skip-domain \
+            --env "RUNTIME_ENVIRONMENT=production" \
+            --env "RELEASE_ROLE=$RELEASE_ROLE" \
+            --env "TASK_EXECUTION_MODE=backend" \
+            --env "SOURCE_SHA=$SOURCE_SHA" \
+            --env "VERCEL_GIT_COMMIT_SHA=$SOURCE_SHA" \
+            --env "RUNTIME_BUNDLE_ID=$RUNTIME_BUNDLE_ID" \
+            --env "DATABASE_URL=$PRODUCTION_RUNTIME_DATABASE_URL" \
+            --env "CONTROL_PLANE_DATABASE_URL=$PRODUCTION_CONTROL_PLANE_DATABASE_URL" \
+            --env "ACCEPTANCE_IDENTITY_HMAC_KEY=$ACCEPTANCE_IDENTITY_HMAC_KEY" \
+            --env "SUPPORT_EMAIL=$PRODUCTION_SUPPORT_EMAIL" \
+            --env "SUPPORT_URL=$PRODUCTION_SUPPORT_URL" \
+            --env "SUPPORT_MONITORED=$PRODUCTION_SUPPORT_MONITORED" \
+            --meta "vowpicSourceSha=$SOURCE_SHA" \
+            --meta "vowpicRuntimeBundleId=$RUNTIME_BUNDLE_ID" \
+            --meta "vowpicBuildSha256=$BUILD_SHA256" \
+            --meta "vowpicReleaseRole=$RELEASE_ROLE" \
+            --meta "vowpicRuntimeIdentityContract=vowpic-runtime-identity-v1" \
+            --token="$VERCEL_TOKEN")"
+          [[ "$CANDIDATE_URL" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]
+          echo "CANDIDATE_URL=$CANDIDATE_URL" >> "$GITHUB_ENV"
+          echo "BUILD_SHA256=$BUILD_SHA256" >> "$GITHUB_ENV"
+
+      - name: Verify the unaliased candidate with every capability still ON
+        env:
+          VERCEL_AUTOMATION_BYPASS_HEADER: ${{ secrets.VERCEL_AUTOMATION_BYPASS_HEADER }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          (async () => {
+            const base = process.env.CANDIDATE_URL;
+            const headers = {'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_HEADER || ''};
+            const getJson = async (path) => {
+              const response = await fetch(base + path, {headers, cache: 'no-store'});
+              if (!response.ok) throw new Error(`candidate ${path} returned ${response.status}`);
+              return response.json();
+            };
+            let runtime;
+            for (let attempt = 0; attempt < 30; attempt += 1) {
+              try {
+                runtime = await getJson('/version');
+                if (runtime.source_sha === process.env.SOURCE_SHA) break;
+              } catch {}
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            if (!runtime || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.RUNTIME_BUNDLE_ID || runtime.release_role !== 'COMMERCIAL_7A' || runtime.schema_revision !== '20260710_0021' || !/^dpl_[A-Za-z0-9_-]+$/.test(runtime.deployment_id)) throw new Error('candidate runtime coordinates are invalid');
+            const readiness = await getJson('/api/v1/ops/readiness');
+            const config = await getJson('/api/v1/ops/public_config');
+            const capabilities = config.capabilities || {};
+            if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('candidate readiness is not green');
+            if (Object.keys(capabilities).length !== 7 || Object.values(capabilities).some(value => value !== true)) throw new Error('candidate did not inherit all seven ON capabilities');
+            if (config.auth?.google_oauth_enabled !== true || !config.auth?.supabase_url || !config.auth?.supabase_publishable_key) throw new Error('candidate Google login config is incomplete');
+            for (const route of ['/', '/pages/auth/login', '/pages/auth/register', '/pages/create/index', '/pages/pricing/index', '/pages/account/index', '/pages/legal/privacy', '/pages/legal/refund', '/pages/legal/terms']) {
+              const response = await fetch(base + route, {headers, redirect: 'manual', cache: 'no-store'});
+              if (response.status !== 200) throw new Error(`candidate ${route} returned ${response.status}`);
+            }
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/candidate-verified.json`, JSON.stringify({runtime, readiness: {commercial_ready: true, blockers: []}, capabilities, google_oauth_enabled: true}));
+            fs.appendFileSync(process.env.GITHUB_ENV, `CANDIDATE_DEPLOYMENT_ID=${runtime.deployment_id}\n`);
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Recheck the release-only main delta before promotion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_github_ref.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --expected-sha "$GITHUB_SHA" \
+            --token-env GITHUB_TOKEN \
+            --output "$RUNNER_TEMP/main-before-promote.json"
+
+      - name: Promote once and roll back on any formal verification failure
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          rollback() {
+            current_id="$(node <<'NODE' || true
+          (async () => {
+            const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+            const response = await fetch(`${base}/version`, {cache: 'no-store'});
+            if (!response.ok) process.exit(1);
+            const runtime = await response.json();
+            if (!/^dpl_[A-Za-z0-9_-]+$/.test(runtime.deployment_id)) process.exit(1);
+            process.stdout.write(runtime.deployment_id);
+          })().catch(() => process.exit(1));
+          NODE
+            )"
+            if [[ "$current_id" != "$ROLLBACK_DEPLOYMENT_ID" ]]; then
+              "$VERCEL_CLI" rollback "$ROLLBACK_DEPLOYMENT_ID" --yes --token="$VERCEL_TOKEN"
+            fi
+            node <<'NODE'
+          (async () => {
+            const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+            let runtime;
+            for (let attempt = 0; attempt < 30; attempt += 1) {
+              try {
+                const response = await fetch(`${base}/version`, {cache: 'no-store'});
+                if (response.ok) {
+                  runtime = await response.json();
+                  if (runtime.deployment_id === process.env.ROLLBACK_DEPLOYMENT_ID) break;
+                }
+              } catch {}
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            if (!runtime || runtime.deployment_id !== process.env.ROLLBACK_DEPLOYMENT_ID) throw new Error('formal domain did not return to the captured rollback deployment');
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
+          }
+
+          set +e
+          "$VERCEL_CLI" promote "$CANDIDATE_URL" --yes --token="$VERCEL_TOKEN"
+          promote_status=$?
+          set -e
+          if [[ "$promote_status" -ne 0 ]]; then
+            rollback
+            exit "$promote_status"
+          fi
+
+          if ! node <<'NODE'
+          const fs = require('node:fs');
+          (async () => {
+            const base = String(process.env.PRODUCTION_BASE_URL || '').replace(/\/$/, '');
+            const getJson = async (path) => {
+              const response = await fetch(base + path, {cache: 'no-store'});
+              if (!response.ok) throw new Error(`formal ${path} returned ${response.status}`);
+              return response.json();
+            };
+            let runtime;
+            for (let attempt = 0; attempt < 30; attempt += 1) {
+              try {
+                runtime = await getJson('/version');
+                if (runtime.deployment_id === process.env.CANDIDATE_DEPLOYMENT_ID) break;
+              } catch {}
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            if (!runtime || runtime.deployment_id !== process.env.CANDIDATE_DEPLOYMENT_ID || runtime.source_sha !== process.env.SOURCE_SHA || runtime.runtime_bundle_id !== process.env.RUNTIME_BUNDLE_ID || runtime.release_role !== 'COMMERCIAL_7A') throw new Error('formal runtime did not converge to the verified candidate');
+            const readiness = await getJson('/api/v1/ops/readiness');
+            const config = await getJson('/api/v1/ops/public_config');
+            const capabilities = config.capabilities || {};
+            if (readiness.commercial_ready !== true || (readiness.blockers || []).length) throw new Error('formal readiness is not green');
+            if (Object.keys(capabilities).length !== 7 || Object.values(capabilities).some(value => value !== true)) throw new Error('formal capabilities are not all ON');
+            if (config.auth?.google_oauth_enabled !== true) throw new Error('formal Google login is not enabled');
+            for (const route of ['/', '/pages/auth/login', '/pages/auth/register', '/pages/create/index', '/pages/pricing/index', '/pages/account/index', '/pages/legal/privacy', '/pages/legal/refund', '/pages/legal/terms']) {
+              const response = await fetch(base + route, {redirect: 'manual', cache: 'no-store'});
+              if (response.status !== 200) throw new Error(`formal ${route} returned ${response.status}`);
+            }
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/formal-verified.json`, JSON.stringify({runtime, readiness: {commercial_ready: true, blockers: []}, capabilities, google_oauth_enabled: true}));
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          NODE
+          then
+            rollback
+            exit 1
+          fi
+
+      - name: Persist sanitized release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vowpic-frontend-production-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/current-main.json
+            ${{ runner.temp }}/source-gates.json
+            ${{ runner.temp }}/production-database-credential-proof.json
+            ${{ runner.temp }}/database-capabilities.json
+            ${{ runner.temp }}/rollback-baseline.json
+            ${{ runner.temp }}/candidate-verified.json
+            ${{ runner.temp }}/main-before-promote.json
+            ${{ runner.temp }}/formal-verified.json
+          if-no-files-found: error
+          retention-days: 90
